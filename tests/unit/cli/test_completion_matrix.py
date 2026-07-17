@@ -816,7 +816,7 @@ def test_dynamic_completers_seeded_archive_per_shell(
     comp_cls: type[ShellComplete],
     label: str,
     cwords: list[str],
-    corpus_seeded_db: Callable[..., Path],
+    named_seeded_archive: Callable[[str], Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With a seeded archive, every dynamic completer returns at least one item on every shell.
@@ -828,11 +828,9 @@ def test_dynamic_completers_seeded_archive_per_shell(
     tool (which are always populated) to be non-empty, while still
     asserting the call itself succeeds for all completers.
     """
-    # ``corpus_seeded_db`` ingests through the archive pipeline and points
-    # ``POLYLOGUE_ARCHIVE_ROOT`` at the archive root that holds the seeded
-    # ``index.db`` — exactly the store ``active_index_db_path()`` resolves
-    # for the completers, so no extra staging is required.
-    corpus_seeded_db(providers=("chatgpt", "claude-ai"), count=3, seed=1271)
+    # The named workload is generated through the production pipeline then
+    # cloned into this test's configured archive root.
+    named_seeded_archive("completion")
 
     items = _run_completion(shell, comp_cls, cwords)
     # The call must succeed for every completer.

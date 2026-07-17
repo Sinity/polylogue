@@ -1,5 +1,7 @@
 """Shared scenario models used across verification projections."""
 
+from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
+
 from .assertions import AssertionClass, AssertionSpec, classification_label
 from .cli_surfaces import (
     CliSurfaceFamily,
@@ -94,10 +96,34 @@ from .runtime import (
 )
 from .sources import NamedScenarioSource
 from .specs import ScenarioSpec
+from .workload import (
+    BudgetAggregation,
+    BudgetMeasure,
+    BudgetSemantics,
+    BudgetVerdict,
+    MeasurementScope,
+    WorkloadBudget,
+    WorkloadBudgetResult,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+    evaluate_budgets,
+    exact_session_actions_canary_spec,
+    lineage_replay_canary_spec,
+    partial_convergence_canary_spec,
+    tool_pairing_canary_spec,
+    watcher_append_cohort_canary_spec,
+)
 
 __all__ = [
     "AssertionClass",
     "AssertionSpec",
+    "BudgetAggregation",
+    "BudgetMeasure",
+    "BudgetSemantics",
+    "BudgetVerdict",
     "classification_label",
     "build_default_corpus_specs",
     "build_demo_corpus_specs",
@@ -114,6 +140,7 @@ __all__ = [
     "devtools_execution",
     "flatten_corpus_specs",
     "memory_budget_execution",
+    "MeasurementScope",
     "pipeline_probe_execution",
     "resolve_corpus_scenarios",
     "resolve_corpus_specs",
@@ -176,4 +203,19 @@ __all__ = [
     "runtime_maintenance_target_names",
     "runtime_operation_target_names",
     "runtime_path_target_names",
+    "WorkloadBudget",
+    "WorkloadBudgetResult",
+    "WorkloadEnvelopeSpec",
+    "WorkloadInputRef",
+    "WorkloadPhaseObservation",
+    "WorkloadReceipt",
+    "WorkloadRunStatus",
+    "WorkloadScaleTier",
+    "WorkloadSelectivityTier",
+    "evaluate_budgets",
+    "exact_session_actions_canary_spec",
+    "lineage_replay_canary_spec",
+    "partial_convergence_canary_spec",
+    "tool_pairing_canary_spec",
+    "watcher_append_cohort_canary_spec",
 ]

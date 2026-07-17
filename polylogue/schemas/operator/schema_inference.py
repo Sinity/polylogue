@@ -116,6 +116,11 @@ def cli_main(args: list[str] | None = None) -> int:
         default=None,
         help="Optional sample cap for fast/debug generation (default: full dataset)",
     )
+    parser.add_argument(
+        "--archive-workload-profile",
+        action="store_true",
+        help="Also write an aggregate archive composition profile beside staged provider packages",
+    )
 
     parsed = parser.parse_args(args)
 
@@ -125,6 +130,7 @@ def cli_main(args: list[str] | None = None) -> int:
         db_path=parsed.db_path,
         providers=providers,
         max_samples=parsed.max_samples,
+        include_archive_workload_profile=parsed.archive_workload_profile,
     )
 
     success = []

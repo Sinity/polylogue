@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
@@ -36,6 +37,19 @@ def classify_artifact_path(
         return None
 
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
+    if provider_token is Provider.HERMES and inner_name in {
+        "verification_evidence.db",
+        "verification_evidence.sqlite",
+        "verification_evidence.sqlite3",
+    }:
+        return ArtifactClassification(
+            provider=provider_token,
+            kind=ArtifactKind.METADATA_DOCUMENT,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="Hermes SQLite evidence sidecar",
+        )
     if provider_token is Provider.ANTIGRAVITY:
         if inner_name.endswith(".md.metadata.json"):
             return None
@@ -99,7 +113,7 @@ def classify_artifact(
     if explicit is not None:
         return explicit
 
-    if isinstance(payload, list):
+    if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
         return _classify_list(payload, provider=provider_token, source_path=source_path)
     if isinstance(payload, dict):
         return _classify_dict(payload, provider=provider_token, source_path=source_path)
@@ -114,7 +128,7 @@ def classify_artifact(
 
 
 def _classify_list(
-    payload: list[JSONValue],
+    payload: Sequence[JSONValue],
     *,
     provider: Provider,
     source_path: str | Path | None,
@@ -173,7 +187,7 @@ def _classify_list(
             reason="bundle of session documents",
         )
 
-    if looks_metadataish_list(payload):
+    if looks_metadataish_list(payload):  # type: ignore[arg-type]
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.METADATA_DOCUMENT,

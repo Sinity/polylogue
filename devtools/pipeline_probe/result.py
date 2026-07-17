@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
 from devtools.pipeline_probe.request import BudgetReport, ProbeSummary, RawFanoutEntry
 from polylogue.core.json import JSONDocument, JSONValue, json_document
-from polylogue.scenarios import PipelineProbeRequest
+from polylogue.scenarios import (
+    BudgetMeasure,
+    BudgetSemantics,
+    MeasurementScope,
+    PipelineProbeRequest,
+    WorkloadBudget,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+)
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -231,6 +244,100 @@ def _observed_peak_rss_mb(metrics: JSONDocument) -> tuple[JSONValue, JSONValue, 
     return round(peak_self_value + peak_children_value, 1), peak_self, peak_children
 
 
+def _pipeline_workload_receipt(
+    summary: ProbeSummary,
+    request: PipelineProbeRequest,
+    *,
+    observed_total_ms: float | None,
+    observed_peak_rss_mb: float | None,
+) -> JSONDocument:
+    probe = _json_object_or_empty(summary.get("probe"))
+    input_digest = hashlib.sha256(
+        json.dumps(probe, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    budgets: list[WorkloadBudget] = []
+    if request.max_total_ms is not None:
+        budgets.append(
+            WorkloadBudget(
+                BudgetMeasure.WALL_MS,
+                request.max_total_ms,
+                BudgetSemantics.REGRESSION_GATE,
+                phase="total",
+            )
+        )
+    if request.max_peak_rss_mb is not None:
+        budgets.append(
+            WorkloadBudget(
+                BudgetMeasure.PEAK_RSS_BYTES,
+                request.max_peak_rss_mb * 1024 * 1024,
+                BudgetSemantics.REGRESSION_GATE,
+                phase="total",
+            )
+        )
+    spec = WorkloadEnvelopeSpec(
+        workload_id=f"pipeline-probe:{request.stage}",
+        family_id="pipeline-probe",
+        version=1,
+        inputs=(WorkloadInputRef(input_id=f"pipeline-probe-input:sha256:{input_digest}"),),
+        phases=("total",),
+        measurement_scope=MeasurementScope.PROCESS_TREE,
+        concurrency=request.ingest_workers or 1,
+        budgets=tuple(budgets),
+    )
+    unavailable = [
+        "cpu_ms",
+        "current_rss_bytes",
+        "peak_pss_bytes",
+        "current_pss_bytes",
+        "anon_bytes",
+        "file_cache_bytes",
+        "swap_bytes",
+        "temp_storage_bytes",
+        "storage_bytes",
+        "read_io_bytes",
+        "write_io_bytes",
+        "response_bytes",
+        "cancellation_latency_ms",
+        "progress_completed",
+        "progress_total",
+        "queue_depth",
+        "backpressure_ms",
+        "cleanup_reclaimed_bytes",
+    ]
+    if observed_total_ms is None:
+        unavailable.append("wall_ms")
+    if observed_peak_rss_mb is None:
+        unavailable.append("peak_rss_bytes")
+    provenance = summary.get("provenance", {})
+    build_id_value = provenance.get("git_commit")
+    build_id = f"git:{build_id_value}" if isinstance(build_id_value, str) and build_id_value else None
+    result = _json_object_or_empty(summary.get("result"))
+    logical_failure = bool(result.get("index_error"))
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.FAILED if logical_failure else WorkloadRunStatus.SUCCEEDED,
+        build_id=build_id,
+        runtime_id=None,
+        archive_id=None,
+        generation_id=None,
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(
+                name="total",
+                wall_ms=observed_total_ms,
+                peak_rss_bytes=(
+                    round(observed_peak_rss_mb * 1024 * 1024) if observed_peak_rss_mb is not None else None
+                ),
+                unavailable=tuple(unavailable),
+            ),
+        ),
+        notes=(
+            "Adapter preserves the existing process self+children high-water accounting; PSS and charge classes are unmeasured.",
+        ),
+    )
+    return receipt.to_payload()
+
+
 def _build_budget_report(summary: ProbeSummary, request: PipelineProbeRequest) -> BudgetReport | None:
     if request.max_total_ms is None and request.max_peak_rss_mb is None:
         return None
@@ -262,6 +369,9 @@ def _build_budget_report(summary: ProbeSummary, request: PipelineProbeRequest) -
                 f"peak RSS {observed_peak_rss_mb_value:.1f} MiB exceeded budget {request.max_peak_rss_mb:.1f} MiB"
             )
 
+    total_ms_value = _json_float_or_none(observed_total_ms)
+    peak_rss_value = _json_float_or_none(observed_peak_rss_mb)
+
     return {
         "ok": not violations,
         "max_total_ms": request.max_total_ms,
@@ -271,6 +381,12 @@ def _build_budget_report(summary: ProbeSummary, request: PipelineProbeRequest) -
         "observed_peak_rss_self_mb": observed_peak_rss_self_mb,
         "observed_peak_rss_children_mb": observed_peak_rss_children_mb,
         "violations": violations,
+        "workload_receipt": _pipeline_workload_receipt(
+            summary,
+            request,
+            observed_total_ms=total_ms_value,
+            observed_peak_rss_mb=peak_rss_value,
+        ),
     }
 
 

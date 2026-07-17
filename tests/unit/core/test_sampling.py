@@ -7,15 +7,35 @@ and load_samples_from_sessions with JSON/JSONL fixtures.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from polylogue.archive.raw_payload import ReplayableRecordSamples
 from polylogue.core.enums import Provider
+from polylogue.schemas.generation.workflow import generate_provider_schema
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
-from polylogue.schemas.sampling import load_samples_from_db, load_samples_from_sessions
+from polylogue.schemas.observation_runtime import _document_profile_tokens
+from polylogue.schemas.sampling import iter_schema_units, load_samples_from_db, load_samples_from_sessions
 from tests.infra.schema_access import schema_node
+
+
+def test_document_profile_tokens_collapse_record_identity_keys() -> None:
+    tokens = _document_profile_tokens(
+        {
+            "mapping": {
+                "2f5a7f5d-a809-469a-a79a-8f032618fa92": {"message": {}},
+                "client-created-root": {"message": None},
+            }
+        }
+    )
+
+    assert "child:mapping:*" in tokens
+    assert "child:mapping:client-created-root" in tokens
+    assert not any("2f5a7f5d" in token for token in tokens)
 
 
 def _archive_index_db(tmp_path: Path) -> Path:
@@ -237,6 +257,139 @@ class TestLoadSamplesFromDb:
         text = first_block.get("text")
         assert isinstance(text, str)
         assert len(text) == 1024
+
+    def test_full_corpus_record_sampling_replays_every_record_without_materializing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        db = _archive_index_db(tmp_path)
+        record_count = 1_024
+        raw_content = "\n".join(
+            json.dumps(
+                {"type": "session_meta", "id": "sess-1"}
+                if index == 0
+                else {
+                    "type": "message",
+                    "role": "user" if index % 2 else "assistant",
+                    "content": [{"type": "input_text", "text": f"message-{index}"}],
+                }
+            )
+            for index in range(record_count)
+        ).encode("utf-8")
+        _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/large-session.jsonl",
+            raw_content=raw_content,
+        )
+
+        units = list(iter_schema_units("codex", db_path=db, full_corpus=True))
+
+        assert len(units) == 1
+        samples = units[0].schema_samples
+        assert isinstance(samples, ReplayableRecordSamples)
+        assert len(samples) == record_count
+        assert samples[0]["type"] == "session_meta"
+        assert samples[-1]["type"] == "message"
+
+        generation = generate_provider_schema("codex", db_path=db, full_corpus=True)
+
+        assert generation.success, generation.error
+        assert generation.sample_count == record_count
+
+    def test_document_provider_streams_compacted_values_into_envelope(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.schemas import sampling
+
+        db = _archive_index_db(tmp_path)
+        raw_content = json.dumps(
+            {
+                "title": "conversation",
+                "mapping": {
+                    "node-1": {
+                        "id": "node-1",
+                        "message": {
+                            "author": {"role": "user"},
+                            "content": {"content_type": "text", "parts": ["x" * 4096]},
+                        },
+                    }
+                },
+            }
+        ).encode("utf-8")
+        _insert_raw_session(
+            db_path=db,
+            origin="chatgpt-export",
+            source_path="/tmp/conversation.json",
+            raw_content=raw_content,
+        )
+        original_build = cast(Callable[..., object], sampling.build_raw_payload_envelope)
+        observed_payloads: list[object] = []
+
+        def _capture_payload(raw: object, **kwargs: object) -> object:
+            observed_payloads.append(raw)
+            return original_build(raw, **kwargs)
+
+        monkeypatch.setattr(sampling, "build_raw_payload_envelope", _capture_payload)
+
+        result = load_samples_from_db("chatgpt", db_path=db)
+
+        assert len(result) == 1
+        assert len(observed_payloads) == 1
+        payload = schema_node(observed_payloads[0])
+        mapping = schema_node(payload["mapping"])
+        node = schema_node(mapping["node-1"])
+        message = schema_node(node["message"])
+        content = schema_node(message["content"])
+        parts = content["parts"]
+        assert isinstance(parts, list)
+        assert parts == ["x" * 1024]
+        assert "node-1" in mapping
+
+    def test_schema_observation_records_included_and_decode_failed_raws(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db = _archive_index_db(tmp_path)
+        good_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/good.jsonl",
+            raw_content=b'{"type":"session_meta","id":"sess-1"}\n',
+        )
+        bad_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/bad.jsonl",
+            raw_content=b"not-json\n",
+        )
+        monkeypatch.setattr(
+            "polylogue.schemas.sampling.build_raw_payload_envelope",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("not provider JSON")),
+        )
+        outcomes: list[dict[str, object]] = []
+
+        units = list(
+            iter_schema_units(
+                "codex",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert len(units) == 1
+        assert {outcome["raw_id"]: outcome["status"] for outcome in outcomes} == {
+            good_raw_id: "included",
+            bad_raw_id: "decode_failed",
+        }
+        assert {outcome["raw_id"]: outcome["reason"] for outcome in outcomes} == {
+            good_raw_id: "observed_schema_units",
+            bad_raw_id: "payload_decode_failed",
+        }
 
 
 class TestLoadSamplesFromSessions:

@@ -155,6 +155,15 @@ def test_watcher_append_uses_durable_replay_metadata_without_historical_full_rea
     plan = _seed_cohort_and_append_plan(tmp_path)
     with append_cohort_memory_counter() as counter:
         result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+        counter.snapshot("quiescent")
+
+    receipt = counter.workload_receipt(
+        profile_id="workload-profile:append-cohort-canary",
+        archive_id="archive:test:append-cohort",
+        build_id="git:test",
+        runtime_id="python:test",
+        generation_id="synthetic:append-cohort",
+    )
 
     assert result.succeeded == [plan]
     assert counter.batch_count == 1
@@ -185,6 +194,7 @@ def test_watcher_append_uses_durable_replay_metadata_without_historical_full_rea
         "raw_revision_replay_plan:before",
         "raw_revision_replay_plan:after",
         "watcher_append:after",
+        "quiescent",
     ], counter.summary()
     for phase in counter.phases:
         assert phase.batch_count == 1
@@ -192,6 +202,10 @@ def test_watcher_append_uses_durable_replay_metadata_without_historical_full_rea
     summary = counter.summary()
     for field in ("anon_pss=", "cgroup_anon=", "cgroup_file=", "io_read=", "io_write="):
         assert field in summary
+    assert receipt.spec.inputs[0].profile_id == "workload-profile:append-cohort-canary"
+    assert receipt.phases[-2].peak_rss_bytes is not None
+    assert receipt.phases[-2].quiescent is True
+    assert receipt.phases[-1].file_cache_bytes is not None
 
 
 def test_watcher_append_does_not_reclassify_an_established_cohort(tmp_path: Path) -> None:

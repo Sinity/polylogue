@@ -10,6 +10,7 @@ from polylogue.archive.raw_payload.decode import (
 )
 from polylogue.archive.raw_payload.sampling_buckets import is_record_candidate, record_bucket_key
 from polylogue.archive.raw_payload.sampling_extract import (
+    ReplayableRecordSamples,
     collect_limited_samples,
     extract_payload_samples,
     extract_record_samples_from_raw_content,
@@ -23,6 +24,7 @@ __all__ = [
     "JSONScalar",
     "JSONValue",
     "RawPayloadEnvelope",
+    "ReplayableRecordSamples",
     "WireFormat",
     "build_raw_payload_envelope",
     "collect_limited_samples",

@@ -115,6 +115,7 @@ class DemoCorpusFamily:
     messages_max: int = 1
     seed_offset: int = 0
     style: str = "default"
+    session_native_ids: tuple[str, ...] = ()
     synthetic: bool = True
 
     def to_spec(
@@ -133,6 +134,7 @@ class DemoCorpusFamily:
             messages_max=self.messages_max,
             seed=seed + self.seed_offset,
             style=self.style,
+            session_native_ids=self.session_native_ids,
             origin=origin,
             tags=tags,
         )
@@ -151,6 +153,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         messages_max=3,
         seed_offset=0,
         style="demo",
+        session_native_ids=(DEMO_CHATGPT_SESSION_ID.removeprefix("chatgpt-export:"),),
     ),
     DemoCorpusFamily(
         family_id="claude-code-tools",
@@ -328,7 +331,6 @@ class CorpusProfile:
     observed_artifact_count: int | None = None
     observed_confidence: float | None = None
     bundle_scope_count: int | None = None
-    representative_paths: tuple[str, ...] = ()
     first_seen: str | None = None
     last_seen: str | None = None
 
@@ -347,7 +349,6 @@ class CorpusProfile:
             and self.observed_artifact_count is None
             and self.observed_confidence is None
             and self.bundle_scope_count is None
-            and not self.representative_paths
             and self.first_seen is None
             and self.last_seen is None
         )
@@ -369,7 +370,6 @@ class CorpusProfile:
             observed_artifact_count=payload_int(payload.get("observed_artifact_count"), "observed_artifact_count"),
             observed_confidence=_coerce_optional_float(payload.get("observed_confidence")),
             bundle_scope_count=payload_int(payload.get("bundle_scope_count"), "bundle_scope_count"),
-            representative_paths=payload_string_tuple(payload.get("representative_paths")),
             first_seen=payload_optional_string(payload.get("first_seen")),
             last_seen=payload_optional_string(payload.get("last_seen")),
         )
@@ -392,8 +392,6 @@ class CorpusProfile:
             payload["observed_confidence"] = self.observed_confidence
         if self.bundle_scope_count is not None:
             payload["bundle_scope_count"] = self.bundle_scope_count
-        if self.representative_paths:
-            payload["representative_paths"] = list(self.representative_paths)
         if self.first_seen is not None:
             payload["first_seen"] = self.first_seen
         if self.last_seen is not None:
@@ -490,6 +488,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
     messages_max: int = 15
     seed: int | None = None
     style: str = "default"
+    session_native_ids: tuple[str, ...] = ()
     profile: CorpusProfile = field(default_factory=CorpusProfile)
 
     def __post_init__(self) -> None:
@@ -501,6 +500,12 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             raise ValueError("CorpusSpec.messages_min must be >= 1")
         if self.messages_max < self.messages_min:
             raise ValueError("CorpusSpec.messages_max must be >= messages_min")
+        if self.session_native_ids and len(self.session_native_ids) != self.count:
+            raise ValueError("CorpusSpec.session_native_ids must contain exactly one id per session")
+        if any(not native_id for native_id in self.session_native_ids):
+            raise ValueError("CorpusSpec.session_native_ids must not contain empty ids")
+        if len(set(self.session_native_ids)) != len(self.session_native_ids):
+            raise ValueError("CorpusSpec.session_native_ids must be unique")
 
     @property
     def messages_per_session(self) -> range:
@@ -544,6 +549,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
         messages_max: int | None = None,
         seed: int | None = None,
         style: str | None = None,
+        session_native_ids: tuple[str, ...] | None = None,
         origin: str | None = None,
         tags: tuple[str, ...] | None = None,
     ) -> CorpusSpec:
@@ -554,6 +560,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             messages_max=self.messages_max if messages_max is None else messages_max,
             seed=self.seed if seed is None else seed,
             style=self.style if style is None else style,
+            session_native_ids=(self.session_native_ids if session_native_ids is None else session_native_ids),
             origin=self.origin if origin is None else origin,
             tags=self.tags if tags is None else tags,
         )
@@ -571,6 +578,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
         messages_max: int = 15,
         seed: int | None = None,
         style: str = "default",
+        session_native_ids: tuple[str, ...] = (),
         origin: str = "authored",
         tags: tuple[str, ...] = (),
     ) -> CorpusSpec:
@@ -584,6 +592,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             messages_max=messages_max,
             seed=seed,
             style=style,
+            session_native_ids=session_native_ids,
             origin=origin,
             tags=tags,
         )
@@ -606,6 +615,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             messages_max=payload_int(payload.get("messages_max"), "messages_max") or 15,
             seed=payload_int(payload.get("seed"), "seed"),
             style=payload_optional_string(payload.get("style")) or "default",
+            session_native_ids=payload_string_tuple(payload.get("session_native_ids")),
             origin=metadata.origin,
             path_targets=metadata.path_targets,
             artifact_targets=metadata.artifact_targets,
@@ -629,6 +639,8 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             payload["element_kind"] = self.element_kind
         if self.seed is not None:
             payload["seed"] = self.seed
+        if self.session_native_ids:
+            payload["session_native_ids"] = list(self.session_native_ids)
         if not self.profile.is_empty:
             payload["profile"] = self.profile.to_payload()
         return payload
@@ -1055,13 +1067,6 @@ def _profile_from_package(
         else package.bundle_scope_count
         if package
         else None,
-        representative_paths=(
-            tuple(element.representative_paths)
-            if element is not None
-            else tuple(package.representative_paths)
-            if package is not None
-            else ()
-        ),
         first_seen=element.first_seen if element is not None else package.first_seen if package is not None else None,
         last_seen=element.last_seen if element is not None else package.last_seen if package is not None else None,
     )
@@ -1081,7 +1086,6 @@ def _merge_corpus_profiles(*profiles: CorpusProfile) -> CorpusProfile:
             observed_artifact_count=merged.observed_artifact_count or profile.observed_artifact_count,
             observed_confidence=merged.observed_confidence or profile.observed_confidence,
             bundle_scope_count=merged.bundle_scope_count or profile.bundle_scope_count,
-            representative_paths=_merge_string_tuples(merged.representative_paths, profile.representative_paths),
             first_seen=merged.first_seen or profile.first_seen,
             last_seen=merged.last_seen or profile.last_seen,
         )
@@ -1116,7 +1120,6 @@ def _cluster_to_corpus_spec(
                 observed_sample_count=cluster.sample_count,
                 observed_confidence=cluster.confidence,
                 bundle_scope_count=cluster.bundle_scope_count or None,
-                representative_paths=tuple(cluster.representative_paths),
                 first_seen=cluster.first_seen or None,
                 last_seen=cluster.last_seen or None,
             ),

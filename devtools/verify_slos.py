@@ -13,6 +13,7 @@ without blocking.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -21,12 +22,25 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.benchmark_results import parse_pytest_benchmark_stats
+from devtools.verify_runs import git_head
+from polylogue.scenarios.workload import (
+    BudgetMeasure,
+    BudgetSemantics,
+    MeasurementScope,
+    WorkloadBudget,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+)
 
 ROOT = _get_root()
 SLO_CATALOG = ROOT / "docs" / "plans" / "slo-catalog.yaml"
 SLO_GATES = frozenset({"required", "informational"})
 SLO_TIERS = frozenset({"cheap-local", "lab"})
 DEFAULT_TIER = "cheap-local"
+SLO_WORKLOAD_RECEIPT = ROOT / ".cache" / "verify" / "current-slo-workload-receipt.json"
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +168,76 @@ def _estimate_p95(entry_stats: dict[str, float]) -> float:
     stddev = entry_stats.get("stddev", 0)
     # p95 ≈ mean + 1.645 * stddev  (for normal distribution)
     return mean + 1.645 * stddev
+
+
+def _slo_workload_receipt(
+    *,
+    catalog_text: str,
+    surfaces: dict[str, dict[str, object]],
+    active_tiers: frozenset[str] | None,
+    passed: list[dict[str, object]],
+    violations: list[dict[str, object]],
+    blocking: bool,
+) -> dict[str, object]:
+    """Adapt percentile SLO rows into named shared-receipt phases."""
+    measured = {str(row["surface"]): row for row in (*passed, *violations) if isinstance(row.get("surface"), str)}
+    phases: list[str] = []
+    budgets: list[WorkloadBudget] = []
+    observations: list[WorkloadPhaseObservation] = []
+    for surface_name, config in sorted(surfaces.items()):
+        tier, tier_error = _surface_tier(surface_name, config)
+        gate, gate_error = _surface_gate(surface_name, config)
+        if tier_error is not None or gate_error is not None or tier is None or gate is None:
+            continue
+        if active_tiers is not None and tier not in active_tiers:
+            continue
+        row = measured.get(surface_name)
+        for statistic in ("p50", "p95"):
+            target = config.get(f"{statistic}_ms")
+            if not isinstance(target, int):
+                continue
+            phase = f"{surface_name}:{statistic}"
+            phases.append(phase)
+            budgets.append(
+                WorkloadBudget(
+                    BudgetMeasure.WALL_MS,
+                    target,
+                    (BudgetSemantics.REGRESSION_GATE if gate == "required" else BudgetSemantics.MEASURE_ONLY),
+                    phase=phase,
+                )
+            )
+            actual = row.get(f"actual_{statistic}_ms") if row is not None else None
+            observations.append(
+                WorkloadPhaseObservation(
+                    name=phase,
+                    wall_ms=float(actual) if isinstance(actual, int | float) else None,
+                    unavailable=("wall_ms",) if not isinstance(actual, int | float) else (),
+                )
+            )
+    catalog_id = hashlib.sha256(catalog_text.encode("utf-8")).hexdigest()
+    spec = WorkloadEnvelopeSpec(
+        workload_id="read-surface-slo-catalog",
+        family_id="read-surface-slo",
+        version=1,
+        inputs=(WorkloadInputRef(input_id=f"slo-catalog:sha256:{catalog_id}"),),
+        phases=tuple(phases),
+        measurement_scope=MeasurementScope.PROCESS_TREE,
+        budgets=tuple(budgets),
+    )
+    head = git_head(ROOT)
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.FAILED if blocking else WorkloadRunStatus.SUCCEEDED,
+        build_id=f"git:{head}" if head is not None else None,
+        runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        archive_id=None,
+        generation_id=None,
+        frame_id=None,
+        phases=tuple(observations),
+        evidence_refs=(str(SLO_WORKLOAD_RECEIPT.relative_to(ROOT)),),
+        notes=("Each surface percentile is a named phase so p50 and p95 retain distinct budgets.",),
+    )
+    return dict(receipt.to_payload())
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +404,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. Report
     blocking = bool(catalog_errors or violations or missing_required)
+    workload_receipt = _slo_workload_receipt(
+        catalog_text=catalog_text,
+        surfaces=surfaces,
+        active_tiers=active_tiers,
+        passed=passed,
+        violations=violations,
+        blocking=blocking,
+    )
+    SLO_WORKLOAD_RECEIPT.parent.mkdir(parents=True, exist_ok=True)
+    SLO_WORKLOAD_RECEIPT.write_text(json.dumps(workload_receipt, indent=2, ensure_ascii=False) + "\n")
     if args.json:
         json.dump(
             {
@@ -331,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
                 "passed": passed,
                 "uncovered_informational": uncovered_informational,
                 "skipped_tier": skipped_tier,
+                "workload_receipt": workload_receipt,
             },
             sys.stdout,
             indent=2,
@@ -384,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if active_tiers is not None:
             print(f"active_tiers={sorted(active_tiers)}")
+        print(f"workload_receipt={workload_receipt['receipt_id']} artifact={SLO_WORKLOAD_RECEIPT.relative_to(ROOT)}")
         print(f"blocking={blocking}")
 
     return 1 if blocking else 0

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, TypeAlias
 
@@ -53,15 +53,30 @@ class SchemaElementManifest:
     first_seen: str = ""
     last_seen: str = ""
     bundle_scope_count: int = 0
-    bundle_scopes: list[str] = field(default_factory=list)
+    bundle_scope_identities: list[str] = field(default_factory=list)
     exact_structure_ids: list[str] = field(default_factory=list)
     profile_family_ids: list[str] = field(default_factory=list)
     profile_tokens: list[str] = field(default_factory=list)
-    representative_paths: list[str] = field(default_factory=list)
     observed_artifact_count: int = 0
 
     def to_dict(self) -> JSONDocument:
-        return json_document(asdict(self))
+        return json_document(
+            {
+                "element_kind": self.element_kind,
+                "schema_file": self.schema_file,
+                "sample_count": self.sample_count,
+                "artifact_count": self.artifact_count,
+                "supported": self.supported,
+                "first_seen": self.first_seen,
+                "last_seen": self.last_seen,
+                "bundle_scope_count": self.bundle_scope_count,
+                "bundle_scope_identities": self.bundle_scope_identities,
+                "exact_structure_ids": self.exact_structure_ids,
+                "profile_family_ids": self.profile_family_ids,
+                "profile_tokens": self.profile_tokens,
+                "observed_artifact_count": self.observed_artifact_count,
+            }
+        )
 
     @classmethod
     def from_dict(cls, data: JSONDocument) -> SchemaElementManifest:
@@ -74,11 +89,10 @@ class SchemaElementManifest:
             first_seen=str(data.get("first_seen", "")),
             last_seen=str(data.get("last_seen", "")),
             bundle_scope_count=_int_value(data.get("bundle_scope_count")),
-            bundle_scopes=_string_list(data.get("bundle_scopes")),
+            bundle_scope_identities=_string_list(data.get("bundle_scope_identities")),
             exact_structure_ids=_string_list(data.get("exact_structure_ids")),
             profile_family_ids=_string_list(data.get("profile_family_ids")),
             profile_tokens=_string_list(data.get("profile_tokens")),
-            representative_paths=_string_list(data.get("representative_paths")),
             observed_artifact_count=_int_value(data.get("observed_artifact_count")),
         )
 
@@ -94,11 +108,11 @@ class SchemaVersionPackage:
     bundle_scope_count: int
     sample_count: int
     anchor_profile_family_id: str = ""
-    bundle_scopes: list[str] = field(default_factory=list)
+    bundle_scope_identities: list[str] = field(default_factory=list)
     profile_family_ids: list[str] = field(default_factory=list)
-    representative_paths: list[str] = field(default_factory=list)
     elements: list[SchemaElementManifest] = field(default_factory=list)
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
+    workload_profile_file: str | None = None
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -112,11 +126,11 @@ class SchemaVersionPackage:
                 "bundle_scope_count": self.bundle_scope_count,
                 "sample_count": self.sample_count,
                 "anchor_profile_family_id": self.anchor_profile_family_id,
-                "bundle_scopes": self.bundle_scopes,
+                "bundle_scope_identities": self.bundle_scope_identities,
                 "profile_family_ids": self.profile_family_ids,
-                "representative_paths": self.representative_paths,
                 "elements": [element.to_dict() for element in self.elements],
                 "orphan_adjunct_counts": self.orphan_adjunct_counts,
+                "workload_profile_file": self.workload_profile_file,
             }
         )
 
@@ -132,24 +146,25 @@ class SchemaVersionPackage:
             bundle_scope_count=_int_value(data.get("bundle_scope_count")),
             sample_count=_int_value(data.get("sample_count")),
             anchor_profile_family_id=str(data.get("anchor_profile_family_id", "")),
-            bundle_scopes=_string_list(data.get("bundle_scopes")),
+            bundle_scope_identities=_string_list(data.get("bundle_scope_identities")),
             profile_family_ids=_string_list(data.get("profile_family_ids")),
-            representative_paths=_string_list(data.get("representative_paths")),
             elements=[SchemaElementManifest.from_dict(item) for item in json_document_list(data.get("elements"))],
             orphan_adjunct_counts=_string_int_dict(data.get("orphan_adjunct_counts")),
+            workload_profile_file=_string_or_none(data.get("workload_profile_file")),
         )
 
     def element(self, element_kind: str | None = None) -> SchemaElementManifest | None:
         target = element_kind or self.default_element_kind
         return next((item for item in self.elements if item.element_kind == target), None)
 
-    def element_bundle_scopes(self, element_kind: str | None = None) -> set[str]:
+    def matches_bundle_scope(self, scope: str, element_kind: str | None = None) -> bool:
+        from polylogue.schemas.observation_identity import bundle_scope_identity
+
         element = self.element(element_kind)
-        if element is None:
-            return set(self.bundle_scopes)
-        scopes = set(self.bundle_scopes)
-        scopes.update(element.bundle_scopes)
-        return scopes
+        identities = set(self.bundle_scope_identities)
+        if element is not None:
+            identities.update(element.bundle_scope_identities)
+        return bundle_scope_identity(scope) in identities
 
 
 @dataclass
@@ -161,13 +176,15 @@ class SchemaPackageCatalog:
     default_version: str | None = None
     recommended_version: str | None = None
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
+    selection_rationale: JSONDocument = field(default_factory=dict)
+    observation_outcomes: JSONDocument = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.generated_at:
             self.generated_at = datetime.now(tz=timezone.utc).isoformat()
 
     def to_dict(self) -> JSONDocument:
-        return json_document(
+        data = json_document(
             {
                 "provider": _provider_value(self.provider),
                 "generated_at": self.generated_at,
@@ -178,6 +195,11 @@ class SchemaPackageCatalog:
                 "packages": [package.to_dict() for package in self.packages],
             }
         )
+        if self.selection_rationale:
+            data["selection_rationale"] = self.selection_rationale
+        if self.observation_outcomes:
+            data["observation_outcomes"] = self.observation_outcomes
+        return json_document(data)
 
     @classmethod
     def from_dict(cls, data: JSONDocument) -> SchemaPackageCatalog:
@@ -188,6 +210,8 @@ class SchemaPackageCatalog:
             default_version=_string_or_none(data.get("default_version")),
             recommended_version=_string_or_none(data.get("recommended_version")),
             orphan_adjunct_counts=_string_int_dict(data.get("orphan_adjunct_counts")),
+            selection_rationale=json_document(data.get("selection_rationale")),
+            observation_outcomes=json_document(data.get("observation_outcomes")),
             packages=[SchemaVersionPackage.from_dict(item) for item in json_document_list(data.get("packages"))],
         )
 

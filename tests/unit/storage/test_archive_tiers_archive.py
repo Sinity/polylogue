@@ -11,6 +11,13 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.scenarios.workload import (
+    BudgetVerdict,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+    exact_session_actions_canary_spec,
+)
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -18,12 +25,13 @@ from polylogue.sources.parsers.base import (
     ParsedPasteEvidence,
     ParsedSession,
 )
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveQueryUnitAggregateRow, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
     assertion_id_for_session_tag,
     read_assertion_envelope,
 )
+from tests.infra.workload_artifacts import build_seeded_archive
 
 
 def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_path: Path) -> None:
@@ -163,6 +171,170 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
     assert [(row.session_id, row.is_error, row.exit_code) for row in failed_rows] == [(session_id, 1, 2)]
     assert [(row.group_key, row.count) for row in error_counts] == [("1", 1)]
     assert [(row.group_key, row.count) for row in exit_counts] == [("2", 1)]
+
+
+def test_exact_session_action_count_bounds_pairing_before_global_ranking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C-03: irrelevant sessions cannot amplify an exact-session action count."""
+    root = tmp_path / "archive"
+    target_session_id = "codex-session:target"
+    session_rows: list[tuple[str, str, bytes]] = []
+    message_rows: list[tuple[str, str, int, str, str, bytes]] = []
+    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None]] = []
+    for index in range(512):
+        native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
+        session_id = f"codex-session:{native_id}"
+        message_id = f"{session_id}:m1"
+        tool_id = f"tool-{index:04d}"
+        session_rows.append((native_id, Origin.CODEX_SESSION.value, sha256(session_id.encode()).digest()))
+        message_rows.append(
+            (session_id, "m1", 0, Role.ASSISTANT.value, "message", sha256(message_id.encode()).digest())
+        )
+        block_rows.extend(
+            (
+                (message_id, session_id, 0, BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
+                (message_id, session_id, 1, BlockType.TOOL_RESULT.value, None, tool_id, None, None),
+            )
+        )
+
+    with ArchiveStore(root) as facade:
+        facade._conn.executemany(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            session_rows,
+        )
+        facade._conn.executemany(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            message_rows,
+        )
+        facade._conn.executemany(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            block_rows,
+        )
+        source = parse_unit_source_expression(f"actions where session.id:{target_session_id}")
+        assert source is not None
+
+        def measure_query() -> tuple[list[ArchiveQueryUnitAggregateRow], int]:
+            progress_calls = 0
+
+            def count_vm_steps() -> int:
+                nonlocal progress_calls
+                progress_calls += 1
+                return 0
+
+            facade._conn.set_progress_handler(count_vm_steps, 100)
+            try:
+                result_rows = facade.query_unit_counts("action", source.predicate)
+            finally:
+                facade._conn.set_progress_handler(None, 0)
+            return list(result_rows), progress_calls * 100
+
+        rows, bounded_vm_steps = measure_query()
+        contradictory_source = parse_unit_source_expression(
+            f"actions where session.id:{target_session_id} and session.id:codex-session:absent"
+        )
+        assert contradictory_source is not None
+        facade._conn.set_progress_handler(lambda: 0, 100)
+        try:
+            contradictory_rows = facade.query_unit_counts("action", contradictory_source.predicate)
+        finally:
+            facade._conn.set_progress_handler(None, 0)
+        monkeypatch.setattr(
+            "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
+            lambda **_kwargs: ("", "actions", []),
+        )
+        mutant_rows, global_first_vm_steps = measure_query()
+
+    canary_spec = exact_session_actions_canary_spec(
+        profile_id="workload-profile:c03-known-answer",
+        archive_id="archive:c03-known-answer",
+        maximum_vm_steps=49_999,
+    )
+
+    def canary_receipt(vm_steps: int, *, build_id: str) -> WorkloadReceipt:
+        return WorkloadReceipt.from_observations(
+            spec=canary_spec,
+            status=WorkloadRunStatus.SUCCEEDED,
+            build_id=build_id,
+            runtime_id="sqlite:test",
+            archive_id="archive:c03-known-answer",
+            generation_id="generation:c03-known-answer",
+            frame_id=None,
+            phases=(
+                WorkloadPhaseObservation(name="seed"),
+                WorkloadPhaseObservation(name="query", sqlite_vm_steps=vm_steps),
+                WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+            ),
+            cleanup_complete=True,
+        )
+
+    bounded_receipt = canary_receipt(bounded_vm_steps, build_id="git:bounded")
+    mutant_receipt = canary_receipt(global_first_vm_steps, build_id="git:global-first-mutant")
+
+    assert [(row.group_key, row.count) for row in rows] == [("all", 1)]
+    assert contradictory_rows == []
+    assert [(row.group_key, row.count) for row in mutant_rows] == [("all", 1)]
+    assert bounded_vm_steps < 50_000
+    assert global_first_vm_steps >= 50_000
+    assert bounded_receipt.budget_results[0].verdict is BudgetVerdict.PASS
+    assert mutant_receipt.budget_results[0].verdict is BudgetVerdict.EXCEEDED
+    assert mutant_receipt.spec.semantic_result == "complete"
+
+
+def test_c03_exact_session_actions_uses_real_provider_pipeline_and_planted_facts(tmp_path: Path) -> None:
+    """C-03 executes generated Codex bytes through acquire→parse→index→query."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-artifacts")
+    target = next(fact for fact in artifact.facts if fact.expected_session_id == "codex-session:c03-target")
+    assert target.expected_session_id is not None
+    source = parse_unit_source_expression(f"actions where session.id:{target.expected_session_id}")
+    assert source is not None
+
+    with ArchiveStore.open_existing(artifact.root) as facade:
+        progress_calls = 0
+
+        def count_vm_steps() -> int:
+            nonlocal progress_calls
+            progress_calls += 1
+            return 0
+
+        facade._conn.set_progress_handler(count_vm_steps, 100)
+        try:
+            rows = list(facade.query_unit_counts("action", source.predicate))
+        finally:
+            facade._conn.set_progress_handler(None, 0)
+
+    vm_steps = progress_calls * 100
+    spec = exact_session_actions_canary_spec(
+        profile_id=artifact.manifest.profile_id,
+        archive_id=artifact.manifest.archive_id,
+    )
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id=artifact.manifest.build_id,
+        runtime_id="sqlite:real-pipeline",
+        archive_id=artifact.manifest.archive_id,
+        generation_id=artifact.manifest.key,
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="seed"),
+            WorkloadPhaseObservation(name="query", sqlite_vm_steps=vm_steps),
+            WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+        ),
+        cleanup_complete=True,
+    )
+
+    assert [(row.group_key, row.count) for row in rows] == [("all", len(target.tool_use_ids))]
+    assert target.paired_tool_ids
+    assert receipt.budget_results[0].verdict is BudgetVerdict.PASS
 
 
 def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) -> None:

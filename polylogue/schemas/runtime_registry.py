@@ -33,6 +33,7 @@ from polylogue.schemas.packages import (
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str
 SchemaCacheKey = tuple[str, str, str | None]
+WorkloadProfileCacheKey = tuple[str, str]
 SchemaInputDocument = Mapping[str, object]
 PublicSchemaDocument = JSONRecord
 ElementSchemaMap = dict[str, PublicSchemaDocument]
@@ -132,7 +133,6 @@ class _SchemaEvidence:
     element_bundle_scope_count: int
     exact_structure_ids: list[str]
     profile_tokens: list[str]
-    representative_paths: list[str]
 
 
 @dataclass(frozen=True)
@@ -192,7 +192,6 @@ def _schema_evidence(schema: SchemaInputDocument) -> _SchemaEvidence:
         element_bundle_scope_count=_int_value(schema.get("x-polylogue-element-bundle-scope-count", 0)),
         exact_structure_ids=_string_list(schema.get("x-polylogue-exact-structure-ids", [])),
         profile_tokens=_string_list(schema.get("x-polylogue-profile-tokens", [])),
-        representative_paths=_string_list(schema.get("x-polylogue-representative-paths", [])),
     )
 
 
@@ -242,11 +241,13 @@ class SchemaRegistry:
         self._storage_root = storage_root
         self._catalog_cache: dict[str, SchemaPackageCatalog | None] = {}
         self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
+        self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
 
     def clear_cache(self) -> None:
         """Clear internal caches. Call after modifying schema packages."""
         self._catalog_cache.clear()
         self._schema_cache.clear()
+        self._workload_profile_cache.clear()
 
     @property
     def storage_root(self) -> Path:
@@ -358,6 +359,32 @@ class SchemaRegistry:
     def get_schema(self, provider: str, version: str = "default") -> PublicSchemaDocument | None:
         return self.get_element_schema(provider, version=version)
 
+    def get_workload_profile(
+        self,
+        provider: str,
+        version: str = "default",
+    ) -> PublicSchemaDocument | None:
+        """Load the privacy-safe workload profile carried by a package."""
+        provider_token = _provider_token(provider)
+        cache_key = (provider_token, version)
+        if cache_key in self._workload_profile_cache:
+            return self._workload_profile_cache[cache_key]
+        package = self.get_package(provider_token, version=version)
+        if package is None or package.workload_profile_file is None:
+            self._workload_profile_cache[cache_key] = None
+            return None
+        provider_dir = self._provider_dir_for_package(provider_token, package.version)
+        if provider_dir is None:
+            self._workload_profile_cache[cache_key] = None
+            return None
+        path = provider_dir / "versions" / package.version / package.workload_profile_file
+        if not path.exists():
+            self._workload_profile_cache[cache_key] = None
+            return None
+        profile = _read_gzip_json_dict(path)
+        self._workload_profile_cache[cache_key] = profile
+        return profile
+
     def list_versions(self, provider: str) -> list[str]:
         provider_token = _provider_token(provider)
         catalog = self.load_package_catalog(provider_token)
@@ -392,8 +419,14 @@ class SchemaRegistry:
         package: SchemaVersionPackage,
         *,
         element_schemas: ElementSchemaMap,
+        workload_profile: Mapping[str, object] | None = None,
     ) -> Path:
         provider_token = _provider_token(package.provider)
+        self._preflight_package_write(
+            package,
+            element_schemas=element_schemas,
+            workload_profile=workload_profile,
+        )
         package_dir = self._package_dir(provider_token, package.version)
         elements_dir = package_dir / "elements"
         elements_dir.mkdir(parents=True, exist_ok=True)
@@ -412,18 +445,78 @@ class SchemaRegistry:
             schema_path = elements_dir / element.schema_file
             schema_path.write_bytes(gzip.compress(json.dumps(schema, indent=2).encode("utf-8")))
 
+        if package.workload_profile_file is not None:
+            if workload_profile is None:
+                raise ValueError(
+                    f"Package {provider_token}/{package.version} declares "
+                    f"{package.workload_profile_file} but no workload profile was supplied"
+                )
+            profile_path = package_dir / package.workload_profile_file
+            profile_path.write_bytes(
+                gzip.compress(
+                    json.dumps(dict(workload_profile), indent=2, sort_keys=True).encode("utf-8"),
+                    mtime=0,
+                )
+            )
+
         manifest_path = self._package_manifest_path(provider_token, package.version)
         manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
         self.clear_cache()
         return manifest_path
+
+    @staticmethod
+    def _preflight_package_write(
+        package: SchemaVersionPackage,
+        *,
+        element_schemas: ElementSchemaMap,
+        workload_profile: Mapping[str, object] | None,
+    ) -> None:
+        missing_elements = sorted(
+            element.element_kind
+            for element in package.elements
+            if element.schema_file is not None and element.element_kind not in element_schemas
+        )
+        if missing_elements:
+            raise ValueError(
+                f"Package {package.provider}/{package.version} is missing schemas for: {', '.join(missing_elements)}"
+            )
+        if package.workload_profile_file is not None and workload_profile is None:
+            raise ValueError(
+                f"Package {package.provider}/{package.version} declares "
+                f"{package.workload_profile_file} but no workload profile was supplied"
+            )
+        if workload_profile is not None:
+            try:
+                json.dumps(dict(workload_profile), sort_keys=True)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Package {package.provider}/{package.version} has a non-JSON workload profile"
+                ) from exc
 
     def replace_provider_packages(
         self,
         provider: str,
         catalog: SchemaPackageCatalog,
         package_schemas: Mapping[str, ElementSchemaMap],
+        *,
+        package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
     ) -> None:
         provider_token = _provider_token(provider)
+        prepared_packages: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
+        for package in catalog.packages:
+            element_schemas = package_schemas.get(package.version)
+            if element_schemas is None:
+                raise ValueError(f"Package {provider_token}/{package.version} has no schema mapping")
+            workload_profile = (
+                package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
+            )
+            self._preflight_package_write(
+                package,
+                element_schemas=element_schemas,
+                workload_profile=workload_profile,
+            )
+            prepared_packages.append((package, element_schemas, workload_profile))
+
         provider_dir = self._provider_dir(provider_token)
         provider_dir.mkdir(parents=True, exist_ok=True)
         versions_dir = provider_dir / "versions"
@@ -436,8 +529,12 @@ class SchemaRegistry:
                     path.rmdir()
         versions_dir.mkdir(parents=True, exist_ok=True)
 
-        for package in catalog.packages:
-            self.write_package(package, element_schemas=package_schemas[package.version])
+        for package, element_schemas, workload_profile in prepared_packages:
+            self.write_package(
+                package,
+                element_schemas=element_schemas,
+                workload_profile=workload_profile,
+            )
         self.save_package_catalog(catalog)
 
     def _single_element_package(
@@ -476,7 +573,6 @@ class SchemaRegistry:
                     exact_structure_ids=evidence.exact_structure_ids,
                     profile_family_ids=evidence.element_profile_family_ids,
                     profile_tokens=evidence.profile_tokens,
-                    representative_paths=evidence.representative_paths,
                     observed_artifact_count=evidence.observed_artifact_count,
                 )
             ],
@@ -576,8 +672,8 @@ class SchemaRegistry:
                         observation_index=observation_index,
                     )
                 )
-            if observation.bundle_scope and observation.bundle_scope in package.element_bundle_scopes(
-                element.element_kind
+            if observation.bundle_scope and package.matches_bundle_scope(
+                observation.bundle_scope, element.element_kind
             ):
                 candidates.append(
                     _ResolutionCandidate(

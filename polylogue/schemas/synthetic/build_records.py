@@ -21,6 +21,7 @@ class _WireFormatContext(Protocol):
     schema: SchemaRecord
     wire_format: WireFormat
     _semantic_gen: SemanticValueGenerator | None
+    _active_record_bucket: tuple[str, str] | None
 
     def _generate_from_schema(
         self,
@@ -44,6 +45,8 @@ class _WireFormatContext(Protocol):
     ) -> None: ...
 
     def _role_cycle(self) -> list[str]: ...
+
+    def _profile_record_buckets(self) -> tuple[tuple[str, str], ...]: ...
 
 
 def _coerce_record(value: JSONValue) -> SyntheticRecord:
@@ -211,8 +214,15 @@ def _generate_jsonl_records(
     base_ts = rng.uniform(1670000000, 1760000000)
     _reset_semantic_generator(self, rng=rng, theme=theme, base_ts=base_ts, roles=roles)
 
-    for i in range(n_messages):
+    profile_buckets = self._profile_record_buckets()
+    record_count = max(n_messages, len(profile_buckets))
+    for i in range(record_count):
+        self._active_record_bucket = profile_buckets[i % len(profile_buckets)] if profile_buckets else None
         record = _coerce_record(self._generate_from_schema(self.schema, rng))
+
+        if self._active_record_bucket is not None:
+            discriminator, value = self._active_record_bucket
+            record[discriminator] = value
 
         role = roles[i % len(roles)]
         self._ensure_wire_format(record, role, rng, i, base_ts=base_ts, theme=theme)
@@ -237,6 +247,7 @@ def _generate_jsonl_records(
 
         records.append(record)
 
+    self._active_record_bucket = None
     return records
 
 

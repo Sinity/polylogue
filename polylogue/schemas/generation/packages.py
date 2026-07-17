@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from polylogue.schemas.generation.models import (
@@ -11,6 +12,7 @@ from polylogue.schemas.generation.models import (
     _PackageAccumulator,
     _UnitMembership,
 )
+from polylogue.schemas.generation.observation_journal import ObservationJournal
 
 _ANCHOR_ELEMENT_KINDS = {
     "session_document",
@@ -48,7 +50,7 @@ def _update_observed_window(acc: _ClusterAccumulator | _PackageAccumulator, obse
         acc.last_seen = iso
 
 
-def _membership_observed_window(memberships: list[_UnitMembership]) -> tuple[str | None, str | None]:
+def _membership_observed_window(memberships: Sequence[_UnitMembership]) -> tuple[str | None, str | None]:
     first_seen: str | None = None
     last_seen: str | None = None
     for membership in memberships:
@@ -75,7 +77,7 @@ def _membership_scope_key(membership: _UnitMembership) -> str:
     )
 
 
-def _dedupe_bundle_memberships(memberships: list[_UnitMembership]) -> dict[str, list[_UnitMembership]]:
+def _dedupe_bundle_memberships(memberships: Sequence[_UnitMembership]) -> dict[str, list[_UnitMembership]]:
     scoped: dict[str, list[_UnitMembership]] = {}
     for membership in memberships:
         scoped.setdefault(_membership_scope_key(membership), []).append(membership)
@@ -102,8 +104,7 @@ def _dedupe_bundle_memberships(memberships: list[_UnitMembership]) -> dict[str, 
     return deduped
 
 
-def _attach_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
-    package.memberships.append(membership)
+def _observe_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
     package.bundle_scopes.add(scope)
     package.profile_family_ids.add(membership.profile_family_id)
     if membership.unit.source_path:
@@ -111,12 +112,39 @@ def _attach_package_membership(package: _PackageAccumulator, membership: _UnitMe
     _update_observed_window(package, membership.unit.observed_at)
 
 
+def _observe_journal_package_membership(
+    package: _PackageAccumulator,
+    membership: _UnitMembership,
+) -> None:
+    """Update bounded package metadata; exact distinct values remain in SQLite."""
+    if membership.unit.source_path:
+        _merge_representative_paths(package.representative_paths, [membership.unit.source_path])
+    _update_observed_window(package, membership.unit.observed_at)
+
+
+def _package_bundle_scope_count(package: _PackageAccumulator) -> int:
+    if package.journal_bundle_scope_count is not None:
+        return package.journal_bundle_scope_count
+    return len(package.bundle_scopes)
+
+
+def _attach_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
+    if not isinstance(package.memberships, list):
+        raise TypeError("Cannot mutate replay-backed package memberships")
+    package.memberships.append(membership)
+    _observe_package_membership(package, membership, scope=scope)
+
+
 def _build_package_candidates(
     provider: str,
     *,
-    memberships: list[_UnitMembership],
+    memberships: Sequence[_UnitMembership],
     clusters: dict[str, _ClusterAccumulator],
+    journal: ObservationJournal | None = None,
 ) -> tuple[list[_PackageAccumulator], dict[str, int]]:
+    if journal is not None:
+        result = _assemble_journal_package_candidates(provider, journal=journal, clusters=clusters)
+        return result.packages, result.orphan_adjunct_counts
     result = assemble_package_candidates(
         provider,
         memberships=memberships,
@@ -128,7 +156,7 @@ def _build_package_candidates(
 def assemble_package_candidates(
     provider: str,
     *,
-    memberships: list[_UnitMembership],
+    memberships: Sequence[_UnitMembership],
     clusters: dict[str, _ClusterAccumulator],
 ) -> PackageAssemblyResult:
     scoped = _dedupe_bundle_memberships(memberships)
@@ -187,7 +215,45 @@ def assemble_package_candidates(
     )
 
 
-def _element_profile_tokens(memberships: list[_UnitMembership]) -> list[str]:
+def _assemble_journal_package_candidates(
+    provider: str,
+    *,
+    journal: ObservationJournal,
+    clusters: dict[str, _ClusterAccumulator],
+) -> PackageAssemblyResult:
+    """Persist canonical scope assignment in SQLite, then replay output packages."""
+    orphan_adjunct_counts = journal.assign_canonical_package_families(frozenset(_ANCHOR_ELEMENT_KINDS))
+    packages: dict[str, _PackageAccumulator] = {}
+    for family_id in journal.iter_package_family_ids():
+        cluster = clusters[family_id]
+        first_seen, last_seen, representative_paths = journal.package_metadata(family_id)
+        package = _PackageAccumulator(
+            provider=provider,
+            anchor_family_id=family_id,
+            anchor_kind=cluster.artifact_kind,
+            representative_paths=representative_paths,
+            first_seen=first_seen,
+            last_seen=last_seen,
+        )
+        package.memberships = journal.memberships(package_family_id=family_id)
+        package.journal_bundle_scope_count = package.memberships.scope_count()
+        packages[family_id] = package
+
+    ordered = sorted(
+        packages.values(),
+        key=lambda item: (
+            _parse_observed_at(item.first_seen) or datetime.max.replace(tzinfo=timezone.utc),
+            -_package_bundle_scope_count(item),
+            item.anchor_family_id,
+        ),
+    )
+    return PackageAssemblyResult(
+        packages=ordered,
+        orphan_adjunct_counts=dict(orphan_adjunct_counts),
+    )
+
+
+def _element_profile_tokens(memberships: Sequence[_UnitMembership]) -> list[str]:
     token_counts: Counter[str] = Counter()
     for membership in memberships:
         token_counts.update(membership.unit.profile_tokens)
@@ -213,4 +279,5 @@ __all__ = [
     "_membership_observed_window",
     "_merge_representative_paths",
     "_parse_observed_at",
+    "_package_bundle_scope_count",
 ]

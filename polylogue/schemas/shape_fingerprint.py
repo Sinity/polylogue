@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TypeAlias
 
 from polylogue.core.json import JSONDocument
@@ -37,7 +37,7 @@ def _structure_fingerprint(
     if isinstance(value, str):
         return ("string",)
 
-    if isinstance(value, list):
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         item_shapes = {
             _structure_fingerprint(item, depth=depth + 1, max_depth=max_depth)
             for item in value[:_FINGERPRINT_ARRAY_SAMPLE]

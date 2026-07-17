@@ -19,6 +19,11 @@ from polylogue.schemas.field_stats.stats import (
     _detect_string_format,
     is_dynamic_key,
 )
+from polylogue.schemas.generation.dynamic_keys import (
+    dynamic_object_paths,
+    merge_observed_structure_schemas,
+    observed_structure_schema,
+)
 
 # =============================================================================
 # is_dynamic_key
@@ -63,6 +68,18 @@ class TestIsDynamicKey:
     @pytest.mark.parametrize(
         "key",
         [
+            "What should happen after the plan is approved?",
+            '<source path="/realm/project/polylogue">\nfragment</source>',
+            "field\x00name",
+            "x" * 129,
+        ],
+    )
+    def test_content_shaped_property_names_detected(self, key: str) -> None:
+        assert is_dynamic_key(key)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
             "mapping",
             "title",
             "content",
@@ -71,6 +88,9 @@ class TestIsDynamicKey:
             "abc",
             "my-field",
             "status_code",
+            "text/html",
+            "application/vnd.ant.code",
+            "claude/phase_3",
         ],
     )
     def test_static_keys_not_dynamic(self, key: str) -> None:
@@ -317,6 +337,33 @@ class TestCollectFieldStats:
         samples: list[JSONDocument] = [{"mapping": {"550e8400-e29b-41d4-a716-446655440000": {"v": 1}}}]
         stats = _collect_field_stats(samples)
         assert "$.mapping.*" in stats
+
+    def test_wide_maps_use_one_wildcard_path(self) -> None:
+        wide_mapping = {f"ordinary-key-{index}": {"v": index} for index in range(256)}
+
+        stats = _collect_field_stats([{"mapping": wide_mapping}])
+
+        assert "$.mapping.*.v" in stats
+        assert not any(path.startswith("$.mapping.ordinary-key-") for path in stats)
+
+    def test_cross_sample_dynamic_schema_normalizes_field_stats(self) -> None:
+        samples = [{f"ordinary-key-{index}": {"v": index}} for index in range(256)]
+        schema = merge_observed_structure_schemas(observed_structure_schema(sample) for sample in samples)
+
+        stats = _collect_field_stats(samples, dynamic_paths=dynamic_object_paths(schema))
+
+        assert "$.*.v" in stats
+        assert not any(path.startswith("$.ordinary-key-") for path in stats)
+
+    def test_large_numeric_arrays_retain_bounded_legacy_evidence(self) -> None:
+        values = list(range(10_000))
+
+        stats = _collect_field_stats([{"values": values}])
+
+        item_stats = stats["$.values[*]"]
+        assert item_stats.ordered_pair_count == 9_999
+        assert item_stats.ordered_increasing_pair_count == 9_999
+        assert len(item_stats._ordered_samples[0]) == 2_000
 
     def test_session_ids_tracked(self) -> None:
         samples: list[JSONDocument] = [{"status": "active"}, {"status": "active"}, {"status": "pending"}]

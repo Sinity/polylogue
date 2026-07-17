@@ -117,6 +117,7 @@ class BudgetReport(TypedDict):
     observed_peak_rss_self_mb: JSONValue
     observed_peak_rss_children_mb: JSONValue
     violations: list[str]
+    workload_receipt: JSONDocument
 
 
 class RegressionCaseSummary(TypedDict):

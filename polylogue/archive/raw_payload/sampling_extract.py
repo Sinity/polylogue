@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import operator
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from itertools import islice
 from pathlib import Path
-from typing import Literal
+from typing import Literal, SupportsIndex, overload
 
 from polylogue.archive.raw_payload.sampling_buckets import (
     bucket_target_counts,
@@ -15,6 +17,81 @@ from polylogue.archive.raw_payload.sampling_buckets import (
 )
 from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.core.json import JSONDocument, JSONValue, json_document, loads
+
+
+class ReplayableRecordSamples(Sequence[JSONDocument]):
+    """A re-iterable JSONL record list whose payload stays on disk.
+
+    Provider classification and structural fingerprinting treat this sequence
+    as the JSON array represented by a JSONL file. Sequence operations are
+    implemented as bounded rescans; no record collection is retained in the
+    Python heap.
+    """
+
+    def __init__(
+        self,
+        source: Path | bytes | str,
+        *,
+        transforms: tuple[Callable[[JSONDocument], JSONDocument], ...] = (),
+        known_length: int | None = None,
+    ) -> None:
+        self._source = source
+        self._transforms = transforms
+        self._known_length = known_length
+
+    def __iter__(self) -> Iterator[JSONDocument]:
+        with raw_line_stream(self._source) as stream:
+            first_line = True
+            for raw_line in stream:
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                if first_line:
+                    line = line.lstrip("\ufeff")
+                    first_line = False
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = loads(line)
+                except ValueError:
+                    continue
+                record = json_document(parsed)
+                if not record or not is_record_candidate(record):
+                    continue
+                for transform in self._transforms:
+                    record = transform(record)
+                yield record
+
+    def __len__(self) -> int:
+        if self._known_length is None:
+            self._known_length = sum(1 for _record in self)
+        return self._known_length
+
+    @overload
+    def __getitem__(self, index: SupportsIndex) -> JSONDocument: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[JSONDocument]: ...
+
+    def __getitem__(self, index: SupportsIndex | slice) -> JSONDocument | list[JSONDocument]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(len(self))
+            return list(islice(self, start, stop, step))
+        integer_index = operator.index(index)
+        normalized = integer_index if integer_index >= 0 else len(self) + integer_index
+        if normalized < 0:
+            raise IndexError(index)
+        try:
+            return next(islice(self, normalized, normalized + 1))
+        except StopIteration as error:
+            raise IndexError(index) from error
+
+    def mapped(self, transform: Callable[[JSONDocument], JSONDocument]) -> ReplayableRecordSamples:
+        """Return another replay view with a bounded per-record transform."""
+        return ReplayableRecordSamples(
+            self._source,
+            transforms=(*self._transforms, transform),
+            known_length=self._known_length,
+        )
 
 
 def limit_samples(
@@ -83,7 +160,12 @@ def extract_payload_samples(
     record_type_key: str | None = None,
 ) -> list[JSONDocument]:
     """Extract representative validation/schema samples from a decoded payload."""
-    if not isinstance(payload, (dict, list)):
+    if isinstance(payload, ReplayableRecordSamples):
+        if sample_granularity != "record":
+            return []
+        if max_samples is None:
+            return payload
+    elif not isinstance(payload, (dict, list)):
         return []
 
     if sample_granularity == "document":
@@ -158,26 +240,9 @@ def extract_record_samples_from_raw_content(
         )
 
     with raw_line_stream(raw_content) as stream:
-        # Full-corpus mode: collect everything without caps.
+        # Full-corpus mode: retain a replayable file view, not every record.
         if max_samples is None:
-            all_records: list[JSONDocument] = []
-            first_line = True
-            for raw_line in stream:
-                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-                if first_line:
-                    line = line.lstrip("\ufeff")
-                    first_line = False
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    parsed = loads(line)
-                except ValueError:
-                    continue
-                record = json_document(parsed)
-                if record and is_record_candidate(record):
-                    all_records.append(record)
-            return all_records
+            return ReplayableRecordSamples(raw_content)  # type: ignore[return-value]
 
         lines: list[JSONDocument] = []
         buckets: dict[str, list[JSONDocument]] = {}
@@ -219,6 +284,7 @@ def extract_record_samples_from_raw_content(
 
 
 __all__ = [
+    "ReplayableRecordSamples",
     "collect_limited_samples",
     "extract_payload_samples",
     "extract_record_samples_from_raw_content",

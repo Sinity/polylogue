@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +22,12 @@ from polylogue.daemon.convergence_stages import (
     make_embed_stage,
     make_fts_stage,
     make_insights_stage,
+)
+from polylogue.scenarios import (
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+    partial_convergence_canary_spec,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.insights.session import storage as session_storage
@@ -933,6 +940,74 @@ def test_insights_stage_defers_hot_large_session_debt(
     stage = make_insights_stage(db_path)
     assert stage.execute_sessions is not None
     assert stage.execute_sessions([session_id]) is False
+
+
+def test_profile_canary_defers_hot_session_then_converges_when_quiet(tmp_path: Path) -> None:
+    """The real insights stage exposes pending work, then drains it after quiet."""
+    started = time.perf_counter()
+    db_path = tmp_path / "index.db"
+    source_path = tmp_path / "profile-growing-codex.jsonl"
+    _truncate(source_path, stages._HOT_INSIGHT_SOURCE_BYTES + 1)
+    generated_at = time.perf_counter()
+    with open_connection(db_path) as conn:
+        session_id = _seed_raw_source_session(conn, session_id="profile-partial-convergence", source_path=source_path)
+        conn.commit()
+    ingested_at = time.perf_counter()
+
+    stage = make_insights_stage(db_path)
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions([session_id]) is False
+    debt_observed_at = time.perf_counter()
+
+    _truncate(source_path, 1024)
+    result = stage.execute_sessions([session_id])
+    converged_at = time.perf_counter()
+    assert result
+    assert isinstance(result, StageExecutionResult)
+    with sqlite3.connect(db_path) as conn:
+        profile_count = conn.execute(
+            "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+    queried_at = time.perf_counter()
+
+    spec = partial_convergence_canary_spec(
+        profile_id="workload-profile:partial-convergence-canary",
+        archive_id="archive:test:partial-convergence",
+    )
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id="git:test",
+        runtime_id="python:test",
+        archive_id="archive:test:partial-convergence",
+        generation_id="synthetic:partial-convergence",
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="generate", wall_ms=(generated_at - started) * 1_000),
+            WorkloadPhaseObservation(name="ingest", wall_ms=(ingested_at - generated_at) * 1_000),
+            WorkloadPhaseObservation(
+                name="observe-debt",
+                wall_ms=(debt_observed_at - ingested_at) * 1_000,
+                progress_completed=0,
+                progress_total=1,
+            ),
+            WorkloadPhaseObservation(
+                name="converge",
+                wall_ms=(converged_at - debt_observed_at) * 1_000,
+                progress_completed=1,
+                progress_total=1,
+            ),
+            WorkloadPhaseObservation(name="query", wall_ms=(queried_at - converged_at) * 1_000),
+            WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+        ),
+        cleanup_complete=True,
+    )
+
+    assert profile_count == 1
+    assert receipt.spec.inputs[0].profile_id == "workload-profile:partial-convergence-canary"
+    assert receipt.phases[2].progress_completed == 0
+    assert receipt.phases[3].progress_completed == 1
 
 
 def test_session_ids_missing_profiles_includes_stale(tmp_path: Path) -> None:

@@ -36,10 +36,12 @@ from devtools.verify import (
     _read_pytest_report,
     _record_testmon_affected_coverage,
     _run,
+    _seed_node_outcomes_from_events,
     _stop_after_failed_step,
     _testmon_database_state,
     _testmon_preflight,
     _testmon_seed_can_resume,
+    _worktree_fingerprint,
     build_verify_steps,
     main,
 )
@@ -510,6 +512,142 @@ def test_testmon_database_state_reports_missing_and_failed_nodes(
     assert state["recorded_count"] == 2
     assert state["failed_nodeids"] == ["tests/test_b.py::test_failed"]
     assert state["missing_nodeids"] == ["tests/test_c.py::test_missing"]
+    assert state["node_outcomes"] == {
+        "tests/test_a.py::test_ok": "passed",
+        "tests/test_b.py::test_failed": "failed",
+        "tests/test_c.py::test_missing": "missing",
+    }
+
+
+def test_worktree_fingerprint_hashes_untracked_file_contents(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "tracked.py"], check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], check=True)
+    untracked = tmp_path / "candidate.py"
+    untracked.write_text("VALUE = 1\n")
+
+    before = _worktree_fingerprint()
+    untracked.write_text("VALUE = 2\n")
+    after = _worktree_fingerprint()
+
+    assert before != after
+
+
+def test_seed_receipt_classifies_every_node_terminal_outcome(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    expected = [
+        "tests/test_seed.py::test_passed",
+        "tests/test_seed.py::test_failed",
+        "tests/test_seed.py::test_error",
+        "tests/test_seed.py::test_timeout",
+        "tests/test_seed.py::test_worker_crash",
+        "tests/test_seed.py::test_missing",
+    ]
+    (artifact_dir / "selection.json").write_text(
+        json.dumps(
+            {
+                "selected_count": len(expected),
+                "deselected_count": 0,
+                "selected_nodeids": expected,
+                "selected_nodeids_omitted": 0,
+            }
+        )
+    )
+    events = [
+        {"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"},
+        {
+            "event": "test_report",
+            "nodeid": expected[1],
+            "when": "call",
+            "outcome": "failed",
+            "longrepr": "assert false",
+        },
+        {
+            "event": "test_report",
+            "nodeid": expected[2],
+            "when": "setup",
+            "outcome": "failed",
+            "longrepr": "fixture exploded",
+        },
+        {
+            "event": "test_report",
+            "nodeid": expected[3],
+            "when": "call",
+            "outcome": "failed",
+            "longrepr": "Failed: Timeout > 10s",
+        },
+        {"event": "test_started", "nodeid": expected[4]},
+    ]
+    (artifact_dir / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+    TESTMON_DATA.parent.mkdir(parents=True)
+    with sqlite3.connect(TESTMON_DATA) as conn:
+        conn.execute(
+            "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO test_execution(test_name, failed) VALUES (?, ?)",
+            [(nodeid, int(nodeid != expected[0])) for nodeid in expected[:-1]],
+        )
+
+    receipt = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {"git_head": "head"},
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-mixed",
+            "artifact_dir": str(tmp_path / "run-mixed"),
+        },
+        step_results=[
+            {
+                "name": "pytest seed-testmon",
+                "artifact_dir": str(artifact_dir),
+                "exit": 1,
+                "diagnosis": "xdist_worker_crash",
+            }
+        ],
+        exit_code=1,
+    )
+
+    assert receipt["status"] == "incomplete"
+    assert {item["nodeid"]: item["outcome"] for item in receipt["node_outcomes"]} == {
+        expected[0]: "passed",
+        expected[1]: "failed",
+        expected[2]: "error",
+        expected[3]: "timeout",
+        expected[4]: "worker_crash",
+        expected[5]: "missing",
+    }
+    assert receipt["node_outcome_counts"] == {
+        "error": 1,
+        "failed": 1,
+        "missing": 1,
+        "passed": 1,
+        "timeout": 1,
+        "worker_crash": 1,
+    }
+
+
+def test_seed_node_outcomes_preserve_interrupted_active_node(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(json.dumps({"event": "test_started", "nodeid": "tests/test_a.py::test_active"}) + "\n")
+
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=["tests/test_a.py::test_active"],
+        database={"node_outcomes": {"tests/test_a.py::test_active": "missing"}},
+        pytest_step={"diagnosis": "terminated by signal"},
+    )
+
+    assert outcomes[0]["outcome"] == "interrupted"
 
 
 def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -588,6 +726,48 @@ def test_resource_sampler_records_process_tree_sample(tmp_path: Path) -> None:
     assert sample["tree_rss_kb"] > 0
     assert summary["resource_sample_count"] == 1
     assert summary["peak_tree_rss_kb"] == sample["tree_rss_kb"]
+    assert "peak_tree_anon_pss_kb" in summary
+    assert "peak_tree_file_pss_kb" in summary
+    assert "peak_tree_swap_pss_kb" in summary
+    assert "tree_read_bytes_delta" in summary
+    assert "tree_write_bytes_delta" in summary
+
+
+def test_resource_sampler_accounts_memory_swap_and_io_deltas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = {
+        "smaps": {"Pss": 24, "Pss_Anon": 11, "Pss_File": 13, "SwapPss": 5},
+        "io": {"read_bytes": 100, "write_bytes": 200, "cancelled_write_bytes": 0},
+    }
+    monkeypatch.setattr("devtools.verify_runs.process_tree", lambda _root_pid: [101])
+    monkeypatch.setattr("devtools.verify_runs._status_values", lambda _pid: {"state": "S", "rss_kb": 30})
+    monkeypatch.setattr("devtools.verify_runs._smaps_rollup_kb", lambda _pid: dict(state["smaps"]))
+    monkeypatch.setattr("devtools.verify_runs._process_io_bytes", lambda _pid: dict(state["io"]))
+    monkeypatch.setattr("devtools.verify_runs._process_identity", lambda _pid: "101:1")
+    monkeypatch.setattr("devtools.verify_runs._cpu_seconds", lambda _pid: 1.0)
+    sampler = ResourceSampler(
+        root_pid=101,
+        run_id="resource-deltas",
+        root=tmp_path,
+        env={"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)},
+        output_path=tmp_path / "resources.jsonl",
+    )
+
+    sampler.sample(event="started")
+    state["smaps"] = {"Pss": 26, "Pss_Anon": 12, "Pss_File": 14, "SwapPss": 7}
+    state["io"] = {"read_bytes": 160, "write_bytes": 260, "cancelled_write_bytes": 10}
+    sampler.sample(event="finished")
+    summary = sampler.summary()
+
+    assert summary["peak_tree_anon_pss_kb"] == 12
+    assert summary["peak_tree_file_pss_kb"] == 14
+    assert summary["peak_tree_swap_pss_kb"] == 7
+    assert summary["tree_swap_pss_delta_kb"] == 2
+    assert summary["tree_read_bytes_delta"] == 60
+    assert summary["tree_write_bytes_delta"] == 60
+    assert summary["tree_cancelled_write_bytes_delta"] == 10
 
 
 def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -705,6 +885,22 @@ def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> Non
     assert not basetemp.exists()
 
 
+def test_cleanup_managed_pytest_basetemp_does_not_receipt_residual_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path / "scratch")}
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-residual", env=env)
+    basetemp.mkdir(parents=True)
+    (basetemp / "still-open").write_text("residual")
+    monkeypatch.setattr("devtools.verify_runs.shutil.rmtree", lambda _path: None)
+
+    cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="run-residual", env=env)
+
+    assert cleaned is None
+    assert basetemp.exists()
+
+
 def test_cleanup_managed_pytest_basetemp_keeps_seed_cache(tmp_path: Path) -> None:
     env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
     seeded = pytest_basetemp_path(root=tmp_path, run_id="seeded-cache", env=env)
@@ -757,6 +953,9 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     assert metadata["pytest_workers"] == "unset"
     assert metadata["pytest_selection"] == "full"
+    receipt = metadata["workload_receipt"]
+    assert receipt["spec"]["semantic_result"] == "complete"
+    assert [phase["name"] for phase in receipt["phases"]] == ["execute", "quiescent"]
 
 
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:

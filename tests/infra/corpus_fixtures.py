@@ -1,86 +1,44 @@
-"""SyntheticCorpus integration fixture for seeding DBs through the real pipeline.
-
-Provides a ``corpus_seeded_db`` factory fixture that generates wire-format bytes,
-writes them to temp files, and runs the pipeline to produce a seeded database.
-This is additive infrastructure — it does NOT replace SessionBuilder tests.
-
-Usage::
-
-    def test_query_on_real_data(corpus_seeded_db):
-        db_path = corpus_seeded_db(providers=("chatgpt",), count=2, seed=42)
-        # db_path now contains parsed data from the real pipeline
-"""
+"""Named real-pipeline archive fixtures shared by composition consumers."""
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from tests.infra.workload_artifacts import (
+    SeededArchiveArtifact,
+    SeededArchiveClone,
+    build_seeded_archive,
+    clone_seeded_archive,
+    named_corpus_specs,
+    schema_coverage_corpus_specs,
+)
 
-def _seed_db(
-    tmp_path: Path,
-    archive_root: Path,
-    providers: Sequence[str] = ("chatgpt", "claude-ai"),
-    count: int = 3,
-    seed: int = 42,
-) -> Path:
-    """Generate wire-format bytes, write to temp, ingest directly, return index db.
 
-    Writes synthetic corpus artifacts and ingests them through the archive's
-    archive ingest path so the data lands in the same store the facade/CLI read.
-    """
-    # Defer all heavy imports to avoid circular import at conftest collection time
-    from polylogue.config import Source
-    from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-    from polylogue.scenarios import build_default_corpus_specs
-    from polylogue.schemas.synthetic import SyntheticCorpus
-
-    archive_root.mkdir(parents=True, exist_ok=True)
-    corpus_dir = tmp_path / "corpus"
-    corpus_dir.mkdir(exist_ok=True)
-
-    async def _do_seed() -> None:
-        available = set(SyntheticCorpus.available_providers())
-        specs = build_default_corpus_specs(
-            providers=(provider for provider in providers if provider in available),
-            count=count,
-            messages_min=4,
-            messages_max=11,
-            seed=seed,
-        )
-        sources: list[Source] = []
-        for spec in specs:
-            provider_dir = corpus_dir / spec.provider
-            written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="corpus")
-            sources.extend(Source(name=spec.provider, path=file_path) for file_path in written.files)
-
-        if sources:
-            await parse_sources_archive(archive_root, sources)
-
-    asyncio.run(_do_seed())
-    return archive_root / "index.db"
+@pytest.fixture(scope="session")
+def seeded_archive() -> SeededArchiveArtifact:
+    """Shared immutable named schema-coverage archive for read-only consumers."""
+    return build_seeded_archive(schema_coverage_corpus_specs())
 
 
 @pytest.fixture
-def corpus_seeded_db(tmp_path: Path, workspace_env: dict[str, Path]) -> Callable[..., Path]:
-    """Factory: returns db_path seeded with corpus data through the real pipeline.
+def seeded_archive_writable(seeded_archive: SeededArchiveArtifact, tmp_path: Path) -> SeededArchiveClone:
+    """Private full-root clone for a mutating consumer."""
+    return clone_seeded_archive(seeded_archive, tmp_path / "seeded-archive-clone")
 
-    Usage::
 
-        def test_something(corpus_seeded_db):
-            db = corpus_seeded_db(providers=("chatgpt",), count=2)
-    """
-
+@pytest.fixture
+def named_seeded_archive(
+    workspace_env: dict[str, Path],
+) -> Callable[[str], Path]:
+    """Clone one registered immutable workload into this test's archive root."""
     archive_root = workspace_env["archive_root"]
 
-    def _seed(
-        providers: Sequence[str] = ("chatgpt", "claude-ai"),
-        count: int = 3,
-        seed: int = 42,
-    ) -> Path:
-        return _seed_db(tmp_path, archive_root, providers=providers, count=count, seed=seed)
+    def seed(name: str) -> Path:
+        artifact = build_seeded_archive(named_corpus_specs(name))
+        clone_seeded_archive(artifact, archive_root)
+        return archive_root / "index.db"
 
-    return _seed
+    return seed
