@@ -139,9 +139,13 @@ class RawAuthorityScaleScenario:
                 raw_count = item.get("component_raw_count")
                 direct_candidate_count = item.get("direct_candidate_count")
                 component_count = item.get("component_count")
-                if any(
-                    not isinstance(value, int) or isinstance(value, bool)
-                    for value in (raw_count, direct_candidate_count, component_count)
+                if (
+                    not isinstance(raw_count, int)
+                    or isinstance(raw_count, bool)
+                    or not isinstance(direct_candidate_count, int)
+                    or isinstance(direct_candidate_count, bool)
+                    or not isinstance(component_count, int)
+                    or isinstance(component_count, bool)
                 ):
                     raise ValueError("scenario profile component cohort values must be integral")
                 parsed_cohorts.append((raw_count, direct_candidate_count, component_count))
