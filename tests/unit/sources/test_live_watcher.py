@@ -2045,6 +2045,22 @@ def test_catch_up_recurses_like_live_watch(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
+def test_catch_up_prunes_runtime_dependency_trees(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    session = root / "sessions" / "session.jsonl"
+    session.parent.mkdir()
+    session.write_text('{"a":1}\n')
+    dependency = root / "venv" / "lib" / "site-packages" / "generated.jsonl"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text('{"not":"a session"}\n')
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert parse_sources.await_count == 1
+
+
 def test_catch_up_handles_empty_roots(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
