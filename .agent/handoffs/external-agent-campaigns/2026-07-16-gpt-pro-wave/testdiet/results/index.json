@@ -1,169 +1,172 @@
 {
- "schema_version": 1,
- "campaign_id": "gpt-pro-wave-2026-07-16",
- "workload_id": "testdiet",
- "attempts": [
-  {
-   "job": "testdiet-01",
-   "workload": "testdiet",
-   "zip": "testdiet-01-query-algebra-cardinality-r01.zip",
-   "sha256": "365cb58bf6e1135bc210b62ae422fb5009825cd3f505db0c3adcb41ccd00d2e5",
-   "bytes": 21998,
-   "checked_at": "2026-07-17T10:55:34+00:00",
-   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "problems": [],
-   "status": "integrated_merged",
-   "members": [
-    "EVIDENCE.md",
-    "HANDOFF.md",
-    "PATCH.diff",
-    "TESTS.md"
-   ],
-   "patch_lines": 786,
-   "patch_applies": true,
-   "apply_detail": "patch applies cleanly",
-   "attempt_id": "a01",
-   "package_revision": "r01",
-   "state": "integrated_merged",
-   "integration": "production defect reconciled against current master and admitted as PR #3022 / d1c08af640a07b27c3fb04185e34f4fda2f814ec; native-Codex corpus proves selector-only root CLI membership and total preserve the compiled boolean predicate"
-  },
-  {
-   "job": "testdiet-02",
-   "workload": "testdiet",
-   "zip": "testdiet-02-convergence-liveness-r01.zip",
-   "sha256": "57d52025be0554c45d482073e776b82f77d368127bc6000ef872a894d26fbcb6",
-   "bytes": 22637,
-   "checked_at": "2026-07-17T10:55:43+00:00",
-   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "problems": [],
-   "status": "integrated_merged",
-   "members": [
-    "EVIDENCE.md",
-    "HANDOFF.md",
-    "PATCH.diff",
-    "TESTS.md"
-   ],
-   "patch_lines": 917,
-   "patch_applies": true,
-   "apply_detail": "patch applies cleanly",
-   "attempt_id": "a01",
-   "package_revision": "r01",
-   "state": "integrated_merged",
-   "integration": "admitted after current-master reconciliation as PR #3014 / 76ad3e1379bde4829650392e459cd4804abb721d; real restart/debt recovery proof landed, while the missing live FTS-debt feeder remains explicit residual scope"
-  },
-  {
-   "job": "testdiet-04",
-   "workload": "testdiet",
-   "revision": "r02",
-   "zip": "testdiet-04/r02/raw.zip",
-   "sha256": "225ad872667e579b0d0b0975ff0f463f9e54acd5a07d29825084a93eae79b2b3",
-   "bytes": 6294,
-   "checked_at": "2026-07-17T14:01:00+00:00",
-   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "status": "evidence_only_no_candidate",
-   "members": [
-    "derived_freshness_solution/README.md",
-    "derived_freshness_solution/candidate-index.json",
-    "derived_freshness_solution/changed-paths.txt",
-    "derived_freshness_solution/input-identities.json",
-    "derived_freshness_solution/manifest.json",
-    "derived_freshness_solution/requirements/04-derived-freshness.md",
-    "derived_freshness_solution/selection.json",
-    "derived_freshness_solution/solution.patch",
-    "derived_freshness_solution/validation/archive-verification.json"
-   ],
-   "patch_lines": 0,
-   "problems": [
-    "solution.patch is zero bytes",
-    "selected_candidate is null",
-    "changed_paths is empty"
-   ],
-   "integration": "ZIP CRC and manifest checked. Retained as delivery/freshness evidence only; it authorizes no implementation or Bead closure."
-  },
-  {
-   "job": "testdiet-01",
-   "workload": "testdiet",
-   "revision": "r02",
-   "zip": "testdiet-01/r02/raw.zip",
-   "sha256": "557ba43a9f77783ed0e7644eb7dd4c9f6a07e4c416ac6a16c4aae096f2cc3fa8",
-   "bytes": 23470,
-   "checked_at": "2026-07-17T12:21:00+00:00",
-   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
-   "status": "integrated_merged",
-   "state": "integrated_merged",
-   "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
-   "patch_lines": 923,
-   "integration": "admitted after current-master reconciliation as PR #3019 / d42cc1497ee91fded8c46313a46e18733f9084ee; native Codex action-cardinality survivor is a query-law seed, not closure of the broad cross-surface/cancellation/receipt scope"
-  },
-  {
-   "job": "testdiet-05",
-   "workload": "testdiet",
-   "revision": "r01",
-   "zip": "testdiet-05/r01/raw.zip",
-   "sha256": "cad064d3c0c4cdfa3c221adf6a7a1000ce59dccf84a8b9944003bfd8c21350f4",
-   "bytes": 33668,
-   "checked_at": "2026-07-17T14:01:00+00:00",
-   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "status": "integrated_merged",
-   "state": "integrated_merged",
-   "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
-   "integration": "admitted after current-master reconciliation as PR #3012 / 876358610ebd8c7532d3d6865df6bc5fc01712b1; bounded aggregate execution is proven, while shared resumable query transaction scope remains open"
-  },
-  {
-   "job": "testdiet-02",
-   "workload": "testdiet",
-   "revision": "r02",
-   "artifact": "testdiet-02/r02/raw/polylogue-convergence-liveness-handoff.zip",
-   "sha256": "079eedeefb6fcf830c023b1700692ed5b080fe3186dcf466067cb2684f1724e7",
-   "bytes": 8059,
-   "checked_at": "2026-07-17T15:16:00+00:00",
-   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
-   "status": "rejected_validation_failed",
-   "state": "rejected_validation_failed",
-   "problems": [
-    "release status declares INCOMPLETE/FAIL",
-    "base commit is unknown and changed_files is empty",
-    "bundle contains no PATCH.diff or production payload",
-    "finalizer failed to locate the required repository baseline"
-   ],
-   "integration": "Retained as honest failed-delivery evidence only. It authorizes neither code admission nor Bead closure; the independently verified r01 admission remains PR #3014."
-  },
-  {
-   "job": "testdiet-05",
-   "workload": "testdiet",
-   "revision": "r02",
-   "artifact": "testdiet-05/r02/raw/query-bounds-deliverables.tar.gz",
-   "sha256": "e0954c7f5002ad41d9af4eeb644437f8229f61b680070cff7d01e01f5962456a",
-   "bytes": 1863,
-   "checked_at": "2026-07-17T15:16:00+00:00",
-   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
-   "status": "rejected_validation_failed",
-   "state": "rejected_validation_failed",
-   "problems": [
-    "STATUS is PARTIAL",
-    "no reconstructed Git worktree was found",
-    "no patch or changed-file payload exists",
-    "no executable test transcript exists"
-   ],
-   "integration": "Retained as honest failed-delivery evidence only. It authorizes neither code admission nor Bead closure; the independently verified r01 admission remains PR #3012."
-  },
-  {
-   "job": "testdiet-06",
-   "workload": "testdiet",
-   "revision": "r01",
-   "artifact": "testdiet-06/r01/raw/PATCH.diff",
-   "sha256": "2b48fb36707e0310fe734618794ef0faadeb41ac02d627b7d4a33f8a622fbe62",
-   "bytes": 153265,
-   "checked_at": "2026-07-17T15:16:00+00:00",
-   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
-   "status": "integrated_merged",
-   "state": "integrated_merged",
-   "patch_paths": 18,
-   "problems": [
-    "the provider did not produce the mandated cohesive result ZIP",
-    "the received patch required generated-topology refresh and a small shared-declaration-kernel rebase before admission"
-   ],
-   "integration": "admitted as PR #3033 / efadb404ebe70ec91f03ffcb7eaf0de7956ece4d after FactFamilySpec was projected through the shared DeclarationRegistry; three real owner-route canaries landed while broader EvidenceValue family migration remains open"
-  }
- ]
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "attempts": [
+    {
+      "job": "testdiet-01",
+      "workload": "testdiet",
+      "zip": "testdiet-01-query-algebra-cardinality-r01.zip",
+      "sha256": "365cb58bf6e1135bc210b62ae422fb5009825cd3f505db0c3adcb41ccd00d2e5",
+      "bytes": 21998,
+      "checked_at": "2026-07-17T10:55:34+00:00",
+      "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+      "problems": [],
+      "members": [
+        "EVIDENCE.md",
+        "HANDOFF.md",
+        "PATCH.diff",
+        "TESTS.md"
+      ],
+      "patch_lines": 786,
+      "patch_applies": true,
+      "apply_detail": "patch applies cleanly",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "integrated_merged",
+      "integration": "production defect reconciled against current master and admitted as PR #3022 / d1c08af640a07b27c3fb04185e34f4fda2f814ec; native-Codex corpus proves selector-only root CLI membership and total preserve the compiled boolean predicate"
+    },
+    {
+      "job": "testdiet-02",
+      "workload": "testdiet",
+      "zip": "testdiet-02-convergence-liveness-r01.zip",
+      "sha256": "57d52025be0554c45d482073e776b82f77d368127bc6000ef872a894d26fbcb6",
+      "bytes": 22637,
+      "checked_at": "2026-07-17T10:55:43+00:00",
+      "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+      "problems": [],
+      "members": [
+        "EVIDENCE.md",
+        "HANDOFF.md",
+        "PATCH.diff",
+        "TESTS.md"
+      ],
+      "patch_lines": 917,
+      "patch_applies": true,
+      "apply_detail": "patch applies cleanly",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "integrated_merged",
+      "integration": "admitted after current-master reconciliation as PR #3014 / 76ad3e1379bde4829650392e459cd4804abb721d; real restart/debt recovery proof landed, while the missing live FTS-debt feeder remains explicit residual scope"
+    },
+    {
+      "job": "testdiet-01",
+      "workload": "testdiet",
+      "zip": "testdiet-01/r02/raw.zip",
+      "sha256": "557ba43a9f77783ed0e7644eb7dd4c9f6a07e4c416ac6a16c4aae096f2cc3fa8",
+      "bytes": 23470,
+      "checked_at": "2026-07-17T12:21:00+00:00",
+      "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+      "state": "integrated_merged",
+      "members": [
+        "EVIDENCE.md",
+        "HANDOFF.md",
+        "PATCH.diff",
+        "TESTS.md"
+      ],
+      "patch_lines": 923,
+      "integration": "admitted after current-master reconciliation as PR #3019 / d42cc1497ee91fded8c46313a46e18733f9084ee; native Codex action-cardinality survivor is a query-law seed, not closure of the broad cross-surface/cancellation/receipt scope",
+      "package_revision": "r02"
+    },
+    {
+      "job": "testdiet-02",
+      "workload": "testdiet",
+      "artifact": "testdiet-02/r02/raw/polylogue-convergence-liveness-handoff.zip",
+      "sha256": "079eedeefb6fcf830c023b1700692ed5b080fe3186dcf466067cb2684f1724e7",
+      "bytes": 8059,
+      "checked_at": "2026-07-17T15:16:00+00:00",
+      "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+      "state": "rejected_validation_failed",
+      "problems": [
+        "release status declares INCOMPLETE/FAIL",
+        "base commit is unknown and changed_files is empty",
+        "bundle contains no PATCH.diff or production payload",
+        "finalizer failed to locate the required repository baseline"
+      ],
+      "integration": "Retained as honest failed-delivery evidence only. It authorizes neither code admission nor Bead closure; the independently verified r01 admission remains PR #3014.",
+      "package_revision": "r02"
+    },
+    {
+      "job": "testdiet-04",
+      "workload": "testdiet",
+      "zip": "testdiet-04/r02/raw.zip",
+      "sha256": "225ad872667e579b0d0b0975ff0f463f9e54acd5a07d29825084a93eae79b2b3",
+      "bytes": 6294,
+      "checked_at": "2026-07-17T14:01:00+00:00",
+      "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+      "members": [
+        "derived_freshness_solution/README.md",
+        "derived_freshness_solution/candidate-index.json",
+        "derived_freshness_solution/changed-paths.txt",
+        "derived_freshness_solution/input-identities.json",
+        "derived_freshness_solution/manifest.json",
+        "derived_freshness_solution/requirements/04-derived-freshness.md",
+        "derived_freshness_solution/selection.json",
+        "derived_freshness_solution/solution.patch",
+        "derived_freshness_solution/validation/archive-verification.json"
+      ],
+      "patch_lines": 0,
+      "problems": [
+        "solution.patch is zero bytes",
+        "selected_candidate is null",
+        "changed_paths is empty"
+      ],
+      "integration": "ZIP CRC and manifest checked. Retained as delivery/freshness evidence only; it authorizes no implementation or Bead closure.",
+      "package_revision": "r02",
+      "state": "evidence_only_no_candidate"
+    },
+    {
+      "job": "testdiet-05",
+      "workload": "testdiet",
+      "zip": "testdiet-05/r01/raw.zip",
+      "sha256": "cad064d3c0c4cdfa3c221adf6a7a1000ce59dccf84a8b9944003bfd8c21350f4",
+      "bytes": 33668,
+      "checked_at": "2026-07-17T14:01:00+00:00",
+      "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+      "state": "integrated_merged",
+      "members": [
+        "EVIDENCE.md",
+        "HANDOFF.md",
+        "PATCH.diff",
+        "TESTS.md"
+      ],
+      "integration": "admitted after current-master reconciliation as PR #3012 / 876358610ebd8c7532d3d6865df6bc5fc01712b1; bounded aggregate execution is proven, while shared resumable query transaction scope remains open",
+      "package_revision": "r01"
+    },
+    {
+      "job": "testdiet-05",
+      "workload": "testdiet",
+      "artifact": "testdiet-05/r02/raw/query-bounds-deliverables.tar.gz",
+      "sha256": "e0954c7f5002ad41d9af4eeb644437f8229f61b680070cff7d01e01f5962456a",
+      "bytes": 1863,
+      "checked_at": "2026-07-17T15:16:00+00:00",
+      "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+      "state": "rejected_validation_failed",
+      "problems": [
+        "STATUS is PARTIAL",
+        "no reconstructed Git worktree was found",
+        "no patch or changed-file payload exists",
+        "no executable test transcript exists"
+      ],
+      "integration": "Retained as honest failed-delivery evidence only. It authorizes neither code admission nor Bead closure; the independently verified r01 admission remains PR #3012.",
+      "package_revision": "r02"
+    },
+    {
+      "job": "testdiet-06",
+      "workload": "testdiet",
+      "artifact": "testdiet-06/r01/raw/PATCH.diff",
+      "sha256": "2b48fb36707e0310fe734618794ef0faadeb41ac02d627b7d4a33f8a622fbe62",
+      "bytes": 153265,
+      "checked_at": "2026-07-17T15:16:00+00:00",
+      "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+      "state": "integrated_merged",
+      "patch_paths": 18,
+      "problems": [
+        "the provider did not produce the mandated cohesive result ZIP",
+        "the received patch required generated-topology refresh and a small shared-declaration-kernel rebase before admission"
+      ],
+      "integration": "admitted as PR #3033 / efadb404ebe70ec91f03ffcb7eaf0de7956ece4d after FactFamilySpec was projected through the shared DeclarationRegistry; three real owner-route canaries landed while broader EvidenceValue family migration remains open",
+      "package_revision": "r01"
+    }
+  ]
 }

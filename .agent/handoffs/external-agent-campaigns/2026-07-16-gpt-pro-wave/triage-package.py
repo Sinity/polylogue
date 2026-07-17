@@ -33,6 +33,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -110,9 +111,20 @@ def main() -> int:
     parser.add_argument("zip_path", type=Path)
     parser.add_argument("--workload", required=True)
     parser.add_argument("--job", required=True)
+    parser.add_argument("--attempt", required=True, help="immutable attempt id (aNN)")
+    parser.add_argument("--package-revision", required=True, help="immutable package revision (rNN)")
+    parser.add_argument("--prompt-sha256", required=True, help="64-character hash of the dispatched prompt")
     parser.add_argument("--snapshot", help="commit the package claims to target (from its HANDOFF.md)")
-    parser.add_argument("--record", action="store_true", help="append attempt record to results/index.json")
+    parser.add_argument(
+        "--write", action="store_true", help="preserve immutable raw custody and write the result receipt"
+    )
     args = parser.parse_args()
+    if not re.fullmatch(r"a[0-9]{2}", args.attempt):
+        raise SystemExit("error: --attempt must be aNN")
+    if not re.fullmatch(r"r[0-9]{2}", args.package_revision):
+        raise SystemExit("error: --package-revision must be rNN")
+    if not re.fullmatch(r"[0-9a-f]{64}", args.prompt_sha256):
+        raise SystemExit("error: --prompt-sha256 must be a lowercase SHA-256")
 
     zp: Path = args.zip_path
     if not zp.exists():
@@ -128,63 +140,117 @@ def main() -> int:
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "snapshot": args.snapshot,
         "problems": [],
-        "status": "triaged",
+        "state": "triaged",
     }
 
     try:
         zf = zipfile.ZipFile(zp)
     except zipfile.BadZipFile:
         record["problems"].append("not a valid ZIP")
-        record["status"] = "rejected"
-        print(json.dumps(record, indent=2))
-        return 2
+        record["state"] = "rejected"
+        zf = None
 
-    names = zf.namelist()
-    basenames = {_member_basename(n) for n in names if not n.endswith("/")}
-    record["members"] = sorted(names)
+    if zf is not None:
+        names = zf.namelist()
+        basenames = {_member_basename(n) for n in names if not n.endswith("/")}
+        record["members"] = sorted(names)
 
-    for required in sorted(REQUIRED_MEMBERS - basenames):
-        record["problems"].append(f"missing required member {required}")
-    for n in names:
-        info = zf.getinfo(n)
-        if n.lower().endswith(".zip"):
-            record["problems"].append(f"nested archive in package: {n} (copied inputs are forbidden)")
-        if info.file_size > HUGE_MEMBER_BYTES:
-            record["problems"].append(f"oversized member {n} ({info.file_size} bytes)")
+        for required in sorted(REQUIRED_MEMBERS - basenames):
+            record["problems"].append(f"missing required member {required}")
+        for n in names:
+            info = zf.getinfo(n)
+            if n.lower().endswith(".zip"):
+                record["problems"].append(f"nested archive in package: {n} (copied inputs are forbidden)")
+            if info.file_size > HUGE_MEMBER_BYTES:
+                record["problems"].append(f"oversized member {n} ({info.file_size} bytes)")
 
-    patch_names = [n for n in names if _member_basename(n) == "PATCH.diff"]
-    if patch_names:
-        patch_text = zf.read(patch_names[0]).decode("utf-8", errors="replace")
-        if not patch_text.strip():
-            record["problems"].append("PATCH.diff is empty")
-        elif "+++ " not in patch_text:
-            record["problems"].append("PATCH.diff has no unified-diff hunks")
-        hits = sorted({pat.pattern for pat in PLACEHOLDER_PATTERNS if pat.search(patch_text)})
-        if hits:
-            record["problems"].append(f"placeholder markers in PATCH.diff: {hits}")
-        record["patch_lines"] = patch_text.count("\n")
-        if args.snapshot and not record["problems"]:
-            ok, detail = apply_check(_repo_root(), args.snapshot, patch_text)
-            record["patch_applies"] = ok
-            record["apply_detail"] = detail
-            if not ok:
-                record["problems"].append(f"apply-check failed: {detail[:200]}")
-        elif not args.snapshot:
-            record["patch_applies"] = None
-            record["problems"].append("no --snapshot given: apply-check skipped (get the commit from HANDOFF.md)")
+        patch_names = [n for n in names if _member_basename(n) == "PATCH.diff"]
+        if patch_names:
+            patch_text = zf.read(patch_names[0]).decode("utf-8", errors="replace")
+            if not patch_text.strip():
+                record["problems"].append("PATCH.diff is empty")
+            elif "+++ " not in patch_text:
+                record["problems"].append("PATCH.diff has no unified-diff hunks")
+            hits = sorted({pat.pattern for pat in PLACEHOLDER_PATTERNS if pat.search(patch_text)})
+            if hits:
+                record["problems"].append(f"placeholder markers in PATCH.diff: {hits}")
+            record["patch_lines"] = patch_text.count("\n")
+            if args.snapshot and not record["problems"]:
+                ok, detail = apply_check(_repo_root(), args.snapshot, patch_text)
+                record["patch_applies"] = ok
+                record["apply_detail"] = detail
+                if not ok:
+                    record["problems"].append(f"apply-check failed: {detail[:200]}")
+            elif not args.snapshot:
+                record["patch_applies"] = None
+                record["problems"].append("no --snapshot given: apply-check skipped (get the commit from HANDOFF.md)")
 
     if any(p.startswith(("missing required member", "not a valid", "PATCH.diff is empty")) for p in record["problems"]):
-        record["status"] = "rejected"
+        record["state"] = "rejected"
 
     print(json.dumps(record, indent=2))
 
-    if args.record:
-        index_path = WAVE_ROOT / args.workload / "results" / "index.json"
-        index = json.loads(index_path.read_text())
-        index.setdefault("attempts", []).append(record)
-        index_path.write_text(json.dumps(index, indent=1) + "\n")
-        print(f"recorded attempt in {index_path}", file=sys.stderr)
-    return 0 if record["status"] == "triaged" and not record["problems"] else 2
+    if args.write:
+        receipt_path = WAVE_ROOT / args.workload / "results" / args.job / args.attempt / "result.json"
+        raw_dir = receipt_path.parent / "raw"
+        if receipt_path.exists():
+            raise SystemExit(f"error: immutable receipt already exists: {receipt_path}")
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        custody = raw_dir / zp.name
+        if custody.exists():
+            raise SystemExit(f"error: immutable raw artifact already exists: {custody}")
+        shutil.copy2(zp, custody)
+        receipt = {
+            "schema_version": 1,
+            "campaign_id": _load_campaign_id(args.workload),
+            "workload_id": args.workload,
+            "job_id": args.job,
+            "attempt_id": args.attempt,
+            "package_revision": args.package_revision,
+            "state": record["state"],
+            "provider": None,
+            "provider_conversation_id": None,
+            "provider_turn_id": None,
+            "polylogue_session_ref": None,
+            "prompt_sha256": args.prompt_sha256,
+            "snapshot_identity": args.snapshot,
+            "supersedes_attempt_id": None,
+            "artifacts": [
+                {
+                    "filename": zp.name,
+                    "sha256": record["sha256"],
+                    "size_bytes": record["bytes"],
+                    "custody_path": str(custody.relative_to(WAVE_ROOT)),
+                    "polylogue_attachment_ref": None,
+                }
+            ],
+            "triage": "; ".join(record["problems"]) if record["problems"] else record.get("apply_detail", "validated"),
+            "beads": [],
+            "worktree": None,
+            "agent_handle": None,
+            "commits": [],
+            "pull_request": None,
+            "verification_receipts": [],
+            "notes": "created by triage-package.py; later integration evidence belongs in a new immutable receipt revision",
+        }
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+        reconcile = subprocess.run(
+            [sys.executable, str(WAVE_ROOT.parent / "reconcile_results.py"), str(WAVE_ROOT), "--write"],
+            capture_output=True,
+            text=True,
+        )
+        if reconcile.returncode:
+            raise SystemExit(f"error: receipt was written but index materialization failed: {reconcile.stderr.strip()}")
+        print(f"wrote immutable receipt {receipt_path} and rebuilt indexes", file=sys.stderr)
+    return 0 if record["state"] == "triaged" and not record["problems"] else 2
+
+
+def _load_campaign_id(workload: str) -> str:
+    campaign = json.loads((WAVE_ROOT / workload / "campaign.json").read_text())
+    campaign_id = campaign.get("campaign_id")
+    if not isinstance(campaign_id, str) or not campaign_id:
+        raise SystemExit(f"error: {workload}/campaign.json has no campaign_id")
+    return campaign_id
 
 
 if __name__ == "__main__":
