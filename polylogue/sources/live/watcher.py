@@ -717,6 +717,14 @@ class LiveWatcher:
                 final_stat.st_ctime_ns,
             ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         if size > cursor.byte_offset:
+            # A previous incomplete-tail probe recorded this exact filesystem
+            # state.  The next useful observation is a write notification (or
+            # a periodic scan that sees different stat evidence), not another
+            # probe of the same unfinished record.  In particular, a single
+            # oversized JSONL record must not make the 15-second safety scan
+            # reread its first 64 MiB forever.
+            if _cursor_stat_matches(cursor, stat):
+                return False
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
             return True
@@ -755,8 +763,10 @@ class LiveWatcher:
             return True
         if b"\n" in payload:
             return False
-        if bytes_to_probe < remaining_bytes:
-            return False
+        # The bounded probe can prove that no complete record begins at the
+        # cursor, even when the unfinished record exceeds the probe budget.
+        # Record this observed state so unchanged periodic catch-up scans skip
+        # it; a subsequent append changes stat evidence and reopens the probe.
         record_deferred_append_cursor(
             self._cursor,
             path,

@@ -1118,12 +1118,12 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     assert append_plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
 
 
-def test_large_incomplete_jsonl_append_still_needs_work(tmp_path: Path) -> None:
+def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
     original = b'{"a":1}\n'
-    f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
+    f.write_bytes(original)
     watcher, _parse_sources = _make_watcher(tmp_path, root)
     stat = f.stat()
     watcher._cursor.set(
@@ -1142,11 +1142,16 @@ def test_large_incomplete_jsonl_append_still_needs_work(tmp_path: Path) -> None:
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+    f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
 
-    assert watcher._needs_work(f) is True
+    # The first bounded probe observes no newline and records the unfinished
+    # tail.  Repeating the same periodic scan must then be a stat-only skip.
+    assert watcher._needs_work(f) is False
     record = watcher._cursor.get_record(f)
     assert record is not None
-    assert record.byte_size == len(original)
+    assert record.byte_size == f.stat().st_size
+    assert record.byte_offset == len(original)
+    assert watcher._needs_work(f) is False
 
 
 def test_last_complete_newline_from_tail_reads_only_final_chunk(tmp_path: Path) -> None:
