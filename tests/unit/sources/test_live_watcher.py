@@ -2278,6 +2278,35 @@ def test_periodic_catch_up_drains_missed_browser_capture_event(
     asyncio.run(_drive())
 
 
+def test_periodic_catch_up_backs_off_after_each_reconciliation_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.01)
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_MAX_INTERVAL_S", 0.04)
+    delays: list[float] = []
+    passes = 0
+
+    async def fake_sleep(delay_s: float) -> None:
+        delays.append(delay_s)
+
+    async def fake_catch_up(_roots: list[Path]) -> None:
+        nonlocal passes
+        passes += 1
+        if passes == 3:
+            watcher.stop()
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    watcher._catch_up = fake_catch_up  # type: ignore[assignment,method-assign]
+
+    asyncio.run(watcher._periodic_catch_up([root]))
+
+    assert delays == [0.01, 0.02, 0.04]
+
+
 def test_end_to_end_deletion_does_not_ingest(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
