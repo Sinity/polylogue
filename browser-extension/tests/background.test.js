@@ -2725,12 +2725,15 @@ describe("receiver health probe", () => {
     expect(stored.polylogueCaptureQueue).toEqual(queue);
   });
 
-  it("reports the receiver as reachable but unauthorized when no valid token is configured", async () => {
+  it("keeps a missing receiver token local without probing the receiver", async () => {
+    await loadBackground({ receiverAuthToken: "" });
     globalThis.fetch = vi.fn(async () => responseJson({ ok: false, error: "unauthorized" }));
 
     const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
 
-    expect(response).toMatchObject({ ok: true, status: "unauthorized", detail: "unauthorized" });
+    expect(response).toMatchObject({ ok: true, status: "unauthorized", detail: "receiver_auth_missing" });
+    expect(response.receiver_request_id).toBeUndefined();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("reports the receiver as unreachable when the fetch itself fails", async () => {
