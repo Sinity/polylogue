@@ -3016,7 +3016,7 @@ files:
     target: polylogue/sinex/transport.py
     owner: stable
   - path: polylogue/sources/__init__.py
-    loc: 40
+    loc: 39
     target: polylogue/sources/__init__.py
     owner: stable
   - path: polylogue/sources/assembly.py
@@ -3056,8 +3056,12 @@ files:
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
-    loc: 302
+    loc: 276
     target: polylogue/sources/drive/__init__.py
+    owner: stable
+  - path: polylogue/sources/drive/attachment_fetch.py
+    loc: 183
+    target: polylogue/sources/drive/attachment_fetch.py
     owner: stable
   - path: polylogue/sources/drive/auth.py
     loc: 209
@@ -3253,7 +3257,7 @@ files:
     target: polylogue/sources/parsers/drive_support.py
     owner: stable
   - path: polylogue/sources/parsers/drive_support_attachments.py
-    loc: 317
+    loc: 340
     target: polylogue/sources/parsers/drive_support_attachments.py
     owner: stable
   - path: polylogue/sources/parsers/drive_support_blocks.py

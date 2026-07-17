@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 # Drive integration
-from .drive import download_drive_files, iter_drive_sessions
+from .drive import download_drive_files
 from .drive.source import DriveSourceAPI, DriveSourceClient, build_drive_source_client
 from .drive.types import (
     DriveAuthError,
@@ -35,6 +35,5 @@ __all__ = [
     "ParsedMessage",
     "build_drive_source_client",
     "download_drive_files",
-    "iter_drive_sessions",
     "iter_source_sessions",
 ]
