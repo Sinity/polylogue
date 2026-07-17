@@ -2669,14 +2669,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
                         ],
                     }
-                route_state_name, route_state_reason = _session_list_state(len(hits), filtered=True)
+                total = self._run_archive_bounded_query(
+                    archive,
+                    deadline_s=None,
+                    compute=lambda: archive.count_search_sessions(
+                        fts_query,
+                        session_id=resolved_session_id,
+                        **_filter_kw,  # type: ignore[arg-type]
+                    ),
+                )
+                route_state_name, route_state_reason = _session_list_state(total, filtered=True)
                 payload: dict[str, object] = {
                     "query": fts_query,
                     "retrieval_lane": "dialogue",
                     "ranking_policy": "mixed-bm25-rrf-vector",
                     "ranking_policy_version": "1",
                     "hits": [self._archive_search_hit_payload(hit) for hit in hits],
-                    "total": len(hits),
+                    "total": total,
                     "limit": limit,
                     "offset": offset,
                     "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),

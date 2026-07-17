@@ -64,11 +64,28 @@ class ContinuityScenarioSpec:
             raise ValueError(f"fixture answer for {self.scenario_id} has no refs sequence")
         return tuple(str(ref) for ref in refs)
 
+    def oracle_answer(self, fixture: Mapping[str, object]) -> dict[str, object]:
+        """Return fixture-owned non-reference answer fields."""
+        return {
+            str(key): value
+            for key, value in self.oracle_record(fixture).items()
+            if key not in {"refs", "mutation_expectations"}
+        }
+
+    def oracle_mutations(self, fixture: Mapping[str, object]) -> Mapping[str, object]:
+        """Return fixture-owned mutation expectations, when supplied."""
+        raw = self.oracle_record(fixture).get("mutation_expectations", {})
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"fixture mutation expectations for {self.scenario_id} must be an object")
+        return raw
+
     def classify(
         self,
         fixture: Mapping[str, object],
         *,
         observed_refs: Sequence[str],
+        observed_answer: Mapping[str, object] | None = None,
+        observed_mutations: Mapping[str, object] | None = None,
         calls: int,
         observed_failure: ContinuityFailureClass | None = None,
         page_bytes: int | None = None,
@@ -87,6 +104,12 @@ class ContinuityScenarioSpec:
             return "execution"
         if observed_failure is not None:
             return observed_failure
+        expected_answer = self.oracle_answer(fixture)
+        if expected_answer and dict(observed_answer or {}) != expected_answer:
+            return "projection"
+        expected_mutations = self.oracle_mutations(fixture)
+        if expected_mutations and dict(observed_mutations or {}) != dict(expected_mutations):
+            return "projection"
         observed = tuple(observed_refs)
         if len(observed) != len(set(observed)):
             return "projection"

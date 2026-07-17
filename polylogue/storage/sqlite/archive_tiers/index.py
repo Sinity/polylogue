@@ -1347,6 +1347,17 @@ WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session
     DELETE FROM delegation_refresh_scope;
 END;
 
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_au
+AFTER UPDATE ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
+    {action_pairs_refresh_sql("NEW.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
 CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_ai
 AFTER INSERT ON session_links
 WHEN NEW.resolved_dst_session_id IS NOT NULL
@@ -1386,7 +1397,16 @@ END;
 CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_au
 AFTER UPDATE ON session_profiles
 WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    -- A profile row may be the child-side evidence of many parent
+    -- delegations. Preserve those parent cohorts before replacing the stale
+    -- derived rows; refreshing only NEW.session_id leaves child model/cost
+    -- projections stale.
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
+    SELECT parent_session_id
+    FROM delegation_facts
+    WHERE child_session_id = NEW.session_id;
+    DELETE FROM delegation_facts
+    WHERE parent_session_id = NEW.session_id OR child_session_id = NEW.session_id;
     INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
     {delegation_facts_insert_sql("NEW.session_id")};
     DELETE FROM delegation_refresh_scope;

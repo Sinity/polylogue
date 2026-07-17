@@ -17,6 +17,11 @@
     "completed_call_keys": 49,
     "unresolved_call_keys": 1,
     "other_child_sessions": 38,
-    "source": "independent incident census"
+    "source": "independent incident census",
+    "mutation_expectations": {
+      "lost-continuation-state": "detected",
+      "global-delegation-materialization": "detected",
+      "wrong-workflow-membership": "detected"
+    }
   }
 }

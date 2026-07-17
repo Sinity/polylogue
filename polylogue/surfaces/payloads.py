@@ -7,7 +7,7 @@ import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 
@@ -773,8 +773,10 @@ class SessionMessagePayload(SurfacePayloadModel):
         """
 
         message_id = str(message.message_id)
-        blocks = tuple(message.blocks)
+        blocks = tuple(getattr(message, "blocks", ()))
         text = "\n\n".join(str(block.text) for block in blocks if block.text)
+        if not text:
+            text = str(getattr(message, "text", "") or "")
         content_blocks: list[dict[str, object]] = []
         for block in blocks:
             row: dict[str, object] = {
@@ -802,7 +804,14 @@ class SessionMessagePayload(SurfacePayloadModel):
             text=text,
             target_ref=TargetRefPayload.message(session_id=session_id, message_id=message_id),
             anchor=reader_anchor("message", message_id),
-            timestamp=_parse_optional_datetime(getattr(message, "occurred_at", None)),
+            timestamp=(
+                _parse_optional_datetime(getattr(message, "occurred_at", None))
+                or (
+                    datetime.fromtimestamp(float(message.occurred_at_ms) / 1000.0, UTC)
+                    if getattr(message, "occurred_at_ms", None) is not None
+                    else None
+                )
+            ),
             message_type=str(getattr(message, "message_type", "message") or "message"),
             material_origin=str(getattr(message, "material_origin", "unknown") or "unknown"),
             content_blocks=content_blocks,
@@ -2888,6 +2897,7 @@ class SearchCursor(BaseModel):
     s: float | None = None
     c: str
     lane: str = Field(validation_alias="l", serialization_alias="l")
+    query_hash: str | None = Field(default=None, validation_alias="q", serialization_alias="q")
 
 
 class InvalidSearchCursorError(ValueError):
@@ -2898,7 +2908,20 @@ class InvalidSearchCursorError(ValueError):
     """
 
 
-def build_search_cursor(hits: Sequence[SessionSearchHitPayload]) -> str | None:
+def search_cursor_request_identity(arguments: Mapping[str, object]) -> str:
+    """Return a stable identity for the logical ranked-search request."""
+    import hashlib
+
+    canonical = {key: value for key, value in arguments.items() if key not in {"cursor", "offset", "limit"}}
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def build_search_cursor(
+    hits: Sequence[SessionSearchHitPayload],
+    *,
+    request_identity: str | None = None,
+) -> str | None:
     """Build an opaque keyset cursor token from the last hit of a page.
 
     Encodes ``(rank, score, session_id, lane)`` of the final hit so
@@ -2920,6 +2943,7 @@ def build_search_cursor(hits: Sequence[SessionSearchHitPayload]) -> str | None:
         s=last.match.score,
         c=last.session.id,
         lane=last.match.retrieval_lane,
+        query_hash=request_identity,
     )
     payload = cursor.model_dump_json(by_alias=True)
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
@@ -2964,6 +2988,7 @@ def apply_search_cursor(
     cursor: SearchCursor,
     *,
     retrieval_lane: str | None = None,
+    request_identity: str | None = None,
 ) -> tuple[SessionSearchHitPayload, ...]:
     """Drop hits up to and including the cursor anchor.
 
@@ -2981,6 +3006,8 @@ def apply_search_cursor(
         raise InvalidSearchCursorError(
             f"cursor was minted for retrieval_lane={cursor.lane!r} but this request is {retrieval_lane!r}"
         )
+    if cursor.query_hash is not None and request_identity is not None and cursor.query_hash != request_identity:
+        raise InvalidSearchCursorError("cursor belongs to a different ranked-search request")
     result: list[SessionSearchHitPayload] = []
     for hit in hits:
         if _cursor_strictly_before(cursor, hit):
@@ -3038,6 +3065,7 @@ def build_search_envelope(
     ranking_policy: str = RANKING_POLICY_MIXED,
     ranking_policy_version: str = RANKING_POLICY_VERSION,
     cursor: SearchCursor | None = None,
+    request_identity: str | None = None,
 ) -> SearchEnvelope:
     """Construct a :class:`SearchEnvelope` with the canonical cursor logic.
 
@@ -3053,7 +3081,12 @@ def build_search_envelope(
     """
     hits_tuple = tuple(hits)
     if cursor is not None:
-        hits_tuple = apply_search_cursor(hits_tuple, cursor, retrieval_lane=retrieval_lane)
+        hits_tuple = apply_search_cursor(
+            hits_tuple,
+            cursor,
+            retrieval_lane=retrieval_lane,
+            request_identity=request_identity,
+        )
     if len(hits_tuple) > limit:
         hits_tuple = hits_tuple[:limit]
     next_offset: int | None = None
@@ -3061,7 +3094,7 @@ def build_search_envelope(
     if hits_tuple and len(hits_tuple) == limit and (total is None or offset + limit < total):
         # More results likely available; expose both pagination handles.
         next_offset = offset + limit
-        next_cursor = build_search_cursor(hits_tuple)
+        next_cursor = build_search_cursor(hits_tuple, request_identity=request_identity)
     if action_affordances is None:
         from polylogue.operations.action_contracts import query_result_action_affordance_payloads
 

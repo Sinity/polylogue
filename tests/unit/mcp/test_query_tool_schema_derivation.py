@@ -143,7 +143,7 @@ def test_archive_list_sessions_routes_near_session_to_query_executor(monkeypatch
 
     assert observed == {"similar_session_id": "seed-session", "archive_root": Path("/archive")}
     assert payload.items == ()
-    assert payload.total == 0
+    assert payload.total is None
 
 
 def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:

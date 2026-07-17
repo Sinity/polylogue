@@ -240,47 +240,6 @@ def _aggregate_group_fields(group_by: str | None) -> tuple[str, ...]:
     return () if group_by is None else tuple(group_by.split(","))
 
 
-def _aggregate_value(unit: str, field: str, row: Any) -> str | None:
-    attribute = _AGGREGATE_ROW_FIELDS.get(unit, {}).get(field)
-    if attribute is None:
-        supported = ", ".join(sorted(_AGGREGATE_ROW_FIELDS.get(unit, {})))
-        raise ExpressionCompileError(
-            f"pipeline `group by {field}` cannot stream {unit} rows; supported fields: {supported}", field=field
-        )
-    value = getattr(row, attribute)
-    if field == "basis":
-        return "action" if value is not None else "edge"
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return str(value).lower()
-    return str(value)
-
-
-def _all_aggregate_rows(ctx: TerminalExecutionContext) -> list[Any]:
-    method_name = ctx.descriptor.sql_query_method
-    if method_name is None:
-        raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
-    query_method = cast(Any, getattr(ctx.archive, method_name))
-    rows: list[Any] = []
-    page_size = 1000
-    offset = 0
-    while True:
-        page = cast(
-            Sequence[Any],
-            query_method(
-                ctx.source.predicate,
-                limit=page_size,
-                offset=offset,
-                session_filters=ctx.session_filters,
-            ),
-        )
-        rows.extend(page)
-        if len(page) < page_size:
-            return rows
-        offset += len(page)
-
-
 def _aggregate_pipeline_payload(
     pipeline: QueryUnitPipeline,
     *,
@@ -328,17 +287,17 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
         pipeline.sort.direction if aggregate_sort is not None and pipeline.sort is not None else "desc"
     )
     group_fields = _aggregate_group_fields(pipeline.group_by)
+    aggregate_rows = ctx.archive.query_unit_counts(
+        pipeline.source_unit,
+        pipeline.predicate,
+        group_by=pipeline.group_by,
+        sort=aggregate_sort,
+        sort_direction=aggregate_sort_direction,
+        limit=ctx.fetch_limit,
+        offset=ctx.offset,
+        session_filters=ctx.session_filters,
+    )
     if len(group_fields) <= 1:
-        aggregate_rows = ctx.archive.query_unit_counts(
-            pipeline.source_unit,
-            pipeline.predicate,
-            group_by=pipeline.group_by,
-            sort=aggregate_sort,
-            sort_direction=aggregate_sort_direction,
-            limit=ctx.fetch_limit,
-            offset=ctx.offset,
-            session_filters=ctx.session_filters,
-        )
         return build_query_unit_aggregate_envelope(
             tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
             unit=ctx.source.unit,
@@ -349,30 +308,37 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
             pipeline=pipeline.to_payload(),
             pipeline_stages=_pipeline_stage_payloads(pipeline),
         )
-    rows = _all_aggregate_rows(ctx)
+
+    # Composite groups are encoded by the SQL query as a JSON object keyed by
+    # the requested dimensions.  Decode only the bounded aggregate page; no
+    # action/delegation row projection is materialized in Python.
+    all_rows = ctx.archive.query_unit_counts(
+        pipeline.source_unit,
+        pipeline.predicate,
+        group_by=None,
+        limit=1,
+        offset=0,
+        session_filters=ctx.session_filters,
+    )
+    denominator = all_rows[0].count if all_rows else 0
+    group_by = pipeline.group_by
     missing_counts: Counter[str] = Counter()
     unknown_counts: Counter[str] = Counter()
-    counts: Counter[tuple[str, ...]] = Counter()
-    for row in rows:
-        values: list[str] = []
-        for field in group_fields:
-            value = _aggregate_value(ctx.source.unit, field, row)
-            if value is None:
-                missing_counts[field] += 1
-                value = _MISSING_GROUP_KEY
+    page_groups: list[tuple[tuple[str, ...], int]] = []
+    for row in aggregate_rows:
+        try:
+            decoded = json.loads(row.group_key or "{}")
+        except json.JSONDecodeError as exc:
+            raise ExpressionCompileError("composite aggregate returned invalid JSON", field=pipeline.group_by) from exc
+        if not isinstance(decoded, dict):
+            raise ExpressionCompileError("composite aggregate returned a non-object key", field=pipeline.group_by)
+        values = tuple(str(decoded.get(field, _MISSING_GROUP_KEY)) for field in group_fields)
+        for field, value in zip(group_fields, values, strict=True):
+            if value == _MISSING_GROUP_KEY:
+                missing_counts[field] += row.count
             elif value.lower() == "unknown":
-                unknown_counts[field] += 1
-            values.append(value)
-        counts[tuple(values)] += 1
-    if not group_fields:
-        counts[()] = len(rows)
-    ordered_groups = list(counts.items())
-    if aggregate_sort == "key":
-        ordered_groups.sort(key=lambda item: item[0], reverse=aggregate_sort_direction == "desc")
-    else:
-        ordered_groups.sort(key=lambda item: (item[1], item[0]), reverse=aggregate_sort_direction == "desc")
-    page_groups = ordered_groups[ctx.offset : ctx.offset + ctx.fetch_limit]
-    group_by = pipeline.group_by
+                unknown_counts[field] += row.count
+        page_groups.append((values, row.count))
     aggregate_payload_rows = tuple(
         QueryUnitAggregateRowPayload(
             unit=ctx.source.unit,
@@ -396,7 +362,7 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
         pipeline=_aggregate_pipeline_payload(
             pipeline,
             group_fields=group_fields,
-            denominator=len(rows),
+            denominator=denominator,
             missing_counts=missing_counts,
             unknown_counts=unknown_counts,
             groups=page_groups[: ctx.limit],

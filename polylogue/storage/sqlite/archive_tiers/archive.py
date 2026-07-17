@@ -218,6 +218,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
+    ArchiveBlockRow,
     ArchiveInsightMaterialization,
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
@@ -375,6 +376,7 @@ class ArchiveMessageQueryRow:
     position: int
     word_count: int
     text: str
+    blocks: tuple[ArchiveBlockRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -947,6 +949,13 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
 
     if group_by is None:
         return "'all'"
+    fields = tuple(field.strip() for field in group_by.split(","))
+    if len(fields) > 1:
+        # Keep multi-dimensional grouping in SQLite.  The old Python fallback
+        # fetched every matching action/delegation row before grouping, which
+        # made a bounded page an archive-wide materialization request.
+        components = ", ".join(f"'{field}', {_query_unit_group_expression(unit, row_alias, field)}" for field in fields)
+        return f"json_object({components})"
     normalized = group_by.removeprefix("session.")
     session_fields = {
         "origin": "COALESCE(NULLIF(s.origin, ''), 'unknown')",
@@ -1037,7 +1046,9 @@ def _query_unit_group_uses_session(group_by: str | None) -> bool:
 
     if group_by is None:
         return False
-    return group_by.startswith("session.") or group_by in {"origin", "repo"}
+    return any(
+        field.strip().startswith("session.") or field.strip() in {"origin", "repo"} for field in group_by.split(",")
+    )
 
 
 def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> bool:
@@ -3183,6 +3194,21 @@ class ArchiveStore:
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
         return read_archive_session_envelope(self._conn, session_id)
+
+    def has_prefix_lineage(self, session_id: str) -> bool:
+        """Return whether a session's logical transcript inherits a prefix."""
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM session_links
+            WHERE src_session_id = ?
+              AND inheritance = 'prefix-sharing'
+              AND resolved_dst_session_id IS NOT NULL
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        return row is not None
 
     def get_session_tree(self, session_id: str) -> list[ArchiveSessionEnvelope]:
         """Return the rooted archive session tree containing ``session_id``."""
@@ -7225,6 +7251,41 @@ class ArchiveStore:
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
+        message_ids = tuple(str(row["message_id"]) for row in rows)
+        blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
+        if message_ids:
+            block_placeholders = ", ".join("?" for _ in message_ids)
+            block_rows = self._conn.execute(
+                f"""
+                SELECT block_id, message_id, block_type, text, tool_name, tool_id,
+                       semantic_type, tool_input, language,
+                       tool_result_is_error, tool_result_exit_code
+                FROM blocks
+                WHERE message_id IN ({block_placeholders})
+                ORDER BY message_id, position, block_id
+                """,
+                message_ids,
+            ).fetchall()
+            for block in block_rows:
+                blocks_by_message[str(block["message_id"])].append(
+                    ArchiveBlockRow(
+                        block_id=str(block["block_id"]),
+                        message_id=str(block["message_id"]),
+                        block_type=str(block["block_type"]),
+                        text=str(block["text"]) if block["text"] is not None else None,
+                        tool_name=str(block["tool_name"]) if block["tool_name"] is not None else None,
+                        tool_id=str(block["tool_id"]) if block["tool_id"] is not None else None,
+                        semantic_type=str(block["semantic_type"]) if block["semantic_type"] is not None else None,
+                        tool_input=str(block["tool_input"]) if block["tool_input"] is not None else None,
+                        language=str(block["language"]) if block["language"] is not None else None,
+                        tool_result_is_error=(
+                            int(block["tool_result_is_error"]) if block["tool_result_is_error"] is not None else None
+                        ),
+                        tool_result_exit_code=(
+                            int(block["tool_result_exit_code"]) if block["tool_result_exit_code"] is not None else None
+                        ),
+                    )
+                )
         return [
             ArchiveMessageQueryRow(
                 message_id=str(row["message_id"]),
@@ -7238,6 +7299,7 @@ class ArchiveStore:
                 position=int(row["position"]),
                 word_count=int(row["word_count"]),
                 text=str(row["text"] or ""),
+                blocks=tuple(blocks_by_message[str(row["message_id"])]),
             )
             for row in rows
         ]
@@ -7249,6 +7311,9 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
+        roles: Sequence[str] = (),
+        message_type: str | None = None,
+        material_origins: Sequence[str] = (),
     ) -> list[ArchiveMessageQueryRow]:
         """Return message rows for known sessions using the session sort-key index."""
 
@@ -7261,6 +7326,21 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         placeholders = ", ".join("?" for _ in normalized_session_ids)
+        predicates = [f"m.session_id IN ({placeholders})"]
+        filter_params: list[object] = [*normalized_session_ids]
+        normalized_roles = tuple(dict.fromkeys(str(role) for role in roles if str(role)))
+        if normalized_roles:
+            role_placeholders = ", ".join("?" for _ in normalized_roles)
+            predicates.append(f"m.role IN ({role_placeholders})")
+            filter_params.extend(normalized_roles)
+        if message_type is not None:
+            predicates.append("m.message_type = ?")
+            filter_params.append(str(message_type))
+        normalized_origins = tuple(dict.fromkeys(str(origin) for origin in material_origins if str(origin)))
+        if normalized_origins:
+            origin_placeholders = ", ".join("?" for _ in normalized_origins)
+            predicates.append(f"m.material_origin IN ({origin_placeholders})")
+            filter_params.extend(normalized_origins)
         rows = self._conn.execute(
             f"""
             SELECT
@@ -7286,14 +7366,47 @@ class ArchiveStore:
                 ), '') AS text
             FROM messages m INDEXED BY idx_messages_session_sortkey
             JOIN sessions s ON s.session_id = m.session_id
-            WHERE m.session_id IN ({placeholders})
-            ORDER BY (m.occurred_at_ms IS NULL) {order_direction},
-                     m.occurred_at_ms {order_direction},
-                     m.message_id {order_direction}
+            WHERE {" AND ".join(predicates)}
+            ORDER BY m.position {order_direction}, m.variant_index {order_direction}, m.message_id {order_direction}
             LIMIT ? OFFSET ?
             """,
-            [*normalized_session_ids, normalized_limit, normalized_offset],
+            [*filter_params, normalized_limit, normalized_offset],
         ).fetchall()
+        message_ids = tuple(str(row["message_id"]) for row in rows)
+        blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
+        if message_ids:
+            block_placeholders = ", ".join("?" for _ in message_ids)
+            block_rows = self._conn.execute(
+                f"""
+                SELECT block_id, message_id, block_type, text, tool_name, tool_id,
+                       semantic_type, tool_input, language,
+                       tool_result_is_error, tool_result_exit_code
+                FROM blocks
+                WHERE message_id IN ({block_placeholders})
+                ORDER BY message_id, position, block_id
+                """,
+                message_ids,
+            ).fetchall()
+            for block in block_rows:
+                blocks_by_message[str(block["message_id"])].append(
+                    ArchiveBlockRow(
+                        block_id=str(block["block_id"]),
+                        message_id=str(block["message_id"]),
+                        block_type=str(block["block_type"]),
+                        text=str(block["text"]) if block["text"] is not None else None,
+                        tool_name=str(block["tool_name"]) if block["tool_name"] is not None else None,
+                        tool_id=str(block["tool_id"]) if block["tool_id"] is not None else None,
+                        semantic_type=str(block["semantic_type"]) if block["semantic_type"] is not None else None,
+                        tool_input=str(block["tool_input"]) if block["tool_input"] is not None else None,
+                        language=str(block["language"]) if block["language"] is not None else None,
+                        tool_result_is_error=(
+                            int(block["tool_result_is_error"]) if block["tool_result_is_error"] is not None else None
+                        ),
+                        tool_result_exit_code=(
+                            int(block["tool_result_exit_code"]) if block["tool_result_exit_code"] is not None else None
+                        ),
+                    )
+                )
         return [
             ArchiveMessageQueryRow(
                 message_id=str(row["message_id"]),
@@ -7307,9 +7420,46 @@ class ArchiveStore:
                 position=int(row["position"]),
                 word_count=int(row["word_count"]),
                 text=str(row["text"] or ""),
+                blocks=tuple(blocks_by_message[str(row["message_id"])]),
             )
             for row in rows
         ]
+
+    def count_session_messages(
+        self,
+        session_ids: Sequence[str],
+        *,
+        roles: Sequence[str] = (),
+        message_type: str | None = None,
+        material_origins: Sequence[str] = (),
+    ) -> int:
+        """Return an exact count for a bounded session-message projection."""
+
+        normalized_session_ids = tuple(
+            dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
+        )
+        if not normalized_session_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in normalized_session_ids)
+        predicates = [f"session_id IN ({placeholders})"]
+        params: list[object] = [*normalized_session_ids]
+        normalized_roles = tuple(dict.fromkeys(str(role) for role in roles if str(role)))
+        if normalized_roles:
+            role_placeholders = ", ".join("?" for _ in normalized_roles)
+            predicates.append(f"role IN ({role_placeholders})")
+            params.extend(normalized_roles)
+        if message_type is not None:
+            predicates.append("message_type = ?")
+            params.append(str(message_type))
+        normalized_origins = tuple(dict.fromkeys(str(origin) for origin in material_origins if str(origin)))
+        if normalized_origins:
+            origin_placeholders = ", ".join("?" for _ in normalized_origins)
+            predicates.append(f"material_origin IN ({origin_placeholders})")
+            params.extend(normalized_origins)
+        row = self._conn.execute(
+            f"SELECT COUNT(*) AS count FROM messages WHERE {' AND '.join(predicates)}", params
+        ).fetchone()
+        return int(row["count"]) if row is not None else 0
 
     def query_unit_counts(
         self,

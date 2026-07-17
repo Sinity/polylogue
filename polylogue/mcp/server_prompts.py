@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
@@ -158,6 +158,29 @@ def _archive_prompt_session(session: ArchiveSessionEnvelope) -> PromptSession:
     )
 
 
+def _archive_prompt_session_page(archive: ArchiveStore, session_id: str, *, limit: int = 20) -> PromptSession:
+    """Build prompt context from a bounded message projection."""
+    summary = archive.read_summary(session_id)
+    rows = archive.query_session_messages((session_id,), limit=limit, offset=0)
+    return PromptSession(
+        id=summary.session_id,
+        origin=summary.origin,
+        display_title=summary.title or "(untitled)",
+        messages=tuple(
+            PromptMessage(
+                role=row.role,
+                text=row.text[:4000],
+                timestamp=(
+                    datetime.fromtimestamp(row.occurred_at_ms / 1000.0, UTC).isoformat()
+                    if row.occurred_at_ms is not None
+                    else None
+                ),
+            )
+            for row in rows
+        ),
+    )
+
+
 def _archive_prompt_sessions(archive: ArchiveStore, spec: SessionQuerySpec) -> list[PromptSession]:
     filters = archive_query_filters(spec)
     limit = spec.limit or 10
@@ -191,14 +214,14 @@ def _archive_prompt_sessions(archive: ArchiveStore, spec: SessionQuerySpec) -> l
         if session_id in seen:
             continue
         seen.add(session_id)
-        sessions.append(_archive_prompt_session(archive.read_session(session_id)))
+        sessions.append(_archive_prompt_session_page(archive, session_id))
     return sessions
 
 
 def _archive_prompt_session_by_id(archive: ArchiveStore, token: str) -> PromptSession | None:
     try:
         session_id = archive.resolve_session_id(token)
-        return _archive_prompt_session(archive.read_session(session_id))
+        return _archive_prompt_session_page(archive, session_id)
     except (KeyError, ValueError):
         return None
 

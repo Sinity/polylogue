@@ -253,7 +253,11 @@ def _serialize_payload(payload: BaseModel, *, exclude_none: bool) -> str:
 
 def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseModel, int] | None:
     """Find the largest useful prefix that fits the transport budget."""
-    raw_items = getattr(payload, "items", None)
+    item_field = "items"
+    raw_items = getattr(payload, item_field, None)
+    if not isinstance(raw_items, (tuple, list)):
+        item_field = "messages"
+        raw_items = getattr(payload, item_field, None)
     if not isinstance(raw_items, (tuple, list)) or not raw_items:
         return None
     items = tuple(raw_items)
@@ -261,7 +265,7 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
     best: tuple[BaseModel, int] | None = None
     while low <= high:
         count = (low + high) // 2
-        updates: dict[str, object] = {"items": items[:count]}
+        updates: dict[str, object] = {item_field: items[:count]}
         if hasattr(payload, "next_offset"):
             offset = getattr(payload, "offset", 0)
             updates["next_offset"] = offset + count
@@ -281,6 +285,29 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
     context = _response_context_var.get()
     page = _bounded_item_page(payload, exclude_none=exclude_none)
     continuation = _narrow_continuation(context, consumed=page[1] if page is not None else None)
+    if context is not None and context.tool == "query_units":
+        # The typed unit envelope has the authoritative q1 token.  Rebase it
+        # to the prefix actually retained by the MCP budget wrapper; the
+        # original token may point past rows omitted from the response.
+        raw_continuation = body.get("continuation")
+        if isinstance(raw_continuation, str) and page is not None:
+            try:
+                from polylogue.archive.query.transaction import QueryContinuation
+
+                decoded = QueryContinuation.decode(raw_continuation)
+                original_items = getattr(payload, "items", None)
+                if not isinstance(original_items, (tuple, list)):
+                    original_items = getattr(payload, "messages", ())
+                narrowed = decoded.request.next(offset=decoded.request.offset - len(original_items) + page[1])
+                continuation = {
+                    "tool": "query_units",
+                    "arguments": {
+                        "continuation": QueryContinuation(request=narrowed, result_ref=decoded.result_ref).encode()
+                    },
+                    "reason": "The original query page exceeded the MCP response budget; continue from the returned prefix.",
+                }
+            except ValueError:
+                continuation = None
     envelope = {
         "ok": True,
         "status": "response_budget_exceeded",

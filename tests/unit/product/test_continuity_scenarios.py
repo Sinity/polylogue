@@ -61,6 +61,23 @@ def test_incident_known_answer_preserves_independent_census() -> None:
         {
             "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
             "calls": 8,
+            "answer": {
+                "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
+                "run_ref": "wf_54d4fb2e-841",
+                "workflow_invocations": 4,
+                "call_keys": 50,
+                "attempt_transcripts": 91,
+                "result_records": 65,
+                "completed_call_keys": 49,
+                "unresolved_call_keys": 1,
+                "other_child_sessions": 38,
+                "source": "independent incident census",
+            },
+            "mutations": {
+                "lost-continuation-state": "detected",
+                "global-delegation-materialization": "detected",
+                "wrong-workflow-membership": "detected",
+            },
         },
     )
 

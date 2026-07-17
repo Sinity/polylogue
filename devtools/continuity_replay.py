@@ -23,6 +23,12 @@ def evaluate_replay(
     refs = observation.get("refs", ())
     if not isinstance(refs, list):
         raise ValueError("observation.refs must be a JSON list")
+    observed_answer = observation.get("answer", {})
+    if not isinstance(observed_answer, dict):
+        raise ValueError("observation.answer must be a JSON object")
+    observed_mutations = observation.get("mutations", {})
+    if not isinstance(observed_mutations, dict):
+        raise ValueError("observation.mutations must be a JSON object")
     calls = observation.get("calls", 0)
     if not isinstance(calls, int):
         raise ValueError("observation.calls must be an integer")
@@ -37,6 +43,8 @@ def evaluate_replay(
     result = scenario.classify(
         fixture,
         observed_refs=[str(ref) for ref in refs],
+        observed_answer=observed_answer,
+        observed_mutations=observed_mutations,
         calls=calls,
         observed_failure=failure_value if failure_value in scenario.failure_taxonomy else None,  # type: ignore[arg-type]
         page_bytes=page_bytes,
@@ -44,12 +52,14 @@ def evaluate_replay(
         continuation_state_lost=bool(observation.get("continuation_state_lost", False)),
         non_progressing_continuation=bool(observation.get("non_progressing_continuation", False)),
     )
-    expected_record = scenario.oracle_record(fixture)
     return {
         "scenario": scenario.scenario_id,
         "classification": result,
         "expected_refs": list(scenario.oracle(fixture)),
-        "expected_answer": {str(key): value for key, value in expected_record.items() if key != "refs"},
+        "expected_answer": scenario.oracle_answer(fixture),
+        "expected_mutations": dict(scenario.oracle_mutations(fixture)),
+        "observed_answer": observed_answer,
+        "observed_mutations": observed_mutations,
         "observed_refs": refs,
         "calls": calls,
         "budget": {

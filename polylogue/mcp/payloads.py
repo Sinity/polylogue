@@ -242,7 +242,10 @@ class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     """Paginated query result envelope for list_sessions."""
 
     items: tuple[MCPMatchedSessionSummaryPayload, ...]
-    total: int
+    # Semantic/vector retrieval does not expose an exact archive cardinality;
+    # ``None`` is honest and keeps lower-bound page probes from masquerading as
+    # totals.
+    total: int | None
     limit: int
     offset: int
     next_offset: int | None = None

@@ -39,7 +39,12 @@ if TYPE_CHECKING:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
-    from polylogue.surfaces.payloads import QueryUnitResultEnvelope, SearchEnvelope, SessionSearchHitPayload
+    from polylogue.surfaces.payloads import (
+        QueryUnitResultEnvelope,
+        SearchCursor,
+        SearchEnvelope,
+        SessionSearchHitPayload,
+    )
 
 
 def _real_path(value: object) -> Path | None:
@@ -310,7 +315,6 @@ def archive_session_list_payload(
         # apply it a second time after coalescing its raw block hits.
         page = summaries
         next_offset = offset + len(page) if len(pairs) == limit else None
-        total = offset + len(page) + (1 if next_offset is not None else 0)
         return MCPPaginatedQueryResultPayload(
             items=tuple(
                 archive_matched_summary_payload(
@@ -320,7 +324,7 @@ def archive_session_list_payload(
                 )
                 for summary in page
             ),
-            total=total,
+            total=None,
             limit=limit,
             offset=offset,
             next_offset=next_offset,
@@ -419,6 +423,8 @@ def archive_search_payload(
     config: Config | None = None,
     archive_root: Path | None = None,
     include_affordances: bool = False,
+    cursor: SearchCursor | None = None,
+    request_identity: str | None = None,
 ) -> SearchEnvelope:
     """Build the generic MCP search envelope from archive block search."""
     from polylogue.surfaces.payloads import build_search_envelope
@@ -438,13 +444,15 @@ def archive_search_payload(
         )
         return build_search_envelope(
             tuple(archive_search_hit_payload(hit, archive=archive) for hit, _summary in pairs),
-            total=offset + len(pairs) + (1 if len(pairs) == limit else 0),
+            total=None,
             limit=limit,
             offset=offset,
             query=query,
             retrieval_lane=resolved_lane,
             sort=sort,
             action_affordances=_search_affordances(include_affordances),
+            cursor=cursor,
+            request_identity=request_identity,
         )
 
     filters = archive_query_filters(spec)
@@ -468,6 +476,8 @@ def archive_search_payload(
         sort=sort,
         action_affordances=_search_affordances(include_affordances),
         diagnostics=diagnostics,
+        cursor=cursor,
+        request_identity=request_identity,
     )
 
 
@@ -603,6 +613,97 @@ def archive_messages_payload(
     )
 
 
+def archive_message_page_payload(
+    archive: ArchiveStore,
+    session_id: str,
+    *,
+    roles: Sequence[str] = (),
+    message_type: str | None = None,
+    material_origins: Sequence[str] = (),
+    limit: int,
+    offset: int,
+    offset_from: str = "start",
+    max_chars_per_message: int | None = None,
+    excerpt: bool = False,
+    match_query: str | None = None,
+) -> MCPMessagesListPayload:
+    """Build a bounded message page directly from indexed message rows.
+
+    This route deliberately never hydrates the composed session envelope.
+    The row projection is enough for the MCP reader payload and makes a
+    one-message request remain one-message work, even for very large sessions.
+    """
+    from polylogue.mcp.payloads import MCPMessagesListPayload
+    from polylogue.surfaces.payloads import SessionMessagePayload
+
+    resolved_session_id = archive.resolve_session_id(session_id)
+    if archive.has_prefix_lineage(resolved_session_id):
+        # Lineage composition is a logical splice, not a single SQL session.
+        # Preserve that semantic until the storage-level composed page reader
+        # is available; ordinary sessions take the bounded row path below.
+        return archive_messages_payload(
+            archive.read_session(resolved_session_id),
+            roles=roles,
+            message_type=message_type,
+            material_origins=material_origins,
+            limit=limit,
+            offset=offset,
+            offset_from=offset_from,
+            max_chars_per_message=max_chars_per_message,
+            excerpt=excerpt,
+            match_query=match_query,
+        )
+    total = archive.count_session_messages(
+        (resolved_session_id,),
+        roles=roles,
+        message_type=message_type,
+        material_origins=material_origins,
+    )
+    requested_offset = max(0, offset)
+    effective_offset = max(total - limit, 0) if offset_from == "end" else requested_offset
+    rows = archive.query_session_messages(
+        (resolved_session_id,),
+        roles=roles,
+        message_type=message_type,
+        material_origins=material_origins,
+        limit=limit,
+        offset=effective_offset,
+    )
+    messages = []
+    for row in rows:
+        message = SessionMessagePayload.from_archive_row(row, session_id=resolved_session_id)
+        messages.append(
+            _bounded_message_payload(
+                message,
+                max_chars=max_chars_per_message,
+                excerpt=excerpt,
+                match_query=match_query,
+            )
+        )
+    next_offset = effective_offset + len(messages) if effective_offset + len(messages) < total else None
+    suggested_tail_offset = max(total - limit, 0)
+    offset_note = None
+    if offset_from != "end" and requested_offset >= total:
+        offset_note = (
+            "No messages returned because offset is in filtered result space "
+            f"and is >= filtered total ({total}). Use offset_from='end' or "
+            f"offset={suggested_tail_offset} for the filtered tail."
+            if total
+            else "No messages matched the supplied filters."
+        )
+    return MCPMessagesListPayload(
+        session_id=resolved_session_id,
+        messages=tuple(messages),
+        total=total,
+        limit=limit,
+        offset=effective_offset,
+        offset_from=offset_from,
+        next_offset=next_offset,
+        suggested_tail_offset=suggested_tail_offset,
+        offset_note=offset_note,
+    )
+
+
 def _bounded_message_payload(
     payload: MCPMessagePayload,
     *,
@@ -693,6 +794,7 @@ __all__ = [
     "archive_index_active_paths",
     "archive_session_list_payload",
     "archive_message_payload",
+    "archive_message_page_payload",
     "archive_messages_payload",
     "archive_query_filters",
     "archive_query_unit_payload",

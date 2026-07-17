@@ -7,7 +7,6 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.archive_support import (
-    archive_messages_payload,
     archive_session_list_payload,
     archive_summary_payload,
     mcp_archive_root,
@@ -214,7 +213,6 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             def read(archive: ArchiveStore) -> str:
                 try:
                     session_id = archive.resolve_session_id(conv_id)
-                    session = archive.read_session(session_id)
                 except (KeyError, ValueError):
                     return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
                 with hooks.response_context(
@@ -226,7 +224,9 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         "excerpt": True,
                     },
                 ):
-                    return hooks.json_payload(archive_messages_payload(session, limit=20, offset=0))
+                    from polylogue.mcp.archive_support import archive_message_page_payload
+
+                    return hooks.json_payload(archive_message_page_payload(archive, session_id, limit=20, offset=0))
 
             return await transaction.run(read)
         except sqlite3.OperationalError:
