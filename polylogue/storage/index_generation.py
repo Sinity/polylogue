@@ -30,6 +30,35 @@ class IndexGeneration:
     source_snapshot: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class IndexRebuildTransaction:
+    """Durable cursor and candidate ownership for one source-index rebuild.
+
+    A transaction is deliberately retained while it is paused or failed.  The
+    inactive generation is useful work, not disposable scratch: resuming the
+    same source snapshot continues from the next raw key without exposing a
+    partial index to readers.
+    """
+
+    operation_id: str
+    generation_id: str
+    generation_owner_id: str
+    source_snapshot: str
+    status: str
+    created_at_ms: int
+    updated_at_ms: int
+    last_acquired_at_ms: int | None = None
+    last_raw_id: str | None = None
+    processed_raw_count: int = 0
+    error: str | None = None
+
+    @property
+    def cursor(self) -> str | None:
+        if self.last_acquired_at_ms is None or self.last_raw_id is None:
+            return None
+        return f"source:{self.last_acquired_at_ms}:{self.last_raw_id}"
+
+
 class RebuildLeaseUnavailableError(RuntimeError):
     """Another process owns the archive-wide rebuild lease."""
 
@@ -115,6 +144,104 @@ class IndexGenerationStore:
             os.replace(temporary, anchor)
             _fsync_directory(anchor.parent)
         self.generations_root = self.active_pointer.parent / ".index-generations"
+        self.transactions_root = self.active_pointer.parent / ".index-rebuild-transactions"
+
+    def create_transaction(
+        self,
+        *,
+        source_snapshot: str,
+        operation_id: str | None = None,
+    ) -> IndexRebuildTransaction:
+        """Create an inactive candidate and its resumable transaction record."""
+        op_id = operation_id or str(uuid.uuid4())
+        path = self._transaction_path(op_id)
+        if path.exists():
+            raise RuntimeError(f"rebuild transaction already exists: {op_id}")
+        generation = self.create(source_snapshot=source_snapshot)
+        now = int(time.time() * 1000)
+        transaction = IndexRebuildTransaction(
+            operation_id=op_id,
+            generation_id=generation.generation_id,
+            generation_owner_id=generation.owner_id,
+            source_snapshot=source_snapshot,
+            status="running",
+            created_at_ms=now,
+            updated_at_ms=now,
+        )
+        self.save_transaction(transaction)
+        return transaction
+
+    def load_transaction(self, operation_id: str) -> IndexRebuildTransaction:
+        """Load a rebuild transaction; corrupt or missing state is never resumed."""
+        payload = json.loads(self._transaction_path(operation_id).read_text(encoding="utf-8"))
+        return IndexRebuildTransaction(**payload)
+
+    def save_transaction(self, transaction: IndexRebuildTransaction) -> IndexRebuildTransaction:
+        """Atomically checkpoint a transaction after one bounded replay pass."""
+        updated = IndexRebuildTransaction(**{**asdict(transaction), "updated_at_ms": int(time.time() * 1000)})
+        path = self._transaction_path(transaction.operation_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(asdict(updated), indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+        return updated
+
+    def checkpoint_transaction(
+        self,
+        transaction: IndexRebuildTransaction,
+        *,
+        status: str,
+        last_acquired_at_ms: int | None = None,
+        last_raw_id: str | None = None,
+        processed_raw_count: int | None = None,
+        error: str | None = None,
+    ) -> IndexRebuildTransaction:
+        """Persist one state transition without changing candidate ownership."""
+        return self.save_transaction(
+            IndexRebuildTransaction(
+                **{
+                    **asdict(transaction),
+                    "status": status,
+                    "last_acquired_at_ms": last_acquired_at_ms
+                    if last_acquired_at_ms is not None
+                    else transaction.last_acquired_at_ms,
+                    "last_raw_id": last_raw_id if last_raw_id is not None else transaction.last_raw_id,
+                    "processed_raw_count": processed_raw_count
+                    if processed_raw_count is not None
+                    else transaction.processed_raw_count,
+                    "error": error,
+                }
+            )
+        )
+
+    def next_raw_page(
+        self,
+        transaction: IndexRebuildTransaction,
+        *,
+        limit: int,
+    ) -> tuple[tuple[str, int], ...]:
+        """Read one source-order page without archive-wide raw-id materialization."""
+        if limit <= 0:
+            raise ValueError("rebuild raw page limit must be positive")
+        source_db = self.archive_root / "source.db"
+        if transaction.last_acquired_at_ms is None or transaction.last_raw_id is None:
+            query = """
+                SELECT raw_id, acquired_at_ms FROM raw_sessions
+                ORDER BY acquired_at_ms, raw_id LIMIT ?
+            """
+            params: tuple[object, ...] = (limit,)
+        else:
+            query = """
+                SELECT raw_id, acquired_at_ms FROM raw_sessions
+                WHERE acquired_at_ms > ?
+                   OR (acquired_at_ms = ? AND raw_id > ?)
+                ORDER BY acquired_at_ms, raw_id LIMIT ?
+            """
+            params = (transaction.last_acquired_at_ms, transaction.last_acquired_at_ms, transaction.last_raw_id, limit)
+        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return tuple((str(raw_id), int(acquired_at_ms)) for raw_id, acquired_at_ms in rows)
 
     def create(self, *, owner_id: str | None = None, source_snapshot: str) -> IndexGeneration:
         generation_id = f"gen-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
@@ -202,6 +329,9 @@ class IndexGenerationStore:
     def _metadata_path(self, generation_id: str) -> Path:
         return self.generations_root / generation_id / "generation.json"
 
+    def _transaction_path(self, operation_id: str) -> Path:
+        return self.transactions_root / f"{operation_id}.json"
+
     def _write(self, generation: IndexGeneration) -> None:
         path = self._metadata_path(generation.generation_id)
         temporary = path.with_suffix(".json.tmp")
@@ -244,6 +374,7 @@ def _fsync_directory(path: Path) -> None:
 __all__ = [
     "ActiveWriterLease",
     "IndexGeneration",
+    "IndexRebuildTransaction",
     "IndexGenerationStore",
     "RebuildLease",
     "RebuildLeaseUnavailableError",

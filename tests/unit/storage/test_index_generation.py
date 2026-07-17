@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -180,3 +181,34 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
     assert configured.joinpath("index.db").stat().st_ino == canonical.joinpath("index.db").stat().st_ino
     assert canonical.joinpath("index.db").resolve() == Path(second.index_path).resolve()
     assert len(tuple(store.generations_root.glob("retired-*/index.db"))) == 2
+
+
+def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archive(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        for raw_id, acquired_at_ms in (("raw-c", 30), ("raw-a", 10), ("raw-b", 10)):
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, validation_status
+                ) VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), 1, ?, 'passed')
+                """,
+                (raw_id, raw_id, f"/{raw_id}.jsonl", acquired_at_ms),
+            )
+
+    store = IndexGenerationStore(tmp_path)
+    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="resume-me")
+    first_page = store.next_raw_page(transaction, limit=2)
+    assert first_page == (("raw-a", 10), ("raw-b", 10))
+
+    transaction = store.checkpoint_transaction(
+        transaction,
+        status="paused",
+        last_acquired_at_ms=10,
+        last_raw_id="raw-b",
+        processed_raw_count=2,
+    )
+    assert transaction.cursor == "source:10:raw-b"
+    assert store.load_transaction("resume-me") == transaction
+    assert store.next_raw_page(transaction, limit=2) == (("raw-c", 30),)

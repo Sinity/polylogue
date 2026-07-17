@@ -1722,6 +1722,82 @@ def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
     ]
 
 
+def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotion(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """A bounded pass retains its generation; only the terminal resume promotes it."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = cli_workspace["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for native_id, acquired_at_ms in (("first", 1), ("second", 2)):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\\n'
+                    f'{{"type":"response_item","payload":{{"type":"message","role":"user",'
+                    f'"content":[{{"type":"input_text","text":"{native_id}"}}]}}}}\\n'
+                ).encode(),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=acquired_at_ms,
+            )
+
+    first = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--raw-batch-size", "1", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    assert first.exit_code == 0
+    first_payload = json.loads(first.output)
+    operation_id = first_payload["transaction"]["operation_id"]
+    generation_path = Path(first_payload["generation"]["index_path"])
+    assert first_payload["status"] == "paused"
+    assert first_payload["transaction"]["processed_raw_count"] == 1
+    assert generation_path.exists()
+    assert root.joinpath("index.db").resolve() != generation_path.resolve()
+
+    second = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--operation-id",
+            operation_id,
+            "--raw-batch-size",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert second.exit_code == 0
+    assert json.loads(second.output)["status"] == "paused"
+
+    terminal = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--operation-id",
+            operation_id,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert terminal.exit_code == 0
+    terminal_payload = json.loads(terminal.output)
+    assert terminal_payload["status"] == "replayed"
+    assert terminal_payload["transaction"]["status"] == "promoted"
+    assert root.joinpath("index.db").resolve() == generation_path.resolve()
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+
+
 def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path) -> None:
     config = Config(
         archive_root=tmp_path,
@@ -1748,6 +1824,8 @@ def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path)
         "quarantined_raw_count": 0,
         "adoption_deferred_raw_count": 0,
         "authority_selection_expanded": True,
+        "scheduled_raw_count": 2,
+        "raw_batch_size": 7,
     }
 
 
