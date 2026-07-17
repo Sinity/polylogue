@@ -41,7 +41,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6284
+    loc: 6294
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -442,12 +442,12 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/transaction.py
-    loc: 313
+    loc: 317
     target: polylogue/archive/query/transaction.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 555
+    loc: 564
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1522,7 +1522,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 4728
+    loc: 4737
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
@@ -1774,6 +1774,10 @@ files:
   - path: polylogue/insights/authored_payloads.py
     loc: 163
     target: polylogue/insights/authored_payloads.py
+    owner: stable
+  - path: polylogue/insights/claude_workflow_evidence.py
+    loc: 157
+    target: polylogue/insights/claude_workflow_evidence.py
     owner: stable
   - path: polylogue/insights/cohorts.py
     loc: 245
@@ -2153,7 +2157,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1437
+    loc: 1410
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3593,7 +3597,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_authority.py
-    loc: 1709
+    loc: 1712
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
@@ -3826,7 +3830,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 12217
+    loc: 12255
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
