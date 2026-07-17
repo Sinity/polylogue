@@ -11,13 +11,13 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import closing
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, BinaryIO, Literal, TypedDict, cast
 
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
@@ -38,12 +38,12 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 from polylogue.archive.revision_authority import (
-    HistoricalRawRevision,
+    HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
-    classify_historical_full_revisions,
+    classify_historical_full_revision_streams,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -1799,21 +1799,27 @@ class ArchiveStore:
         source_conn = self._ensure_source_conn()
         full_rows = source_conn.execute(
             """
-            SELECT raw_id, lower(hex(blob_hash)) AS blob_hash
+            SELECT raw_id, lower(hex(blob_hash)) AS blob_hash, blob_size
             FROM raw_sessions
             WHERE logical_source_key = ? AND revision_kind = 'full'
             """,
             (logical_source_key,),
         ).fetchall()
-        historical: list[HistoricalRawRevision] = []
+        historical: list[HistoricalRawRevisionStream] = []
         for row in full_rows:
+
+            def open_payload(blob_hash: str = str(row[1])) -> BinaryIO:
+                assert self._blob_publisher is not None
+                return self._blob_publisher.open(blob_hash)
+
             historical.append(
-                HistoricalRawRevision(
+                HistoricalRawRevisionStream(
                     raw_id=str(row[0]),
-                    payload=self._blob_publisher.read_all(str(row[1])),
+                    payload_size=int(row[2]),
+                    open_payload=open_payload,
                 )
             )
-        decisions = classify_historical_full_revisions(historical)
+        decisions = classify_historical_full_revision_streams(historical)
         by_raw_id = {decision.raw_id: decision for decision in decisions}
         baseline_ids = [decision.raw_id for decision in decisions if decision.relation == "baseline"]
         baseline_raw_id = baseline_ids[0] if len(baseline_ids) == 1 else None
@@ -1970,11 +1976,11 @@ class ArchiveStore:
             or accepted_head.append_end_offset != frontier
         ):
             return None
-        _provider, full_payload, _path, _kind = self.raw_revision_material(full_candidate.raw_id)
-        if len(full_payload) != frontier:
+        _full_digest, full_size = self._raw_revision_payload_digest_and_size(full_candidate.raw_id)
+        if full_size != frontier:
             return None
 
-        tail_payloads: list[bytes] = []
+        tail_raw_ids: list[str] = []
         current = accepted_head
         baseline_raw_id = current.baseline_raw_id
         expected_end = frontier
@@ -1991,17 +1997,16 @@ class ArchiveStore:
             ):
                 return None
             visited.add(current.raw_id)
-            _provider, tail_payload, _path, _kind = self.raw_revision_material(current.raw_id)
+            tail_digest, tail_size = self._raw_revision_payload_digest_and_size(current.raw_id)
             assert current.append_end_offset is not None
             assert current.append_start_offset is not None
-            if len(tail_payload) != current.append_end_offset - current.append_start_offset:
+            if tail_size != current.append_end_offset - current.append_start_offset:
                 return None
             predecessor = candidates.get(current.predecessor_raw_id)
             if (
                 predecessor is None
                 or predecessor.source_revision != current.predecessor_source_revision
-                or current.source_revision
-                != append_source_revision(predecessor.source_revision, hashlib.sha256(tail_payload).hexdigest())
+                or current.source_revision != append_source_revision(predecessor.source_revision, tail_digest)
             ):
                 return None
             predecessor_end = (
@@ -2009,7 +2014,7 @@ class ArchiveStore:
             )
             if predecessor_end != current.append_start_offset:
                 return None
-            tail_payloads.append(tail_payload)
+            tail_raw_ids.append(current.raw_id)
             expected_end = current.append_start_offset
             current = predecessor
         if (
@@ -2019,10 +2024,10 @@ class ArchiveStore:
             or current.blob_size != expected_end
         ):
             return None
-        _provider, baseline_payload, _path, _kind = self.raw_revision_material(current.raw_id)
-        if (
-            len(baseline_payload) != current.blob_size
-            or baseline_payload + b"".join(reversed(tail_payloads)) != full_payload
+        _baseline_digest, baseline_size = self._raw_revision_payload_digest_and_size(current.raw_id)
+        if baseline_size != current.blob_size or not self._raw_revision_matches_segments(
+            full_candidate.raw_id,
+            [current.raw_id, *reversed(tail_raw_ids)],
         ):
             return None
         return FullSnapshotFoldAuthorization(
@@ -2036,15 +2041,15 @@ class ArchiveStore:
             full_source_revision=full_candidate.source_revision,
         )
 
-    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
-        """Read one retained revision with its parsing identity."""
+    def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+        """Return one retained revision's identity without materializing its blob."""
         if self._blob_publisher is None:
             raise RuntimeError("raw revision replay requires a writable blob publisher")
         row = (
             self._ensure_source_conn()
             .execute(
                 """
-            SELECT origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind
+            SELECT origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
             FROM raw_sessions WHERE raw_id = ?
             """,
                 (raw_id,),
@@ -2055,10 +2060,46 @@ class ArchiveStore:
             raise KeyError(raw_id)
         return (
             provider_from_origin(Origin.from_string(str(row[0])), family_hint=row[1]),
-            self._blob_publisher.read_all(str(row[2])),
+            str(row[2]),
             str(row[3]),
             RawRevisionKind(str(row[4])),
+            int(row[5]),
         )
+
+    @contextmanager
+    def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
+        """Open a retained revision for bounded streaming consumption."""
+        provider, blob_hash, source_path, kind, _blob_size = self.raw_revision_descriptor(raw_id)
+        assert self._blob_publisher is not None
+        with self._blob_publisher.open(blob_hash) as payload:
+            yield provider, payload, source_path, kind
+
+    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+        """Read one retained revision with its parsing identity.
+
+        Use ``open_raw_revision_material`` for potentially large blobs.
+        """
+        provider, blob_hash, source_path, kind, _blob_size = self.raw_revision_descriptor(raw_id)
+        assert self._blob_publisher is not None
+        return provider, self._blob_publisher.read_all(blob_hash), source_path, kind
+
+    def _raw_revision_payload_digest_and_size(self, raw_id: str) -> tuple[str, int]:
+        digest = hashlib.sha256()
+        size = 0
+        with self.open_raw_revision_material(raw_id) as (_provider, payload, _source_path, _kind):
+            while chunk := payload.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        return digest.hexdigest(), size
+
+    def _raw_revision_matches_segments(self, full_raw_id: str, segment_raw_ids: Sequence[str]) -> bool:
+        with self.open_raw_revision_material(full_raw_id) as (_provider, full, _source_path, _kind):
+            for raw_id in segment_raw_ids:
+                with self.open_raw_revision_material(raw_id) as (_provider, segment, _source_path, _kind):
+                    while chunk := segment.read(1024 * 1024):
+                        if full.read(len(chunk)) != chunk:
+                            return False
+            return full.read(1) == b""
 
     def unclassified_raw_revision_rows(self) -> tuple[tuple[str, int], ...]:
         """Return legacy rows that have no durable logical revision identity."""
@@ -2582,7 +2623,7 @@ class ArchiveStore:
         attachments_by_raw_id: dict[str, dict[int, tuple[bytes | None, int, str]]] = {}
         attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
         for raw_id in plan.accepted_raw_ids:
-            _provider, _payload, source_path, _kind = self.raw_revision_material(raw_id)
+            _provider, _blob_hash, source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
             acquired, refs = self._preacquire_attachment_blobs(
                 parsed_by_raw_id[raw_id],
                 source_path=source_path,
@@ -2699,7 +2740,7 @@ class ArchiveStore:
             }
         }
         for raw_id in terminal_raw_ids:
-            provider, _payload, _source_path, _kind = self.raw_revision_material(raw_id)
+            provider, _blob_hash, _source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
             self.mark_raw_parse_succeeded(raw_id, provider=provider)
         return session_id, plan.accepted_raw_ids
 
@@ -2728,7 +2769,7 @@ class ArchiveStore:
         if classification.accepted_raw_ids:
             accepted_raw_id = classification.accepted_raw_ids[-1]
             accepted_session = parsed_by_raw_id[accepted_raw_id]
-            _provider, _payload, source_path, _kind = self.raw_revision_material(accepted_raw_id)
+            _provider, _blob_hash, source_path, _kind, _blob_size = self.raw_revision_descriptor(accepted_raw_id)
             attachments, refs = self._preacquire_attachment_blobs(
                 accepted_session,
                 source_path=source_path,
@@ -2873,7 +2914,7 @@ class ArchiveStore:
                 (raw_id,),
             ).fetchone()
             if complete is not None and bool(complete[0]):
-                provider, _payload, _source_path, _kind = self.raw_revision_material(raw_id)
+                provider, _blob_hash, _source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
                 self.mark_raw_parse_succeeded(raw_id, provider=provider)
             else:
                 with conn:

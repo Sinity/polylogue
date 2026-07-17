@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 import pytest
 
 from polylogue.archive.revision_authority import (
     HistoricalRawRevision,
+    HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
+    classify_historical_full_revision_streams,
     classify_historical_full_revisions,
 )
 from polylogue.core.enums import Origin, Provider
@@ -50,6 +54,36 @@ def test_historical_full_classifier_proves_unique_prefix_chain_independent_of_or
     )
 
 
+def test_streamed_historical_full_classifier_matches_byte_proof_without_eager_payloads() -> None:
+    payloads = {
+        "oldest": b"one\n",
+        "middle": b"one\ntwo\n",
+        "newest": b"one\ntwo\nthree\n",
+    }
+    opened: list[str] = []
+
+    def opener(raw_id: str) -> Callable[[], BinaryIO]:
+        def open_payload() -> BinaryIO:
+            opened.append(raw_id)
+            from io import BytesIO
+
+            return BytesIO(payloads[raw_id])
+
+        return open_payload
+
+    streamed = classify_historical_full_revision_streams(
+        [HistoricalRawRevisionStream(raw_id, len(payload), opener(raw_id)) for raw_id, payload in payloads.items()]
+    )
+    eager = classify_historical_full_revisions(
+        [HistoricalRawRevision(raw_id, payload) for raw_id, payload in payloads.items()]
+    )
+
+    assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
+        (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
+    }
+    assert len(opened) == 7  # three size passes plus two adjacent prefix comparisons
+
+
 @pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])
 def test_historical_classifier_quarantines_unprovable_authority(payloads: list[bytes]) -> None:
     decisions = classify_historical_full_revisions(
@@ -57,6 +91,27 @@ def test_historical_classifier_quarantines_unprovable_authority(payloads: list[b
     )
     assert decisions
     assert {decision.authority for decision in decisions} == {RawRevisionAuthority.QUARANTINED}
+
+
+@pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])
+def test_streamed_historical_classifier_matches_eager_ambiguous_authority(payloads: list[bytes]) -> None:
+    def stream_revision(index: int, payload: bytes) -> HistoricalRawRevisionStream:
+        return HistoricalRawRevisionStream(
+            raw_id=f"raw-{index}",
+            payload_size=len(payload),
+            open_payload=lambda: BytesIO(payload),
+        )
+
+    eager = classify_historical_full_revisions(
+        [HistoricalRawRevision(f"raw-{index}", payload) for index, payload in enumerate(payloads)]
+    )
+    streamed = classify_historical_full_revision_streams(
+        [stream_revision(index, payload) for index, payload in enumerate(payloads)]
+    )
+
+    assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
+        (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
+    }
 
 
 def test_append_envelope_requires_predecessor_revision_and_exact_forward_offsets() -> None:

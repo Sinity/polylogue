@@ -5685,8 +5685,6 @@ def repair_raw_materialization(
     oversized_stream_safe_raw_ids = [
         raw_id for raw_id in oversized_candidate_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
     ]
-    # The retained-raw reader materializes bytes before stream parsing, so
-    # stream-capable format is diagnostic only until that reader is replaced.
     oversized_raw_ids = oversized_candidate_raw_ids
     if oversized_raw_ids:
         metrics["raw_materialization_oversized_count"] = float(len(oversized_raw_ids))

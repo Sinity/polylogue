@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
+from typing import BinaryIO
 
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
@@ -420,8 +421,24 @@ def backfill_historical_revision_evidence(
 
 
 def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
-    provider, payload, source_path, kind = archive.raw_revision_material(raw_id)
-    return _parse_one(provider, payload, source_path), len(payload), kind
+    provider, _blob_hash, source_path, kind, payload_size = archive.raw_revision_descriptor(raw_id)
+    return parse_retained_raw_sessions(archive, raw_id), payload_size, kind
+
+
+def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
+    """Parse retained raw evidence without eagerly loading stream records.
+
+    Raw-revision replay is shared by historical repair and the live full and
+    append routes.  Keeping the provider-shape decision here prevents a
+    seemingly harmless live replay helper from reintroducing ``read_all()``
+    for Codex/Claude JSONL evidence.
+    """
+    provider, _blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    if is_stream_record_provider(source_path, str(provider)):
+        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
+            return _parse_stream(stream_provider, payload, stream_path)
+    _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
+    return _parse_one(provider, eager_payload, source_path)
 
 
 class _ParsedSessionSpill:
@@ -505,10 +522,22 @@ def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[Par
     )
 
 
+def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:
+    source_name = Path(source_path).name
+    fallback_id = Path(source_path).stem
+    return parse_stream_payload(
+        provider,
+        _iter_json_stream(payload, source_name),
+        fallback_id,
+        source_path=source_path,
+    )
+
+
 __all__ = [
     "RawRevisionReplayResourceBlockedError",
     "RevisionBackfillResult",
     "RevisionCensusResult",
     "backfill_historical_revision_evidence",
     "census_historical_revision_evidence",
+    "parse_retained_raw_sessions",
 ]

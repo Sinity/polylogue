@@ -111,6 +111,7 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.parsers import hermes_state
+from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
@@ -1945,22 +1946,7 @@ class LiveBatchProcessor:
 
     @staticmethod
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:
-        provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
-        source_name = Path(source_path).name
-        fallback_id = Path(source_path).stem
-        if is_stream_record_provider(source_path, str(provider)):
-            return parse_stream_payload(
-                provider,
-                _iter_json_stream(BytesIO(payload), source_name),
-                fallback_id,
-                source_path=source_path,
-            )
-        return parse_payload(
-            provider,
-            list(_iter_json_stream(BytesIO(payload), source_name)),
-            fallback_id,
-            source_path=source_path,
-        )
+        return parse_retained_raw_sessions(archive, raw_id)
 
     def _extract_zip_member_records(
         self,

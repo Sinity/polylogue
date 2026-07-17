@@ -141,6 +141,66 @@ def _seed_live_append_plan(
     return path, plan, _append_owner(archive_root)
 
 
+def test_live_append_replay_streams_retained_jsonl_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Append replay must not resurrect eager blob materialization."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="streamed-append")
+    monkeypatch.setattr(
+        ArchiveBlobPublisher,
+        "read_all",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("append replay eagerly read raw blob")),
+    )
+
+    result = ingest_append_plans(cast(Any, owner), [plan])
+
+    assert result.succeeded == [plan]
+    assert result.failed == []
+
+
+def test_live_full_replay_streams_retained_jsonl_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full replay must stream its older retained JSONL snapshot."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "streamed-full.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"streamed-full"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    assert processor._ingest_full_paths_sync([path], source_name="codex").succeeded == [path]
+    with path.open("ab") as handle:
+        handle.write(
+            b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+            b'"role":"assistant","content":[{"type":"output_text","text":"one"}]}}\n'
+        )
+    monkeypatch.setattr(
+        ArchiveBlobPublisher,
+        "read_all",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full replay eagerly read raw blob")),
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="codex")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+
+
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
