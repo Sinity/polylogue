@@ -45,6 +45,7 @@ class RawAuthorityScalePass:
     number: int
     mode: str
     candidate_count: int
+    executable_candidate_count: int
     repaired_count: int
     executable_component_count: int
     fixed_point: bool
@@ -492,6 +493,7 @@ def _record_repair_pass(
     mode: str,
     config: Config,
     pass_limit: int,
+    max_payload_bytes: int,
 ) -> tuple[RawAuthorityScalePass, str]:
     """Run one real repair/census pass and reject incomplete evidence."""
     before = _process_sample()
@@ -499,12 +501,14 @@ def _record_repair_pass(
     result = repair.repair_raw_materialization(
         config,
         raw_artifact_limit=pass_limit,
+        max_payload_bytes=max_payload_bytes,
         dry_run=mode == "dry_run",
     )
     wall_ms = int((time.perf_counter() - started) * 1000)
     after = _process_sample()
     metrics = result.metrics
     candidate_value = metrics.get("raw_materialization_candidate_count")
+    executable_candidate_value = metrics.get("raw_materialization_executable_candidate_count", candidate_value)
     if (
         not isinstance(candidate_value, int | float)
         or isinstance(candidate_value, bool)
@@ -514,6 +518,14 @@ def _record_repair_pass(
         raise RuntimeError(
             "raw-authority scale proof requires a non-negative integral raw-materialization candidate count"
         )
+    if (
+        not isinstance(executable_candidate_value, int | float)
+        or isinstance(executable_candidate_value, bool)
+        or not float(executable_candidate_value).is_integer()
+        or executable_candidate_value < 0
+        or executable_candidate_value > candidate_value
+    ):
+        raise RuntimeError("raw-authority scale proof requires a bounded integral executable-candidate count")
     if result.census_receipt is None:
         raise RuntimeError("raw-authority scale proof requires a census receipt for every replay pass")
     receipt = result.census_receipt
@@ -525,6 +537,7 @@ def _record_repair_pass(
             number=number,
             mode=receipt.mode,
             candidate_count=int(candidate_value),
+            executable_candidate_count=int(executable_candidate_value),
             repaired_count=result.repaired_count,
             executable_component_count=int(metrics.get("raw_materialization_selected_executable_component_count", 0)),
             fixed_point=receipt.fixed_point,
@@ -557,12 +570,15 @@ def run_raw_authority_scale_proof(
     pass_limit: int = 4,
     keep: bool = False,
     prepare_only: bool = False,
+    max_payload_bytes: int = repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
     max_io_full_avg10: float | None = 2.0,
     max_memory_full_avg10: float | None = 2.0,
 ) -> dict[str, object]:
     """Exercise real authority census/replay and emit a stable receipt payload."""
     if pass_limit < 1:
         raise ValueError("pass_limit must be positive")
+    if max_payload_bytes < 1:
+        raise ValueError("max_payload_bytes must be positive")
     if scenario is None:
         if components < 1 or raws < components:
             raise ValueError("require components >= 1 and raws >= components")
@@ -782,9 +798,10 @@ def run_raw_authority_scale_proof(
             mode="apply",
             config=config,
             pass_limit=pass_limit,
+            max_payload_bytes=max_payload_bytes,
         )
         pass_receipts.append(pass_receipt)
-        if pass_receipt.candidate_count == 0:
+        if pass_receipt.executable_candidate_count == 0:
             break
     else:
         raise RuntimeError("raw-authority scale proof did not drain bounded apply passes")
@@ -795,8 +812,9 @@ def run_raw_authority_scale_proof(
             mode="dry_run",
             config=config,
             pass_limit=pass_limit,
+            max_payload_bytes=max_payload_bytes,
         )
-        if pass_receipt.candidate_count != 0:
+        if pass_receipt.executable_candidate_count != 0:
             raise RuntimeError("raw-authority scale proof lost quiescence during fixed-point confirmation")
         pass_receipts.append(pass_receipt)
         fixed_point_digests.append(digest)
@@ -849,6 +867,7 @@ def run_raw_authority_scale_proof(
             f"requested_direct_candidates={scenario.direct_candidates}",
             f"requested_expanded_candidates={scenario.expanded_candidates}",
             f"requested_payload_bytes={scenario.total_payload_bytes}",
+            f"resource_envelope_bytes={max_payload_bytes}",
             "repair_raw_materialization combines census and replay; its measured resource totals are recorded once on replay.",
             "This receipt is a generated projection; only an explicit July-15-sized invocation is production-shaped evidence.",
         ),
@@ -881,6 +900,12 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         help="Read an aggregate scale profile produced by --capture-profile and generate that synthetic shape.",
     )
     parser.add_argument("--pass-limit", type=int, default=4)
+    parser.add_argument(
+        "--max-payload-bytes",
+        type=int,
+        default=repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+        help="Bound each authority component replay; deferred components remain typed residual debt.",
+    )
     parser.add_argument("--keep", action="store_true")
     parser.add_argument(
         "--prepare-only",
@@ -917,6 +942,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         pass_limit=args.pass_limit,
         keep=args.keep,
         prepare_only=args.prepare_only,
+        max_payload_bytes=args.max_payload_bytes,
         max_io_full_avg10=pressure_limit,
         max_memory_full_avg10=memory_limit,
     )

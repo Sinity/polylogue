@@ -61,6 +61,7 @@ from polylogue.storage.raw_authority import (
     RawReplayPlanStatus,
     build_raw_replay_plans,
     finalize_raw_authority_census,
+    latest_raw_authority_census_receipt,
     raw_replay_application_receipt,
     raw_replay_plan_deferred_for_envelope,
     raw_replay_plan_last_attempts,
@@ -5702,6 +5703,13 @@ def repair_raw_materialization(
             }
         )
         if census_resource_blocked_raw_ids:
+            resource_blocked_candidate_raw_ids = set(candidates.raw_ids).intersection(census_resource_blocked_raw_ids)
+            metrics["raw_materialization_executable_candidate_count"] = float(
+                len(set(candidates.raw_ids) - resource_blocked_candidate_raw_ids)
+            )
+            metrics["raw_materialization_resource_blocked_candidate_count"] = float(
+                len(resource_blocked_candidate_raw_ids)
+            )
             metrics["raw_materialization_resource_blocked_count"] = float(len(census_resource_blocked_raw_ids))
             metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
             oversized = {
@@ -5744,6 +5752,7 @@ def repair_raw_materialization(
         > max_payload_bytes
     ]
     all_blocked_component_raw_ids = {raw_id for component in all_blocked_components for raw_id in component}
+    resource_blocked_candidate_raw_ids = set(candidate_raw_ids).intersection(all_blocked_component_raw_ids)
     selected_components = (
         ordered_components[:raw_artifact_limit] if raw_artifact_limit is not None else ordered_components
     )
@@ -5795,6 +5804,10 @@ def repair_raw_materialization(
     metrics["raw_materialization_selected_executable_component_count"] = float(len(executable_components))
     metrics["raw_materialization_selected_blocked_component_count"] = float(len(blocked_components))
     if all_blocked_component_raw_ids:
+        metrics["raw_materialization_executable_candidate_count"] = float(
+            len(set(candidate_raw_ids) - resource_blocked_candidate_raw_ids)
+        )
+        metrics["raw_materialization_resource_blocked_candidate_count"] = float(len(resource_blocked_candidate_raw_ids))
         metrics["raw_materialization_resource_blocked_count"] = float(len(all_blocked_component_raw_ids))
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
     diagnostic_component_raw_ids = selected_component_raw_ids | all_blocked_component_raw_ids
@@ -5818,7 +5831,17 @@ def repair_raw_materialization(
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if deferred_plan_ids:
         metrics["raw_materialization_deferred_plan_count"] = float(len(deferred_plan_ids))
-    if not selected_components and deferred_plan_ids:
+    scope = _raw_authority_scope(
+        raw_artifact_id=raw_artifact_id,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+        raw_artifact_limit=raw_artifact_limit,
+    )
+    if not dry_run and not selected_components and deferred_plan_ids:
+        retained_census_receipt = latest_raw_authority_census_receipt(archive_root, scope=scope)
+        if retained_census_receipt is None:
+            raise RuntimeError("resource-deferred raw replay lacks a completed durable census receipt")
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
@@ -5829,6 +5852,7 @@ def repair_raw_materialization(
                 f"the {_format_bytes(max_payload_bytes)} envelope"
             ),
             metrics=metrics,
+            census_receipt=retained_census_receipt,
         )
     selected_plan_ids = {plan_by_component[component].plan_id for component in selected_components}
     executable_plan_ids = {
@@ -5849,13 +5873,7 @@ def repair_raw_materialization(
         executable_plan_ids=executable_plan_ids,
         mode="dry_run" if dry_run else "apply",
         quiescent=True,
-        scope=_raw_authority_scope(
-            raw_artifact_id=raw_artifact_id,
-            provider=provider,
-            source_family=source_family,
-            source_root=source_root,
-            raw_artifact_limit=raw_artifact_limit,
-        ),
+        scope=scope,
         residual=residual,
     )
     metrics["raw_materialization_census_sequence"] = float(census_receipt.sequence_no)

@@ -292,6 +292,36 @@ def test_raw_authority_scale_proof_converges_with_explicit_deferred_cohort(tmp_p
     assert digests[0] == digests[1]
 
 
+def test_raw_authority_scale_proof_reaches_fixed_point_with_resource_deferred_residual(tmp_path: Path) -> None:
+    """A bounded envelope may leave durable debt without preventing quiescence."""
+    scenario = RawAuthorityScaleScenario(
+        components=2,
+        direct_candidates=3,
+        expanded_candidates=4,
+        total_payload_bytes=10_000,
+        component_cohorts=((1, 1, 1), (3, 2, 1)),
+        component_byte_cohorts=((1, 1, 2_048, 1), (3, 2, 8_192, 1)),
+    )
+
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        pass_limit=2,
+        keep=True,
+        max_payload_bytes=4_096,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    passes = cast(list[dict[str, object]], payload["passes"])
+    assert passes[-1]["candidate_count"] == 2
+    assert passes[-1]["executable_candidate_count"] == 0
+    assert any(item["executable_candidate_count"] == 1 for item in passes)
+    assert all(item["executable_candidate_count"] == 0 for item in passes[-3:])
+    digests = cast(list[str], payload["fixed_point_digests"])
+    assert digests[0] == digests[1]
+
+
 def test_raw_authority_scale_proof_preserves_private_free_joint_byte_cohorts(tmp_path: Path) -> None:
     expected = [
         {
