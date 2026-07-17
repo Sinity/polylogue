@@ -49,6 +49,35 @@
    "attempt_id": "a01",
    "package_revision": "r01",
    "state": "blocked"
+  },
+  {
+   "job": "testdiet-04",
+   "workload": "testdiet",
+   "revision": "r02",
+   "zip": "testdiet-04/r02/raw.zip",
+   "sha256": "225ad872667e579b0d0b0975ff0f463f9e54acd5a07d29825084a93eae79b2b3",
+   "bytes": 6294,
+   "checked_at": "2026-07-17T14:01:00+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "status": "evidence_only_no_candidate",
+   "members": [
+    "derived_freshness_solution/README.md",
+    "derived_freshness_solution/candidate-index.json",
+    "derived_freshness_solution/changed-paths.txt",
+    "derived_freshness_solution/input-identities.json",
+    "derived_freshness_solution/manifest.json",
+    "derived_freshness_solution/requirements/04-derived-freshness.md",
+    "derived_freshness_solution/selection.json",
+    "derived_freshness_solution/solution.patch",
+    "derived_freshness_solution/validation/archive-verification.json"
+   ],
+   "patch_lines": 0,
+   "problems": [
+    "solution.patch is zero bytes",
+    "selected_candidate is null",
+    "changed_paths is empty"
+   ],
+   "integration": "ZIP CRC and manifest checked. Retained as delivery/freshness evidence only; it authorizes no implementation or Bead closure."
   }
  ]
 }
