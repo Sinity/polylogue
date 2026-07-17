@@ -323,7 +323,10 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                     # diagnostic operation, not a bounded health projection.
                     # Running it in the periodic snapshot can strand a
                     # default-executor worker through process shutdown.
-                    payload = daemon_status_payload(include_raw_replay_backlog=False)
+                    payload = daemon_status_payload(
+                        include_raw_replay_backlog=False,
+                        include_exact_raw_materialization_readiness=False,
+                    )
                 else:
                     payload = _minimal_status_payload()
         except Exception as exc:
