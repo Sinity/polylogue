@@ -1,1 +1,71 @@
-{"schema_version":1,"campaign_id":"gpt-pro-wave-2026-07-16","workload_id":"beads","attempts":[]}
+{
+ "schema_version": 1,
+ "campaign_id": "gpt-pro-wave-2026-07-16",
+ "workload_id": "beads",
+ "attempts": [
+  {
+   "job": "beads-01",
+   "workload": "beads",
+   "zip": "polylogue-config-closure.zip",
+   "sha256": "dcef7122d477232585c6169d5306d5dc30ce9924ab86dda92915c95c2c4dcd26",
+   "bytes": 35210095,
+   "checked_at": "2026-07-17T10:55:00+00:00",
+   "status": "rejected_incomplete",
+   "problems": ["zero-byte patch", "copied 162 MB repository snapshot", "remote verification lacks project dependencies"],
+   "integration": "raw package retained; no implementation is authorized from it"
+  },
+  {
+   "job": "beads-02",
+   "workload": "beads",
+   "artifact": "PATCH.diff",
+   "sha256": "59d40d9e39f4cd97b35ef7c3e47f9efa9a0153c4766e091a7609091ba4397592",
+   "bytes": 781283,
+   "checked_at": "2026-07-17T10:56:00+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "status": "recovered_incomplete_package",
+   "patch_applies": true,
+   "problems": ["missing required HANDOFF.md", "missing required TESTS.md", "missing required EVIDENCE.md", "no provider result ZIP or verified conversation export"],
+   "integration": "MCP algebra foundation candidate; must be reconciled with beads-03/04 on current master"
+  },
+  {
+   "job": "beads-03",
+   "workload": "beads",
+   "zip": "beads-03-mcp-read-migration-r01.zip",
+   "sha256": "195e7f898c298c29a39006247e2836e981b51549ce92ba46a43db938c4365830",
+   "bytes": 76818,
+   "checked_at": "2026-07-17T10:55:16+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "problems": [],
+   "status": "triaged",
+   "members": [
+    "EVIDENCE.md",
+    "HANDOFF.md",
+    "PATCH.diff",
+    "TESTS.md"
+   ],
+   "patch_lines": 20870,
+   "patch_applies": true,
+   "apply_detail": "patch applies cleanly"
+  },
+  {
+   "job": "beads-04",
+   "workload": "beads",
+   "zip": "beads-04-mcp-context-migration-r01.zip",
+   "sha256": "fe1c8a99a89372da83db8068ec97fa2bec671302248696bd99e6d907de13d8a9",
+   "bytes": 40602,
+   "checked_at": "2026-07-17T10:55:25+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "problems": [],
+   "status": "triaged",
+   "members": [
+    "EVIDENCE.md",
+    "HANDOFF.md",
+    "PATCH.diff",
+    "TESTS.md"
+   ],
+   "patch_lines": 4143,
+   "patch_applies": true,
+   "apply_detail": "patch applies cleanly"
+  }
+ ]
+}
