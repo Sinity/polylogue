@@ -747,6 +747,12 @@ def test_resource_sampler_accounts_memory_swap_and_io_deltas(
     monkeypatch.setattr("devtools.verify_runs._process_io_bytes", lambda _pid: dict(state["io"]))
     monkeypatch.setattr("devtools.verify_runs._process_identity", lambda _pid: "101:1")
     monkeypatch.setattr("devtools.verify_runs._cpu_seconds", lambda _pid: 1.0)
+    monkeypatch.setattr("devtools.verify_runs._cgroup_path", lambda _pid: "/test.scope")
+    monkeypatch.setattr(
+        "devtools.verify_runs._cgroup_int",
+        lambda _path, name: {"memory.current": 100, "memory.peak": 120, "memory.swap.current": 8}[name],
+    )
+    monkeypatch.setattr("devtools.verify_runs._cgroup_io_bytes", lambda _path: {"rbytes": 300, "wbytes": 400})
     sampler = ResourceSampler(
         root_pid=101,
         run_id="resource-deltas",
@@ -768,6 +774,9 @@ def test_resource_sampler_accounts_memory_swap_and_io_deltas(
     assert summary["tree_read_bytes_delta"] == 60
     assert summary["tree_write_bytes_delta"] == 60
     assert summary["tree_cancelled_write_bytes_delta"] == 10
+    assert summary["cgroup_path"] == "/test.scope"
+    assert summary["peak_cgroup_memory_bytes"] == 120
+    assert summary["final_cgroup_memory_swap_current_bytes"] == 8
 
 
 def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
