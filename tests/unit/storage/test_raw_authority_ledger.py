@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -15,7 +17,7 @@ from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import raw_authority as raw_authority_mod
 from polylogue.storage import repair as repair_mod
-from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_authority import (
     RawReplayPlan,
     RawReplayPlanOutcome,
@@ -250,6 +252,7 @@ def test_stale_plan_persists_blocker_before_automatic_replay_refuses_work(tmp_pa
     refused = repair_raw_materialization(_config(tmp_path))
     assert refused.success is False
     assert refused.metrics["raw_materialization_unresolved_blocker_count"] == 1.0
+    assert raw_materialization_ready(raw_materialization_readiness_snapshot(tmp_path)) is False
 
 
 def test_interrupted_census_has_no_partial_plan_visibility_and_retries_once(tmp_path: Path) -> None:
@@ -790,6 +793,46 @@ def test_frontier_preview_cannot_claim_one_plan_twice(tmp_path: Path) -> None:
         record_raw_authority_census(
             tmp_path, (plan,), selected_plan_ids={plan.plan_id}, mode="apply", quiescent=True, scope=scope, residual={}
         )
+
+
+def test_concurrent_frontier_claims_serialize_before_apply_census(tmp_path: Path) -> None:
+    """One preview plan has one durable apply census, even under concurrent callers."""
+    initialize_active_archive_root(tmp_path)
+    plan = RawReplayPlan(
+        plan_id="raw-authority-frontier:" + "c" * 64,
+        input_digest="d" * 64,
+        input_raw_ids=("raw-concurrent",),
+        logical_keys=("codex:concurrent",),
+        authority_witness={"schema": "polylogue.raw-authority-frontier-plan.v1"},
+        source_preconditions={},
+        index_preconditions={},
+    )
+    scope = {"schema": "polylogue.raw-authority-frontier-scope.v1", "preview_census_id": "preview:concurrent"}
+    barrier = threading.Barrier(2)
+
+    def claim() -> str:
+        barrier.wait()
+        try:
+            record_raw_authority_census(
+                tmp_path,
+                (plan,),
+                selected_plan_ids={plan.plan_id},
+                mode="apply",
+                quiescent=True,
+                scope=scope,
+                residual={},
+            )
+        except RuntimeError as exc:
+            assert "already claimed" in str(exc)
+            return "rejected"
+        return "claimed"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(lambda _index: claim(), range(2)))
+
+    assert sorted(outcomes) == ["claimed", "rejected"]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses WHERE mode = 'apply'").fetchone() == (1,)
 
 
 def test_fixed_point_compares_residual_identity_and_parser_fingerprint(tmp_path: Path) -> None:
