@@ -177,3 +177,30 @@ def test_raw_authority_scale_proof_generates_exact_scenario_bytes_and_expansion(
     assert achieved["authority_component_count"] == 2
     assert achieved["expanded_total_blob_bytes"] == 8192
     assert payload["prepared_only"] is True
+
+
+def test_raw_authority_scale_proof_keeps_prefix_chain_across_blob_flushes(tmp_path: Path) -> None:
+    """A component larger than the publisher batch must continue from its blob."""
+    scenario = RawAuthorityScaleScenario(
+        components=1,
+        direct_candidates=129,
+        expanded_candidates=129,
+        total_payload_bytes=2_200_000,
+    )
+
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        pass_limit=2,
+        keep=True,
+        prepare_only=True,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    root = Path(cast(str, payload["archive_root"]))
+    with sqlite3.connect(root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (129,)
+    achieved = cast(dict[str, object], payload["achieved_shape"])
+    assert achieved["authority_component_count"] == 1
+    assert achieved["expanded_candidate_count"] == 129

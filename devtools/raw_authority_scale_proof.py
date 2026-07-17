@@ -648,8 +648,13 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         import sys
 
         out = sys.stdout
-    receipt = cast(dict[str, object], payload["receipt"])
-    print(json.dumps(payload, indent=2, sort_keys=True) if args.json else receipt["receipt_id"], file=out)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    elif args.prepare_only:
+        print(payload["archive_root"], file=out)
+    else:
+        receipt = cast(dict[str, object], payload["receipt"])
+        print(receipt["receipt_id"], file=out)
     return 0
 
 
