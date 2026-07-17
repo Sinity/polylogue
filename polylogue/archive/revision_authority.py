@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
-from typing import Literal
+from typing import BinaryIO, Literal
 
 
 class RawRevisionKind(StrEnum):
@@ -64,6 +65,15 @@ class RawRevisionEnvelope:
 class HistoricalRawRevision:
     raw_id: str
     payload: bytes
+
+
+@dataclass(frozen=True)
+class HistoricalRawRevisionStream:
+    """A retained full revision whose bytes can be compared without loading it."""
+
+    raw_id: str
+    payload_size: int
+    open_payload: Callable[[], BinaryIO]
 
 
 @dataclass(frozen=True)
@@ -147,12 +157,105 @@ def classify_historical_full_revisions(
     return decisions
 
 
+def _stream_size(revision: HistoricalRawRevisionStream) -> int:
+    size = 0
+    with revision.open_payload() as handle:
+        while chunk := handle.read(1024 * 1024):
+            size += len(chunk)
+    return size
+
+
+def _stream_is_prefix(
+    parent: HistoricalRawRevisionStream,
+    child: HistoricalRawRevisionStream,
+    *,
+    parent_size: int,
+    child_size: int,
+) -> bool:
+    """Return whether *parent* is an exact proper byte prefix of *child*."""
+    if parent_size >= child_size:
+        return False
+    remaining = parent_size
+    with parent.open_payload() as parent_handle, child.open_payload() as child_handle:
+        while remaining:
+            chunk = parent_handle.read(min(1024 * 1024, remaining))
+            if not chunk or child_handle.read(len(chunk)) != chunk:
+                return False
+            remaining -= len(chunk)
+        return parent_handle.read(1) == b""
+
+
+def classify_historical_full_revision_streams(
+    revisions: list[HistoricalRawRevisionStream],
+) -> list[HistoricalRevisionDecision]:
+    """Stream the same unique-prefix proof as the eager byte classifier."""
+    if not revisions:
+        return []
+    parents: dict[str, list[str]] = {}
+    children: dict[str, list[str]] = {revision.raw_id: [] for revision in revisions}
+    actual_sizes = {revision.raw_id: _stream_size(revision) for revision in revisions}
+    prefix_pairs = {
+        (parent.raw_id, child.raw_id)
+        for child in revisions
+        for parent in revisions
+        if parent.raw_id != child.raw_id
+        and _stream_is_prefix(
+            parent,
+            child,
+            parent_size=actual_sizes[parent.raw_id],
+            child_size=actual_sizes[child.raw_id],
+        )
+    }
+    for child in revisions:
+        candidates = [parent.raw_id for parent in revisions if (parent.raw_id, child.raw_id) in prefix_pairs]
+        maximal = [
+            candidate
+            for candidate in candidates
+            if not any(candidate != other and (candidate, other) in prefix_pairs for other in candidates)
+        ]
+        parents[child.raw_id] = maximal
+        for parent in maximal:
+            children[parent].append(child.raw_id)
+    roots = [raw_id for raw_id, parent_ids in parents.items() if not parent_ids]
+    leaves = [raw_id for raw_id, child_ids in children.items() if not child_ids]
+    unique_chain = (
+        len(roots) == 1
+        and len(leaves) == 1
+        and all(len(parent_ids) <= 1 for parent_ids in parents.values())
+        and all(len(child_ids) <= 1 for child_ids in children.values())
+    )
+    if not unique_chain:
+        return [
+            HistoricalRevisionDecision(
+                raw_id=revision.raw_id, authority=RawRevisionAuthority.QUARANTINED, relation="ambiguous"
+            )
+            for revision in revisions
+        ]
+    decisions: list[HistoricalRevisionDecision] = []
+    current: str | None = roots[0]
+    while current is not None:
+        predecessor = parents[current][0] if parents[current] else None
+        relation: Literal["baseline", "predecessor"] = "baseline" if predecessor is None else "predecessor"
+        decisions.append(
+            HistoricalRevisionDecision(
+                raw_id=current,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+                relation=relation,
+                predecessor_raw_id=predecessor,
+            )
+        )
+        current = children[current][0] if children[current] else None
+    return decisions
+
+
 __all__ = [
     "HistoricalRawRevision",
+    "HistoricalRawRevisionStream",
     "HistoricalRevisionDecision",
     "RawRevisionAuthority",
     "RawRevisionEnvelope",
     "RawRevisionKind",
     "append_source_revision",
     "classify_historical_full_revisions",
+    "classify_historical_full_revision_streams",
 ]

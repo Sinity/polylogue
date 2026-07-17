@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
+from typing import BinaryIO
 
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
@@ -182,7 +183,8 @@ def _census_historical_revision_evidence(
                 payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
                 total_payload_bytes = sum(payload_sizes.values())
                 oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-                if oversized or total_payload_bytes > max_payload_bytes:
+                stream_safe = all(_retained_raw_is_stream_safe(archive, raw_id) for raw_id in payload_sizes)
+                if (oversized or total_payload_bytes > max_payload_bytes) and not stream_safe:
                     blocked_ids = oversized or list(payload_sizes)
                     raise RawRevisionReplayResourceBlockedError(
                         sorted(blocked_ids), max_payload_bytes, total_payload_bytes
@@ -420,8 +422,12 @@ def backfill_historical_revision_evidence(
 
 
 def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
-    provider, payload, source_path, kind = archive.raw_revision_material(raw_id)
-    return _parse_one(provider, payload, source_path), len(payload), kind
+    provider, _blob_hash, source_path, kind, payload_size = archive.raw_revision_descriptor(raw_id)
+    if is_stream_record_provider(source_path, str(provider)):
+        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, stream_kind):
+            return _parse_stream(stream_provider, payload, stream_path), payload_size, stream_kind
+    _provider, eager_payload, _source_path, _kind = archive.raw_revision_material(raw_id)
+    return _parse_one(provider, eager_payload, source_path), len(eager_payload), kind
 
 
 class _ParsedSessionSpill:
@@ -503,6 +509,22 @@ def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[Par
         fallback_id,
         source_path=source_path,
     )
+
+
+def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:
+    source_name = Path(source_path).name
+    fallback_id = Path(source_path).stem
+    return parse_stream_payload(
+        provider,
+        _iter_json_stream(payload, source_name),
+        fallback_id,
+        source_path=source_path,
+    )
+
+
+def _retained_raw_is_stream_safe(archive: ArchiveStore, raw_id: str) -> bool:
+    provider, _blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    return is_stream_record_provider(source_path, str(provider))
 
 
 __all__ = [

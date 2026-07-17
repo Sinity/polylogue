@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 import pytest
 
 from polylogue.archive.revision_authority import (
     HistoricalRawRevision,
+    HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
+    classify_historical_full_revision_streams,
     classify_historical_full_revisions,
 )
 from polylogue.core.enums import Origin, Provider
@@ -48,6 +51,36 @@ def test_historical_full_classifier_proves_unique_prefix_chain_independent_of_or
             ("newest", "middle", RawRevisionAuthority.BYTE_PROVEN),
         }
     )
+
+
+def test_streamed_historical_full_classifier_matches_byte_proof_without_eager_payloads() -> None:
+    payloads = {
+        "oldest": b"one\n",
+        "middle": b"one\ntwo\n",
+        "newest": b"one\ntwo\nthree\n",
+    }
+    opened: list[str] = []
+
+    def opener(raw_id: str) -> Callable[[], BinaryIO]:
+        def open_payload() -> BinaryIO:
+            opened.append(raw_id)
+            from io import BytesIO
+
+            return BytesIO(payloads[raw_id])
+
+        return open_payload
+
+    streamed = classify_historical_full_revision_streams(
+        [HistoricalRawRevisionStream(raw_id, len(payload), opener(raw_id)) for raw_id, payload in payloads.items()]
+    )
+    eager = classify_historical_full_revisions(
+        [HistoricalRawRevision(raw_id, payload) for raw_id, payload in payloads.items()]
+    )
+
+    assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
+        (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
+    }
+    assert opened
 
 
 @pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])

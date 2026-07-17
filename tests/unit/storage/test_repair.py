@@ -13,6 +13,7 @@ from polylogue.config import Config
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import repair as repair_mod
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
@@ -1677,48 +1678,18 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
         conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (oversized, raw_id))
         conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
-    config = _config(tmp_path)
-    calls: dict[str, object] = {}
-
-    class FakeBackend:
-        def __init__(self, *, db_path: Path) -> None:
-            calls["db_path"] = db_path
-
-    class FakeRepository:
-        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
-            calls["archive_root"] = archive_root
-
-        async def close(self) -> None:
-            calls["closed"] = True
-
-    class FakeParseResult:
-        processed_ids = {"session-1"}
-        parse_failures = 0
-
-    class FakeParsingService:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        async def parse_from_raw(self, **kwargs: object) -> FakeParseResult:
-            calls["parse_kwargs"] = kwargs
-            return FakeParseResult()
-
-    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
-    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
     monkeypatch.setattr(
-        "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
-        lambda *_args, **_kwargs: pytest.fail("oversized stream raw must be blocked before backfill"),
+        ArchiveBlobPublisher,
+        "read_all",
+        lambda *_args, **_kwargs: pytest.fail("stream-safe oversized replay must not eagerly read a blob"),
     )
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=False)
 
-    assert result.success is False
-    assert result.repaired_count == 0
+    assert result.success is True
+    assert result.repaired_count == 1
     assert result.metrics["raw_materialization_stream_oversized_count"] == 1.0
-    assert "1 replay candidate(s) remain" in result.detail
-    assert "parse_kwargs" not in calls
-    assert "closed" not in calls
+    assert result.metrics.get("raw_materialization_resource_blocked_count", 0.0) == 0.0
 
 
 def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
@@ -1741,10 +1712,10 @@ def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         small_raw = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline, source_path="expanded.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX, payload=baseline, source_path="expanded.json", acquired_at_ms=1
         )
         oversized_raw = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=newest, source_path="expanded.jsonl", acquired_at_ms=2
+            provider=Provider.CODEX, payload=newest, source_path="expanded.json", acquired_at_ms=2
         )
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
@@ -1783,10 +1754,10 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
     large_payload = b'{"type":"session_meta","payload":{"id":"large-done"}}\n'
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         small_raw = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=small_payload, source_path="shared.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX, payload=small_payload, source_path="shared.json", acquired_at_ms=1
         )
         large_raw = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=large_payload, source_path="shared.jsonl", acquired_at_ms=2
+            provider=Provider.CODEX, payload=large_payload, source_path="shared.json", acquired_at_ms=2
         )
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
@@ -1831,7 +1802,7 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
             archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=f'{{"type":"session_meta","payload":{{"id":"aggregate-{index}"}}}}\n'.encode(),
-                source_path="aggregate.jsonl",
+                source_path="aggregate.json",
                 acquired_at_ms=index,
             )
             for index in range(2)
@@ -1910,7 +1881,9 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
     assert repair_mod.repair_raw_materialization(config, raw_artifact_limit=5).success is True
 
 
-def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(tmp_path: Path) -> None:
+def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """A retryable oldest component must not monopolize a slot after ops reset."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1937,6 +1910,13 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(tmp_
         )
         conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=raw_ids)
+
+    original_stream_safe = repair_mod._raw_materialization_stream_safe
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_stream_safe",
+        lambda candidates, raw_id: raw_id != raw_ids[0] and original_stream_safe(candidates, raw_id),
+    )
 
     first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert first.plan_outcomes[0].status.value == "retryable"

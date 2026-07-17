@@ -13,6 +13,7 @@ from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -66,6 +67,30 @@ def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> 
     assert len(sessions) == 1
     assert sessions[0].provider_session_id.startswith("polylogue-7fj@workspace-")
     assert sessions[0].working_directories == [str(source_path.parent.parent.resolve())]
+
+
+def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b'{"type":"session_meta","payload":{"id":"streamed"}}\n'
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="streamed.jsonl",
+            acquired_at_ms=1,
+        )
+    monkeypatch.setattr(
+        ArchiveBlobPublisher,
+        "read_all",
+        lambda *_args, **_kwargs: pytest.fail("stream-safe revision replay must not eagerly read a blob"),
+    )
+
+    result = backfill_historical_revision_evidence(tmp_path)
+
+    assert result.scanned == 1
+    assert result.replayed_logical_sources == 1
 
 
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:
