@@ -4,7 +4,7 @@
   "workload_id": "testdiet",
   "job_id": "testdiet-06",
   "package_revision": "r01",
-  "state": "candidate_requires_kernel_rebase",
+  "state": "integrated_merged",
   "provider": "chatgpt-pro",
   "prompt_sha256": "5a863e2954c70000d9afc2b2c491bbc4578bcf8cb23fdf31633e10c3a979d804",
   "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
@@ -17,8 +17,13 @@
   "validation": [
     "the patch targets an ancestor of current master",
     "the patch contains 18 paths and three real owner-route canaries",
-    "current-master application stops only at generated topology artifacts",
-    "the source candidate introduces a local FactFamilySpec and must instead consume the o21.1 DeclarationSpec kernel"
+    "current-master reconciliation refreshed generated topology artifacts",
+    "FactFamilySpec was rebased to project through the shared DeclarationRegistry rather than creating a second registry",
+    "focused owner-route suite: 172 passed",
+    "devtools verify --quick passed"
   ],
-  "admission": "Positive source/design material is retained for polylogue-cuxz.2. Its exact-token/unknown-price, stale-last-good-status, and excluded-source-byte-lag canaries are accepted as the first kernel-rebased slice; no source code is admitted before that rebase."
+  "bead": "polylogue-cuxz.2",
+  "merge_commit": "efadb404ebe70ec91f03ffcb7eaf0de7956ece4d",
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3033",
+  "admission": "The candidate is admitted as the first kernel-rebased EvidenceValue production slice. Exact-token/unknown-price, stale-last-good-status, and excluded-source-byte-lag canaries are now on master. Broad family/surface migration remains explicitly open under the parent EvidenceValue program."
 }
