@@ -15,13 +15,15 @@ This module supplies the reusable layer the shared query transaction
   Admission is backpressure, never a semantic refusal: valid large work is
   eventually admitted.
 - :class:`InterruptibleSQLiteRead` — runs one unit of archive read work on a
-  dedicated read-only connection in a worker thread, with a SQLite progress
-  handler enforcing cancellation/deadline and a cross-thread interrupt path.
+  dedicated read-only connection and snapshot in a worker thread, with a SQLite
+  progress handler enforcing cancellation/deadline/work budgets and a
+  cross-thread interrupt path.
 - :class:`QueryExecutionReceipt` — the observable outcome record. Receipts
   carry safe query refs (hashes), never raw expressions.
 
-Paging/spool formats and request-level budget contracts remain z9gh.9.1
-scope; this slice owns execution and ownership primitives only.
+Paging/spool formats and cross-surface budget policy remain z9gh.9.1 scope.
+This layer owns execution, snapshot/connection lifetime, optional SQLite VM-work
+containment, and production work/cleanup receipts.
 """
 
 from __future__ import annotations
@@ -77,6 +79,7 @@ QueryExecutionState = Literal[
     "completed",
     "cancelled",
     "timed_out",
+    "work_budget_exceeded",
     "disconnected",
     "failed",
 ]
@@ -88,6 +91,10 @@ class QueryCancelledError(Exception):
 
 class QueryTimeoutError(Exception):
     """The read exceeded its execution deadline."""
+
+
+class QueryWorkBudgetExceededError(Exception):
+    """The read exceeded its declared SQLite VM-work budget."""
 
 
 @dataclass
@@ -106,6 +113,13 @@ class QueryExecutionReceipt:
     queued_s: float = 0.0
     run_s: float = 0.0
     interrupted: bool = False
+    sqlite_progress_callbacks: int = 0
+    sqlite_vm_steps_lower_bound: int = 0
+    sqlite_vm_step_budget: int | None = None
+    selected_rows_exact: int | None = None
+    rows_emitted: int = 0
+    result_pages_emitted: int = 0
+    cleanup_complete: bool = False
     error: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -118,6 +132,13 @@ class QueryExecutionReceipt:
             "queued_s": round(self.queued_s, 6),
             "run_s": round(self.run_s, 6),
             "interrupted": self.interrupted,
+            "sqlite_progress_callbacks": self.sqlite_progress_callbacks,
+            "sqlite_vm_steps_lower_bound": self.sqlite_vm_steps_lower_bound,
+            "sqlite_vm_step_budget": self.sqlite_vm_step_budget,
+            "selected_rows_exact": self.selected_rows_exact,
+            "rows_emitted": self.rows_emitted,
+            "result_pages_emitted": self.result_pages_emitted,
+            "cleanup_complete": self.cleanup_complete,
             "error": self.error,
         }
 
@@ -137,15 +158,24 @@ class QueryExecutionContext:
     workload_class: WorkloadClass = "interactive"
     admission_weight: int = 1
     deadline_monotonic: float | None = None
+    sqlite_vm_step_budget: int | None = None
     owner_ref: str | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
+    _receipt_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
     receipt: QueryExecutionReceipt = field(init=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.sqlite_vm_step_budget is not None and self.sqlite_vm_step_budget < 0:
+            raise ValueError("sqlite_vm_step_budget must be non-negative")
         object.__setattr__(
             self,
             "receipt",
-            QueryExecutionReceipt(call_id=self.call_id, query_ref=self.query_ref, workload_class=self.workload_class),
+            QueryExecutionReceipt(
+                call_id=self.call_id,
+                query_ref=self.query_ref,
+                workload_class=self.workload_class,
+                sqlite_vm_step_budget=self.sqlite_vm_step_budget,
+            ),
         )
 
     @classmethod
@@ -156,6 +186,7 @@ class QueryExecutionContext:
         workload_class: WorkloadClass = "interactive",
         admission_weight: int = 1,
         timeout_s: float | None = DEFAULT_READ_DEADLINE_S,
+        sqlite_vm_step_budget: int | None = None,
         owner_ref: str | None = None,
     ) -> QueryExecutionContext:
         query_ref = hashlib.sha256((query_text or "").encode("utf-8")).hexdigest()[:16]
@@ -166,6 +197,7 @@ class QueryExecutionContext:
             workload_class=workload_class,
             admission_weight=max(1, admission_weight),
             deadline_monotonic=deadline,
+            sqlite_vm_step_budget=sqlite_vm_step_budget,
             owner_ref=owner_ref,
         )
 
@@ -179,8 +211,48 @@ class QueryExecutionContext:
     def deadline_exceeded(self) -> bool:
         return self.deadline_monotonic is not None and time.monotonic() > self.deadline_monotonic
 
+    def record_sqlite_progress(self, opcodes: int) -> None:
+        """Record one real SQLite progress callback without estimating rows."""
+
+        with self._receipt_lock:
+            self.receipt.sqlite_progress_callbacks += 1
+            self.receipt.sqlite_vm_steps_lower_bound += max(1, int(opcodes))
+
+    def record_result_page(self, *, emitted_rows: int, selected_rows_exact: int | None = None) -> None:
+        """Record a delivered logical page and exact selection evidence when known."""
+
+        with self._receipt_lock:
+            self.receipt.result_pages_emitted += 1
+            self.receipt.rows_emitted += max(0, int(emitted_rows))
+            if selected_rows_exact is not None:
+                normalized = max(0, int(selected_rows_exact))
+                existing = self.receipt.selected_rows_exact
+                if existing is not None and existing != normalized:
+                    raise RuntimeError("query execution reported contradictory exact selection counts")
+                self.receipt.selected_rows_exact = normalized
+
+    def mark_cleanup_complete(self) -> None:
+        with self._receipt_lock:
+            self.receipt.cleanup_complete = True
+
+    def work_budget_exceeded(self) -> bool:
+        budget = self.sqlite_vm_step_budget
+        if budget is None:
+            return False
+        with self._receipt_lock:
+            return self.receipt.sqlite_vm_steps_lower_bound >= budget
+
+    def abort_reason(self) -> Literal["cancelled", "timed_out", "work_budget_exceeded"] | None:
+        if self.cancelled:
+            return "cancelled"
+        if self.deadline_exceeded():
+            return "timed_out"
+        if self.work_budget_exceeded():
+            return "work_budget_exceeded"
+        return None
+
     def should_abort(self) -> bool:
-        return self.cancelled or self.deadline_exceeded()
+        return self.abort_reason() is not None
 
 
 class QueryAdmissionController:
@@ -297,10 +369,11 @@ class InterruptibleSQLiteRead:
     """One archive read on a dedicated read-only connection in this thread.
 
     The runner opens its own :class:`ArchiveStore` (never a shared or writer
-    connection), installs a progress guard that aborts on cancellation or
-    deadline, and publishes the store so :meth:`interrupt` can abort the
-    active statement from another thread. Cleanup (progress handler, store,
-    published handle) happens exactly once in ``finally``.
+    connection), begins one read snapshot, installs a progress guard that aborts
+    on cancellation, deadline, or a declared VM-work budget, and publishes the
+    store so :meth:`interrupt` can abort the active statement from another
+    thread. Cleanup (progress handler, transaction, store, published handle)
+    happens exactly once in ``finally``.
     """
 
     def __init__(self, ctx: QueryExecutionContext) -> None:
@@ -325,39 +398,52 @@ class InterruptibleSQLiteRead:
         ctx = self._ctx
         ctx.receipt.state = "running"
         started = time.monotonic()
+        progress_opcodes = PROGRESS_GUARD_OPCODES
+        if ctx.sqlite_vm_step_budget is not None:
+            progress_opcodes = min(progress_opcodes, max(1, ctx.sqlite_vm_step_budget))
 
         def _guard() -> int:
+            ctx.record_sqlite_progress(progress_opcodes)
             return 1 if ctx.should_abort() else 0
 
         store = ArchiveStore.open_existing(archive_root, read_timeout=read_timeout)
         with self._store_lock:
             self._store = store
         try:
-            store.set_read_progress_guard(_guard, n_opcodes=PROGRESS_GUARD_OPCODES)
-            # A cancel/deadline that landed before the first opcode must not
-            # start the statement at all.
+            store.set_read_progress_guard(_guard, n_opcodes=progress_opcodes)
+            # An abort that landed before ownership begins must not start the
+            # caller's statement or acquire a read snapshot.
             if ctx.should_abort():
                 raise _abort_error(ctx)
             try:
+                store.begin_read_snapshot()
                 result = work(store)
             except Exception as exc:
                 if ctx.should_abort() and _is_interrupt_error(exc):
                     ctx.receipt.interrupted = True
                     raise _abort_error(ctx) from exc
                 raise
-            # The progress guard only observes SQLite execution. A cancel or
-            # deadline that lands during Python-side post-processing (row
-            # grouping, envelope assembly) must still abort here rather than
-            # returning a "completed" result nobody is waiting for.
-            if ctx.should_abort():
-                raise _abort_error(ctx)
-            ctx.receipt.state = "completed"
-            return result
+            else:
+                # The progress guard only observes SQLite execution. An abort
+                # that lands during Python-side post-processing (row grouping,
+                # envelope assembly) must still abort here rather than return a
+                # "completed" result nobody is waiting for.
+                if ctx.should_abort():
+                    raise _abort_error(ctx)
+                ctx.receipt.state = "completed"
+                return result
         finally:
             ctx.receipt.run_s = time.monotonic() - started
             with self._store_lock:
                 self._store = None
-            store.close()
+            try:
+                store.clear_read_progress_guard()
+            finally:
+                try:
+                    store.end_read_snapshot()
+                finally:
+                    store.close()
+            ctx.mark_cleanup_complete()
 
 
 def _is_interrupt_error(exc: Exception) -> bool:
@@ -366,10 +452,16 @@ def _is_interrupt_error(exc: Exception) -> bool:
     return isinstance(exc, sqlite3.OperationalError) and "interrupt" in str(exc).lower()
 
 
-def _abort_error(ctx: QueryExecutionContext) -> QueryCancelledError | QueryTimeoutError:
-    if ctx.cancelled:
+def _abort_error(
+    ctx: QueryExecutionContext,
+) -> QueryCancelledError | QueryTimeoutError | QueryWorkBudgetExceededError:
+    reason = ctx.abort_reason()
+    if reason == "cancelled":
         ctx.receipt.state = "cancelled"
         return QueryCancelledError(f"archive read cancelled (call {ctx.call_id})")
+    if reason == "work_budget_exceeded":
+        ctx.receipt.state = "work_budget_exceeded"
+        return QueryWorkBudgetExceededError(f"archive read exceeded SQLite work budget (call {ctx.call_id})")
     ctx.receipt.state = "timed_out"
     return QueryTimeoutError(f"archive read exceeded deadline (call {ctx.call_id})")
 
@@ -448,7 +540,7 @@ async def execute_archive_read(
             # wait on it forever. An undrained worker keeps running in the
             # background and still performs its own cleanup on exit.
             await asyncio.wait_for(worker, timeout=DISCONNECT_DRAIN_TIMEOUT_S)
-        except (QueryCancelledError, QueryTimeoutError, asyncio.CancelledError):
+        except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError, asyncio.CancelledError):
             pass
         except TimeoutError:
             logger.warning(
@@ -462,7 +554,7 @@ async def execute_archive_read(
         # "cancelled", but the caller-side truth here is a disconnect.
         ctx.receipt.state = "disconnected"
         raise
-    except (QueryCancelledError, QueryTimeoutError):
+    except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError):
         raise
     except Exception as exc:
         ctx.receipt.state = "failed"
@@ -493,7 +585,7 @@ def execute_archive_read_sync(
     try:
         with admission.admit_blocking(ctx):
             return reader.run(archive_root, work, read_timeout=read_timeout)
-    except (QueryCancelledError, QueryTimeoutError):
+    except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError):
         raise
     except Exception as exc:
         ctx.receipt.state = "failed"
@@ -511,6 +603,7 @@ __all__ = [
     "QueryExecutionContext",
     "QueryExecutionReceipt",
     "QueryTimeoutError",
+    "QueryWorkBudgetExceededError",
     "WorkloadClass",
     "classify_unit_expression_workload",
     "default_admission_controller",

@@ -3522,7 +3522,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             payload = execute_archive_read_sync(
                 archive_root,
-                lambda archive: query_unit_envelope(archive, request),
+                lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
                 ctx=ctx,
                 read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
             )
