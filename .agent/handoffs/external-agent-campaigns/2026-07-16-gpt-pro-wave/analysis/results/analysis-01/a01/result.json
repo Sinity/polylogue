@@ -5,7 +5,7 @@
   "job_id": "analysis-01",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "acquired",
+  "state": "adjudicated_mixed_snapshot",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -29,5 +29,5 @@
   "commits": [],
   "pull_request": null,
   "verification_receipts": [],
-  "notes": "analysis retained for current-source adjudication"
+  "notes": "Current-master adjudication retained status/query/raw-chain/synchronization evidence but rejected stale ownership proposals, especially superseding polylogue-t46.9; no source patch admitted."
 }
