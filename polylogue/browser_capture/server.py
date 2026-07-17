@@ -209,8 +209,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return False
         if _check_token(dict(self.headers), config):
             return False
+        # The daemon normally uses the lazy stdlib logger, whose plain handler
+        # does not render structured kwargs.  Keep this rejection forensic
+        # without emitting credentials or arbitrary request headers.
         logger.warning(
-            "browser_capture.token_rejected", request_id=self._request_id(), origin=self.headers.get("Origin")
+            "browser_capture.token_rejected request_id=%s path=%s origin=%s",
+            self._request_id(),
+            urlparse(self.path).path,
+            self.headers.get("Origin") or "-",
         )
         self._safe_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return True
