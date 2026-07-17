@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
-from polylogue.config import Config
+from polylogue.config import Config, get_config
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios.workload import (
@@ -371,8 +371,20 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser.add_argument("--max-io-full-avg10", type=float, default=2.0)
     parser.add_argument("--max-memory-full-avg10", type=float, default=2.0)
     parser.add_argument("--allow-contended-host", action="store_true")
+    parser.add_argument(
+        "--capture-profile",
+        type=Path,
+        default=None,
+        help="Write a read-only aggregate frontier profile for a private-free synthetic scenario, then exit.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.capture_profile is not None:
+        profile = repair.raw_materialization_scale_profile(get_config())
+        args.capture_profile.parent.mkdir(parents=True, exist_ok=True)
+        args.capture_profile.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n")
+        print(json.dumps(profile, indent=2, sort_keys=True) if args.json else args.capture_profile, file=stdout)
+        return 0
     pressure_limit = None if args.allow_contended_host else args.max_io_full_avg10
     memory_limit = None if args.allow_contended_host else args.max_memory_full_avg10
     payload = run_raw_authority_scale_proof(
