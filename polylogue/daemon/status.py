@@ -1961,8 +1961,18 @@ def _raw_frontier_integrity_info(
     return RawFrontierIntegrity.model_validate(projection.to_dict())
 
 
-def _raw_replay_backlog_info() -> dict[str, object]:
-    """Return weighted raw source-to-index replay backlog for daemon status."""
+def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
+    """Return weighted raw replay backlog only for an explicitly rich read."""
+    if not include:
+        return {
+            "available": False,
+            "reason": "excluded_from_bounded_status_snapshot",
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
     try:
         from polylogue.config import Config
         from polylogue.paths import render_root
@@ -1989,6 +1999,7 @@ def build_daemon_status(
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
     include_expensive_health: bool = False,
+    include_raw_replay_backlog: bool = True,
 ) -> DaemonStatus:
     """Build a typed DaemonStatus from durable component state."""
     watch_sources = sources if sources is not None else default_sources()
@@ -2008,7 +2019,7 @@ def build_daemon_status(
     freshness = _insight_freshness_info()
     raw_materialization_readiness = _raw_materialization_readiness_info()
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
-    raw_replay_backlog = _raw_replay_backlog_info()
+    raw_replay_backlog = _raw_replay_backlog_info(include=include_raw_replay_backlog)
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
     )
@@ -2195,6 +2206,7 @@ def daemon_status_payload(
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
     include_browser_capture_spool_path: bool = False,
+    include_raw_replay_backlog: bool = True,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict)."""
     watch_sources = sources if sources is not None else default_sources()
@@ -2219,6 +2231,7 @@ def daemon_status_payload(
         sources=sources,
         browser_capture_enabled=browser_capture_enabled,
         browser_capture_spool_path=browser_capture_spool_path,
+        include_raw_replay_backlog=include_raw_replay_backlog,
     )
     archive_debt = _archive_debt_status_summary()
 

@@ -318,7 +318,7 @@ def test_status_snapshot_refresh_default_builds_rich_payload(monkeypatch: pytest
 
     snapshot = refresh_status_snapshot()
 
-    assert build.call_count == 1
+    build.assert_called_once_with(include_raw_replay_backlog=False)
     assert snapshot.payload["checked_at"] == "rich"
     assert snapshot.payload["raw_materialization_readiness"] == {"total": 2}
 
@@ -574,7 +574,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     )
     monkeypatch.setattr(
         "polylogue.daemon.status._raw_replay_backlog_info",
-        lambda: {
+        lambda *, include=True: {
             "available": True,
             "execution_blocked": True,
             "execution_block_reason": "raw source-to-index replay is disabled pending revision authority",

@@ -319,7 +319,11 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                 if rich:
                     from polylogue.daemon.status import daemon_status_payload
 
-                    payload = daemon_status_payload()
+                    # Raw replay selection expands authority cohorts and is a
+                    # diagnostic operation, not a bounded health projection.
+                    # Running it in the periodic snapshot can strand a
+                    # default-executor worker through process shutdown.
+                    payload = daemon_status_payload(include_raw_replay_backlog=False)
                 else:
                     payload = _minimal_status_payload()
         except Exception as exc:
