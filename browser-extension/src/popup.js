@@ -454,6 +454,7 @@ function ambientFallback(raw, tabUrl) {
   try { hostname = new URL(tabUrl || "").hostname; } catch { hostname = ""; }
   return {
     enabled: settings.enabled !== false,
+    automatic_capture_enabled: settings.automatic_capture_enabled !== false,
     disabled_sites: disabledSites,
     site: hostname || null,
     site_enabled: hostname ? disabledSites[hostname] !== true : true,
@@ -464,12 +465,14 @@ function renderAmbient(ambient, tabUrl = "", assertions = null) {
   const enabledNode = document.getElementById("ambient-enabled");
   const siteNode = document.getElementById("ambient-site-enabled");
   const siteLabel = document.getElementById("ambient-site");
+  const automaticCaptureNode = document.getElementById("automatic-capture-enabled");
   const assertionNode = document.getElementById("assertion-status");
   if (enabledNode) enabledNode.checked = ambient?.enabled !== false;
   if (siteNode) {
     siteNode.checked = ambient?.site_enabled !== false;
     siteNode.disabled = !providerFromUrl(tabUrl) || providerFromUrl(tabUrl) === "unknown";
   }
+  if (automaticCaptureNode) automaticCaptureNode.checked = ambient?.automatic_capture_enabled !== false;
   if (siteLabel) siteLabel.textContent = ambient?.site || hostLabel(tabUrl || "") || "Current site";
   if (assertionNode) {
     assertionNode.textContent = assertions?.persistence_supported
@@ -715,6 +718,14 @@ document.getElementById("ambient-site-enabled")?.addEventListener("change", asyn
     type: "polylogue.ambient.configure",
     url: tab?.url || "",
     site_enabled: Boolean(event.target.checked),
+  });
+  await render();
+});
+
+document.getElementById("automatic-capture-enabled")?.addEventListener("change", async (event) => {
+  await chrome.runtime.sendMessage({
+    type: "polylogue.ambient.configure",
+    automatic_capture_enabled: Boolean(event.target.checked),
   });
   await render();
 });

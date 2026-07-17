@@ -1661,6 +1661,27 @@ describe("background receiver diagnostics", () => {
     }));
   });
 
+  it("does not fetch a missing conversation while automatic capture is paused", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-paused", title: "ChatGPT" }];
+    await sendRuntimeMessage({
+      type: "polylogue.ambient.configure",
+      automatic_capture_enabled: false,
+    });
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-paused",
+      state: "missing",
+      captured: false,
+    }));
+
+    installedListener();
+
+    await vi.waitFor(() => expect(stored.polylogueSessionLedger["chatgpt:conv-paused"]?.archive_state)
+      .toMatchObject({ state: "missing" }));
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith("polylogueCaptureFreshnessWake");
+  });
+
   it("keeps the earliest freshness deadline when a later hint is queued", async () => {
     vi.spyOn(Date, "now").mockReturnValue(100_000);
     await sendRuntimeMessage({
@@ -2320,12 +2341,31 @@ describe("ambient capture status", () => {
 
     expect(response).toMatchObject({
       ok: true,
-      ambient: { enabled: true, site_enabled: false, site: "chatgpt.com" },
+      ambient: { enabled: true, automatic_capture_enabled: true, site_enabled: false, site: "chatgpt.com" },
     });
     expect(stored.polylogueAmbientSettings).toEqual({
       enabled: true,
+      automatic_capture_enabled: true,
       disabled_sites: { "chatgpt.com": true },
     });
+  });
+
+  it("persists a global automatic-capture circuit breaker and clears its wake", async () => {
+    const response = await sendRuntimeMessage({
+      type: "polylogue.ambient.configure",
+      automatic_capture_enabled: false,
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      ambient: { enabled: true, automatic_capture_enabled: false },
+    });
+    expect(stored.polylogueAmbientSettings).toEqual({
+      enabled: true,
+      automatic_capture_enabled: false,
+      disabled_sites: {},
+    });
+    expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith("polylogueCaptureFreshnessWake");
   });
 });
 

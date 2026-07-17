@@ -549,7 +549,7 @@ function hostnameForUrl(url) {
 
 async function ambientSettings(hostname = "") {
   const stored = await chrome.storage.local.get({
-    [AMBIENT_SETTINGS_KEY]: { enabled: true, disabled_sites: {} },
+    [AMBIENT_SETTINGS_KEY]: { enabled: true, automatic_capture_enabled: true, disabled_sites: {} },
   });
   const raw = stored[AMBIENT_SETTINGS_KEY] && typeof stored[AMBIENT_SETTINGS_KEY] === "object"
     ? stored[AMBIENT_SETTINGS_KEY]
@@ -557,13 +557,14 @@ async function ambientSettings(hostname = "") {
   const disabledSites = raw.disabled_sites && typeof raw.disabled_sites === "object" ? raw.disabled_sites : {};
   return {
     enabled: raw.enabled !== false,
+    automatic_capture_enabled: raw.automatic_capture_enabled !== false,
     disabled_sites: disabledSites,
     site: hostname || null,
     site_enabled: hostname ? disabledSites[hostname] !== true : true,
   };
 }
 
-async function saveAmbientSettings({ enabled = null, hostname = "", siteEnabled = null } = {}) {
+async function saveAmbientSettings({ enabled = null, automaticCaptureEnabled = null, hostname = "", siteEnabled = null } = {}) {
   const current = await ambientSettings(hostname);
   const disabledSites = { ...current.disabled_sites };
   if (hostname && siteEnabled !== null) {
@@ -572,10 +573,17 @@ async function saveAmbientSettings({ enabled = null, hostname = "", siteEnabled 
   }
   const next = {
     enabled: enabled === null ? current.enabled : Boolean(enabled),
+    automatic_capture_enabled: automaticCaptureEnabled === null
+      ? current.automatic_capture_enabled
+      : Boolean(automaticCaptureEnabled),
     disabled_sites: disabledSites,
   };
   await chrome.storage.local.set({ [AMBIENT_SETTINGS_KEY]: next });
   return ambientSettings(hostname);
+}
+
+async function automaticCaptureEnabled() {
+  return (await ambientSettings()).automatic_capture_enabled;
 }
 
 function sessionKey(provider, providerSessionId) {
@@ -1651,6 +1659,9 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
     || !conversationIdForUrl(conversationUrl)
     || !injectionPlanForUrl(conversationUrl).length
   ) return null;
+  if (reason !== "popup_sync_open_tabs" && !(await automaticCaptureEnabled())) {
+    return { ok: false, skipped: true, reason: "automatic_capture_paused" };
+  }
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
   if (
@@ -1854,6 +1865,10 @@ async function scheduleNextCaptureFreshnessWake(queueValue = null) {
 }
 
 async function processCaptureFreshnessQueueOnce() {
+  if (!(await automaticCaptureEnabled())) {
+    await chrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
+    return { processed: 0, paused: true };
+  }
   const owner = await extensionInstanceId();
   const now = Date.now();
   const { queue, claim } = await serializeStorageMutation(async () => {
@@ -1943,6 +1958,9 @@ function processCaptureFreshnessQueue() {
 }
 
 async function runCaptureFreshnessSweep() {
+  if (!(await automaticCaptureEnabled())) {
+    return { skipped: true, reason: "automatic_capture_paused" };
+  }
   const now = Date.now();
   let queue = await storedCaptureFreshnessQueue();
   if (queue.sweep_not_before_ms > now) return { skipped: true, reason: "sweep_backoff" };
@@ -2722,9 +2740,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const url = sender.tab?.url || sender.tab?.pendingUrl || message.url || "";
       const settings = await saveAmbientSettings({
         enabled: message.enabled ?? null,
+        automaticCaptureEnabled: message.automatic_capture_enabled ?? null,
         hostname: message.hostname || hostnameForUrl(url),
         siteEnabled: message.site_enabled ?? null,
       });
+      if (settings.automatic_capture_enabled) await ensureCaptureFreshnessAlarms();
+      else await chrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
       sendResponse({ ok: true, ambient: settings });
       return;
     }

@@ -85,6 +85,7 @@ function installDom() {
       <div id="open-tabs"></div>
       <input id="ambient-enabled" type="checkbox" />
       <input id="ambient-site-enabled" type="checkbox" />
+      <input id="automatic-capture-enabled" type="checkbox" />
       <span id="ambient-site"></span>
       <span id="assertion-status"></span>
       <div id="debug-panel" hidden><div id="debug-log"></div></div>
@@ -161,6 +162,24 @@ describe("popup capture", () => {
       expect(markup).not.toContain(`id="${id}"`);
     }
     expect(markup).toContain("Capture, freshness checks, open-tab convergence, and receiver health run automatically.");
+  });
+
+  it("exposes a persisted automatic-capture circuit breaker", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.ambient.configure") {
+        return { ok: true, ambient: { enabled: true, automatic_capture_enabled: false, site_enabled: true } };
+      }
+      return { ok: true };
+    });
+
+    const control = document.getElementById("automatic-capture-enabled");
+    control.checked = false;
+    control.dispatchEvent(new globalThis.window.Event("change"));
+
+    await vi.waitFor(() => expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.ambient.configure",
+      automatic_capture_enabled: false,
+    }));
   });
 
   it("starts in the manifest classic-script load order without a global redeclaration", () => {
