@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
-import fcntl
 import hashlib
 import json
-import os
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager, suppress
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -70,7 +68,6 @@ from polylogue.storage.raw_authority import (
     recover_interrupted_raw_authority_censuses,
     reject_invalid_raw_replay_application,
     reject_stale_raw_replay_plan,
-    unresolved_raw_authority_blockers,
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
@@ -87,11 +84,6 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact
 _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
 _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
-_QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
-_BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-origin-copy-forward.v1"
-_LEGACY_BROWSER_CAPTURE_NATIVE_ID_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-legacy-native-id-copy-forward.v1"
-_BYTE_PROVEN_BROWSER_CAPTURE_REKEY_RECEIPT_SCHEMA = "polylogue.browser-capture-byte-proven-rekey.v1"
-_LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL = "rollback-superjournal-v1"
 _QUARANTINED_CENSUS_STAGE_FINGERPRINT = "repair-quarantined-accepted-raw-v1"
 _QUARANTINED_CENSUS_STAGE_DETAIL = "census-only evidence staged before accepted-head authority refinement"
 _BROWSER_ORIGIN_SEMANTIC_HISTORICAL_WITNESS_LIMIT = 8
@@ -172,19 +164,6 @@ class QuarantinedAcceptedRawRepairItem:
 
 
 @dataclass(frozen=True, slots=True)
-class QuarantinedAcceptedRawRepairReport:
-    mode: str
-    requested_count: int
-    eligible_count: int
-    repaired_count: int
-    already_repaired_count: int
-    ineligible_count: int
-    proof_digest: str
-    receipt_path: str | None
-    items: tuple[QuarantinedAcceptedRawRepairItem, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class BrowserCaptureOriginRepairItem:
     raw_id: str
     status: str
@@ -205,6 +184,7 @@ class BrowserCaptureOriginRepairItem:
     repair_strategy: str | None = None
     replacement_raw_id: str | None = None
     replacement_source_revision: str | None = None
+    replacement_content_hash: str | None = None
     replacement_frontier_kind: str | None = None
     replacement_frontier: int | None = None
     copy_forward_raw_id: str | None = None
@@ -221,19 +201,6 @@ class BrowserCaptureOriginRepairItem:
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class BrowserCaptureOriginRepairReport:
-    mode: str
-    requested_count: int
-    eligible_count: int
-    repaired_count: int
-    already_repaired_count: int
-    ineligible_count: int
-    proof_digest: str
-    receipt_path: str | None
-    items: tuple[BrowserCaptureOriginRepairItem, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,10 +231,17 @@ class BrowserCanonicalAuthorityConflictWitness:
     old_logical_source_key: str | None = None
     canonical_logical_source_key: str | None = None
     unknown_raw_content_hash: str | None = None
+    unknown_source_revision: str | None = None
+    unknown_frontier_kind: str | None = None
+    unknown_frontier: int | None = None
+    unknown_decided_at_ms: int | None = None
     unknown_raw_message_count: int | None = None
     competing_raw_id: str | None = None
     competing_content_hash: str | None = None
+    competing_source_revision: str | None = None
     competing_frontier_kind: str | None = None
+    competing_frontier: int | None = None
+    competing_decided_at_ms: int | None = None
     competing_decision: str | None = None
     competing_message_count: int | None = None
     divergent_message_index: int | None = None
@@ -1097,260 +1071,6 @@ def _inspect_quarantined_accepted_raw(
     return dataclasses.replace(item, proof_digest=_proof_digest(item))
 
 
-def _repair_receipt_targets(items: list[QuarantinedAcceptedRawRepairItem]) -> list[dict[str, object]]:
-    targets = [
-        {key: value for key, value in dataclasses.asdict(item).items() if key not in {"reason", "repaired", "status"}}
-        for item in items
-    ]
-    return cast(list[dict[str, object]], json.loads(json.dumps(targets, sort_keys=True)))
-
-
-def _repair_proof_digest(items: list[QuarantinedAcceptedRawRepairItem]) -> str:
-    proof_digests = [item.proof_digest for item in items]
-    return hashlib.sha256(json.dumps(proof_digests, separators=(",", ":")).encode()).hexdigest()
-
-
-def _fsync_parent(path: Path) -> None:
-    descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-@dataclass(slots=True)
-class _LockedQuarantinedRawRepairReceipt:
-    path: Path
-    descriptor: int
-    target_hash: str
-    terminal: bool
-    repair_intent_raw_ids: tuple[str, ...]
-    torn_terminals: tuple[bytes, ...] = ()
-    receipt_terminated: bool = True
-
-    def close(self) -> None:
-        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
-        os.close(self.descriptor)
-
-
-def _receipt_write(descriptor: int, payload: bytes) -> int:
-    return os.write(descriptor, payload)
-
-
-def _write_receipt_all(descriptor: int, payload: bytes) -> None:
-    offset = 0
-    while offset < len(payload):
-        written = _receipt_write(descriptor, payload[offset:])
-        if written <= 0:
-            raise RuntimeError("operator repair receipt write made no progress")
-        offset += written
-
-
-def _receipt_records(descriptor: int) -> tuple[list[dict[str, object] | bytes], bool]:
-    size = os.fstat(descriptor).st_size
-    if size > 16 * 1024 * 1024:
-        raise RuntimeError("existing repair receipt exceeds the bounded parser limit")
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    chunks: list[bytes] = []
-    remaining = size
-    while remaining:
-        chunk = os.read(descriptor, remaining)
-        if not chunk:
-            raise RuntimeError("existing repair receipt changed during its locked read")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    payload = b"".join(chunks)
-    terminated = payload.endswith(b"\n")
-    lines = payload.split(b"\n")
-    if terminated:
-        lines.pop()
-    records: list[dict[str, object] | bytes] = []
-    for index, line in enumerate(lines):
-        if index == len(lines) - 1 and not terminated:
-            records.append(line)
-            continue
-        try:
-            parsed: object = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
-            records.append(line)
-            continue
-        records.append(cast(dict[str, object], parsed) if isinstance(parsed, dict) else line)
-    return records, terminated
-
-
-def _validate_repair_receipt_records(
-    parsed_receipt: tuple[list[dict[str, object] | bytes], bool],
-    *,
-    targets: list[dict[str, object]],
-    target_hash: str,
-) -> tuple[bool, tuple[str, ...], tuple[bytes, ...], bool]:
-    records, terminated = parsed_receipt
-    if not records:
-        raise RuntimeError("existing repair receipt is empty")
-    planned = records[0]
-    if not isinstance(planned, dict):
-        raise RuntimeError("existing repair receipt does not start with valid planned JSON")
-    planned_keys = {"schema", "state", "target_hash", "targets", "repair_intent_raw_ids", "planned_at_ms"}
-    if set(planned) != planned_keys or planned.get("schema") != _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
-        raise RuntimeError("existing repair receipt has an invalid planned record schema")
-    if planned.get("state") != "planned":
-        raise RuntimeError("existing repair receipt must start with a planned record")
-    if planned.get("target_hash") != target_hash or planned.get("targets") != targets:
-        raise RuntimeError("existing repair receipt targets do not match the proven repair set")
-    planned_at_ms = planned.get("planned_at_ms")
-    if not isinstance(planned_at_ms, int) or planned_at_ms < 0:
-        raise RuntimeError("existing repair receipt planned timestamp is invalid")
-    raw_ids = tuple(str(target["raw_id"]) for target in targets)
-    intent = planned.get("repair_intent_raw_ids")
-    if not isinstance(intent, list) or any(not isinstance(raw_id, str) for raw_id in intent):
-        raise RuntimeError("existing repair receipt repair intent is invalid")
-    intent_ids = tuple(cast(list[str], intent))
-    if len(set(intent_ids)) != len(intent_ids) or any(raw_id not in raw_ids for raw_id in intent_ids):
-        raise RuntimeError("existing repair receipt repair intent does not match its targets")
-    if len(records) == 1:
-        if not terminated:
-            raise RuntimeError("existing repair receipt has a torn planned record")
-        return False, intent_ids, (), terminated
-    tail = records[1:]
-    applied = tail[-1] if isinstance(tail[-1], dict) else None
-    torn_terminals = (
-        tuple(record for record in tail[:-1] if isinstance(record, bytes))
-        if applied
-        else tuple(record for record in tail if isinstance(record, bytes))
-    )
-    expected_tail_length = len(torn_terminals) + (1 if applied is not None else 0)
-    if len(tail) != expected_tail_length or any(not fragment for fragment in torn_terminals):
-        raise RuntimeError("existing repair receipt has an invalid state transition")
-    if applied is None:
-        return False, intent_ids, torn_terminals, terminated
-    if not terminated:
-        raise RuntimeError("existing repair receipt has an unterminated applied record")
-    recovered = bool(torn_terminals)
-    applied_keys = {
-        "schema",
-        "state",
-        "target_hash",
-        "applied_at_ms",
-        "repaired_raw_ids",
-        "proven_raw_ids",
-    }
-    if recovered:
-        applied_keys |= {"torn_terminals"}
-    if set(applied) != applied_keys or applied.get("schema") != _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
-        raise RuntimeError("existing repair receipt has an invalid applied record schema")
-    if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
-        raise RuntimeError("existing repair receipt has an invalid applied target transition")
-    applied_at_ms = applied.get("applied_at_ms")
-    if not isinstance(applied_at_ms, int) or applied_at_ms < 0:
-        raise RuntimeError("existing repair receipt applied timestamp is invalid")
-    repaired_ids = applied.get("repaired_raw_ids")
-    if (
-        applied.get("proven_raw_ids") != list(raw_ids)
-        or not isinstance(repaired_ids, list)
-        or any(not isinstance(raw_id, str) for raw_id in repaired_ids)
-        or len(set(cast(list[str], repaired_ids))) != len(repaired_ids)
-        or any(raw_id not in intent_ids for raw_id in cast(list[str], repaired_ids))
-    ):
-        raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
-    expected_torn_witnesses = [
-        {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in torn_terminals
-    ]
-    if recovered and applied.get("torn_terminals") != expected_torn_witnesses:
-        raise RuntimeError("existing repair receipt recovery does not match its preserved torn terminal")
-    return True, intent_ids, torn_terminals, terminated
-
-
-def _lock_quarantined_raw_repair_receipt(
-    path: Path,
-    items: list[QuarantinedAcceptedRawRepairItem],
-) -> _LockedQuarantinedRawRepairReceipt:
-    """Lock one stable receipt inode and create or validate its planned record."""
-    if path.is_symlink():
-        raise RuntimeError("repair receipt path must not be a symbolic link")
-    targets = _repair_receipt_targets(items)
-    target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    repair_intent_raw_ids = tuple(item.raw_id for item in items if item.status == "eligible")
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        os.close(descriptor)
-        raise RuntimeError("operator repair receipt is already locked by another apply") from exc
-    try:
-        opened = os.fstat(descriptor)
-        named = path.stat(follow_symlinks=False)
-        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-            raise RuntimeError("operator repair receipt path changed while it was being locked")
-        if opened.st_size:
-            terminal, existing_intent, torn_terminals, terminated = _validate_repair_receipt_records(
-                _receipt_records(descriptor), targets=targets, target_hash=target_hash
-            )
-            return _LockedQuarantinedRawRepairReceipt(
-                path,
-                descriptor,
-                target_hash,
-                terminal,
-                existing_intent,
-                torn_terminals,
-                terminated,
-            )
-        planned = {
-            "schema": _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
-            "state": "planned",
-            "target_hash": target_hash,
-            "targets": targets,
-            "repair_intent_raw_ids": list(repair_intent_raw_ids),
-            "planned_at_ms": int(time.time() * 1000),
-        }
-        encoded = (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        _write_receipt_all(descriptor, encoded)
-        os.fsync(descriptor)
-        _fsync_parent(path)
-        return _LockedQuarantinedRawRepairReceipt(path, descriptor, target_hash, False, repair_intent_raw_ids)
-    except Exception:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
-        raise
-
-
-def _finish_quarantined_raw_repair_receipt(
-    receipt: _LockedQuarantinedRawRepairReceipt,
-    *,
-    items: list[QuarantinedAcceptedRawRepairItem],
-) -> None:
-    opened = os.fstat(receipt.descriptor)
-    named = receipt.path.stat(follow_symlinks=False)
-    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-        raise RuntimeError("operator repair receipt path changed before terminal append")
-    os.lseek(receipt.descriptor, 0, os.SEEK_END)
-    preserved_torn_terminals = list(receipt.torn_terminals)
-    if preserved_torn_terminals and not receipt.receipt_terminated:
-        # Make even a complete-JSON prefix permanently distinguishable from a
-        # terminal record after the newline is appended. The exact sealed bytes
-        # remain in the append-only receipt and are bound into the terminal.
-        _write_receipt_all(receipt.descriptor, b"\xff\n")
-        preserved_torn_terminals[-1] += b"\xff"
-    terminal = {
-        "schema": _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
-        "state": "applied",
-        "target_hash": receipt.target_hash,
-        "applied_at_ms": int(time.time() * 1000),
-        "repaired_raw_ids": [item.raw_id for item in items if item.repaired],
-        "proven_raw_ids": [item.raw_id for item in items],
-    }
-    if preserved_torn_terminals:
-        terminal["torn_terminals"] = [
-            {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()}
-            for fragment in preserved_torn_terminals
-        ]
-    _write_receipt_all(
-        receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    )
-    os.fsync(receipt.descriptor)
-    _fsync_parent(receipt.path)
-
-
 def _cas_refine_quarantined_accepted_raw(
     source_conn: sqlite3.Connection,
     item: QuarantinedAcceptedRawRepairItem,
@@ -1391,106 +1111,26 @@ def _cas_refine_quarantined_accepted_raw(
         raise RuntimeError(f"source authority CAS failed for {item.raw_id}")
 
 
-def repair_quarantined_accepted_raws(
+def inspect_quarantined_accepted_raws(
     config: Config,
     raw_ids: list[str],
-    *,
-    apply: bool = False,
-    receipt_path: Path | None = None,
-    proof_digest: str | None = None,
-) -> QuarantinedAcceptedRawRepairReport:
-    """Refine accepted untyped or typed-quarantined full raws after exact proof."""
+) -> tuple[QuarantinedAcceptedRawRepairItem, ...]:
+    """Return exact typed quarantine-refinement proofs without mutation."""
     if len(set(raw_ids)) != len(raw_ids):
         raise ValueError("duplicate raw ids are not allowed")
     if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
         raise ValueError(f"raw-id list must contain 1..{_QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT} entries")
     if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
-    block_reason = offline_maintenance_block_reason(config, active=apply, dry_run=not apply)
-    if block_reason is not None:
-        raise RuntimeError(block_reason)
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as dry_conn:
-        _attach_repair_index(dry_conn, index_db)
-        _validate_quarantined_raw_repair_blob_budget(dry_conn, raw_ids)
-        items = [_inspect_quarantined_accepted_raw(archive_root, raw_id, conn=dry_conn) for raw_id in raw_ids]
-    aggregate_proof = _repair_proof_digest(items)
-    if apply and any(item.status == "ineligible" for item in items):
-        raise RuntimeError("quarantined accepted raw repair refused because one or more targets are ineligible")
-    if apply and receipt_path is None:
-        raise ValueError("apply requires an explicit operator repair receipt path")
-    if apply and proof_digest != aggregate_proof:
-        raise RuntimeError("apply proof digest does not match the exact dry-run target list")
-    if apply:
-        from polylogue.storage.index_generation import RebuildLease
-
-        assert receipt_path is not None
-        with RebuildLease(archive_root):
-            receipt = _lock_quarantined_raw_repair_receipt(receipt_path, items)
-            try:
-                with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
-                    source_conn.execute("PRAGMA foreign_keys = ON")
-                    _attach_repair_index(source_conn, index_db)
-                    source_conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        _validate_quarantined_raw_repair_blob_budget(source_conn, raw_ids)
-                        locked_items = [
-                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
-                            for raw_id in raw_ids
-                        ]
-                        if _repair_proof_digest(locked_items) != proof_digest:
-                            raise RuntimeError("authority proof changed after acquiring the repair transaction")
-                        if any(item.status == "ineligible" for item in locked_items):
-                            raise RuntimeError("a repair target became ineligible after acquiring the transaction")
-                        if receipt.terminal and any(item.status != "already_repaired" for item in locked_items):
-                            raise RuntimeError("terminal operator receipt disagrees with durable source authority")
-                        if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked_items):
-                            raise RuntimeError("torn terminal receipt has no matching committed source refinement")
-                        for item in locked_items:
-                            if item.status == "eligible" and item.census_stage_raw_ids:
-                                _stage_quarantined_census_cohort(source_conn, item)
-                        staged_items = [
-                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
-                            for raw_id in raw_ids
-                        ]
-                        if any(item.status == "ineligible" for item in staged_items):
-                            raise RuntimeError("census staging did not preserve the proven repair shape")
-                        for item in staged_items:
-                            if item.status == "eligible":
-                                _cas_refine_quarantined_accepted_raw(source_conn, item)
-                        after_items = [
-                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
-                            for raw_id in raw_ids
-                        ]
-                        if any(item.status != "already_repaired" for item in after_items):
-                            raise RuntimeError("source envelope refinement did not reach the proven terminal state")
-                        source_conn.commit()
-                    except Exception:
-                        source_conn.rollback()
-                        raise
-                items = [
-                    dataclasses.replace(after, repaired=before.status == "eligible")
-                    for before, after in zip(locked_items, after_items, strict=True)
-                ]
-                if not receipt.terminal:
-                    _finish_quarantined_raw_repair_receipt(receipt, items=items)
-            finally:
-                receipt.close()
-    return QuarantinedAcceptedRawRepairReport(
-        mode="apply" if apply else "dry-run",
-        requested_count=len(items),
-        eligible_count=sum(item.status == "eligible" for item in items),
-        repaired_count=sum(item.repaired for item in items),
-        already_repaired_count=sum(item.status == "already_repaired" for item in items),
-        ineligible_count=sum(item.status == "ineligible" for item in items),
-        proof_digest=aggregate_proof,
-        receipt_path=str(receipt_path) if receipt_path is not None else None,
-        items=tuple(items),
-    )
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        _attach_repair_index(conn, index_db)
+        _validate_quarantined_raw_repair_blob_budget(conn, raw_ids)
+        return tuple(_inspect_quarantined_accepted_raw(archive_root, raw_id, conn=conn) for raw_id in raw_ids)
 
 
 def _browser_origin_ineligible(raw_id: str, reason: str) -> BrowserCaptureOriginRepairItem:
@@ -1498,24 +1138,13 @@ def _browser_origin_ineligible(raw_id: str, reason: str) -> BrowserCaptureOrigin
 
 
 def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[str, object]:
-    excluded = {
-        "status",
-        "reason",
-        "proof_digest",
-        "repaired",
-        "copy_forward_source_complete",
-        "terminal_byte_witness_digest",
-    }
-    # These fields belong solely to the separately versioned legacy actuator.
-    # Keeping them out of ordinary payloads preserves pre-legacy v1 receipt
-    # targets exactly, so a planned ordinary repair can still resume.
-    if not item.legacy_null_native_id:
-        excluded.update({"legacy_null_native_id", "parser_derived_native_id"})
-    if not item.byte_proven_null_native_id_rekey:
-        excluded.update({"byte_proven_null_native_id_rekey", "parsed_message_count"})
+    """Canonical exact strategy witness for the shared raw-authority plan."""
+    # ``copy_forward_source_complete`` is an execution checkpoint: it flips
+    # after the source row is staged but before the index CAS completes.  It
+    # therefore cannot be part of the immutable strategy identity.  The
+    # actual copy/raw footprint and terminal byte witness remain bound.
+    excluded = {"status", "reason", "proof_digest", "repaired", "copy_forward_source_complete"}
     payload = {key: value for key, value in dataclasses.asdict(item).items() if key not in excluded}
-    # Receipts are JSONL.  Normalize tuples now so an in-memory item has the
-    # identical shape when it is compared to a re-read planned record.
     return cast(dict[str, object], json.loads(json.dumps(payload, sort_keys=True, separators=(",", ":"))))
 
 
@@ -1523,49 +1152,6 @@ def _browser_origin_item_digest(item: BrowserCaptureOriginRepairItem) -> str:
     return hashlib.sha256(
         json.dumps(_browser_origin_item_payload(item), sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-
-
-def _browser_origin_proof_digest(items: list[BrowserCaptureOriginRepairItem]) -> str:
-    return hashlib.sha256(json.dumps([item.proof_digest for item in items], separators=(",", ":")).encode()).hexdigest()
-
-
-def _browser_origin_semantic_witness_bindings(items: list[BrowserCaptureOriginRepairItem]) -> list[dict[str, object]]:
-    return [
-        {
-            "raw_id": item.raw_id,
-            "semantic_canonical_raw_id": item.semantic_canonical_raw_id,
-            "semantic_historical_raw_ids": list(item.semantic_historical_raw_ids),
-            "semantic_head_snapshot": item.semantic_head_snapshot,
-            "semantic_witness_digest": item.semantic_witness_digest,
-        }
-        for item in items
-    ]
-
-
-def _browser_origin_terminal_byte_witness_bindings(
-    items: list[BrowserCaptureOriginRepairItem],
-) -> list[dict[str, object]]:
-    return [
-        {
-            "raw_id": item.raw_id,
-            "copy_forward_raw_id": item.copy_forward_raw_id,
-            "terminal_byte_witness_digest": item.terminal_byte_witness_digest,
-        }
-        for item in items
-    ]
-
-
-def _browser_origin_legacy_native_witness_bindings(
-    items: list[BrowserCaptureOriginRepairItem],
-) -> list[dict[str, object]]:
-    return [
-        {
-            "raw_id": item.raw_id,
-            "legacy_null_native_id": item.legacy_null_native_id,
-            "parser_derived_native_id": item.parser_derived_native_id,
-        }
-        for item in items
-    ]
 
 
 def _browser_origin_copy_forward_detail(item: BrowserCaptureOriginRepairItem) -> str:
@@ -2797,6 +2383,7 @@ def _inspect_browser_capture_origin_mismatch(
         repair_strategy=repair_strategy,
         replacement_raw_id=replacement_raw_id,
         replacement_source_revision=replacement_source_revision,
+        replacement_content_hash=accepted_hash.hex(),
         replacement_frontier_kind=replacement_frontier_kind,
         replacement_frontier=replacement_frontier,
         copy_forward_raw_id=copy_raw_id if repair_strategy == "copy_forward" else None,
@@ -2813,271 +2400,6 @@ def _inspect_browser_capture_origin_mismatch(
         evidence_digest=evidence_digest,
     )
     return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
-
-
-@dataclass(slots=True)
-class _BrowserOriginReceipt:
-    path: Path
-    descriptor: int
-    target_hash: str
-    terminal: bool
-    torn: bytes = b""
-
-    def close(self) -> None:
-        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
-        os.close(self.descriptor)
-
-
-def _browser_origin_requires_legacy_transaction(items: list[BrowserCaptureOriginRepairItem]) -> bool:
-    return any(item.legacy_null_native_id or item.byte_proven_null_native_id_rekey for item in items)
-
-
-def _legacy_browser_journal_modes(source_db: Path, index_db: Path) -> dict[str, str]:
-    modes: dict[str, str] = {}
-    for name, db in (("source", source_db), ("index", index_db)):
-        with closing(sqlite3.connect(f"file:{db}?mode=rw", uri=True, timeout=30.0)) as conn:
-            conn.execute("PRAGMA busy_timeout = 30000")
-            row = conn.execute("PRAGMA journal_mode").fetchone()
-        if row is None:
-            raise RuntimeError(f"legacy browser repair could not read {name} journal mode")
-        modes[name] = str(row[0]).lower()
-    return modes
-
-
-def _legacy_browser_set_journal_mode(db: Path, *, name: str, mode: str) -> None:
-    if mode not in {"delete", "wal"}:
-        raise ValueError(f"unsupported legacy browser journal mode: {mode}")
-    with closing(sqlite3.connect(f"file:{db}?mode=rw", uri=True, timeout=30.0)) as conn:
-        conn.execute("PRAGMA busy_timeout = 30000")
-        row = conn.execute(f"PRAGMA journal_mode = {mode.upper()}").fetchone()
-    if row is None or str(row[0]).lower() != mode:
-        raise RuntimeError(f"legacy browser repair could not set {name} journal_mode={mode}")
-
-
-def _legacy_browser_checkpoint_wal(db: Path, *, name: str) -> None:
-    with closing(sqlite3.connect(f"file:{db}?mode=rw", uri=True, timeout=30.0)) as conn:
-        conn.execute("PRAGMA busy_timeout = 30000")
-        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-    if row is None or tuple(int(value) for value in row) != (0, 0, 0):
-        raise RuntimeError(f"legacy browser repair requires an idle {name} WAL checkpoint: {row!r}")
-
-
-def _legacy_browser_validate_atomic_file_set(source_db: Path, index_db: Path) -> None:
-    source = source_db.resolve(strict=True)
-    index = index_db.resolve(strict=True)
-    if source.stat().st_dev != index.stat().st_dev:
-        raise RuntimeError("legacy browser repair requires source.db and index.db in one archive filesystem")
-
-
-def _legacy_browser_normalize_journal_posture(source_db: Path, index_db: Path) -> dict[str, str]:
-    """Recover any prior legacy interruption to the normal WAL serving posture."""
-    before = _legacy_browser_journal_modes(source_db, index_db)
-    unsupported = {name: mode for name, mode in before.items() if mode not in {"wal", "delete"}}
-    if unsupported:
-        raise RuntimeError(f"legacy browser repair found unsupported journal posture: {unsupported!r}")
-    for name, db in (("source", source_db), ("index", index_db)):
-        if before[name] != "wal":
-            _legacy_browser_set_journal_mode(db, name=name, mode="wal")
-    after = _legacy_browser_journal_modes(source_db, index_db)
-    if after != {"source": "wal", "index": "wal"}:
-        raise RuntimeError(f"legacy browser repair could not restore WAL posture: {after!r}")
-    return before
-
-
-def _legacy_browser_copy_forward_checkpoint(stage: str) -> None:
-    """Test seam for a process death at an exact crash boundary."""
-    del stage
-
-
-@contextmanager
-def _legacy_browser_rollback_superjournal_window(
-    source_db: Path, index_db: Path
-) -> Iterator[tuple[sqlite3.Connection, dict[str, dict[str, str]]]]:
-    """Yield the legacy-only crash-atomic cross-tier maintenance transaction."""
-    _legacy_browser_validate_atomic_file_set(source_db, index_db)
-    observation: dict[str, dict[str, str]] = {"before_transport": _legacy_browser_journal_modes(source_db, index_db)}
-    conn: sqlite3.Connection | None = None
-    failed = False
-    try:
-        _legacy_browser_checkpoint_wal(index_db, name="index")
-        _legacy_browser_checkpoint_wal(source_db, name="source")
-        _legacy_browser_set_journal_mode(index_db, name="index", mode="delete")
-        _legacy_browser_set_journal_mode(source_db, name="source", mode="delete")
-        if _legacy_browser_journal_modes(source_db, index_db) != {"source": "delete", "index": "delete"}:
-            raise RuntimeError("legacy browser repair could not enter rollback-journal posture")
-        conn = sqlite3.connect(f"file:{index_db}?mode=rw", uri=True, timeout=30.0)
-        conn.execute("PRAGMA busy_timeout = 30000")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-        conn.execute("PRAGMA main.synchronous = EXTRA")
-        conn.execute("PRAGMA source.synchronous = EXTRA")
-        if int(conn.execute("PRAGMA main.synchronous").fetchone()[0]) != 3:
-            raise RuntimeError("legacy browser repair could not set index synchronous=EXTRA")
-        if int(conn.execute("PRAGMA source.synchronous").fetchone()[0]) != 3:
-            raise RuntimeError("legacy browser repair could not set source synchronous=EXTRA")
-        conn.execute("BEGIN EXCLUSIVE")
-        yield conn, observation
-    except BaseException:
-        failed = True
-        if conn is not None and conn.in_transaction:
-            with suppress(sqlite3.Error):
-                conn.rollback()
-        raise
-    finally:
-        if conn is not None:
-            conn.close()
-        try:
-            # A completed or rolled-back transport always returns the daemon's
-            # normal WAL posture before its receipt can become terminal.
-            _legacy_browser_set_journal_mode(source_db, name="source", mode="wal")
-            _legacy_browser_set_journal_mode(index_db, name="index", mode="wal")
-            observation["after_restore"] = _legacy_browser_journal_modes(source_db, index_db)
-            if observation["after_restore"] != {"source": "wal", "index": "wal"}:
-                raise RuntimeError("legacy browser repair did not restore WAL posture")
-        except Exception:
-            if failed:
-                logger.exception("legacy browser repair could not restore WAL after a failed transport")
-            else:
-                raise
-
-
-def _lock_browser_origin_receipt(
-    path: Path,
-    items: list[BrowserCaptureOriginRepairItem],
-    *,
-    schema: str,
-) -> _BrowserOriginReceipt:
-    if path.is_symlink():
-        raise RuntimeError("repair receipt path must not be a symbolic link")
-    targets = [_browser_origin_item_payload(item) for item in items]
-    requires_legacy_transaction = _browser_origin_requires_legacy_transaction(items)
-    target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        opened = os.fstat(descriptor)
-        named = path.stat(follow_symlinks=False)
-        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-            raise RuntimeError("repair receipt path changed while it was being locked")
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        chunks: list[bytes] = []
-        remaining = opened.st_size
-        while remaining:
-            chunk = os.read(descriptor, remaining)
-            if not chunk:
-                raise RuntimeError("existing repair receipt changed during its locked read")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        existing = b"".join(chunks)
-        if existing:
-            first, separator, tail = existing.partition(b"\n")
-            if not separator:
-                raise RuntimeError("existing repair receipt has a torn planned record")
-            try:
-                planned = json.loads(first)
-            except (ValueError, json.JSONDecodeError) as exc:
-                raise RuntimeError("existing repair receipt has invalid planned JSON") from exc
-            expected = {
-                "schema": schema,
-                "state": "planned",
-                "target_hash": target_hash,
-                "targets": targets,
-            }
-            if requires_legacy_transaction:
-                expected["transaction_protocol"] = _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
-            if {key: planned.get(key) for key in expected} != expected:
-                raise RuntimeError("existing repair receipt targets do not match the exact proof")
-            terminal = False
-            torn = tail
-            if tail.endswith(b"\n") and tail:
-                lines = tail.splitlines()
-                try:
-                    applied = json.loads(lines[-1])
-                except (ValueError, json.JSONDecodeError):
-                    applied = None
-                if isinstance(applied, dict) and applied.get("state") == "applied":
-                    requires_legacy_witness = requires_legacy_transaction
-                    legacy_witness_matches = applied.get(
-                        "legacy_native_witness_bindings"
-                    ) == _browser_origin_legacy_native_witness_bindings(items)
-                    if (
-                        applied.get("schema") != schema
-                        or applied.get("target_hash") != target_hash
-                        or applied.get("replacement_raw_ids") != [item.replacement_raw_id for item in items]
-                        or applied.get("semantic_witness_bindings") != _browser_origin_semantic_witness_bindings(items)
-                        or applied.get("terminal_byte_witness_bindings")
-                        != _browser_origin_terminal_byte_witness_bindings(items)
-                        or (requires_legacy_witness and not legacy_witness_matches)
-                        or (
-                            requires_legacy_witness
-                            and applied.get("transaction_protocol") != _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
-                        )
-                        or (
-                            not requires_legacy_witness
-                            and applied.get("legacy_native_witness_bindings") is not None
-                            and not legacy_witness_matches
-                        )
-                    ):
-                        raise RuntimeError("existing repair receipt has a conflicting terminal record")
-                    terminal = True
-                    torn = b""
-            return _BrowserOriginReceipt(path, descriptor, target_hash, terminal, torn)
-        planned = {
-            "schema": schema,
-            "state": "planned",
-            "target_hash": target_hash,
-            "targets": targets,
-            "planned_at_ms": int(time.time() * 1000),
-        }
-        if requires_legacy_transaction:
-            planned["transaction_protocol"] = _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
-        _write_receipt_all(descriptor, (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode())
-        os.fsync(descriptor)
-        _fsync_parent(path)
-        return _BrowserOriginReceipt(path, descriptor, target_hash, False)
-    except Exception:
-        with suppress(OSError):
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
-        raise
-
-
-def _finish_browser_origin_receipt(
-    receipt: _BrowserOriginReceipt,
-    items: list[BrowserCaptureOriginRepairItem],
-    *,
-    schema: str,
-    legacy_journal_modes: Mapping[str, object] | None = None,
-) -> None:
-    os.lseek(receipt.descriptor, 0, os.SEEK_END)
-    terminal: dict[str, object] = {
-        "schema": schema,
-        "state": "applied",
-        "target_hash": receipt.target_hash,
-        "applied_at_ms": int(time.time() * 1000),
-        "replacement_raw_ids": [item.replacement_raw_id for item in items],
-        "semantic_witness_bindings": _browser_origin_semantic_witness_bindings(items),
-        "terminal_byte_witness_bindings": _browser_origin_terminal_byte_witness_bindings(items),
-        "legacy_native_witness_bindings": _browser_origin_legacy_native_witness_bindings(items),
-    }
-    if _browser_origin_requires_legacy_transaction(items):
-        if legacy_journal_modes is None:
-            raise RuntimeError("legacy browser repair cannot finalize without journal protocol evidence")
-        terminal["transaction_protocol"] = _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
-        terminal["legacy_journal_modes"] = dict(legacy_journal_modes)
-    if receipt.torn:
-        if not receipt.torn.endswith(b"\n"):
-            _write_receipt_all(receipt.descriptor, b"\xff\n")
-        terminal["preserved_torn_terminal"] = {
-            "bytes": len(receipt.torn),
-            "sha256": hashlib.sha256(receipt.torn).hexdigest(),
-        }
-    _write_receipt_all(
-        receipt.descriptor,
-        (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode(),
-    )
-    os.fsync(receipt.descriptor)
-    _fsync_parent(receipt.path)
 
 
 def _stage_browser_origin_copy_forward_source(
@@ -3268,14 +2590,80 @@ def _finalize_browser_origin_copy_forward_index(conn: sqlite3.Connection, item: 
         ),
         decided_at_ms=acquired_at_ms,
     )
+    _retire_browser_origin_legacy_head(
+        conn,
+        item,
+        accepted_raw_id=item.copy_forward_raw_id,
+        accepted_source_revision=item.blob_hash,
+        accepted_content_hash=item.replacement_content_hash or item.accepted_content_hash,
+        accepted_frontier_kind="byte",
+        accepted_frontier=item.accepted_frontier,
+        decided_at_ms=acquired_at_ms,
+    )
 
 
-def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+def _retire_browser_origin_legacy_head(
+    conn: sqlite3.Connection,
+    item: BrowserCaptureOriginRepairItem,
+    *,
+    accepted_raw_id: str,
+    accepted_source_revision: str,
+    accepted_content_hash: str,
+    accepted_frontier_kind: str,
+    accepted_frontier: int,
+    decided_at_ms: int,
+) -> None:
+    """Terminally receipt and remove the exact obsolete unknown-key head."""
     from polylogue.storage.sqlite.archive_tiers.revision_application import (
         RevisionApplicationReceipt,
         record_revision_application_sync,
     )
 
+    assert item.session_id is not None
+    assert item.old_logical_source_key is not None
+    assert item.blob_hash is not None
+    assert item.accepted_content_hash is not None
+    assert item.accepted_frontier is not None
+    record_revision_application_sync(
+        conn,
+        RevisionApplicationReceipt(
+            raw_id=item.raw_id,
+            session_id=item.session_id,
+            logical_source_key=item.old_logical_source_key,
+            source_revision=item.blob_hash,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SUPERSEDED,
+            accepted_raw_id=accepted_raw_id,
+            accepted_source_revision=accepted_source_revision,
+            accepted_content_hash=bytes.fromhex(accepted_content_hash),
+            accepted_frontier_kind=accepted_frontier_kind,
+            accepted_frontier=accepted_frontier,
+            detail=f"browser_capture_origin_supersession:{item.raw_id}",
+        ),
+        decided_at_ms=decided_at_ms,
+    )
+    deleted = conn.execute(
+        """
+        DELETE FROM raw_revision_heads
+        WHERE logical_source_key = ? AND session_id = ? AND accepted_raw_id = ?
+          AND accepted_source_revision = ? AND accepted_content_hash = ?
+          AND accepted_frontier_kind = 'byte' AND accepted_frontier = ?
+          AND acquisition_generation = 0 AND append_end_offset IS NULL
+        """,
+        (
+            item.old_logical_source_key,
+            item.session_id,
+            item.raw_id,
+            item.blob_hash,
+            bytes.fromhex(item.accepted_content_hash),
+            item.accepted_frontier,
+        ),
+    ).rowcount
+    if deleted != 1:
+        raise RuntimeError(f"obsolete browser-origin head CAS failed for {item.raw_id}")
+
+
+def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
     assert item.session_id is not None
     assert item.canonical_logical_source_key is not None
     assert item.blob_hash is not None
@@ -3291,22 +2679,14 @@ def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: Brows
     )
     if cursor.rowcount != 1:
         raise RuntimeError(f"session raw pointer CAS failed for {item.raw_id}")
-    record_revision_application_sync(
+    _retire_browser_origin_legacy_head(
         conn,
-        RevisionApplicationReceipt(
-            raw_id=item.raw_id,
-            session_id=item.session_id,
-            logical_source_key=item.canonical_logical_source_key,
-            source_revision=item.blob_hash,
-            acquisition_generation=0,
-            decision=ApplicationDecision.SUPERSEDED,
-            accepted_raw_id=item.replacement_raw_id,
-            accepted_source_revision=item.replacement_source_revision,
-            accepted_content_hash=bytes.fromhex(item.accepted_content_hash),
-            accepted_frontier_kind=item.replacement_frontier_kind,
-            accepted_frontier=item.replacement_frontier,
-            detail=f"browser_capture_origin_supersession:{item.raw_id}",
-        ),
+        item,
+        accepted_raw_id=item.replacement_raw_id,
+        accepted_source_revision=item.replacement_source_revision,
+        accepted_content_hash=item.replacement_content_hash or item.accepted_content_hash,
+        accepted_frontier_kind=item.replacement_frontier_kind,
+        accepted_frontier=item.replacement_frontier,
         decided_at_ms=decided_at_ms,
     )
 
@@ -3321,272 +2701,179 @@ def _apply_browser_origin_repair_item(conn: sqlite3.Connection, item: BrowserCap
     raise RuntimeError(f"unsupported browser-capture origin repair strategy: {item.repair_strategy}")
 
 
-def _repair_browser_capture_origin_mismatches(
+def _browser_origin_strategy_terminal(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> bool:
+    """Prove the shared strategy retired the legacy head and selected its successor."""
+    replacement_raw_id = item.copy_forward_raw_id or item.replacement_raw_id
+    if (
+        item.session_id is None
+        or item.old_logical_source_key is None
+        or item.canonical_logical_source_key is None
+        or replacement_raw_id is None
+        or item.replacement_source_revision is None
+        or item.replacement_frontier_kind is None
+        or item.replacement_frontier is None
+    ):
+        return False
+    session = conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (item.session_id,)).fetchone()
+    canonical = conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier
+        FROM raw_revision_heads WHERE logical_source_key = ? AND session_id = ?
+        """,
+        (item.canonical_logical_source_key, item.session_id),
+    ).fetchone()
+    legacy = conn.execute(
+        "SELECT 1 FROM raw_revision_heads WHERE logical_source_key = ?",
+        (item.old_logical_source_key,),
+    ).fetchone()
+    superseded = conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash
+        FROM raw_revision_applications
+        WHERE raw_id = ? AND session_id = ? AND logical_source_key = ?
+          AND decision = 'superseded'
+        """,
+        (item.raw_id, item.session_id, item.old_logical_source_key),
+    ).fetchone()
+    expected = (
+        replacement_raw_id,
+        item.replacement_source_revision,
+        bytes.fromhex(item.replacement_content_hash or item.accepted_content_hash or ""),
+        item.replacement_frontier_kind,
+        item.replacement_frontier,
+    )
+    expected_supersession = expected[:3]
+    return (
+        session is not None
+        and str(session[0]) == replacement_raw_id
+        and canonical is not None
+        and tuple(canonical) == expected
+        and legacy is None
+        and superseded is not None
+        and tuple(superseded) == expected_supersession
+    )
+
+
+def _apply_browser_conflict_canonical_resolution(
+    archive_root: Path,
+    conn: sqlite3.Connection,
+    raw_id: str,
+    expected_witness: Mapping[str, object],
+) -> None:
+    """Apply one explicit retain-canonical judgment against an exact conflict witness."""
+    base = _inspect_browser_capture_origin_strategy(archive_root, raw_id, conn=conn)
+    if base.status != "ineligible":
+        raise RuntimeError("conflict resolution no longer observes a conflicting browser authority")
+    current = _browser_canonical_authority_conflict_witness(archive_root, conn, raw_id, base.reason)
+    current_witness = dataclasses.asdict(current)
+    # ``reason`` is the inspector's human-readable rejection path.  It can
+    # legitimately become more specific as the shared classifier evolves and
+    # is deliberately excluded from the evidence digest.  Every structural
+    # witness field remains an exact CAS precondition.
+    comparable_current = {key: value for key, value in current_witness.items() if key != "reason"}
+    comparable_expected = {key: value for key, value in expected_witness.items() if key != "reason"}
+    if comparable_current != comparable_expected:
+        changed_fields = sorted(
+            key
+            for key in comparable_current.keys() | comparable_expected.keys()
+            if comparable_current.get(key) != comparable_expected.get(key)
+        )
+        raise RuntimeError(
+            f"browser conflict evidence changed after operator judgment: fields={','.join(changed_fields)}"
+        )
+    required = (
+        current.session_id,
+        current.old_logical_source_key,
+        current.canonical_logical_source_key,
+        current.unknown_raw_content_hash,
+        current.unknown_source_revision,
+        current.unknown_frontier,
+        current.competing_raw_id,
+        current.competing_content_hash,
+        current.competing_source_revision,
+        current.competing_frontier_kind,
+        current.competing_frontier,
+    )
+    if any(value is None for value in required):
+        raise RuntimeError("retain-canonical judgment lacks a complete typed competing-head witness")
+    repair_item = BrowserCaptureOriginRepairItem(
+        raw_id=raw_id,
+        status="eligible",
+        reason="accepted operator judgment retained canonical authority",
+        session_id=current.session_id,
+        old_logical_source_key=current.old_logical_source_key,
+        canonical_logical_source_key=current.canonical_logical_source_key,
+        blob_hash=current.unknown_source_revision,
+        accepted_content_hash=current.unknown_raw_content_hash,
+        accepted_frontier=current.unknown_frontier,
+        repair_strategy="restore_canonical_head",
+        replacement_raw_id=current.competing_raw_id,
+        replacement_source_revision=current.competing_source_revision,
+        replacement_content_hash=current.competing_content_hash,
+        replacement_frontier_kind=current.competing_frontier_kind,
+        replacement_frontier=current.competing_frontier,
+    )
+    _restore_browser_origin_canonical_head(conn, repair_item)
+    if not _browser_origin_strategy_terminal(conn, repair_item):
+        raise RuntimeError("retain-canonical judgment did not reach its typed terminal postcondition")
+
+
+def _inspect_browser_capture_origin_strategy(
+    archive_root: Path,
+    raw_id: str,
+    *,
+    conn: sqlite3.Connection,
+) -> BrowserCaptureOriginRepairItem:
+    """Select one admitted strategy shape from its durable source envelope."""
+    conn.row_factory = sqlite3.Row
+    envelope = conn.execute(
+        "SELECT native_id, revision_authority FROM source.raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    legacy_null = bool(
+        envelope is not None
+        and envelope["native_id"] is None
+        and envelope["revision_authority"] == RawRevisionAuthority.QUARANTINED.value
+    )
+    byte_proven_null = bool(
+        envelope is not None
+        and envelope["native_id"] is None
+        and envelope["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value
+    )
+    return _inspect_browser_capture_origin_mismatch(
+        archive_root,
+        raw_id,
+        conn=conn,
+        allow_legacy_null_native_id=legacy_null,
+        allow_byte_proven_null_native_id_rekey=byte_proven_null,
+    )
+
+
+def inspect_browser_capture_origin_mismatches(
     config: Config,
     raw_ids: list[str],
-    *,
-    apply: bool = False,
-    receipt_path: Path | None = None,
-    proof_digest: str | None = None,
-    allow_legacy_null_native_id: bool = False,
-    allow_byte_proven_null_native_id_rekey: bool = False,
-    receipt_schema: str = _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
-) -> BrowserCaptureOriginRepairReport:
-    """Copy exact browser-capture evidence forward under parsed origin authority."""
+) -> tuple[BrowserCaptureOriginRepairItem, ...]:
+    """Return the exact admitted browser-origin strategy for each raw.
+
+    The durable source envelope selects the applicable strategy shape.  This
+    keeps historical null-native-id variants behind the same inspector and
+    plan contract instead of exposing mode-specific repair entrypoints.
+    """
     if len(set(raw_ids)) != len(raw_ids):
         raise ValueError("duplicate raw ids are not allowed")
     if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
         raise ValueError("raw-id list must contain 1..100 entries")
     if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
-    block_reason = offline_maintenance_block_reason(config, active=apply, dry_run=not apply)
-    if block_reason is not None:
-        raise RuntimeError(block_reason)
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
-
-    def inspect(connection: sqlite3.Connection) -> list[BrowserCaptureOriginRepairItem]:
-        return [
-            _inspect_browser_capture_origin_mismatch(
-                archive_root,
-                raw_id,
-                conn=connection,
-                allow_legacy_null_native_id=allow_legacy_null_native_id,
-                allow_byte_proven_null_native_id_rekey=allow_byte_proven_null_native_id_rekey,
-            )
-            for raw_id in raw_ids
-        ]
-
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-        items = inspect(conn)
-    aggregate = _browser_origin_proof_digest(items)
-    if apply and any(item.status == "ineligible" for item in items):
-        raise RuntimeError("browser-capture origin repair refused because one or more targets are ineligible")
-    if apply and receipt_path is None:
-        raise ValueError("apply requires an explicit operator repair receipt path")
-    if apply and proof_digest != aggregate:
-        raise RuntimeError("apply proof digest does not match the exact dry-run target list")
-    if apply:
-        from polylogue.storage.blob_publication import exclude_archive_blob_publishers
-        from polylogue.storage.index_generation import RebuildLease
-
-        assert receipt_path is not None
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with RebuildLease(archive_root), exclude_archive_blob_publishers(source_db):
-            receipt = _lock_browser_origin_receipt(receipt_path, items, schema=receipt_schema)
-            try:
-                legacy_journal_modes: Mapping[str, object] | None = None
-                if _browser_origin_requires_legacy_transaction(items):
-                    # A previous process may have died after its crash-atomic
-                    # commit and before WAL restoration/receipt finalization.
-                    # Normalize that safe mixed posture before inspecting any
-                    # terminal state or issuing another legacy transaction.
-                    legacy_journal_modes = {
-                        "before_normalization": _legacy_browser_normalize_journal_posture(source_db, index_db)
-                    }
-                with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
-                    proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-                    pre_source_items = inspect(proof_conn)
-                if _browser_origin_proof_digest(pre_source_items) != proof_digest:
-                    raise RuntimeError("authority proof changed before copy-forward source staging")
-                if any(item.status == "ineligible" for item in pre_source_items):
-                    raise RuntimeError("a browser-capture origin target became ineligible before source staging")
-                if _browser_origin_requires_legacy_transaction(pre_source_items):
-                    if all(item.status == "already_repaired" for item in pre_source_items):
-                        locked = pre_source_items
-                        after = pre_source_items
-                        assert legacy_journal_modes is not None
-                        legacy_journal_modes = {
-                            **legacy_journal_modes,
-                            "after_restore": _legacy_browser_journal_modes(source_db, index_db),
-                        }
-                    else:
-                        # The legacy route must never leave a source-only
-                        # stage. DELETE rollback journals plus an attached
-                        # non-memory index main database let SQLite use its
-                        # crash-atomic multi-file super-journal protocol.
-                        with _legacy_browser_rollback_superjournal_window(source_db, index_db) as (
-                            conn,
-                            transport_journal_modes,
-                        ):
-                            locked = inspect(conn)
-                            if _browser_origin_proof_digest(locked) != proof_digest:
-                                raise RuntimeError("authority proof changed after acquiring the repair transaction")
-                            if any(item.status == "ineligible" for item in locked):
-                                raise RuntimeError("a browser-capture origin target became ineligible")
-                            if receipt.terminal and any(item.status != "already_repaired" for item in locked):
-                                raise RuntimeError(
-                                    "terminal operator receipt disagrees with durable copy-forward state"
-                                )
-                            for item in locked:
-                                if (
-                                    item.status == "eligible"
-                                    and item.repair_strategy == "copy_forward"
-                                    and not item.copy_forward_source_complete
-                                ):
-                                    _verify_browser_origin_copy_forward_source_stage(
-                                        archive_root, conn, item, source_schema="source"
-                                    )
-                                    _stage_browser_origin_copy_forward_source(conn, item, source_schema="source")
-                            for item in locked:
-                                if item.status == "eligible":
-                                    _apply_browser_origin_repair_item(conn, item)
-                            after = inspect(conn)
-                            if any(item.status != "already_repaired" for item in after):
-                                raise RuntimeError("legacy browser copy-forward did not reach terminal state")
-                            _legacy_browser_copy_forward_checkpoint("before_commit")
-                            conn.commit()
-                            _legacy_browser_copy_forward_checkpoint("after_commit")
-                        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as postflight_conn:
-                            postflight_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-                            after = inspect(postflight_conn)
-                        if any(item.status != "already_repaired" for item in after):
-                            raise RuntimeError("legacy browser copy-forward did not survive WAL restoration")
-                        assert legacy_journal_modes is not None
-                        legacy_journal_modes = {
-                            **legacy_journal_modes,
-                            **transport_journal_modes,
-                        }
-                    if receipt.terminal and any(item.status != "already_repaired" for item in after):
-                        raise RuntimeError("terminal operator receipt disagrees with durable copy-forward state")
-                else:
-                    with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
-                        source_conn.execute("PRAGMA foreign_keys = ON")
-                        source_conn.execute("BEGIN IMMEDIATE")
-                        try:
-                            for item in items:
-                                if (
-                                    item.status == "eligible"
-                                    and item.repair_strategy == "copy_forward"
-                                    and not item.copy_forward_source_complete
-                                ):
-                                    _verify_browser_origin_copy_forward_source_stage(archive_root, source_conn, item)
-                                    _stage_browser_origin_copy_forward_source(source_conn, item)
-                            source_conn.commit()
-                        except Exception:
-                            source_conn.rollback()
-                            raise
-                    with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
-                        conn.execute("PRAGMA foreign_keys = ON")
-                        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-                        conn.execute("BEGIN IMMEDIATE")
-                        try:
-                            locked = inspect(conn)
-                            if _browser_origin_proof_digest(locked) != proof_digest:
-                                raise RuntimeError("authority proof changed after acquiring the repair transaction")
-                            if any(item.status == "ineligible" for item in locked):
-                                raise RuntimeError("a browser-capture origin target became ineligible")
-                            if receipt.terminal and any(item.status != "already_repaired" for item in locked):
-                                raise RuntimeError(
-                                    "terminal operator receipt disagrees with durable copy-forward state"
-                                )
-                            for item in locked:
-                                if item.status == "eligible":
-                                    _apply_browser_origin_repair_item(conn, item)
-                            after = inspect(conn)
-                            if any(item.status != "already_repaired" for item in after):
-                                raise RuntimeError("browser-capture origin copy-forward did not reach terminal state")
-                            conn.commit()
-                        except Exception:
-                            conn.rollback()
-                            raise
-                items = [
-                    dataclasses.replace(after_item, repaired=before.status == "eligible")
-                    for before, after_item in zip(locked, after, strict=True)
-                ]
-                if not receipt.terminal:
-                    _finish_browser_origin_receipt(
-                        receipt,
-                        items,
-                        schema=receipt_schema,
-                        legacy_journal_modes=legacy_journal_modes,
-                    )
-            finally:
-                receipt.close()
-    return BrowserCaptureOriginRepairReport(
-        mode="apply" if apply else "dry-run",
-        requested_count=len(items),
-        eligible_count=sum(item.status == "eligible" for item in items),
-        repaired_count=sum(item.repaired for item in items),
-        already_repaired_count=sum(item.status == "already_repaired" for item in items),
-        ineligible_count=sum(item.status == "ineligible" for item in items),
-        proof_digest=aggregate,
-        receipt_path=str(receipt_path) if receipt_path is not None else None,
-        items=tuple(items),
-    )
-
-
-def repair_browser_capture_origin_mismatches(
-    config: Config,
-    raw_ids: list[str],
-    *,
-    apply: bool = False,
-    receipt_path: Path | None = None,
-    proof_digest: str | None = None,
-) -> BrowserCaptureOriginRepairReport:
-    """Copy exact browser-capture evidence forward under parsed origin authority."""
-    return _repair_browser_capture_origin_mismatches(
-        config,
-        raw_ids,
-        apply=apply,
-        receipt_path=receipt_path,
-        proof_digest=proof_digest,
-    )
-
-
-def repair_legacy_browser_capture_missing_native_ids(
-    config: Config,
-    raw_ids: list[str],
-    *,
-    apply: bool = False,
-    receipt_path: Path | None = None,
-    proof_digest: str | None = None,
-) -> BrowserCaptureOriginRepairReport:
-    """Copy forward only the exact legacy browser shape with native_id NULL.
-
-    The legacy raw remains immutable evidence. The parsed native identity is
-    written only to the new canonical raw and to the dedicated receipt.
-    """
-    return _repair_browser_capture_origin_mismatches(
-        config,
-        raw_ids,
-        apply=apply,
-        receipt_path=receipt_path,
-        proof_digest=proof_digest,
-        allow_legacy_null_native_id=True,
-        receipt_schema=_LEGACY_BROWSER_CAPTURE_NATIVE_ID_REPAIR_RECEIPT_SCHEMA,
-    )
-
-
-def repair_byte_proven_browser_capture_null_native_ids(
-    config: Config,
-    raw_ids: list[str],
-    *,
-    apply: bool = False,
-    receipt_path: Path | None = None,
-    proof_digest: str | None = None,
-) -> BrowserCaptureOriginRepairReport:
-    """Rekey only exact byte-proven browser captures with a NULL native id.
-
-    This is deliberately narrower than the ordinary origin repair and the
-    quarantined legacy route: it admits only a byte-proven old unknown-key head
-    with a self-baseline source envelope, no retained membership census, and a
-    matching selected-baseline receipt. It creates a new canonical byte witness
-    while retaining every old source/index record unchanged.
-    """
-    return _repair_browser_capture_origin_mismatches(
-        config,
-        raw_ids,
-        apply=apply,
-        receipt_path=receipt_path,
-        proof_digest=proof_digest,
-        allow_byte_proven_null_native_id_rekey=True,
-        receipt_schema=_BYTE_PROVEN_BROWSER_CAPTURE_REKEY_RECEIPT_SCHEMA,
-    )
+        return tuple(_inspect_browser_capture_origin_strategy(archive_root, raw_id, conn=conn) for raw_id in raw_ids)
 
 
 def _browser_canonical_authority_conflict_witness(
@@ -3609,7 +2896,7 @@ def _browser_canonical_authority_conflict_witness(
 
     raw = conn.execute(
         """
-        SELECT origin, source_path, blob_hash, blob_size
+        SELECT origin, source_path, blob_hash, blob_size, source_revision
         FROM source.raw_sessions WHERE raw_id = ?
         """,
         (raw_id,),
@@ -3649,10 +2936,20 @@ def _browser_canonical_authority_conflict_witness(
 
     head = conn.execute(
         """
-        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, decided_at_ms
         FROM raw_revision_heads WHERE logical_source_key = ?
         """,
         (canonical_key,),
+    ).fetchone()
+    old_key = f"{Provider.UNKNOWN.value}:{session.provider_session_id}"
+    unknown_head = conn.execute(
+        """
+        SELECT accepted_frontier_kind, accepted_frontier, decided_at_ms
+        FROM raw_revision_heads
+        WHERE logical_source_key = ? AND session_id = ? AND accepted_raw_id = ?
+        """,
+        (old_key, session_id, raw_id),
     ).fetchone()
     # Deliberately not scoped to ``canonical_key``: the byte-proven-rekey
     # actuator's precondition rejects on *any* retained membership row for
@@ -3675,7 +2972,10 @@ def _browser_canonical_authority_conflict_witness(
 
     competing_raw_id: str | None = None
     competing_content_hash: str | None = None
+    competing_source_revision: str | None = None
     competing_frontier_kind: str | None = None
+    competing_frontier: int | None = None
+    competing_decided_at_ms: int | None = None
     competing_decision: str | None = None
     competing_message_count: int | None = None
     divergent_message_index: int | None = None
@@ -3684,7 +2984,10 @@ def _browser_canonical_authority_conflict_witness(
     if head is not None:
         competing_raw_id = str(head["accepted_raw_id"])
         competing_content_hash = _bytes_value(head["accepted_content_hash"]).hex()
+        competing_source_revision = str(head["accepted_source_revision"])
         competing_frontier_kind = str(head["accepted_frontier_kind"])
+        competing_frontier = int(head["accepted_frontier"])
+        competing_decided_at_ms = int(head["decided_at_ms"])
         application = conn.execute(
             """
             SELECT decision FROM raw_revision_applications
@@ -3752,8 +3055,16 @@ def _browser_canonical_authority_conflict_witness(
         "session_id": session_id,
         "canonical_logical_source_key": canonical_key,
         "unknown_raw_content_hash": accepted_hash.hex(),
+        "unknown_source_revision": str(raw["source_revision"]),
+        "unknown_frontier_kind": None if unknown_head is None else str(unknown_head["accepted_frontier_kind"]),
+        "unknown_frontier": None if unknown_head is None else int(unknown_head["accepted_frontier"]),
+        "unknown_decided_at_ms": None if unknown_head is None else int(unknown_head["decided_at_ms"]),
         "competing_raw_id": competing_raw_id,
         "competing_content_hash": competing_content_hash,
+        "competing_source_revision": competing_source_revision,
+        "competing_frontier_kind": competing_frontier_kind,
+        "competing_frontier": competing_frontier,
+        "competing_decided_at_ms": competing_decided_at_ms,
         "competing_decision": competing_decision,
         "divergent_message_index": divergent_message_index,
     }
@@ -3763,13 +3074,20 @@ def _browser_canonical_authority_conflict_witness(
         status="ineligible",
         reason=base_reason,
         session_id=session_id,
-        old_logical_source_key=f"{Provider.UNKNOWN.value}:{session.provider_session_id}",
+        old_logical_source_key=old_key,
         canonical_logical_source_key=canonical_key,
         unknown_raw_content_hash=accepted_hash.hex(),
+        unknown_source_revision=str(raw["source_revision"]),
+        unknown_frontier_kind=None if unknown_head is None else str(unknown_head["accepted_frontier_kind"]),
+        unknown_frontier=None if unknown_head is None else int(unknown_head["accepted_frontier"]),
+        unknown_decided_at_ms=None if unknown_head is None else int(unknown_head["decided_at_ms"]),
         unknown_raw_message_count=len(projection.message_hashes),
         competing_raw_id=competing_raw_id,
         competing_content_hash=competing_content_hash,
+        competing_source_revision=competing_source_revision,
         competing_frontier_kind=competing_frontier_kind,
+        competing_frontier=competing_frontier,
+        competing_decided_at_ms=competing_decided_at_ms,
         competing_decision=competing_decision,
         competing_message_count=competing_message_count,
         divergent_message_index=divergent_message_index,
@@ -3783,8 +3101,8 @@ def inspect_browser_canonical_authority_conflicts(
 ) -> BrowserCanonicalAuthorityConflictReport:
     """Build read-only evidence packets for browser-capture raws a safe rekey refuses.
 
-    Companion to :func:`repair_byte_proven_browser_capture_null_native_ids`
-    (polylogue-lkrc.3): re-runs that actuator's exact eligibility proof for each
+    Companion to :func:`inspect_browser_capture_origin_mismatches`: re-runs the
+    shared actuator strategy's exact eligibility proof for each
     raw id. A raw that comes back ``eligible``/``already_repaired`` is not a
     conflict -- the ordinary actuator already owns it -- and is only counted in
     ``resolved_count``. A raw that stays ``ineligible`` gets an enriched
@@ -3864,13 +3182,7 @@ def record_browser_canonical_authority_conflict_blockers(
     an authoritative, context-injectable claim; an operator must explicitly
     judge it (mirrors ``upsert_pathology_findings_as_assertions``, #2383).
 
-    Deliberately exempt from this file's apply-flag/proof-digest/receipt
-    ceremony (unlike ``repair_duplicate_raw_identity`` and every other
-    actuator in this module): that ceremony exists because those actuators
-    repoint *authoritative* identity state (``raw_revision_heads``,
-    ``sessions``) where an error is expensive to detect and reverse, so they
-    need a CAS re-proof under an exclusive transaction plus a crash-durable
-    receipt trail. This function never touches authoritative state -- it
+    This function never touches authoritative identity state -- it
     writes exactly one ``candidate``/non-injected/private assertion, through
     ``upsert_assertion``'s single write chokepoint, which already refuses to
     resurrect a judged-terminal row (accepted/rejected/deferred/superseded)
@@ -3962,8 +3274,6 @@ def record_browser_canonical_authority_conflict_blockers(
 
 # --- polylogue-t0dy: reconcile pre-#2729 duplicate-raw scheme ---
 
-_DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA = "polylogue.duplicate-raw-identity-repair.v1"
-
 
 @dataclass(frozen=True, slots=True)
 class DuplicateRawIdentityRepairItem:
@@ -3982,245 +3292,6 @@ class DuplicateRawIdentityRepairItem:
     accepted_decided_at_ms: int | None = None
     proof_digest: str | None = None
     repaired: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class DuplicateRawIdentityRepairReport:
-    mode: str
-    requested_count: int
-    eligible_count: int
-    repaired_count: int
-    already_repaired_count: int
-    ineligible_count: int
-    proof_digest: str
-    receipt_path: str | None
-    items: tuple[DuplicateRawIdentityRepairItem, ...]
-
-
-def _duplicate_raw_identity_repair_targets(
-    items: list[DuplicateRawIdentityRepairItem],
-) -> list[dict[str, object]]:
-    """Identify each locked target by its requested ``(stale, canonical)`` pair only.
-
-    Deliberately narrower than the quarantined-raw receipt's full-item-proof
-    targets: for that actuator the accepted head is never touched by repair,
-    so a proven item's payload (including its head snapshot) is invariant
-    across "eligible" and "already_repaired" states and can safely anchor the
-    receipt. Here, repair *repoints* the accepted head (a fresh
-    ``decided_at_ms`` lands on every apply), so an item's full payload is NOT
-    invariant across states. Anchoring the receipt to the stable requested
-    identity instead lets a resumed invocation -- which necessarily re-proves
-    the CAS witness via a fresh ``proof_digest``, not a stale one -- validate
-    against the SAME on-disk receipt without a spurious "targets changed"
-    rejection caused only by the head's own repair-induced timestamp change.
-    """
-    return [{"stale_raw_id": item.stale_raw_id, "canonical_raw_id": item.canonical_raw_id} for item in items]
-
-
-@dataclass(slots=True)
-class _LockedDuplicateRawIdentityRepairReceipt:
-    path: Path
-    descriptor: int
-    target_hash: str
-    terminal: bool
-    repair_intent_stale_raw_ids: tuple[str, ...]
-    torn_terminals: tuple[bytes, ...] = ()
-    receipt_terminated: bool = True
-
-    def close(self) -> None:
-        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
-        os.close(self.descriptor)
-
-
-def _validate_duplicate_raw_identity_repair_receipt_records(
-    parsed_receipt: tuple[list[dict[str, object] | bytes], bool],
-    *,
-    targets: list[dict[str, object]],
-    target_hash: str,
-) -> tuple[bool, tuple[str, ...], tuple[bytes, ...], bool]:
-    """Mirror ``_validate_repair_receipt_records`` keyed on ``stale_raw_id``.
-
-    Same planned/applied two-phase JSONL shape and torn-terminal recovery as
-    the quarantined-accepted-raw receipt (see that function's docstring) --
-    ``repair_duplicate_raw_identity`` needs the identical crash/audit
-    guarantees as every other live-archive actuator in this file.
-    """
-    records, terminated = parsed_receipt
-    if not records:
-        raise RuntimeError("existing repair receipt is empty")
-    planned = records[0]
-    if not isinstance(planned, dict):
-        raise RuntimeError("existing repair receipt does not start with valid planned JSON")
-    planned_keys = {"schema", "state", "target_hash", "targets", "repair_intent_stale_raw_ids", "planned_at_ms"}
-    if set(planned) != planned_keys or planned.get("schema") != _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA:
-        raise RuntimeError("existing repair receipt has an invalid planned record schema")
-    if planned.get("state") != "planned":
-        raise RuntimeError("existing repair receipt must start with a planned record")
-    if planned.get("target_hash") != target_hash or planned.get("targets") != targets:
-        raise RuntimeError("existing repair receipt targets do not match the proven repair set")
-    planned_at_ms = planned.get("planned_at_ms")
-    if not isinstance(planned_at_ms, int) or planned_at_ms < 0:
-        raise RuntimeError("existing repair receipt planned timestamp is invalid")
-    stale_raw_ids = tuple(str(target["stale_raw_id"]) for target in targets)
-    intent = planned.get("repair_intent_stale_raw_ids")
-    if not isinstance(intent, list) or any(not isinstance(raw_id, str) for raw_id in intent):
-        raise RuntimeError("existing repair receipt repair intent is invalid")
-    intent_ids = tuple(cast(list[str], intent))
-    if len(set(intent_ids)) != len(intent_ids) or any(raw_id not in stale_raw_ids for raw_id in intent_ids):
-        raise RuntimeError("existing repair receipt repair intent does not match its targets")
-    if len(records) == 1:
-        if not terminated:
-            raise RuntimeError("existing repair receipt has a torn planned record")
-        return False, intent_ids, (), terminated
-    tail = records[1:]
-    applied = tail[-1] if isinstance(tail[-1], dict) else None
-    torn_terminals = (
-        tuple(record for record in tail[:-1] if isinstance(record, bytes))
-        if applied
-        else tuple(record for record in tail if isinstance(record, bytes))
-    )
-    expected_tail_length = len(torn_terminals) + (1 if applied is not None else 0)
-    if len(tail) != expected_tail_length or any(not fragment for fragment in torn_terminals):
-        raise RuntimeError("existing repair receipt has an invalid state transition")
-    if applied is None:
-        return False, intent_ids, torn_terminals, terminated
-    if not terminated:
-        raise RuntimeError("existing repair receipt has an unterminated applied record")
-    recovered = bool(torn_terminals)
-    applied_keys = {
-        "schema",
-        "state",
-        "target_hash",
-        "applied_at_ms",
-        "repaired_stale_raw_ids",
-        "proven_stale_raw_ids",
-    }
-    if recovered:
-        applied_keys |= {"torn_terminals"}
-    if set(applied) != applied_keys or applied.get("schema") != _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA:
-        raise RuntimeError("existing repair receipt has an invalid applied record schema")
-    if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
-        raise RuntimeError("existing repair receipt has an invalid applied target transition")
-    applied_at_ms = applied.get("applied_at_ms")
-    if not isinstance(applied_at_ms, int) or applied_at_ms < 0:
-        raise RuntimeError("existing repair receipt applied timestamp is invalid")
-    repaired_ids = applied.get("repaired_stale_raw_ids")
-    if (
-        applied.get("proven_stale_raw_ids") != list(stale_raw_ids)
-        or not isinstance(repaired_ids, list)
-        or any(not isinstance(raw_id, str) for raw_id in repaired_ids)
-        or len(set(cast(list[str], repaired_ids))) != len(repaired_ids)
-        or any(raw_id not in intent_ids for raw_id in cast(list[str], repaired_ids))
-    ):
-        raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
-    expected_torn_witnesses = [
-        {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in torn_terminals
-    ]
-    if recovered and applied.get("torn_terminals") != expected_torn_witnesses:
-        raise RuntimeError("existing repair receipt recovery does not match its preserved torn terminal")
-    return True, intent_ids, torn_terminals, terminated
-
-
-def _lock_duplicate_raw_identity_repair_receipt(
-    path: Path,
-    items: list[DuplicateRawIdentityRepairItem],
-) -> _LockedDuplicateRawIdentityRepairReceipt:
-    """Lock one stable receipt inode and create or validate its planned record.
-
-    Same flock(LOCK_EX|LOCK_NB) + O_NOFOLLOW + fsync(file, then parent dir)
-    contract as ``_lock_quarantined_raw_repair_receipt`` -- a concurrent
-    ``--apply`` invocation against the same receipt path fails closed instead
-    of racing a bare ``Path.exists()`` check, and the planned record is
-    durable on disk (not merely in the process) before any mutation begins.
-    """
-    if path.is_symlink():
-        raise RuntimeError("repair receipt path must not be a symbolic link")
-    targets = _duplicate_raw_identity_repair_targets(items)
-    target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    repair_intent_stale_raw_ids = tuple(item.stale_raw_id for item in items if item.status == "eligible")
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        os.close(descriptor)
-        raise RuntimeError("operator repair receipt is already locked by another apply") from exc
-    try:
-        opened = os.fstat(descriptor)
-        named = path.stat(follow_symlinks=False)
-        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-            raise RuntimeError("operator repair receipt path changed while it was being locked")
-        if opened.st_size:
-            terminal, existing_intent, torn_terminals, terminated = (
-                _validate_duplicate_raw_identity_repair_receipt_records(
-                    _receipt_records(descriptor), targets=targets, target_hash=target_hash
-                )
-            )
-            return _LockedDuplicateRawIdentityRepairReceipt(
-                path,
-                descriptor,
-                target_hash,
-                terminal,
-                existing_intent,
-                torn_terminals,
-                terminated,
-            )
-        planned = {
-            "schema": _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA,
-            "state": "planned",
-            "target_hash": target_hash,
-            "targets": targets,
-            "repair_intent_stale_raw_ids": list(repair_intent_stale_raw_ids),
-            "planned_at_ms": int(time.time() * 1000),
-        }
-        encoded = (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        _write_receipt_all(descriptor, encoded)
-        os.fsync(descriptor)
-        _fsync_parent(path)
-        return _LockedDuplicateRawIdentityRepairReceipt(
-            path, descriptor, target_hash, False, repair_intent_stale_raw_ids
-        )
-    except Exception:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
-        raise
-
-
-def _finish_duplicate_raw_identity_repair_receipt(
-    receipt: _LockedDuplicateRawIdentityRepairReceipt,
-    *,
-    items: list[DuplicateRawIdentityRepairItem],
-) -> None:
-    opened = os.fstat(receipt.descriptor)
-    named = receipt.path.stat(follow_symlinks=False)
-    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-        raise RuntimeError("operator repair receipt path changed before terminal append")
-    os.lseek(receipt.descriptor, 0, os.SEEK_END)
-    preserved_torn_terminals = list(receipt.torn_terminals)
-    if preserved_torn_terminals and not receipt.receipt_terminated:
-        # Make even a complete-JSON prefix permanently distinguishable from a
-        # terminal record after the newline is appended, matching the
-        # quarantined-raw receipt's torn-write recovery contract.
-        _write_receipt_all(receipt.descriptor, b"\xff\n")
-        preserved_torn_terminals[-1] += b"\xff"
-    terminal: dict[str, object] = {
-        "schema": _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA,
-        "state": "applied",
-        "target_hash": receipt.target_hash,
-        "applied_at_ms": int(time.time() * 1000),
-        "repaired_stale_raw_ids": [item.stale_raw_id for item in items if item.repaired],
-        "proven_stale_raw_ids": [item.stale_raw_id for item in items],
-    }
-    if preserved_torn_terminals:
-        terminal["torn_terminals"] = [
-            {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()}
-            for fragment in preserved_torn_terminals
-        ]
-    _write_receipt_all(
-        receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    )
-    os.fsync(receipt.descriptor)
-    _fsync_parent(receipt.path)
 
 
 def _duplicate_raw_identity_ineligible(
@@ -4441,128 +3512,6 @@ def _apply_duplicate_raw_identity_repair(conn: sqlite3.Connection, item: Duplica
             detail=f"duplicate_raw_identity_supersession:{item.stale_raw_id}",
         ),
         decided_at_ms=decided_at_ms,
-    )
-
-
-def repair_duplicate_raw_identity(
-    config: Config,
-    pairs: list[tuple[str, str]],
-    *,
-    apply: bool = False,
-    receipt_path: Path | None = None,
-    proof_digest: str | None = None,
-) -> DuplicateRawIdentityRepairReport:
-    """Repoint an accepted head from a pre-#2729 duplicate raw to its post-fix twin.
-
-    polylogue-t0dy: PR #2729 aligned the one-shot importer and the live daemon
-    watcher on one deterministic raw-id scheme (no ``native_id``) so *new*
-    ingests of a grouped/split-session file converge on one raw row instead of
-    duplicating. It explicitly does not retroactively repair raw pairs that
-    already duplicated under the OLD, native_id-inclusive scheme before that
-    fix landed: the accepted head stays bound to the stale raw, and its
-    post-fix, correctly-keyed twin sits orphaned, so every later daemon
-    catch-up pass over that file hits ``RuntimeError: membership replay cannot
-    retire an unrelated accepted head`` (archive.py).
-
-    Each ``(stale_raw_id, canonical_raw_id)`` pair is proven independently by
-    :func:`_inspect_duplicate_raw_identity`: both raws must be verified
-    byte-identical, each raw id must equal the deterministic id its own fields
-    (and native_id shape) predict, the stale raw must be the CURRENT accepted
-    head/session pointer, and the canonical raw must not already be referenced
-    by any head or session -- a genuinely dangling duplicate, never a
-    competing authority. No durable raw/blob row is ever deleted or mutated in
-    place; the stale raw keeps its bytes and gains an immutable ``superseded``
-    application receipt.
-    """
-    if len(pairs) != len({stale for stale, _ in pairs}) or len(pairs) != len({canonical for _, canonical in pairs}):
-        raise ValueError("duplicate stale or canonical raw ids are not allowed")
-    if not pairs or len(pairs) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
-        raise ValueError("raw-id pair list must contain 1..100 entries")
-    for stale_raw_id, canonical_raw_id in pairs:
-        for raw_id in (stale_raw_id, canonical_raw_id):
-            if re.fullmatch(r"[0-9a-f]{64}", raw_id) is None:
-                raise ValueError("raw ids must be lowercase SHA-256 identifiers")
-    block_reason = offline_maintenance_block_reason(config, active=apply, dry_run=not apply)
-    if block_reason is not None:
-        raise RuntimeError(block_reason)
-    archive_root = _raw_materialization_archive_root(config)
-    source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
-    if not source_db.exists() or not index_db.exists():
-        raise RuntimeError("source or index tier is missing")
-
-    def inspect(connection: sqlite3.Connection) -> list[DuplicateRawIdentityRepairItem]:
-        return [
-            _inspect_duplicate_raw_identity(connection, archive_root, stale, canonical) for stale, canonical in pairs
-        ]
-
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
-        items = inspect(conn)
-    aggregate = hashlib.sha256(
-        json.dumps([item.proof_digest for item in items], separators=(",", ":")).encode()
-    ).hexdigest()
-    if apply and any(item.status == "ineligible" for item in items):
-        raise RuntimeError("duplicate raw identity repair refused because one or more targets are ineligible")
-    if apply and receipt_path is None:
-        raise ValueError("apply requires an explicit operator repair receipt path")
-    if apply and proof_digest != aggregate:
-        raise RuntimeError("apply proof digest does not match the exact dry-run target list")
-    if apply:
-        from polylogue.storage.index_generation import RebuildLease
-
-        assert receipt_path is not None
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with RebuildLease(archive_root):
-            receipt = _lock_duplicate_raw_identity_repair_receipt(receipt_path, items)
-            try:
-                with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
-                    conn.row_factory = sqlite3.Row
-                    conn.execute("PRAGMA foreign_keys = ON")
-                    conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
-                    conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        locked = inspect(conn)
-                        locked_digest = hashlib.sha256(
-                            json.dumps([item.proof_digest for item in locked], separators=(",", ":")).encode()
-                        ).hexdigest()
-                        if locked_digest != proof_digest:
-                            raise RuntimeError("authority proof changed after acquiring the repair transaction")
-                        if any(item.status == "ineligible" for item in locked):
-                            raise RuntimeError("a duplicate raw identity target became ineligible")
-                        if receipt.terminal and any(item.status != "already_repaired" for item in locked):
-                            raise RuntimeError("terminal operator receipt disagrees with durable index authority")
-                        if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked):
-                            raise RuntimeError("torn terminal receipt has no matching committed index refinement")
-                        for item in locked:
-                            if item.status == "eligible":
-                                _apply_duplicate_raw_identity_repair(conn, item)
-                        after = inspect(conn)
-                        if any(item.status != "already_repaired" for item in after):
-                            raise RuntimeError("duplicate raw identity repair did not reach terminal state")
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        raise
-                items = [
-                    dataclasses.replace(after_item, repaired=before.status == "eligible")
-                    for before, after_item in zip(locked, after, strict=True)
-                ]
-                if not receipt.terminal:
-                    _finish_duplicate_raw_identity_repair_receipt(receipt, items=items)
-            finally:
-                receipt.close()
-    return DuplicateRawIdentityRepairReport(
-        mode="apply" if apply else "dry-run",
-        requested_count=len(items),
-        eligible_count=sum(item.status == "eligible" for item in items),
-        repaired_count=sum(item.repaired for item in items),
-        already_repaired_count=sum(item.status == "already_repaired" for item in items),
-        ineligible_count=sum(item.status == "ineligible" for item in items),
-        proof_digest=aggregate,
-        receipt_path=str(receipt_path) if receipt_path is not None else None,
-        items=tuple(items),
     )
 
 
@@ -6526,7 +5475,9 @@ def repair_raw_materialization(
             interrupted=True,
         )
     recovered_census_count = len(recovered_censuses)
-    blocker_count = unresolved_raw_authority_blockers(archive_root)
+    from polylogue.storage.raw_authority import unresolved_raw_replay_blockers
+
+    blocker_count = unresolved_raw_replay_blockers(archive_root)
     if blocker_count:
         return _internal_derived_repair_result(
             "raw_materialization",

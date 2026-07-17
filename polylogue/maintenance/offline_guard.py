@@ -35,6 +35,13 @@ def offline_maintenance_block_reason(
     """Return a refusal reason when offline maintenance would race the daemon."""
     if dry_run or not active:
         return None
+    # A daemon-owned writer is already serialized against every other archive
+    # mutation.  Treat it as the online equivalent of the offline exclusion
+    # boundary instead of rejecting the daemon's own convergence work.
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if daemon_write_lease_active():
+        return None
     daemon_pid = running_daemon_pid(config)
     if daemon_pid is None:
         return None

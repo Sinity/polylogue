@@ -144,6 +144,8 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
 
 
 def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
+    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+
     for filename, tier in (
         ("source.db", ArchiveTier.SOURCE),
         ("index.db", ArchiveTier.INDEX),
@@ -154,6 +156,9 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "embeddings.db") as conn:
         conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
         conn.commit()
+    inspect_raw_authority_frontier(
+        Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
+    )
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -546,6 +551,17 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["raw_artifact_limit"] = raw_artifact_limit
         return FakeResult()
 
+    def fake_recover(config: Config) -> tuple[str, ...]:
+        order.append("recover-frontier")
+        calls["recover_archive_root"] = config.archive_root
+        return ()
+
+    def fake_converge(config: Config, *, limit: int) -> int:
+        order.append("frontier")
+        calls["frontier_archive_root"] = config.archive_root
+        calls["frontier_limit"] = limit
+        return 3
+
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
@@ -553,9 +569,14 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         fake_restore_direct_blob_reference_debt,
     )
     monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", fake_repair_raw_materialization)
+    monkeypatch.setattr(
+        "polylogue.storage.raw_reconciler.recover_interrupted_raw_authority_frontier",
+        fake_recover,
+    )
+    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", fake_converge)
 
-    assert daemon_cli._drain_raw_materialization_once(limit=11) == 7
-    assert order == ["restore", "materialize"]
+    assert daemon_cli._drain_raw_materialization_once(limit=11) == 10
+    assert order == ["restore", "recover-frontier", "materialize", "frontier"]
     assert calls == {
         "restore_db_path": tmp_path / "archive" / "source.db",
         "restore_dry_run": False,
@@ -565,6 +586,9 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "render_root": tmp_path / "render",
         "dry_run": False,
         "raw_artifact_limit": 11,
+        "recover_archive_root": tmp_path / "archive",
+        "frontier_archive_root": tmp_path / "archive",
+        "frontier_limit": 8,
     }
 
 

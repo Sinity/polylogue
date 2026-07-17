@@ -857,7 +857,7 @@ files:
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/__init__.py
-    loc: 176
+    loc: 146
     target: polylogue/cli/commands/maintenance/__init__.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_archive_plan.py
@@ -905,7 +905,7 @@ files:
     target: polylogue/cli/commands/maintenance/_preview.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_raw_identity.py
-    loc: 694
+    loc: 220
     target: polylogue/cli/commands/maintenance/_raw_identity.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_rebuild_index.py
@@ -1418,7 +1418,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1983
+    loc: 2018
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1579,7 +1579,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2670
+    loc: 2677
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -1659,7 +1659,7 @@ files:
     target: polylogue/daemon/workspace_routes.py
     owner: stable
   - path: polylogue/daemon/write_coordinator.py
-    loc: 428
+    loc: 439
     target: polylogue/daemon/write_coordinator.py
     owner: stable
   - path: polylogue/demo/__init__.py
@@ -1945,7 +1945,7 @@ files:
     target: polylogue/maintenance/models.py
     owner: stable
   - path: polylogue/maintenance/offline_guard.py
-    loc: 47
+    loc: 54
     target: polylogue/maintenance/offline_guard.py
     owner: stable
   - path: polylogue/maintenance/planner.py
@@ -3240,7 +3240,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_readiness.py
-    loc: 749
+    loc: 818
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_views.py
@@ -3521,7 +3521,11 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_authority.py
-    loc: 1537
+    loc: 1633
+    target: TBD
+    owner: storage-domain
+  - path: polylogue/storage/raw_reconciler.py
+    loc: 1411
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_retention.py
@@ -3530,7 +3534,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7337
+    loc: 6288
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper

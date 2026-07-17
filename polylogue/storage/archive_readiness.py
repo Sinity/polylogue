@@ -16,6 +16,7 @@ from polylogue.archive.raw_materialization import (
 )
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.logging import get_logger
+from polylogue.storage.raw_authority import raw_authority_detail_query_handle
 
 logger = get_logger(__name__)
 
@@ -91,6 +92,9 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     # required the classifier cannot be claimed when the classifier failed.
     if readiness.get("debt_classifier_error"):
         return False
+    frontier = readiness.get("raw_authority_frontier")
+    if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
+        return False
     blocking_keys = (
         "critical",
         "warning",
@@ -102,6 +106,8 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "lost_source_evidence_count",
         "unchecked",
         "affected_unchecked",
+        "raw_authority_frontier_blocking_count",
+        "raw_authority_pending_census_count",
     )
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
 
@@ -234,6 +240,9 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
             lost_source_evidence_count = _missing_source_raw_session_count(conn)
             lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
             authority_census: dict[str, object] | None = None
+            authority_frontier: dict[str, object] | None = None
+            authority_frontier_blocking_count = 0
+            authority_frontier_remediation_refs: list[dict[str, object]] = []
             authority_pending_census_count = 0
             if _table_columns(conn, "source", "raw_authority_censuses"):
                 authority_pending_census_count = int(
@@ -277,6 +286,56 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                         "pending_census_count": authority_pending_census_count,
                         "query_handle": (f"polylogue://raw-authority-census/{census_row['census_id']}/0"),
                     }
+                frontier_row = conn.execute(
+                    """
+                    SELECT census_id, sequence_no, inventory_digest, residual_digest,
+                           plan_count, executable_plan_count, residual_plan_count,
+                           lifecycle_status, completed_at_ms, scope_json,
+                           post_residual_json
+                    FROM source.raw_authority_censuses
+                    WHERE lifecycle_status IN ('completed', 'interrupted')
+                      AND json_extract(scope_json, '$.schema') =
+                          'polylogue.raw-authority-frontier-scope.v1'
+                    ORDER BY sequence_no DESC LIMIT 1
+                    """
+                ).fetchone()
+                if frontier_row is not None:
+                    import json
+
+                    frontier_scope = json.loads(str(frontier_row["scope_json"]))
+                    # An apply census records its pre-application scope for
+                    # auditability, then publishes the actual frontier in the
+                    # postflight residual.  Readiness must reflect that
+                    # terminal state rather than keep an already repaired plan
+                    # blocking until some later inspection happens to run.
+                    frontier_post_residual = json.loads(str(frontier_row["post_residual_json"] or "{}"))
+                    postflight_state_counts = frontier_post_residual.get("state_counts")
+                    scope_state_counts = frontier_scope.get("state_counts")
+                    state_counts_source = (
+                        postflight_state_counts if isinstance(postflight_state_counts, Mapping) else scope_state_counts
+                    )
+                    frontier_state_counts = {
+                        str(key): int(value) for key, value in dict(state_counts_source or {}).items()
+                    }
+                    nonblocking_states = {"proven_current", "superseded"}
+                    authority_frontier_blocking_count = sum(
+                        count for state, count in frontier_state_counts.items() if state not in nonblocking_states
+                    )
+                    authority_frontier = {
+                        "census_id": str(frontier_row["census_id"]),
+                        "sequence_no": int(frontier_row["sequence_no"]),
+                        "inventory_digest": str(frontier_scope.get("inventory_digest") or ""),
+                        "plan_inventory_digest": str(frontier_row["inventory_digest"]),
+                        "residual_digest": str(frontier_row["residual_digest"]),
+                        "plan_count": int(frontier_row["plan_count"]),
+                        "executable_plan_count": int(frontier_row["executable_plan_count"]),
+                        "residual_plan_count": int(frontier_row["residual_plan_count"]),
+                        "state_counts": frontier_state_counts,
+                        "blocking_count": authority_frontier_blocking_count,
+                        "lifecycle_status": str(frontier_row["lifecycle_status"]),
+                        "completed_at_ms": int(frontier_row["completed_at_ms"]),
+                        "query_handle": (f"polylogue://raw-authority-census/{frontier_row['census_id']}/0"),
+                    }
             authority_blocker_count = 0
             if _table_columns(conn, "source", "raw_authority_blockers"):
                 authority_blocker_count = int(
@@ -284,6 +343,25 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                         "SELECT COUNT(*) FROM source.raw_authority_blockers WHERE resolved_at_ms IS NULL"
                     ).fetchone()[0]
                 )
+                authority_frontier_remediation_refs = [
+                    {
+                        "blocker_id": str(blocker_id),
+                        "plan_id": str(plan_id),
+                        "detail_query_handle": raw_authority_detail_query_handle(str(census_id), str(plan_id)),
+                    }
+                    for blocker_id, plan_id, census_id in conn.execute(
+                        """
+                        SELECT b.blocker_id, b.plan_id, b.census_id
+                        FROM source.raw_authority_blockers AS b
+                        JOIN source.raw_authority_plans AS p ON p.plan_id = b.plan_id
+                        WHERE b.resolved_at_ms IS NULL
+                          AND json_extract(p.authority_witness_json, '$.schema') =
+                              'polylogue.raw-authority-frontier-plan.v1'
+                        ORDER BY b.created_at_ms, b.blocker_id
+                        LIMIT 16
+                        """
+                    )
+                ]
     except Exception as exc:
         return {
             "available": False,
@@ -343,6 +421,9 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "category_counts": category_counts,
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
         "raw_authority_census": authority_census,
+        "raw_authority_frontier": authority_frontier,
+        "raw_authority_frontier_blocking_count": authority_frontier_blocking_count,
+        "raw_authority_frontier_remediation_refs": authority_frontier_remediation_refs,
         "raw_authority_blocker_count": authority_blocker_count,
         "raw_authority_pending_census_count": authority_pending_census_count,
         "raw_authority_ledger_counts": {
