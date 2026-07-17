@@ -1,0 +1,1816 @@
+diff --git a/polylogue/api/archive.py b/polylogue/api/archive.py
+index 80d786f1a0793e19087b22938a94c1ebab776532..15ea0db2ca32f057b824dc3ea0272332a666409d 100644
+--- a/polylogue/api/archive.py
++++ b/polylogue/api/archive.py
+@@ -2953,7 +2953,7 @@ class PolylogueArchiveMixin:
+         )
+         return await execute_archive_read(
+             _active_archive_root(self.config),
+-            lambda archive: query_unit_envelope(archive, request),
++            lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
+             ctx=ctx,
+         )
+ 
+diff --git a/polylogue/archive/query/execution_control.py b/polylogue/archive/query/execution_control.py
+index 4c044833c02b5f171db27920b18d638fa59ba5ca..ba6df082a81607ddd0c390863a07b81fd2e2b92c 100644
+--- a/polylogue/archive/query/execution_control.py
++++ b/polylogue/archive/query/execution_control.py
+@@ -15,13 +15,15 @@ This module supplies the reusable layer the shared query transaction
+   Admission is backpressure, never a semantic refusal: valid large work is
+   eventually admitted.
+ - :class:`InterruptibleSQLiteRead` — runs one unit of archive read work on a
+-  dedicated read-only connection in a worker thread, with a SQLite progress
+-  handler enforcing cancellation/deadline and a cross-thread interrupt path.
++  dedicated read-only connection and snapshot in a worker thread, with a SQLite
++  progress handler enforcing cancellation/deadline/work budgets and a
++  cross-thread interrupt path.
+ - :class:`QueryExecutionReceipt` — the observable outcome record. Receipts
+   carry safe query refs (hashes), never raw expressions.
+ 
+-Paging/spool formats and request-level budget contracts remain z9gh.9.1
+-scope; this slice owns execution and ownership primitives only.
++Paging/spool formats and cross-surface budget policy remain z9gh.9.1 scope.
++This layer owns execution, snapshot/connection lifetime, optional SQLite VM-work
++containment, and production work/cleanup receipts.
+ """
+ 
+ from __future__ import annotations
+@@ -77,6 +79,7 @@ QueryExecutionState = Literal[
+     "completed",
+     "cancelled",
+     "timed_out",
++    "work_budget_exceeded",
+     "disconnected",
+     "failed",
+ ]
+@@ -90,6 +93,10 @@ class QueryTimeoutError(Exception):
+     """The read exceeded its execution deadline."""
+ 
+ 
++class QueryWorkBudgetExceededError(Exception):
++    """The read exceeded its declared SQLite VM-work budget."""
++
++
+ @dataclass
+ class QueryExecutionReceipt:
+     """Observable outcome of one controlled archive read.
+@@ -106,6 +113,13 @@ class QueryExecutionReceipt:
+     queued_s: float = 0.0
+     run_s: float = 0.0
+     interrupted: bool = False
++    sqlite_progress_callbacks: int = 0
++    sqlite_vm_steps_lower_bound: int = 0
++    sqlite_vm_step_budget: int | None = None
++    selected_rows_exact: int | None = None
++    rows_emitted: int = 0
++    result_pages_emitted: int = 0
++    cleanup_complete: bool = False
+     error: str | None = None
+ 
+     def to_dict(self) -> dict[str, object]:
+@@ -118,6 +132,13 @@ class QueryExecutionReceipt:
+             "queued_s": round(self.queued_s, 6),
+             "run_s": round(self.run_s, 6),
+             "interrupted": self.interrupted,
++            "sqlite_progress_callbacks": self.sqlite_progress_callbacks,
++            "sqlite_vm_steps_lower_bound": self.sqlite_vm_steps_lower_bound,
++            "sqlite_vm_step_budget": self.sqlite_vm_step_budget,
++            "selected_rows_exact": self.selected_rows_exact,
++            "rows_emitted": self.rows_emitted,
++            "result_pages_emitted": self.result_pages_emitted,
++            "cleanup_complete": self.cleanup_complete,
+             "error": self.error,
+         }
+ 
+@@ -137,15 +158,24 @@ class QueryExecutionContext:
+     workload_class: WorkloadClass = "interactive"
+     admission_weight: int = 1
+     deadline_monotonic: float | None = None
++    sqlite_vm_step_budget: int | None = None
+     owner_ref: str | None = None
+     cancel_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
++    _receipt_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
+     receipt: QueryExecutionReceipt = field(init=False, compare=False, repr=False)
+ 
+     def __post_init__(self) -> None:
++        if self.sqlite_vm_step_budget is not None and self.sqlite_vm_step_budget < 0:
++            raise ValueError("sqlite_vm_step_budget must be non-negative")
+         object.__setattr__(
+             self,
+             "receipt",
+-            QueryExecutionReceipt(call_id=self.call_id, query_ref=self.query_ref, workload_class=self.workload_class),
++            QueryExecutionReceipt(
++                call_id=self.call_id,
++                query_ref=self.query_ref,
++                workload_class=self.workload_class,
++                sqlite_vm_step_budget=self.sqlite_vm_step_budget,
++            ),
+         )
+ 
+     @classmethod
+@@ -156,6 +186,7 @@ class QueryExecutionContext:
+         workload_class: WorkloadClass = "interactive",
+         admission_weight: int = 1,
+         timeout_s: float | None = DEFAULT_READ_DEADLINE_S,
++        sqlite_vm_step_budget: int | None = None,
+         owner_ref: str | None = None,
+     ) -> QueryExecutionContext:
+         query_ref = hashlib.sha256((query_text or "").encode("utf-8")).hexdigest()[:16]
+@@ -166,6 +197,7 @@ class QueryExecutionContext:
+             workload_class=workload_class,
+             admission_weight=max(1, admission_weight),
+             deadline_monotonic=deadline,
++            sqlite_vm_step_budget=sqlite_vm_step_budget,
+             owner_ref=owner_ref,
+         )
+ 
+@@ -179,8 +211,48 @@ class QueryExecutionContext:
+     def deadline_exceeded(self) -> bool:
+         return self.deadline_monotonic is not None and time.monotonic() > self.deadline_monotonic
+ 
++    def record_sqlite_progress(self, opcodes: int) -> None:
++        """Record one real SQLite progress callback without estimating rows."""
++
++        with self._receipt_lock:
++            self.receipt.sqlite_progress_callbacks += 1
++            self.receipt.sqlite_vm_steps_lower_bound += max(1, int(opcodes))
++
++    def record_result_page(self, *, emitted_rows: int, selected_rows_exact: int | None = None) -> None:
++        """Record a delivered logical page and exact selection evidence when known."""
++
++        with self._receipt_lock:
++            self.receipt.result_pages_emitted += 1
++            self.receipt.rows_emitted += max(0, int(emitted_rows))
++            if selected_rows_exact is not None:
++                normalized = max(0, int(selected_rows_exact))
++                existing = self.receipt.selected_rows_exact
++                if existing is not None and existing != normalized:
++                    raise RuntimeError("query execution reported contradictory exact selection counts")
++                self.receipt.selected_rows_exact = normalized
++
++    def mark_cleanup_complete(self) -> None:
++        with self._receipt_lock:
++            self.receipt.cleanup_complete = True
++
++    def work_budget_exceeded(self) -> bool:
++        budget = self.sqlite_vm_step_budget
++        if budget is None:
++            return False
++        with self._receipt_lock:
++            return self.receipt.sqlite_vm_steps_lower_bound >= budget
++
++    def abort_reason(self) -> Literal["cancelled", "timed_out", "work_budget_exceeded"] | None:
++        if self.cancelled:
++            return "cancelled"
++        if self.deadline_exceeded():
++            return "timed_out"
++        if self.work_budget_exceeded():
++            return "work_budget_exceeded"
++        return None
++
+     def should_abort(self) -> bool:
+-        return self.cancelled or self.deadline_exceeded()
++        return self.abort_reason() is not None
+ 
+ 
+ class QueryAdmissionController:
+@@ -297,10 +369,11 @@ class InterruptibleSQLiteRead:
+     """One archive read on a dedicated read-only connection in this thread.
+ 
+     The runner opens its own :class:`ArchiveStore` (never a shared or writer
+-    connection), installs a progress guard that aborts on cancellation or
+-    deadline, and publishes the store so :meth:`interrupt` can abort the
+-    active statement from another thread. Cleanup (progress handler, store,
+-    published handle) happens exactly once in ``finally``.
++    connection), begins one read snapshot, installs a progress guard that aborts
++    on cancellation, deadline, or a declared VM-work budget, and publishes the
++    store so :meth:`interrupt` can abort the active statement from another
++    thread. Cleanup (progress handler, transaction, store, published handle)
++    happens exactly once in ``finally``.
+     """
+ 
+     def __init__(self, ctx: QueryExecutionContext) -> None:
+@@ -325,39 +398,52 @@ class InterruptibleSQLiteRead:
+         ctx = self._ctx
+         ctx.receipt.state = "running"
+         started = time.monotonic()
++        progress_opcodes = PROGRESS_GUARD_OPCODES
++        if ctx.sqlite_vm_step_budget is not None:
++            progress_opcodes = min(progress_opcodes, max(1, ctx.sqlite_vm_step_budget))
+ 
+         def _guard() -> int:
++            ctx.record_sqlite_progress(progress_opcodes)
+             return 1 if ctx.should_abort() else 0
+ 
+         store = ArchiveStore.open_existing(archive_root, read_timeout=read_timeout)
+         with self._store_lock:
+             self._store = store
+         try:
+-            store.set_read_progress_guard(_guard, n_opcodes=PROGRESS_GUARD_OPCODES)
+-            # A cancel/deadline that landed before the first opcode must not
+-            # start the statement at all.
++            store.set_read_progress_guard(_guard, n_opcodes=progress_opcodes)
++            # An abort that landed before ownership begins must not start the
++            # caller's statement or acquire a read snapshot.
+             if ctx.should_abort():
+                 raise _abort_error(ctx)
+             try:
++                store.begin_read_snapshot()
+                 result = work(store)
+             except Exception as exc:
+                 if ctx.should_abort() and _is_interrupt_error(exc):
+                     ctx.receipt.interrupted = True
+                     raise _abort_error(ctx) from exc
+                 raise
+-            # The progress guard only observes SQLite execution. A cancel or
+-            # deadline that lands during Python-side post-processing (row
+-            # grouping, envelope assembly) must still abort here rather than
+-            # returning a "completed" result nobody is waiting for.
+-            if ctx.should_abort():
+-                raise _abort_error(ctx)
+-            ctx.receipt.state = "completed"
+-            return result
++            else:
++                # The progress guard only observes SQLite execution. An abort
++                # that lands during Python-side post-processing (row grouping,
++                # envelope assembly) must still abort here rather than return a
++                # "completed" result nobody is waiting for.
++                if ctx.should_abort():
++                    raise _abort_error(ctx)
++                ctx.receipt.state = "completed"
++                return result
+         finally:
+             ctx.receipt.run_s = time.monotonic() - started
+             with self._store_lock:
+                 self._store = None
+-            store.close()
++            try:
++                store.clear_read_progress_guard()
++            finally:
++                try:
++                    store.end_read_snapshot()
++                finally:
++                    store.close()
++            ctx.mark_cleanup_complete()
+ 
+ 
+ def _is_interrupt_error(exc: Exception) -> bool:
+@@ -366,10 +452,16 @@ def _is_interrupt_error(exc: Exception) -> bool:
+     return isinstance(exc, sqlite3.OperationalError) and "interrupt" in str(exc).lower()
+ 
+ 
+-def _abort_error(ctx: QueryExecutionContext) -> QueryCancelledError | QueryTimeoutError:
+-    if ctx.cancelled:
++def _abort_error(
++    ctx: QueryExecutionContext,
++) -> QueryCancelledError | QueryTimeoutError | QueryWorkBudgetExceededError:
++    reason = ctx.abort_reason()
++    if reason == "cancelled":
+         ctx.receipt.state = "cancelled"
+         return QueryCancelledError(f"archive read cancelled (call {ctx.call_id})")
++    if reason == "work_budget_exceeded":
++        ctx.receipt.state = "work_budget_exceeded"
++        return QueryWorkBudgetExceededError(f"archive read exceeded SQLite work budget (call {ctx.call_id})")
+     ctx.receipt.state = "timed_out"
+     return QueryTimeoutError(f"archive read exceeded deadline (call {ctx.call_id})")
+ 
+@@ -448,7 +540,7 @@ async def execute_archive_read(
+             # wait on it forever. An undrained worker keeps running in the
+             # background and still performs its own cleanup on exit.
+             await asyncio.wait_for(worker, timeout=DISCONNECT_DRAIN_TIMEOUT_S)
+-        except (QueryCancelledError, QueryTimeoutError, asyncio.CancelledError):
++        except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError, asyncio.CancelledError):
+             pass
+         except TimeoutError:
+             logger.warning(
+@@ -462,7 +554,7 @@ async def execute_archive_read(
+         # "cancelled", but the caller-side truth here is a disconnect.
+         ctx.receipt.state = "disconnected"
+         raise
+-    except (QueryCancelledError, QueryTimeoutError):
++    except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError):
+         raise
+     except Exception as exc:
+         ctx.receipt.state = "failed"
+@@ -493,7 +585,7 @@ def execute_archive_read_sync(
+     try:
+         with admission.admit_blocking(ctx):
+             return reader.run(archive_root, work, read_timeout=read_timeout)
+-    except (QueryCancelledError, QueryTimeoutError):
++    except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError):
+         raise
+     except Exception as exc:
+         ctx.receipt.state = "failed"
+@@ -511,6 +603,7 @@ __all__ = [
+     "QueryExecutionContext",
+     "QueryExecutionReceipt",
+     "QueryTimeoutError",
++    "QueryWorkBudgetExceededError",
+     "WorkloadClass",
+     "classify_unit_expression_workload",
+     "default_admission_controller",
+diff --git a/polylogue/archive/query/unit_results.py b/polylogue/archive/query/unit_results.py
+index 97b30a99a4a355b3d70c2488b88568386601b7aa..da94b05f84e1fd4c16080af5756689a966f29bef 100644
+--- a/polylogue/archive/query/unit_results.py
++++ b/polylogue/archive/query/unit_results.py
+@@ -3,10 +3,9 @@
+ from __future__ import annotations
+ 
+ import json
+-from collections import Counter
+ from collections.abc import Callable, Mapping, Sequence
+ from dataclasses import dataclass
+-from typing import Any, Literal, Protocol, cast
++from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+ 
+ from polylogue.archive.query.expression import (
+     ExpressionCompileError,
+@@ -36,6 +35,9 @@ from polylogue.surfaces.payloads import (
+     build_query_unit_envelope,
+ )
+ 
++if TYPE_CHECKING:
++    from polylogue.archive.query.execution_control import QueryExecutionContext
++
+ 
+ def _pipeline_stage_payloads(pipeline: QueryUnitPipeline) -> tuple[dict[str, object], ...]:
+     """Return the executed pipeline stages, ending in the terminal-action node.
+@@ -204,80 +206,28 @@ class TerminalExecutionContext:
+     caller_offset: int
+     fetch_limit: int
+     session_filters: Mapping[str, object] | None
++    execution_context: QueryExecutionContext | None = None
+ 
+ 
+ TerminalExecutor = Callable[[TerminalExecutionContext], QueryUnitResultEnvelope]
+ 
+ 
+-_AGGREGATE_ROW_FIELDS: dict[str, dict[str, str]] = {
+-    "message": {"role": "role", "type": "message_type", "session.origin": "origin"},
+-    "action": {
+-        "tool": "tool_name",
+-        "action": "semantic_type",
+-        "type": "semantic_type",
+-        "is_error": "is_error",
+-        "exit_code": "exit_code",
+-        "followup_class": "followup_class",
+-        "session.origin": "origin",
+-    },
+-    "block": {"type": "block_type", "tool": "tool_name", "action": "semantic_type", "session.origin": "origin"},
+-    "file": {"path": "path", "session.origin": "origin"},
+-    "delegation": {
+-        "basis": "instruction_tool_use_block_id",
+-        "mapping_state": "mapping_state",
+-        "result_status": "result_status",
+-        "requested_model": "requested_model",
+-        "dispatch_model": "dispatch_turn_model",
+-        "child_model": "child_session_dominant_model",
+-        "session.origin": "parent_origin",
+-    },
+-}
+-_MISSING_GROUP_KEY = "[missing]"
+-
+-
+ def _aggregate_group_fields(group_by: str | None) -> tuple[str, ...]:
+-    return () if group_by is None else tuple(group_by.split(","))
+-
+-
+-def _aggregate_value(unit: str, field: str, row: Any) -> str | None:
+-    attribute = _AGGREGATE_ROW_FIELDS.get(unit, {}).get(field)
+-    if attribute is None:
+-        supported = ", ".join(sorted(_AGGREGATE_ROW_FIELDS.get(unit, {})))
+-        raise ExpressionCompileError(
+-            f"pipeline `group by {field}` cannot stream {unit} rows; supported fields: {supported}", field=field
+-        )
+-    value = getattr(row, attribute)
+-    if field == "basis":
+-        return "action" if value is not None else "edge"
+-    if value is None:
+-        return None
+-    if isinstance(value, bool):
+-        return str(value).lower()
+-    return str(value)
++    return () if group_by is None else tuple(field.strip() for field in group_by.split(",") if field.strip())
+ 
+ 
+-def _all_aggregate_rows(ctx: TerminalExecutionContext) -> list[Any]:
+-    method_name = ctx.descriptor.sql_query_method
+-    if method_name is None:
+-        raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
+-    query_method = cast(Any, getattr(ctx.archive, method_name))
+-    rows: list[Any] = []
+-    page_size = 1000
+-    offset = 0
+-    while True:
+-        page = cast(
+-            Sequence[Any],
+-            query_method(
+-                ctx.source.predicate,
+-                limit=page_size,
+-                offset=offset,
+-                session_filters=ctx.session_filters,
+-            ),
++def _record_result_page(
++    ctx: TerminalExecutionContext,
++    envelope: QueryUnitResultEnvelope,
++    *,
++    selected_rows_exact: int | None = None,
++) -> QueryUnitResultEnvelope:
++    if ctx.execution_context is not None:
++        ctx.execution_context.record_result_page(
++            emitted_rows=len(envelope.items),
++            selected_rows_exact=selected_rows_exact,
+         )
+-        rows.extend(page)
+-        if len(page) < page_size:
+-            return rows
+-        offset += len(page)
++    return envelope
+ 
+ 
+ def _aggregate_pipeline_payload(
+@@ -285,8 +235,8 @@ def _aggregate_pipeline_payload(
+     *,
+     group_fields: tuple[str, ...],
+     denominator: int,
+-    missing_counts: Counter[str],
+-    unknown_counts: Counter[str],
++    missing_counts: Mapping[str, int],
++    unknown_counts: Mapping[str, int],
+     groups: Sequence[tuple[tuple[str, ...], int]],
+ ) -> dict[str, object]:
+     payload = pipeline.to_payload()
+@@ -338,39 +288,32 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
+             offset=ctx.offset,
+             session_filters=ctx.session_filters,
+         )
+-        return build_query_unit_aggregate_envelope(
+-            tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
+-            unit=ctx.source.unit,
+-            query=ctx.query,
+-            limit=ctx.limit,
+-            offset=ctx.caller_offset,
+-            has_next=len(aggregate_rows) > ctx.limit,
+-            pipeline=pipeline.to_payload(),
+-            pipeline_stages=_pipeline_stage_payloads(pipeline),
++        return _record_result_page(
++            ctx,
++            build_query_unit_aggregate_envelope(
++                tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
++                unit=ctx.source.unit,
++                query=ctx.query,
++                limit=ctx.limit,
++                offset=ctx.caller_offset,
++                has_next=len(aggregate_rows) > ctx.limit,
++                pipeline=pipeline.to_payload(),
++                pipeline_stages=_pipeline_stage_payloads(pipeline),
++            ),
+         )
+-    rows = _all_aggregate_rows(ctx)
+-    missing_counts: Counter[str] = Counter()
+-    unknown_counts: Counter[str] = Counter()
+-    counts: Counter[tuple[str, ...]] = Counter()
+-    for row in rows:
+-        values: list[str] = []
+-        for field in group_fields:
+-            value = _aggregate_value(ctx.source.unit, field, row)
+-            if value is None:
+-                missing_counts[field] += 1
+-                value = _MISSING_GROUP_KEY
+-            elif value.lower() == "unknown":
+-                unknown_counts[field] += 1
+-            values.append(value)
+-        counts[tuple(values)] += 1
+-    if not group_fields:
+-        counts[()] = len(rows)
+-    ordered_groups = list(counts.items())
+-    if aggregate_sort == "key":
+-        ordered_groups.sort(key=lambda item: item[0], reverse=aggregate_sort_direction == "desc")
+-    else:
+-        ordered_groups.sort(key=lambda item: (item[1], item[0]), reverse=aggregate_sort_direction == "desc")
+-    page_groups = ordered_groups[ctx.offset : ctx.offset + ctx.fetch_limit]
++    aggregate_page = ctx.archive.query_unit_multi_counts(
++        pipeline.source_unit,
++        pipeline.predicate,
++        group_by=group_fields,
++        sort=aggregate_sort,
++        sort_direction=aggregate_sort_direction,
++        limit=ctx.fetch_limit,
++        offset=ctx.offset,
++        session_filters=ctx.session_filters,
++    )
++    page_groups = [(row.group_values, row.count) for row in aggregate_page.rows]
++    missing_counts = dict(zip(group_fields, aggregate_page.missing_counts, strict=True))
++    unknown_counts = dict(zip(group_fields, aggregate_page.unknown_counts, strict=True))
+     group_by = pipeline.group_by
+     aggregate_payload_rows = tuple(
+         QueryUnitAggregateRowPayload(
+@@ -385,22 +328,26 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
+         )
+         for values, count in page_groups[: ctx.limit]
+     )
+-    return build_query_unit_aggregate_envelope(
+-        aggregate_payload_rows,
+-        unit=ctx.source.unit,
+-        query=ctx.query,
+-        limit=ctx.limit,
+-        offset=ctx.caller_offset,
+-        has_next=len(page_groups) > ctx.limit,
+-        pipeline=_aggregate_pipeline_payload(
+-            pipeline,
+-            group_fields=group_fields,
+-            denominator=len(rows),
+-            missing_counts=missing_counts,
+-            unknown_counts=unknown_counts,
+-            groups=page_groups[: ctx.limit],
++    return _record_result_page(
++        ctx,
++        build_query_unit_aggregate_envelope(
++            aggregate_payload_rows,
++            unit=ctx.source.unit,
++            query=ctx.query,
++            limit=ctx.limit,
++            offset=ctx.caller_offset,
++            has_next=len(page_groups) > ctx.limit,
++            pipeline=_aggregate_pipeline_payload(
++                pipeline,
++                group_fields=group_fields,
++                denominator=aggregate_page.denominator,
++                missing_counts=missing_counts,
++                unknown_counts=unknown_counts,
++                groups=page_groups[: ctx.limit],
++            ),
++            pipeline_stages=_pipeline_stage_payloads(pipeline),
+         ),
+-        pipeline_stages=_pipeline_stage_payloads(pipeline),
++        selected_rows_exact=aggregate_page.denominator,
+     )
+ 
+ 
+@@ -426,15 +373,18 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
+             sort_direction=sort_direction,
+         ),
+     )
+-    return build_query_unit_envelope(
+-        tuple(payload_model.from_row(row) for row in rows[: ctx.limit]),
+-        unit=ctx.source.unit,
+-        query=ctx.query,
+-        limit=ctx.limit,
+-        offset=ctx.caller_offset,
+-        has_next=len(rows) > ctx.limit,
+-        pipeline=pipeline.to_payload(),
+-        pipeline_stages=_pipeline_stage_payloads(pipeline),
++    return _record_result_page(
++        ctx,
++        build_query_unit_envelope(
++            tuple(payload_model.from_row(row) for row in rows[: ctx.limit]),
++            unit=ctx.source.unit,
++            query=ctx.query,
++            limit=ctx.limit,
++            offset=ctx.caller_offset,
++            has_next=len(rows) > ctx.limit,
++            pipeline=pipeline.to_payload(),
++            pipeline_stages=_pipeline_stage_payloads(pipeline),
++        ),
+     )
+ 
+ 
+@@ -459,6 +409,7 @@ def _build_sql_envelope(
+     caller_offset: int,
+     fetch_limit: int,
+     session_filters: Mapping[str, object] | None,
++    execution_context: QueryExecutionContext | None,
+ ) -> QueryUnitResultEnvelope:
+     pipeline = source.pipeline
+     action = pipeline.terminal.action
+@@ -480,6 +431,7 @@ def _build_sql_envelope(
+             caller_offset=caller_offset,
+             fetch_limit=fetch_limit,
+             session_filters=session_filters,
++            execution_context=execution_context,
+         )
+     )
+ 
+@@ -492,6 +444,7 @@ def query_unit_rows(
+     limit: int,
+     offset: int = 0,
+     session_filters: Mapping[str, object] | None = None,
++    execution_context: QueryExecutionContext | None = None,
+ ) -> QueryUnitResultEnvelope:
+     """Execute an explicit unit-source query."""
+ 
+@@ -515,10 +468,16 @@ def query_unit_rows(
+         caller_offset=caller_offset,
+         fetch_limit=fetch_limit,
+         session_filters=session_filters,
++        execution_context=execution_context,
+     )
+ 
+ 
+-def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> QueryUnitResultEnvelope:
++def query_unit_envelope(
++    archive: ArchiveStore,
++    request: QueryUnitRequest,
++    *,
++    execution_context: QueryExecutionContext | None = None,
++) -> QueryUnitResultEnvelope:
+     """Execute a compiled terminal query-unit request."""
+ 
+     return query_unit_rows(
+@@ -528,6 +487,7 @@ def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> Que
+         limit=request.limit,
+         offset=request.offset,
+         session_filters=request.session_filters,
++        execution_context=execution_context,
+     )
+ 
+ 
+diff --git a/polylogue/daemon/http.py b/polylogue/daemon/http.py
+index 63da0ce1d2f7af51ecc38669cf3afbe54e5b4f8b..f7780f6238e84a937d3e848eb1496ff6aa4d70b8 100644
+--- a/polylogue/daemon/http.py
++++ b/polylogue/daemon/http.py
+@@ -3522,7 +3522,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+         try:
+             payload = execute_archive_read_sync(
+                 archive_root,
+-                lambda archive: query_unit_envelope(archive, request),
++                lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
+                 ctx=ctx,
+                 read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
+             )
+diff --git a/polylogue/mcp/archive_support.py b/polylogue/mcp/archive_support.py
+index 87670a3e36bb8a4f18e3806314378d6a1306f675..997120257856b783e25d1671e1dc0676ffc9dca1 100644
+--- a/polylogue/mcp/archive_support.py
++++ b/polylogue/mcp/archive_support.py
+@@ -22,6 +22,7 @@ if TYPE_CHECKING:
+     from collections.abc import Sequence
+ 
+     from polylogue.archive.blackboard import BlackboardNote
++    from polylogue.archive.query.execution_control import QueryExecutionContext
+     from polylogue.archive.query.spec import SessionQuerySpec
+     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+     from polylogue.config import Config
+@@ -516,6 +517,7 @@ def archive_query_unit_payload(
+     limit: int,
+     offset: int,
+     session_filters: Mapping[str, object] | None = None,
++    execution_context: QueryExecutionContext | None = None,
+     **filter_params: object,
+ ) -> QueryUnitResultEnvelope:
+     """Build the shared terminal query-unit envelope from an archive."""
+@@ -528,7 +530,7 @@ def archive_query_unit_payload(
+         session_filters=session_filters,
+         **filter_params,
+     )
+-    return query_unit_envelope(archive, request)
++    return query_unit_envelope(archive, request, execution_context=execution_context)
+ 
+ 
+ def archive_messages_payload(
+diff --git a/polylogue/mcp/server_tools.py b/polylogue/mcp/server_tools.py
+index 5c08d927da843bda6c12ca39da18cf748f8440dc..7be9be615eca56e92e4b235e9d6c60235f026d1f 100644
+--- a/polylogue/mcp/server_tools.py
++++ b/polylogue/mcp/server_tools.py
+@@ -336,6 +336,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+                             expression=expression,
+                             limit=hooks.clamp_limit(limit),
+                             offset=max(0, offset),
++                            execution_context=ctx,
+                             origin=origin,
+                             exclude_origin=exclude_origin,
+                             tag=tag,
+diff --git a/polylogue/storage/sqlite/archive_tiers/archive.py b/polylogue/storage/sqlite/archive_tiers/archive.py
+index 1481cf2a84234ee2b591699bb961a557dcb091a8..760cc65f3dc24af2071cad383991483d449cfc1f 100644
+--- a/polylogue/storage/sqlite/archive_tiers/archive.py
++++ b/polylogue/storage/sqlite/archive_tiers/archive.py
+@@ -720,6 +720,32 @@ class ArchiveQueryUnitAggregateRow:
+     count: int
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class ArchiveQueryUnitMultiAggregateRow:
++    """One losslessly addressable row from a multi-field aggregate page."""
++
++    unit: str
++    group_by: tuple[str, ...]
++    group_values: tuple[str, ...]
++    count: int
++
++
++@dataclass(frozen=True, slots=True)
++class ArchiveQueryUnitMultiAggregatePage:
++    """A bounded multi-field aggregate page plus exact full-result facts.
++
++    ``rows`` is bounded by the caller's page limit. ``denominator`` and the
++    per-field quality counters describe the complete matching row set rather
++    than merely the returned page, so page boundaries never change aggregate
++    meaning.
++    """
++
++    rows: tuple[ArchiveQueryUnitMultiAggregateRow, ...]
++    denominator: int
++    missing_counts: tuple[int, ...]
++    unknown_counts: tuple[int, ...]
++
++
+ def _sql_string_literal(value: str) -> str:
+     """Return a SQL single-quoted literal for a static in-repo token."""
+ 
+@@ -1006,6 +1032,122 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
+         raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class _MultiAggregateFieldSQL:
++    """Closed SQL expressions for one multi-field aggregate dimension."""
++
++    value: str
++    missing: str
++    unknown: str
++
++
++def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> _MultiAggregateFieldSQL:
++    """Return lossless value and quality expressions for one group field.
++
++    Multi-field aggregation historically converted terminal rows back into
++    Python objects, where ``None`` became ``[missing]`` and literal ``unknown``
++    values remained distinguishable. Keep that contract while moving the work
++    into SQLite; do not conflate an empty string, a missing value, and an
++    explicit unknown token.
++    """
++
++    if field == "session.origin":
++        raw = "s.origin"
++    elif field == "session.repo":
++        raw = "s.git_repository_url"
++    else:
++        raw_fields = {
++            "message": {
++                "role": f"{row_alias}.role",
++                "type": f"{row_alias}.message_type",
++            },
++            "action": {
++                "tool": f"{row_alias}.tool_name",
++                "action": f"{row_alias}.semantic_type",
++                "type": f"{row_alias}.semantic_type",
++                "is_error": f"{row_alias}.is_error",
++                "exit_code": f"{row_alias}.exit_code",
++                "followup_class": f"{row_alias}.followup_class",
++            },
++            "block": {
++                "type": f"{row_alias}.block_type",
++                "tool": f"{row_alias}.tool_name",
++                "action": f"{row_alias}.semantic_type",
++            },
++            "file": {"path": f"{row_alias}.path"},
++            "assertion": {
++                "kind": f"{row_alias}.kind",
++                "status": f"{row_alias}.status",
++                "visibility": f"{row_alias}.visibility",
++                "author_kind": f"{row_alias}.author_kind",
++            },
++            "observed-event": {
++                "kind": f"{row_alias}.kind",
++                "delivery_state": f"{row_alias}.delivery_state",
++                "tool": f"json_extract({row_alias}.payload_json, '$.tool_name')",
++                "handler": f"json_extract({row_alias}.payload_json, '$.handler_kind')",
++                "status": f"json_extract({row_alias}.payload_json, '$.status')",
++            },
++            "delegation": {
++                "mapping_state": f"{row_alias}.mapping_state",
++                "result_status": f"{row_alias}.result_status",
++                "requested_model": f"{row_alias}.requested_model",
++                "dispatch_model": f"{row_alias}.dispatch_turn_model",
++                "child_model": f"{row_alias}.child_session_dominant_model",
++            },
++        }
++        if unit == "delegation" and field == "basis":
++            return _MultiAggregateFieldSQL(
++                value=(f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
++                missing="0",
++                unknown="0",
++            )
++        try:
++            raw = raw_fields[unit][field]
++        except KeyError as exc:
++            raise ValueError(f"unsupported {unit} multi-aggregate group field: {field}") from exc
++
++    assertion_defaults = {
++        "status": ASSERTION_DEFAULT_STATUS,
++        "visibility": ASSERTION_DEFAULT_VISIBILITY,
++        "author_kind": ASSERTION_DEFAULT_AUTHOR_KIND,
++    }
++    if unit == "assertion" and field in assertion_defaults:
++        value = f"CAST(COALESCE(NULLIF({raw}, ''), {_sql_string_literal(assertion_defaults[field])}) AS TEXT)"
++        missing = "0"
++    else:
++        value = f"CASE WHEN {raw} IS NULL THEN '[missing]' ELSE CAST({raw} AS TEXT) END"
++        missing = f"CASE WHEN {raw} IS NULL THEN 1 ELSE 0 END"
++    unknown = f"CASE WHEN {raw} IS NOT NULL AND LOWER(CAST({raw} AS TEXT)) = 'unknown' THEN 1 ELSE 0 END"
++    return _MultiAggregateFieldSQL(value=value, missing=missing, unknown=unknown)
++
++
++def _query_unit_multi_aggregate_order(
++    group_columns: Sequence[str],
++    sort: Literal["count", "key"] | None,
++    direction: Literal["asc", "desc"],
++) -> str:
++    """Return the stable ordering used by the former Python tuple sort."""
++
++    sql_direction = _query_unit_order_direction(direction)
++    key_order = ", ".join(f"{column} {sql_direction}" for column in group_columns)
++    if sort == "key":
++        return key_order
++    return f"count {sql_direction}, {key_order}"
++
++
++def _append_query_ctes(prefix_sql: str, *ctes: str) -> str:
++    """Append CTEs to an optional relation prefix that already starts WITH."""
++
++    body = ",\n".join(cte.strip() for cte in ctes)
++    prefix = prefix_sql.strip()
++    if not prefix:
++        return f"WITH {body}"
++    if not prefix.upper().startswith("WITH "):
++        raise ValueError("query relation prefix must start with WITH")
++    return f"{prefix},\n{body}"
++
++
+ def _predicate_uses_unit_field(predicate: QueryPredicate, field_name: str, *, unit: str | None = None) -> bool:
+     """Return whether a predicate subtree targets a unit-scoped field."""
+ 
+@@ -1197,6 +1339,22 @@ class ArchiveStore:
+         """
+         self._conn.set_progress_handler(guard, n_opcodes)
+ 
++    def clear_read_progress_guard(self) -> None:
++        """Remove the index connection's progress handler before ownership ends."""
++
++        self._conn.set_progress_handler(None, 0)
++
++    def begin_read_snapshot(self) -> None:
++        """Begin the owned read transaction used by one controlled query call."""
++
++        self._conn.execute("BEGIN")
++
++    def end_read_snapshot(self) -> None:
++        """Release the owned read snapshot without ever committing read work."""
++
++        if self._conn.in_transaction:
++            self._conn.rollback()
++
+     def interrupt_reads(self) -> None:
+         """Interrupt any statement active on the index read connection.
+ 
+@@ -7386,6 +7544,265 @@ class ArchiveStore:
+             for row in rows
+         ]
+ 
++    def query_unit_multi_counts(
++        self,
++        unit: str,
++        predicate: QueryPredicate,
++        *,
++        group_by: Sequence[str],
++        sort: Literal["count", "key"] | None = None,
++        sort_direction: Literal["asc", "desc"] = "desc",
++        limit: int = 50,
++        offset: int = 0,
++        session_filters: Mapping[str, object] | None = None,
++    ) -> ArchiveQueryUnitMultiAggregatePage:
++        """Return one bounded multi-field count page with exact full-set facts.
++
++        The source relation is filtered and grouped inside one SQLite statement.
++        Python retains at most the requested aggregate page; it never pages the
++        selected row relation with OFFSET and never reconstructs the query
++        algorithm in application memory.
++        """
++
++        fields = tuple(str(field).strip() for field in group_by if str(field).strip())
++        if len(fields) < 2:
++            raise ValueError("multi-field aggregate counts require at least two group fields")
++        normalized_limit = max(int(limit), 0)
++        normalized_offset = max(int(offset), 0)
++        empty_page = ArchiveQueryUnitMultiAggregatePage(
++            rows=(),
++            denominator=0,
++            missing_counts=tuple(0 for _ in fields),
++            unknown_counts=tuple(0 for _ in fields),
++        )
++        if unit == "assertion" and not self.user_db_path.exists():
++            return empty_page
++        if unit == "assertion":
++            self._attach_user_tier_if_present()
++
++        row_alias = {
++            "message": "m",
++            "action": "a",
++            "block": "b",
++            "file": "f",
++            "assertion": "a",
++            "observed-event": "e",
++            "delegation": "d",
++        }.get(unit)
++        if row_alias is None:
++            raise ValueError(f"Query unit {unit!r} is not wired to SQL multi-aggregate counts")
++
++        active_session_filters = _session_filter_is_active(session_filters)
++        needs_session = (
++            unit != "observed-event"
++            or active_session_filters
++            or any(_query_unit_group_uses_session(field) for field in fields)
++            or _predicate_uses_session_scope(predicate)
++        )
++        session_alias = "s" if needs_session else None
++        clause, predicate_params = _structural_predicate_clause(
++            unit,
++            "a" if unit == "file" else row_alias,
++            predicate,
++            session_alias=session_alias,
++        )
++        where_clause = clause or "1=1"
++        session_clause = ""
++        session_params: list[object] = []
++        if needs_session and active_session_filters and session_filters is not None:
++            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
++
++        relation_params: list[object] = []
++        source_params: list[object] = []
++        prefix_sql = ""
++        selected_where_clause = where_clause
++        selected_session_clause = session_clause
++        if unit == "file":
++            file_rows_cte = f"""
++                file_rows AS (
++                    SELECT
++                        a.session_id,
++                        REPLACE(a.tool_path, char(92), '/') AS path
++                    FROM actions a
++                    JOIN sessions s ON s.session_id = a.session_id
++                    JOIN messages m ON m.message_id = a.message_id
++                    WHERE a.tool_path IS NOT NULL
++                      AND a.tool_path != ''
++                      AND {where_clause}
++                      {session_clause}
++                    GROUP BY a.session_id, path
++                )
++            """
++            from_sql = "file_rows f JOIN sessions s ON s.session_id = f.session_id"
++            source_ctes = [file_rows_cte]
++            selected_where_clause = "1=1"
++            selected_session_clause = ""
++        else:
++            source_ctes = []
++            action_needs_followup = unit == "action" and (
++                "followup_class" in fields or _action_query_needs_followup_relation(predicate)
++            )
++            action_relation_name = "actions"
++            if unit == "action":
++                prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
++                    predicate=predicate,
++                    include_followup=action_needs_followup,
++                )
++            from_sql_by_unit = {
++                "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
++                "action": f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id",
++                "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
++                "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
++                "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
++                "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
++            }
++            from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
++            if unit == "observed-event":
++                source_where, source_params = observed_event_source_pushdown(predicate)
++                prefix_sql = observed_event_relation_sql(source_where=source_where)
++
++        field_sql = tuple(_query_unit_multi_group_field_sql(unit, row_alias, field) for field in fields)
++        group_columns = tuple(f"group_{index}" for index in range(len(fields)))
++        selected_columns = ",\n".join(
++            expression
++            for index, spec in enumerate(field_sql)
++            for expression in (
++                f"{spec.value} AS group_{index}",
++                f"{spec.missing} AS missing_{index}",
++                f"{spec.unknown} AS unknown_{index}",
++            )
++        )
++        grouped_quality_columns = ",\n".join(
++            expression
++            for index in range(len(fields))
++            for expression in (
++                f"SUM(missing_{index}) AS group_missing_{index}",
++                f"SUM(unknown_{index}) AS group_unknown_{index}",
++            )
++        )
++        ranked_quality_columns = ",\n".join(
++            expression
++            for index in range(len(fields))
++            for expression in (
++                f"SUM(group_missing_{index}) OVER () AS total_missing_{index}",
++                f"SUM(group_unknown_{index}) OVER () AS total_unknown_{index}",
++            )
++        )
++        stats_columns = ",\n".join(
++            expression
++            for index in range(len(fields))
++            for expression in (
++                f"COALESCE(MAX(total_missing_{index}), 0) AS missing_{index}",
++                f"COALESCE(MAX(total_unknown_{index}), 0) AS unknown_{index}",
++            )
++        )
++        final_stats_columns = ",\n".join(
++            expression
++            for index in range(len(fields))
++            for expression in (
++                f"stats.missing_{index}",
++                f"stats.unknown_{index}",
++            )
++        )
++        final_group_columns = ",\n".join(f"page.group_{index}" for index in range(len(fields)))
++        group_column_list = ", ".join(group_columns)
++        order_clause = _query_unit_multi_aggregate_order(group_columns, sort, sort_direction)
++
++        selected_cte = f"""
++            selected AS (
++                SELECT
++                    {selected_columns}
++                FROM {from_sql}
++                WHERE {selected_where_clause}
++                {selected_session_clause}
++            )
++        """
++        grouped_cte = f"""
++            grouped AS (
++                SELECT
++                    {group_column_list},
++                    COUNT(*) AS count,
++                    {grouped_quality_columns}
++                FROM selected
++                GROUP BY {group_column_list}
++            )
++        """
++        ranked_cte = f"""
++            ranked AS (
++                SELECT
++                    grouped.*,
++                    SUM(count) OVER () AS denominator,
++                    {ranked_quality_columns},
++                    ROW_NUMBER() OVER (ORDER BY {order_clause}) AS ordinal
++                FROM grouped
++            )
++        """
++        page_cte = """
++            page AS (
++                SELECT *
++                FROM ranked
++                WHERE ordinal > ? AND ordinal <= ?
++            )
++        """
++        stats_cte = f"""
++            stats AS (
++                SELECT
++                    COALESCE(MAX(denominator), 0) AS denominator,
++                    {stats_columns}
++                FROM ranked
++            )
++        """
++        cte_sql = _append_query_ctes(
++            prefix_sql,
++            *source_ctes,
++            selected_cte,
++            grouped_cte,
++            ranked_cte,
++            page_cte,
++            stats_cte,
++        )
++        rows = self._conn.execute(
++            f"""
++            {cte_sql}
++            SELECT
++                stats.denominator,
++                {final_stats_columns},
++                {final_group_columns},
++                page.count,
++                page.ordinal
++            FROM stats
++            LEFT JOIN page ON 1 = 1
++            ORDER BY page.ordinal
++            """,
++            [
++                *relation_params,
++                *source_params,
++                *predicate_params,
++                *session_params,
++                normalized_offset,
++                normalized_offset + normalized_limit,
++            ],
++        ).fetchall()
++        if not rows:
++            return empty_page
++        stats_row = rows[0]
++        aggregate_rows = tuple(
++            ArchiveQueryUnitMultiAggregateRow(
++                unit=unit,
++                group_by=fields,
++                group_values=tuple(str(row[f"group_{index}"]) for index in range(len(fields))),
++                count=int(row["count"]),
++            )
++            for row in rows
++            if row["count"] is not None
++        )
++        return ArchiveQueryUnitMultiAggregatePage(
++            rows=aggregate_rows,
++            denominator=int(stats_row["denominator"]),
++            missing_counts=tuple(int(stats_row[f"missing_{index}"]) for index in range(len(fields))),
++            unknown_counts=tuple(int(stats_row[f"unknown_{index}"]) for index in range(len(fields))),
++        )
++
+     def query_actions(
+         self,
+         predicate: QueryPredicate,
+diff --git a/tests/unit/archive/query/test_execution_control.py b/tests/unit/archive/query/test_execution_control.py
+index 96ffa1fb598353bbbf18ad1637c6722af68fe937..30ba5c47a65d36609139d27d79628b00df5504f3 100644
+--- a/tests/unit/archive/query/test_execution_control.py
++++ b/tests/unit/archive/query/test_execution_control.py
+@@ -26,6 +26,7 @@ from polylogue.archive.query.execution_control import (
+     QueryCancelledError,
+     QueryExecutionContext,
+     QueryTimeoutError,
++    QueryWorkBudgetExceededError,
+     execute_archive_read,
+     execute_archive_read_sync,
+ )
+@@ -356,6 +357,100 @@ def test_sync_deadline_aborts_for_http_route(tmp_path: Path) -> None:
+     assert ctx.receipt.state == "timed_out"
+ 
+ 
++def test_runner_holds_one_read_snapshot_until_owned_cleanup(tmp_path: Path) -> None:
++    """All statements in one controlled call observe one SQLite snapshot.
++
++    Removing ``begin_read_snapshot`` makes the second SELECT observe the
++    concurrently committed row, while retaining the same connection alone is
++    insufficient under autocommit.
++    """
++
++    import sqlite3
++    from hashlib import sha256
++
++    root = _bootstrap_archive(tmp_path)
++    with ArchiveStore(root) as store:
++        store._conn.execute(
++            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
++            ("seed", "codex-session", sha256(b"seed").digest()),
++        )
++        store._conn.commit()
++
++    first_read = threading.Event()
++    writer_done = threading.Event()
++    writer_errors: list[BaseException] = []
++    owned_stores: list[ArchiveStore] = []
++
++    def _writer() -> None:
++        try:
++            assert first_read.wait(timeout=5)
++            with sqlite3.connect(root / "index.db", timeout=5.0) as conn:
++                conn.execute(
++                    "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
++                    ("concurrent", "codex-session", sha256(b"concurrent").digest()),
++                )
++        except BaseException as exc:  # propagate worker failures to the test thread
++            writer_errors.append(exc)
++        finally:
++            writer_done.set()
++
++    def _read_twice(store: ArchiveStore) -> tuple[int, int]:
++        owned_stores.append(store)
++        first = int(store._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
++        first_read.set()
++        assert writer_done.wait(timeout=5)
++        second = int(store._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
++        return first, second
++
++    writer = threading.Thread(target=_writer)
++    writer.start()
++    ctx = QueryExecutionContext.create(query_text="stable-snapshot", timeout_s=10.0)
++    observed = execute_archive_read_sync(
++        root,
++        _read_twice,
++        ctx=ctx,
++        controller=QueryAdmissionController(),
++    )
++    writer.join(timeout=5)
++
++    assert not writer_errors
++    assert observed == (1, 1)
++    with sqlite3.connect(root / "index.db") as conn:
++        assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) == 2
++    assert ctx.receipt.state == "completed"
++    assert ctx.receipt.cleanup_complete is True
++    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
++        owned_stores[0]._conn.execute("SELECT 1")
++
++
++def test_sqlite_vm_work_budget_interrupts_deterministically_and_cleans_up(tmp_path: Path) -> None:
++    """Production dependencies: progress accounting, budget guard, typed abort.
++
++    Removing ``record_sqlite_progress`` or the budget branch in ``_abort_error``
++    changes this into a deadline timeout; removing cleanup leaves the receipt
++    false and the admission weight held.
++    """
++
++    root = _bootstrap_archive(tmp_path)
++    ctx = QueryExecutionContext.create(
++        query_text="budgeted-expensive",
++        timeout_s=5.0,
++        sqlite_vm_step_budget=10_000,
++    )
++    controller = QueryAdmissionController()
++
++    with pytest.raises(QueryWorkBudgetExceededError):
++        execute_archive_read_sync(root, _expensive_work, ctx=ctx, controller=controller)
++
++    assert ctx.receipt.state == "work_budget_exceeded"
++    assert ctx.receipt.interrupted is True
++    assert ctx.receipt.sqlite_progress_callbacks == 5
++    assert ctx.receipt.sqlite_vm_steps_lower_bound == 10_000
++    assert ctx.receipt.sqlite_vm_step_budget == 10_000
++    assert ctx.receipt.cleanup_complete is True
++    assert controller.in_flight_weight == 0
++
++
+ def test_interrupt_before_first_opcode_never_starts_statement(tmp_path: Path) -> None:
+     root = _bootstrap_archive(tmp_path)
+     ctx = QueryExecutionContext.create(query_text="pre-cancelled", timeout_s=None)
+@@ -402,6 +497,65 @@ async def test_api_query_units_routes_through_execution_control(
+     assert seen == ["api.query_units"]
+ 
+ 
++async def test_api_multi_aggregate_receipt_reports_real_work_selection_and_delivery(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """The public route passes its one outer context into the SQL executor.
++
++    Removing surface-to-executor context propagation leaves page/selection
++    counters at zero; replacing the progress handler with a synthetic test
++    counter leaves the production VM-work fields at zero.
++    """
++
++    from polylogue import Polylogue
++    from polylogue.archive.query import execution_control as ec
++    from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
++    from tests.infra.storage_records import SessionBuilder
++
++    _bootstrap_archive(tmp_path)
++    (
++        SessionBuilder(tmp_path / "index.db", "receipt")
++        .provider("claude-code")
++        .git_repository_url("polylogue")
++        .add_message("receipt-user", role="user", text="receipt aggregate")
++        .add_message("receipt-assistant-1", role="assistant", text="receipt aggregate")
++        .add_message("receipt-assistant-2", role="assistant", text="receipt aggregate")
++        .save()
++    )
++    monkeypatch.setattr(ec, "PROGRESS_GUARD_OPCODES", 50)
++    seen: list[QueryExecutionContext] = []
++    original_run = InterruptibleSQLiteRead.run
++
++    def _recording_run(self: InterruptibleSQLiteRead, *args: object, **kwargs: object) -> object:
++        seen.append(self._ctx)
++        return original_run(self, *args, **kwargs)  # type: ignore[arg-type]
++
++    monkeypatch.setattr(InterruptibleSQLiteRead, "run", _recording_run)
++
++    archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
++    try:
++        envelope = await archive.query_units(
++            "messages where text:receipt | group by role, session.repo | count | sort by count desc"
++        )
++    finally:
++        await archive.close()
++
++    assert isinstance(envelope, QueryUnitAggregateEnvelope)
++    assert [(row.count, row.group_key) for row in envelope.items]
++    assert len(seen) == 1
++    ctx = seen[0]
++    assert ctx.owner_ref == "api.query_units"
++    assert ctx.workload_class == "scan"
++    assert ctx.receipt.state == "completed"
++    assert ctx.receipt.selected_rows_exact == 3
++    assert ctx.receipt.rows_emitted == 2
++    assert ctx.receipt.result_pages_emitted == 1
++    assert ctx.receipt.sqlite_progress_callbacks > 0
++    assert ctx.receipt.sqlite_vm_steps_lower_bound == ctx.receipt.sqlite_progress_callbacks * 50
++    assert ctx.receipt.cleanup_complete is True
++
++
+ def test_queued_deadline_expiry_reports_timeout_not_cancellation() -> None:
+     """A deadline that expires while waiting for capacity is a timeout —
+     surfaces map QueryTimeoutError to 503, not a generic failure."""
+@@ -519,3 +673,108 @@ async def test_api_query_units_classifies_aggregate_as_scan(tmp_path: Path, monk
+         await archive.close()
+ 
+     assert seen == ["scan"]
++
++
++def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growth(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """C-03 through the shared runner and multi-aggregate production route.
++
++    The semantic result remains identical when the exact-session action bound is
++    removed, but the real SQLite VM-work receipt crosses the canary budget. This
++    kills a global-first relation mutation without duplicating query logic in a
++    test-side counter.
++    """
++
++    from hashlib import sha256
++
++    from polylogue.archive.message.roles import Role
++    from polylogue.archive.query import execution_control as ec
++    from polylogue.archive.query.expression import parse_unit_source_expression
++    from polylogue.archive.query.unit_results import query_unit_rows
++    from polylogue.core.enums import BlockType, Origin
++    from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
++
++    root = tmp_path / "archive"
++    target_session_id = "codex-session:target"
++    session_rows: list[tuple[str, str, bytes]] = []
++    message_rows: list[tuple[str, str, int, str, str, bytes]] = []
++    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None]] = []
++    for index in range(512):
++        native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
++        session_id = f"codex-session:{native_id}"
++        message_id = f"{session_id}:m1"
++        tool_id = f"tool-{index:04d}"
++        session_rows.append((native_id, Origin.CODEX_SESSION.value, sha256(session_id.encode()).digest()))
++        message_rows.append(
++            (session_id, "m1", 0, Role.ASSISTANT.value, "message", sha256(message_id.encode()).digest())
++        )
++        block_rows.extend(
++            (
++                (message_id, session_id, 0, BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
++                (message_id, session_id, 1, BlockType.TOOL_RESULT.value, None, tool_id, None, None),
++            )
++        )
++
++    with ArchiveStore(root) as facade:
++        facade._conn.executemany(
++            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
++            session_rows,
++        )
++        facade._conn.executemany(
++            """
++            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
++            VALUES (?, ?, ?, ?, ?, ?)
++            """,
++            message_rows,
++        )
++        facade._conn.executemany(
++            """
++            INSERT INTO blocks (
++                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
++            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
++            """,
++            block_rows,
++        )
++        facade._conn.commit()
++
++    source = parse_unit_source_expression(
++        f"actions where session.id:{target_session_id} | group by tool, session.origin | count"
++    )
++    assert source is not None
++    monkeypatch.setattr(ec, "PROGRESS_GUARD_OPCODES", 100)
++
++    def execute(ctx: QueryExecutionContext) -> QueryUnitAggregateEnvelope:
++        result = execute_archive_read_sync(
++            root,
++            lambda archive: query_unit_rows(
++                archive,
++                source,
++                query="c03-multi-aggregate",
++                limit=10,
++                execution_context=ctx,
++            ),
++            ctx=ctx,
++            controller=QueryAdmissionController(),
++        )
++        assert isinstance(result, QueryUnitAggregateEnvelope)
++        return result
++
++    bounded_ctx = QueryExecutionContext.create(query_text="c03-bounded", workload_class="scan", timeout_s=10.0)
++    bounded = execute(bounded_ctx)
++
++    monkeypatch.setattr(
++        "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
++        lambda **_kwargs: ("", "actions", []),
++    )
++    mutant_ctx = QueryExecutionContext.create(query_text="c03-global-first", workload_class="scan", timeout_s=10.0)
++    mutant = execute(mutant_ctx)
++
++    assert mutant.model_dump(mode="json") == bounded.model_dump(mode="json")
++    assert bounded_ctx.receipt.selected_rows_exact == 1
++    assert bounded_ctx.receipt.rows_emitted == 1
++    assert bounded_ctx.receipt.result_pages_emitted == 1
++    assert bounded_ctx.receipt.cleanup_complete is True
++    assert bounded_ctx.receipt.sqlite_vm_steps_lower_bound < 50_000
++    assert mutant_ctx.receipt.sqlite_vm_steps_lower_bound >= 50_000
+diff --git a/tests/unit/archive/test_query_multi_aggregate.py b/tests/unit/archive/test_query_multi_aggregate.py
+index 37e533b460f1355465df75dee8f4f13e915c117a..c694880c18a1b628186cf59e2aeb34a5578e4ae5 100644
+--- a/tests/unit/archive/test_query_multi_aggregate.py
++++ b/tests/unit/archive/test_query_multi_aggregate.py
+@@ -83,3 +83,393 @@ def test_multi_field_group_count_reports_proportions_and_denominator(workspace_e
+ def test_multi_field_group_rejects_each_unsupported_field() -> None:
+     with pytest.raises(ExpressionCompileError, match=r"group by nope.*action rows"):
+         parse_unit_source_expression("actions where tool:bash | group by tool, nope | count")
++
++
++def _aggregate_page_rows(envelope: QueryUnitAggregateEnvelope) -> list[tuple[tuple[str, str], int]]:
++    return [
++        (
++            (
++                cast(dict[str, str], json.loads(row.group_key))["role"],
++                cast(dict[str, str], json.loads(row.group_key))["session.repo"],
++            ),
++            row.count,
++        )
++        for row in envelope.items
++        if row.group_key is not None
++    ]
++
++
++def test_multi_field_group_pages_concatenate_to_exact_stable_result(
++    workspace_env: dict[str, Path],
++) -> None:
++    """Production dependency: ArchiveStore.query_unit_multi_counts.
++
++    Replacing the SQL page with the former all-row Python materializer loses the
++    out-of-range page's exact denominator/quality facts and restores unbounded
++    selected-row retention.
++    """
++
++    index_db = workspace_env["archive_root"] / "index.db"
++    (
++        SessionBuilder(index_db, "repo-a")
++        .provider("claude-code")
++        .git_repository_url("repo-a")
++        .add_message("a-user-1", role="user", text="aggregate")
++        .add_message("a-user-2", role="user", text="aggregate")
++        .add_message("a-assistant", role="assistant", text="aggregate")
++        .save()
++    )
++    (
++        SessionBuilder(index_db, "repo-b")
++        .provider("codex")
++        .git_repository_url("repo-b")
++        .add_message("b-assistant-1", role="assistant", text="aggregate")
++        .add_message("b-assistant-2", role="assistant", text="aggregate")
++        .add_message("b-system", role="system", text="aggregate")
++        .save()
++    )
++    (
++        SessionBuilder(index_db, "missing-repo")
++        .provider("chatgpt")
++        .git_repository_url(None)
++        .add_message("missing-user", role="user", text="aggregate")
++        .save()
++    )
++    (
++        SessionBuilder(index_db, "unknown-repo")
++        .provider("claude-code")
++        .git_repository_url("unknown")
++        .add_message("unknown-assistant", role="assistant", text="aggregate")
++        .save()
++    )
++    source = parse_unit_source_expression(
++        "messages where text:aggregate | group by role, session.repo | count | sort by count desc"
++    )
++    assert source is not None
++
++    with ArchiveStore.open_existing(index_db.parent) as archive:
++        full = query_unit_rows(archive, source, query="multi-aggregate-full", limit=100)
++        assert isinstance(full, QueryUnitAggregateEnvelope)
++        expected = _aggregate_page_rows(full)
++
++        concatenated: list[tuple[tuple[str, str], int]] = []
++        offset = 0
++        while True:
++            page = query_unit_rows(
++                archive,
++                source,
++                query="multi-aggregate-page",
++                limit=2,
++                offset=offset,
++            )
++            assert isinstance(page, QueryUnitAggregateEnvelope)
++            assert page.pipeline is not None
++            result = cast(dict[str, object], page.pipeline["result"])
++            assert result["denominator"] == {"kind": "all_matching_rows", "n": 8}
++            assert result["missing_counts"] == {"role": 0, "session.repo": 1}
++            assert result["unknown_counts"] == {"role": 0, "session.repo": 1}
++            concatenated.extend(_aggregate_page_rows(page))
++            if page.next_offset is None:
++                break
++            offset = page.next_offset
++
++        beyond = query_unit_rows(
++            archive,
++            source,
++            query="multi-aggregate-beyond",
++            limit=2,
++            offset=100,
++        )
++
++    assert concatenated == expected
++    assert sum(count for _, count in concatenated) == 8
++    assert isinstance(beyond, QueryUnitAggregateEnvelope)
++    assert beyond.items == ()
++    assert beyond.next_offset is None
++    assert beyond.pipeline is not None
++    beyond_result = cast(dict[str, object], beyond.pipeline["result"])
++    assert beyond_result["denominator"] == {"kind": "all_matching_rows", "n": 8}
++    assert beyond_result["missing_counts"] == {"role": 0, "session.repo": 1}
++    assert beyond_result["unknown_counts"] == {"role": 0, "session.repo": 1}
++
++
++def test_multi_field_group_does_not_call_terminal_row_query(
++    workspace_env: dict[str, Path],
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """Restoring ``_all_aggregate_rows`` makes this fail on ``query_messages``."""
++
++    index_db = workspace_env["archive_root"] / "index.db"
++    (
++        SessionBuilder(index_db, "sql-only")
++        .provider("claude-code")
++        .git_repository_url("repo")
++        .add_message("sql-only-message", role="assistant", text="aggregate")
++        .save()
++    )
++    source = parse_unit_source_expression("messages where text:aggregate | group by role, session.repo | count")
++    assert source is not None
++
++    def _row_materialization_mutant(*_args: object, **_kwargs: object) -> object:
++        raise AssertionError("multi-field aggregation called the terminal row-page method")
++
++    monkeypatch.setattr(ArchiveStore, "query_messages", _row_materialization_mutant)
++    with ArchiveStore.open_existing(index_db.parent) as archive:
++        envelope = query_unit_rows(archive, source, query="multi-aggregate-sql-only", limit=10)
++
++    assert isinstance(envelope, QueryUnitAggregateEnvelope)
++    assert [(json.loads(row.group_key or "{}"), row.count) for row in envelope.items] == [
++        ({"role": "assistant", "session.repo": "repo"}, 1)
++    ]
++
++
++def test_file_multi_field_group_uses_lossless_file_relation(workspace_env: dict[str, Path]) -> None:
++    """The file unit keeps its de-duplicated session/path grain inside SQLite."""
++
++    index_db = workspace_env["archive_root"] / "index.db"
++    (
++        SessionBuilder(index_db, "file-multi")
++        .provider("claude-code")
++        .git_repository_url("polylogue")
++        .add_message(
++            "file-edit-1",
++            role="assistant",
++            text="aggregate file",
++            blocks=[
++                {
++                    "type": "tool_use",
++                    "tool_name": "Edit",
++                    "tool_id": "edit-1",
++                    "input": {"file_path": "polylogue/archive/query/unit_results.py"},
++                    "semantic_type": "file_edit",
++                }
++            ],
++        )
++        .add_message(
++            "file-edit-2",
++            role="assistant",
++            text="aggregate file again",
++            blocks=[
++                {
++                    "type": "tool_use",
++                    "tool_name": "Edit",
++                    "tool_id": "edit-2",
++                    "input": {"file_path": "polylogue/archive/query/unit_results.py"},
++                    "semantic_type": "file_edit",
++                }
++            ],
++        )
++        .save()
++    )
++    source = parse_unit_source_expression(
++        "files where action:file_edit | group by path, session.repo | count | sort by key asc"
++    )
++    assert source is not None
++
++    with ArchiveStore.open_existing(index_db.parent) as archive:
++        envelope = query_unit_rows(archive, source, query="file-multi", limit=10)
++
++    assert isinstance(envelope, QueryUnitAggregateEnvelope)
++    assert [(json.loads(row.group_key or "{}"), row.count) for row in envelope.items] == [
++        (
++            {
++                "path": "polylogue/archive/query/unit_results.py",
++                "session.repo": "polylogue",
++            },
++            1,
++        )
++    ]
++    assert envelope.pipeline is not None
++    result = cast(dict[str, object], envelope.pipeline["result"])
++    assert result["denominator"] == {"kind": "all_matching_rows", "n": 1}
++
++
++def test_multi_field_group_distinguishes_missing_empty_and_explicit_unknown(
++    workspace_env: dict[str, Path],
++) -> None:
++    """Lossless group keys must not collapse three different data states.
++
++    Replacing the closed field expressions with ``COALESCE(NULLIF(...),
++    'unknown')`` makes the three rows merge and falsifies both quality counters.
++    """
++
++    import sqlite3
++
++    index_db = workspace_env["archive_root"] / "index.db"
++    for native_id, repository_url in (
++        ("missing", None),
++        ("empty", "temporary"),
++        ("explicit-unknown", "unknown"),
++    ):
++        (
++            SessionBuilder(index_db, native_id)
++            .provider("claude-code")
++            .git_repository_url(repository_url)
++            .add_message(f"{native_id}-message", role="assistant", text="quality-state")
++            .save()
++        )
++    with sqlite3.connect(index_db) as conn:
++        conn.execute(
++            "UPDATE sessions SET git_repository_url = '' WHERE native_id = ? AND origin = ?",
++            ("ext-empty", "claude-code-session"),
++        )
++
++    source = parse_unit_source_expression(
++        "messages where text:quality-state | group by role, session.repo | count | sort by key asc"
++    )
++    assert source is not None
++    with ArchiveStore.open_existing(index_db.parent) as archive:
++        envelope = query_unit_rows(archive, source, query="quality-states", limit=10)
++
++    assert isinstance(envelope, QueryUnitAggregateEnvelope)
++    assert [(json.loads(row.group_key or "{}"), row.count) for row in envelope.items] == [
++        ({"role": "assistant", "session.repo": ""}, 1),
++        ({"role": "assistant", "session.repo": "[missing]"}, 1),
++        ({"role": "assistant", "session.repo": "unknown"}, 1),
++    ]
++    assert envelope.pipeline is not None
++    result = cast(dict[str, object], envelope.pipeline["result"])
++    assert result["denominator"] == {"kind": "all_matching_rows", "n": 3}
++    assert result["missing_counts"] == {"role": 0, "session.repo": 1}
++    assert result["unknown_counts"] == {"role": 0, "session.repo": 1}
++
++
++def test_multi_field_sql_lowerer_covers_action_block_event_and_delegation_relations(
++    workspace_env: dict[str, Path],
++) -> None:
++    """Each non-file derived relation stays inside the shared SQL lowerer.
++
++    Removing the action-bound CTE, observed-event source CTE composition, or
++    delegation-view field mapping makes the corresponding real query fail.
++    """
++
++    index_db = workspace_env["archive_root"] / "index.db"
++    (
++        SessionBuilder(index_db, "derived-relations")
++        .provider("claude-code")
++        .git_repository_url("polylogue")
++        .add_message(
++            "derived-actions",
++            role="assistant",
++            text="derived relation evidence",
++            blocks=[
++                {
++                    "type": "tool_use",
++                    "tool_name": "Bash",
++                    "tool_id": "bash-1",
++                    "input": {"command": "pytest -q"},
++                    "semantic_type": "shell",
++                },
++                {
++                    "type": "tool_result",
++                    "tool_id": "bash-1",
++                    "text": "passed",
++                    "is_error": False,
++                    "exit_code": 0,
++                },
++                {
++                    "type": "tool_use",
++                    "tool_name": "Task",
++                    "tool_id": "task-1",
++                    "input": {"prompt": "review", "model": "sonnet"},
++                    "semantic_type": "subagent",
++                },
++                {
++                    "type": "tool_result",
++                    "tool_id": "task-1",
++                    "text": "done",
++                    "is_error": False,
++                    "exit_code": 0,
++                },
++            ],
++        )
++        .save()
++    )
++    session_id = "claude-code-session:ext-derived-relations"
++    cases = (
++        (
++            f"actions where session.id:{session_id} AND tool:Bash "
++            "| group by tool, session.repo | count | sort by key asc",
++            [({"tool": "Bash", "session.repo": "polylogue"}, 1)],
++        ),
++        (
++            f"blocks where session.id:{session_id} AND type:tool_use "
++            "| group by type, session.repo | count | sort by key asc",
++            [({"type": "tool_use", "session.repo": "polylogue"}, 2)],
++        ),
++        (
++            f"observed-events where session.id:{session_id} AND kind:tool_finished "
++            "| group by tool, session.repo | count | sort by key asc",
++            [
++                ({"tool": "Bash", "session.repo": "polylogue"}, 1),
++                ({"tool": "Task", "session.repo": "polylogue"}, 1),
++            ],
++        ),
++        (
++            "delegations where mapping_state:unresolved | group by basis, session.repo | count | sort by key asc",
++            [({"basis": "action", "session.repo": "polylogue"}, 1)],
++        ),
++    )
++
++    with ArchiveStore.open_existing(index_db.parent) as archive:
++        for expression, expected in cases:
++            source = parse_unit_source_expression(expression)
++            assert source is not None
++            envelope = query_unit_rows(archive, source, query=expression, limit=10)
++            assert isinstance(envelope, QueryUnitAggregateEnvelope)
++            assert [(json.loads(row.group_key or "{}"), row.count) for row in envelope.items] == expected
++            assert envelope.pipeline is not None
++            result = cast(dict[str, object], envelope.pipeline["result"])
++            assert result["denominator"] == {
++                "kind": "all_matching_rows",
++                "n": sum(count for _, count in expected),
++            }
++
++
++def test_multi_field_sql_lowerer_covers_assertion_defaults_and_session_join(
++    workspace_env: dict[str, Path],
++) -> None:
++    """Assertion defaults and owning-session metadata are grouped in SQLite."""
++
++    import sqlite3
++
++    from polylogue.core.enums import AssertionKind
++    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
++
++    index_db = workspace_env["archive_root"] / "index.db"
++    (
++        SessionBuilder(index_db, "assertion-multi")
++        .provider("claude-code")
++        .git_repository_url("polylogue")
++        .add_message("assertion-source", role="user", text="record caveat")
++        .save()
++    )
++    session_id = "claude-code-session:ext-assertion-multi"
++    with sqlite3.connect(index_db.parent / "user.db") as conn:
++        upsert_assertion(
++            conn,
++            assertion_id="assertion-multi-1",
++            target_ref=f"session:{session_id}",
++            kind=AssertionKind.CAVEAT,
++            body_text="review this caveat",
++            author_ref="user:test",
++            author_kind="user",
++            evidence_refs=[session_id],
++            now_ms=1_700_000_000_000,
++        )
++
++    source = parse_unit_source_expression(
++        "assertions where kind:caveat | group by status, session.repo | count | sort by key asc"
++    )
++    assert source is not None
++    with ArchiveStore.open_existing(index_db.parent) as archive:
++        envelope = query_unit_rows(archive, source, query="assertion-multi", limit=10)
++
++    assert isinstance(envelope, QueryUnitAggregateEnvelope)
++    assert [(json.loads(row.group_key or "{}"), row.count) for row in envelope.items] == [
++        ({"status": "active", "session.repo": "polylogue"}, 1)
++    ]
++    assert envelope.pipeline is not None
++    result = cast(dict[str, object], envelope.pipeline["result"])
++    assert result["missing_counts"] == {"status": 0, "session.repo": 0}
++    assert result["unknown_counts"] == {"status": 0, "session.repo": 0}

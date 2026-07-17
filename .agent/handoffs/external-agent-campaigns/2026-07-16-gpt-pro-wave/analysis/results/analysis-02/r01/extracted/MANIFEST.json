@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-07-17T05:31:47.373365+00:00",
+  "job_id": "analysis-02",
+  "members": [
+    {
+      "name": "DECISIONS.md",
+      "sha256": "09f9b65ad9df4a7afe7bf97fe9867da897803ef7e5cfee88c20cef0accb6bd77",
+      "size_bytes": 10283
+    },
+    {
+      "name": "EVIDENCE.md",
+      "sha256": "f958c7769c2bfaccab4c121f641afb9ec48bf1a0057477232c1de0733f622b6e",
+      "size_bytes": 14232
+    },
+    {
+      "name": "FUNNEL.json",
+      "sha256": "731f1e83fd5af3a83e80989127105ef476427a1a7c23c89a908e1bfd1ac08bf6",
+      "size_bytes": 5191
+    },
+    {
+      "name": "NEXT-ACTIONS.md",
+      "sha256": "e8f4f6714425182379e8b10275f03a483cfc2187ed8236ec16a79c361f9322c0",
+      "size_bytes": 10872
+    },
+    {
+      "name": "PACKAGES.csv",
+      "sha256": "59318781ecef842bf52af7b8dc499f79d3aafde64fb0584b8961aac812ee2692",
+      "size_bytes": 14504
+    },
+    {
+      "name": "REPORT.md",
+      "sha256": "3b58ad0c55de896c93e758f0fcb00b27d9caf5776f2e2c98e3dbf7ac0042a673",
+      "size_bytes": 14377
+    },
+    {
+      "name": "RESULT-TELEMETRY-V2.schema.json",
+      "sha256": "73978bce131206452315d58a3044861080a56b52fa4d8713ec2dd321fee1b2d2",
+      "size_bytes": 16125
+    }
+  ],
+  "result_revision": "r01",
+  "schema_version": 1,
+  "source_snapshot_commit": "f654480cadb7cc4c194704e24dfd483199547b35"
+}

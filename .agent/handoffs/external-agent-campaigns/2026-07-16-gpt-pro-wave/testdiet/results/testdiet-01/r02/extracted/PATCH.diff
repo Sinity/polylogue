@@ -1,0 +1,647 @@
+diff --git a/tests/infra/query_manifest_oracle.py b/tests/infra/query_manifest_oracle.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f3096398db3b7cb0a2a976553b6ad9de3f56827
+--- /dev/null
++++ b/tests/infra/query_manifest_oracle.py
+@@ -0,0 +1,323 @@
++"""Independent provider-wire facts for the query cardinality survivor.
++
++The manifest in this module is deliberately test-owned.  It renders Codex
++JSONL inputs and computes the expected action relation directly from those
++planted facts; it never asks Polylogue's parser, query compiler, SQL views, or
++repository for an expected value.
++"""
++
++from __future__ import annotations
++
++import json
++from collections import Counter, defaultdict
++from dataclasses import dataclass
++from datetime import datetime
++from pathlib import Path
++from typing import TypeAlias
++
++QUERY_CARDINALITY_TOKEN = "testdiet-cardinality-law"
++
++ActionIdentity: TypeAlias = tuple[str, str, str | None, int | None, int | None]
++
++
++@dataclass(frozen=True)
++class PlantedCodexCall:
++    """One provider-native function call planted in a Codex JSONL source."""
++
++    call_id: str
++    command: str
++    timestamp: str
++
++
++@dataclass(frozen=True)
++class PlantedCodexResult:
++    """One provider-native function result, including orphan-result cases."""
++
++    call_id: str
++    output: str
++    exit_code: int
++    timestamp: str
++
++    @property
++    def wire_output(self) -> str:
++        return json.dumps(
++            {"metadata": {"exit_code": self.exit_code}, "output": self.output},
++            sort_keys=True,
++            separators=(",", ":"),
++        )
++
++
++@dataclass(frozen=True)
++class PlantedCodexSession:
++    """Provider facts for one source file and its explicit canonical identity."""
++
++    native_session_id: str
++    canonical_session_id: str
++    timestamp: str
++    calls: tuple[PlantedCodexCall, ...]
++    results: tuple[PlantedCodexResult, ...]
++
++    def wire_records(self) -> tuple[dict[str, object], ...]:
++        records: list[dict[str, object]] = [
++            {
++                "type": "session_meta",
++                "payload": {
++                    "id": self.native_session_id,
++                    "timestamp": self.timestamp,
++                },
++            }
++        ]
++        for index, call in enumerate(self.calls):
++            records.append(
++                {
++                    "type": "response_item",
++                    "timestamp": call.timestamp,
++                    "payload": {
++                        "type": "function_call",
++                        "id": f"fc-{self.native_session_id}-{index}",
++                        "call_id": call.call_id,
++                        "name": "exec_command",
++                        "arguments": json.dumps({"cmd": call.command}, sort_keys=True, separators=(",", ":")),
++                    },
++                }
++            )
++        for index, result in enumerate(self.results):
++            records.append(
++                {
++                    "type": "response_item",
++                    "timestamp": result.timestamp,
++                    "payload": {
++                        "type": "function_call_output",
++                        "id": f"fco-{self.native_session_id}-{index}",
++                        "call_id": result.call_id,
++                        "output": result.wire_output,
++                    },
++                }
++            )
++        return tuple(records)
++
++
++@dataclass(frozen=True)
++class ExpectedActionFact:
++    """The intended ordinal pairing of one planted use with its result."""
++
++    session_id: str
++    command: str
++    occurred_at_ms: int
++    output_text: str | None
++    is_error: int | None
++    exit_code: int | None
++
++    @property
++    def identity(self) -> ActionIdentity:
++        return (
++            self.session_id,
++            self.command,
++            self.output_text,
++            self.is_error,
++            self.exit_code,
++        )
++
++
++@dataclass(frozen=True)
++class QueryCardinalityManifest:
++    """Fixed known-answer corpus for membership and cardinality laws."""
++
++    sessions: tuple[PlantedCodexSession, ...]
++
++    def write_sources(self, root: Path) -> tuple[Path, ...]:
++        root.mkdir(parents=True, exist_ok=True)
++        paths: list[Path] = []
++        for session in self.sessions:
++            path = root / f"{session.native_session_id}.jsonl"
++            path.write_text(
++                "".join(
++                    json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
++                    for record in session.wire_records()
++                ),
++                encoding="utf-8",
++            )
++            paths.append(path)
++        return tuple(paths)
++
++    def all_actions(self) -> tuple[ExpectedActionFact, ...]:
++        """Pair the nth call/result sharing an ID, directly from planted facts."""
++        actions: list[ExpectedActionFact] = []
++        for session in self.sessions:
++            result_groups: dict[str, list[PlantedCodexResult]] = defaultdict(list)
++            for planted_result in session.results:
++                result_groups[planted_result.call_id].append(planted_result)
++            call_ranks: Counter[str] = Counter()
++            for call in session.calls:
++                call_rank = call_ranks[call.call_id]
++                call_ranks[call.call_id] += 1
++                matching_results = result_groups.get(call.call_id, [])
++                paired_result = matching_results[call_rank] if call_rank < len(matching_results) else None
++                actions.append(
++                    ExpectedActionFact(
++                        session_id=session.canonical_session_id,
++                        command=call.command,
++                        occurred_at_ms=_epoch_ms(call.timestamp),
++                        output_text=paired_result.wire_output if paired_result is not None else None,
++                        is_error=(int(paired_result.exit_code != 0) if paired_result is not None else None),
++                        exit_code=paired_result.exit_code if paired_result is not None else None,
++                    )
++                )
++        return tuple(actions)
++
++    def matching_actions(self) -> tuple[ExpectedActionFact, ...]:
++        """Evaluate the survivor's fixed public predicate without production code."""
++        return tuple(
++            sorted(
++                (action for action in self.all_actions() if QUERY_CARDINALITY_TOKEN in action.command),
++                key=lambda action: (action.occurred_at_ms, action.identity),
++            )
++        )
++
++    def matching_action_identities(self) -> tuple[ActionIdentity, ...]:
++        return tuple(action.identity for action in self.matching_actions())
++
++    def matching_session_ids(self) -> tuple[str, ...]:
++        selected = {action.session_id for action in self.matching_actions()}
++        return tuple(
++            session.canonical_session_id for session in self.sessions if session.canonical_session_id in selected
++        )
++
++    def is_error_partition(self) -> dict[str, int]:
++        counts: Counter[str] = Counter()
++        for action in self.matching_actions():
++            key = "unknown" if action.is_error is None else str(action.is_error)
++            counts[key] += 1
++        return dict(counts)
++
++    @property
++    def decoy_session_id(self) -> str:
++        return "codex-session:testdiet-query-decoy"
++
++
++def query_cardinality_manifest() -> QueryCardinalityManifest:
++    """Return the stable micro-corpus layered onto the realized C-03 archive."""
++    return QueryCardinalityManifest(
++        sessions=(
++            PlantedCodexSession(
++                native_session_id="testdiet-query-alpha",
++                canonical_session_id="codex-session:testdiet-query-alpha",
++                timestamp="2026-07-01T00:00:00Z",
++                calls=(
++                    PlantedCodexCall(
++                        call_id="shared-duplicate-id",
++                        command=f"printf {QUERY_CARDINALITY_TOKEN}-alpha-one",
++                        timestamp="2026-07-01T00:00:01Z",
++                    ),
++                    PlantedCodexCall(
++                        call_id="shared-duplicate-id",
++                        command=f"printf {QUERY_CARDINALITY_TOKEN}-alpha-two",
++                        timestamp="2026-07-01T00:00:02Z",
++                    ),
++                    PlantedCodexCall(
++                        call_id="missing-result",
++                        command=f"printf {QUERY_CARDINALITY_TOKEN}-alpha-missing",
++                        timestamp="2026-07-01T00:00:03Z",
++                    ),
++                    PlantedCodexCall(
++                        call_id="alpha-decoy",
++                        command="printf alpha-command-outside-law",
++                        timestamp="2026-07-01T00:00:04Z",
++                    ),
++                ),
++                results=(
++                    PlantedCodexResult(
++                        call_id="shared-duplicate-id",
++                        output="alpha-one",
++                        exit_code=0,
++                        timestamp="2026-07-01T00:00:10Z",
++                    ),
++                    PlantedCodexResult(
++                        call_id="shared-duplicate-id",
++                        output="alpha-two",
++                        exit_code=2,
++                        timestamp="2026-07-01T00:00:11Z",
++                    ),
++                    PlantedCodexResult(
++                        call_id="alpha-decoy",
++                        output="alpha-decoy",
++                        exit_code=0,
++                        timestamp="2026-07-01T00:00:12Z",
++                    ),
++                    PlantedCodexResult(
++                        call_id="orphan-result",
++                        output=f"{QUERY_CARDINALITY_TOKEN}-orphan-must-not-be-an-action",
++                        exit_code=7,
++                        timestamp="2026-07-01T00:00:13Z",
++                    ),
++                ),
++            ),
++            PlantedCodexSession(
++                native_session_id="testdiet-query-beta",
++                canonical_session_id="codex-session:testdiet-query-beta",
++                timestamp="2026-07-01T00:01:00Z",
++                calls=(
++                    PlantedCodexCall(
++                        call_id="beta-success",
++                        command=f"printf {QUERY_CARDINALITY_TOKEN}-beta-success",
++                        timestamp="2026-07-01T00:00:05Z",
++                    ),
++                    PlantedCodexCall(
++                        call_id="beta-error",
++                        command=f"printf {QUERY_CARDINALITY_TOKEN}-beta-error",
++                        timestamp="2026-07-01T00:00:06Z",
++                    ),
++                ),
++                results=(
++                    PlantedCodexResult(
++                        call_id="beta-success",
++                        output="beta-success",
++                        exit_code=0,
++                        timestamp="2026-07-01T00:01:10Z",
++                    ),
++                    PlantedCodexResult(
++                        call_id="beta-error",
++                        output="beta-error",
++                        exit_code=3,
++                        timestamp="2026-07-01T00:01:11Z",
++                    ),
++                ),
++            ),
++            PlantedCodexSession(
++                native_session_id="testdiet-query-decoy",
++                canonical_session_id="codex-session:testdiet-query-decoy",
++                timestamp="2026-07-01T00:02:00Z",
++                calls=(
++                    PlantedCodexCall(
++                        call_id="decoy-output-only",
++                        command="printf output-only-lookalike",
++                        timestamp="2026-07-01T00:00:07Z",
++                    ),
++                ),
++                results=(
++                    PlantedCodexResult(
++                        call_id="decoy-output-only",
++                        output=f"{QUERY_CARDINALITY_TOKEN}-appears-only-in-output",
++                        exit_code=0,
++                        timestamp="2026-07-01T00:02:10Z",
++                    ),
++                ),
++            ),
++        )
++    )
++
++
++def _epoch_ms(timestamp: str) -> int:
++    return int(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000)
++
++
++__all__ = [
++    "ActionIdentity",
++    "ExpectedActionFact",
++    "PlantedCodexCall",
++    "PlantedCodexResult",
++    "PlantedCodexSession",
++    "QUERY_CARDINALITY_TOKEN",
++    "QueryCardinalityManifest",
++    "query_cardinality_manifest",
++]
+diff --git a/tests/unit/cli/test_query_composition_laws.py b/tests/unit/cli/test_query_composition_laws.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f8c3cba965d8655af5e6d0738b6aa4e4e2f41e7
+--- /dev/null
++++ b/tests/unit/cli/test_query_composition_laws.py
+@@ -0,0 +1,312 @@
++"""Real-route query algebra and relational-cardinality survivor laws."""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import os
++import shutil
++import sqlite3
++from collections.abc import Iterator
++from contextlib import contextmanager
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, cast
++
++import pytest
++from click.testing import CliRunner
++
++from polylogue.archive.query.expression import compile_expression, parse_unit_source_expression
++from polylogue.archive.query.unit_results import query_unit_rows
++from polylogue.cli import cli
++from polylogue.config import Source
++from polylogue.pipeline.services.archive_ingest import parse_sources_archive
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
++from polylogue.surfaces.payloads import (
++    ActionQueryRowPayload,
++    QueryUnitAggregateEnvelope,
++    QueryUnitEnvelope,
++)
++from tests.infra.query_manifest_oracle import (
++    QUERY_CARDINALITY_TOKEN,
++    ActionIdentity,
++    QueryCardinalityManifest,
++    query_cardinality_manifest,
++)
++from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
++
++_ACTION_EXPRESSION = f"actions where session.origin:codex-session AND command:{QUERY_CARDINALITY_TOKEN}"
++_SESSION_EXPRESSION = f"exists action(session.origin:codex-session AND command:{QUERY_CARDINALITY_TOKEN})"
++
++
++@dataclass(frozen=True)
++class _PreparedArchive:
++    root: Path
++    manifest: QueryCardinalityManifest
++
++
++@contextmanager
++def _archive_environment(root: Path) -> Iterator[None]:
++    updates = {
++        "POLYLOGUE_ARCHIVE_ROOT": str(root),
++        "POLYLOGUE_INGEST_PARSE_WORKERS": "1",
++        "POLYLOGUE_FORCE_PLAIN": "1",
++    }
++    previous = {key: os.environ.get(key) for key in updates}
++    os.environ.update(updates)
++    try:
++        yield
++    finally:
++        for key, value in previous.items():
++            if value is None:
++                os.environ.pop(key, None)
++            else:
++                os.environ[key] = value
++
++
++@pytest.fixture(scope="module")
++def query_cardinality_archive(tmp_path_factory: pytest.TempPathFactory) -> _PreparedArchive:
++    """Layer independent Codex facts onto the immutable realized C-03 canary."""
++    work = tmp_path_factory.mktemp("query-cardinality-survivor")
++    artifact = build_seeded_archive(cache_root=work / "seeded-cache")
++    clone = clone_seeded_archive(artifact, work / "augmented-archive")
++    manifest = query_cardinality_manifest()
++    sources = [Source(name="codex", path=path) for path in manifest.write_sources(work / "wire")]
++    with _archive_environment(clone.root):
++        result = asyncio.run(parse_sources_archive(clone.root, sources))
++    assert result.parse_failures == 0
++    assert result.processed_ids == set(manifest.matching_session_ids()) | {manifest.decoy_session_id}
++    return _PreparedArchive(root=clone.root, manifest=manifest)
++
++
++def _action_identity(row: Any) -> ActionIdentity:
++    return (
++        str(row.session_id),
++        str(row.tool_command),
++        cast(str | None, row.output_text),
++        cast(int | None, row.is_error),
++        cast(int | None, row.exit_code),
++    )
++
++
++def _payload_action_identity(row: dict[str, object]) -> ActionIdentity:
++    return (
++        str(row["session_id"]),
++        str(row["tool_command"]),
++        cast(str | None, row.get("output_text")),
++        cast(int | None, row.get("is_error")),
++        cast(int | None, row.get("exit_code")),
++    )
++
++
++def _assert_repository_membership(root: Path, manifest: QueryCardinalityManifest) -> None:
++    """Assert the action_relation_select_sql -> query_actions production path."""
++    source = parse_unit_source_expression(_ACTION_EXPRESSION)
++    assert source is not None
++    with ArchiveStore.open_existing(root) as archive:
++        rows = archive.query_actions(source.predicate, limit=100)
++    actual = tuple(_action_identity(row) for row in rows)
++    expected = manifest.matching_action_identities()
++    assert actual == expected, (
++        f"expected {len(expected)} independently planted action rows, got {len(actual)}; "
++        f"expected={expected!r}, actual={actual!r}"
++    )
++
++
++def _copy_archive(source: Path, destination: Path) -> Path:
++    shutil.copytree(source, destination)
++    return destination
++
++
++def _cli_env(root: Path) -> dict[str, str]:
++    return {
++        "POLYLOGUE_ARCHIVE_ROOT": str(root),
++        "POLYLOGUE_FORCE_PLAIN": "1",
++    }
++
++
++def test_query_algebra_cardinality_survives_real_read_and_action_routes(
++    query_cardinality_archive: _PreparedArchive,
++    tmp_path: Path,
++) -> None:
++    """Survive parser/lowerer, action relation, repository, CLI, and delete.
++
++    Production dependencies exercised: Codex parser/materializer,
++    ``parse_unit_source_expression``/``compile_expression``,
++    ``action_relation_select_sql``, ``ArchiveStore.query_actions`` and
++    ``query_unit_counts``, ``query_unit_rows``, root CLI ``find``, and the
++    public ``find ... then delete`` preview/apply route.  Removing the command
++    predicate, losing ordinal result pairing, applying LIMIT before selection,
++    or letting preview/apply resolve different sets makes this test fail.
++    """
++    root = query_cardinality_archive.root
++    manifest = query_cardinality_archive.manifest
++    expected = manifest.matching_action_identities()
++
++    # Parse the public terminal expression and lower its action-existence form.
++    source = parse_unit_source_expression(_ACTION_EXPRESSION)
++    assert source is not None
++    assert source.unit == "action"
++    compiled_selector = compile_expression(_SESSION_EXPRESSION)
++    assert compiled_selector.boolean_predicate is not None
++
++    # SQL repository membership and the shared terminal-row envelope agree with
++    # the independent provider-wire oracle, including duplicate IDs, a missing
++    # result, and an orphan result that must not create an action.
++    _assert_repository_membership(root, manifest)
++    with ArchiveStore.open_existing(root) as archive:
++        envelope = query_unit_rows(archive, source, query=_ACTION_EXPRESSION, limit=100)
++    assert isinstance(envelope, QueryUnitEnvelope)
++    assert tuple(_action_identity(row) for row in envelope.items) == expected
++    assert all(isinstance(row, ActionQueryRowPayload) for row in envelope.items)
++
++    # Exact count and a complete partition must conserve the same row grain.
++    count_expression = f"{_ACTION_EXPRESSION} | count"
++    count_source = parse_unit_source_expression(count_expression)
++    assert count_source is not None
++    partition_expression = f"{_ACTION_EXPRESSION} | group by is_error | count"
++    partition_source = parse_unit_source_expression(partition_expression)
++    assert partition_source is not None
++    with ArchiveStore.open_existing(root) as archive:
++        count_envelope = query_unit_rows(archive, count_source, query=count_expression, limit=20)
++        partition_envelope = query_unit_rows(
++            archive,
++            partition_source,
++            query=partition_expression,
++            limit=20,
++        )
++    assert isinstance(count_envelope, QueryUnitAggregateEnvelope)
++    assert [(item.group_key, item.count) for item in count_envelope.items] == [("all", len(expected))]
++    assert isinstance(partition_envelope, QueryUnitAggregateEnvelope)
++    partition = {str(item.group_key): item.count for item in partition_envelope.items}
++    assert partition == manifest.is_error_partition()
++    assert sum(partition.values()) == len(expected)
++
++    # Concatenating bounded public pages returns every logical member once and
++    # in the same stable order as the independent timestamp-ordered fact set.
++    paged: list[ActionIdentity] = []
++    offsets: list[int] = []
++    offset = 0
++    with ArchiveStore.open_existing(root) as archive:
++        while True:
++            page = query_unit_rows(
++                archive,
++                source,
++                query=_ACTION_EXPRESSION,
++                limit=2,
++                offset=offset,
++            )
++            assert isinstance(page, QueryUnitEnvelope)
++            offsets.append(offset)
++            paged.extend(_action_identity(row) for row in page.items)
++            if page.next_offset is None:
++                break
++            assert page.next_offset == offset + len(page.items)
++            offset = page.next_offset
++    assert offsets == [0, 2, 4]
++    assert tuple(paged) == expected
++    assert len(set(paged)) == len(expected)
++
++    # The stable public CLI read route reparses and reexecutes the expression.
++    read_result = CliRunner().invoke(
++        cli,
++        ["--plain", "--format", "json", "find", _ACTION_EXPRESSION],
++        env=_cli_env(root),
++    )
++    assert read_result.exit_code == 0, read_result.output
++    read_payload = cast(dict[str, object], json.loads(read_result.output))
++    read_items = cast(list[dict[str, object]], read_payload["items"])
++    assert tuple(_payload_action_identity(item) for item in read_items) == expected
++    assert read_payload["total"] == len(expected)
++
++    # Preview and apply run against a private clone.  The previewed identities
++    # equal the planted session set, apply reports the same cardinality, the
++    # selected sessions disappear, and the output-only decoy remains.
++    mutation_root = _copy_archive(root, tmp_path / "mutation-archive")
++    runner = CliRunner()
++    preview_result = runner.invoke(
++        cli,
++        ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--dry-run", "--all"],
++        env=_cli_env(mutation_root),
++    )
++    assert preview_result.exit_code == 0, preview_result.output
++    preview = cast(dict[str, object], json.loads(preview_result.output))
++    preview_ids = tuple(cast(list[str], preview["session_ids"]))
++    assert preview["status"] == "preview"
++    assert preview["affected_count"] == 0
++    assert set(preview_ids) == set(manifest.matching_session_ids())
++    assert preview["session_count"] == len(manifest.matching_session_ids())
++
++    apply_result = runner.invoke(
++        cli,
++        ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--yes", "--all"],
++        env=_cli_env(mutation_root),
++    )
++    assert apply_result.exit_code == 0, apply_result.output
++    applied = cast(dict[str, object], json.loads(apply_result.output))
++    assert applied["session_count"] == preview["session_count"]
++    assert applied["affected_count"] == preview["session_count"]
++
++    with ArchiveStore.open_existing(mutation_root) as archive:
++        for session_id in preview_ids:
++            with pytest.raises(KeyError):
++                archive.read_summary(session_id)
++        decoy = archive.read_summary(manifest.decoy_session_id)
++    assert decoy.session_id == manifest.decoy_session_id
++
++    post_result = runner.invoke(
++        cli,
++        ["--plain", "--format", "json", "find", _ACTION_EXPRESSION],
++        env=_cli_env(mutation_root),
++    )
++    assert post_result.exit_code == 2, post_result.output
++    post_payload = cast(dict[str, object], json.loads(post_result.output))
++    assert post_payload["items"] == []
++    assert post_payload["total"] == 0
++
++
++def test_survivor_detects_naive_duplicate_id_join_mutation(
++    query_cardinality_archive: _PreparedArchive,
++    tmp_path: Path,
++) -> None:
++    """Dropping ordinal pairing creates seven rows where the oracle requires five.
++
++    The mutation replaces the production ``actions`` view with the historical
++    same-session/same-tool-id join, equivalent to removing
++    ``result_rank = use_rank`` from ``action_relation_select_sql``.  The two
++    duplicate uses and two duplicate results then form a 2x2 product (four
++    rows instead of two), and the real-route membership survivor must reject it.
++    """
++    root = _copy_archive(query_cardinality_archive.root, tmp_path / "naive-join-archive")
++    with sqlite3.connect(root / "index.db") as conn:
++        conn.executescript(
++            """
++            DROP VIEW actions;
++            CREATE VIEW actions AS
++            SELECT
++                u.session_id,
++                u.message_id,
++                u.block_id AS tool_use_block_id,
++                u.tool_name,
++                u.semantic_type,
++                u.tool_command,
++                u.tool_path,
++                u.tool_input,
++                r.text AS output_text,
++                r.tool_result_is_error AS is_error,
++                r.tool_result_exit_code AS exit_code,
++                r.block_id AS tool_result_block_id
++            FROM blocks u
++            LEFT JOIN blocks r
++              ON r.session_id = u.session_id
++             AND r.tool_id = u.tool_id
++             AND r.block_type = 'tool_result'
++            WHERE u.block_type = 'tool_use';
++            """
++        )
++
++    with pytest.raises(AssertionError) as caught:
++        _assert_repository_membership(root, query_cardinality_archive.manifest)
++    message = str(caught.value)
++    assert "expected 5 independently planted action rows, got 7" in message
++    assert QUERY_CARDINALITY_TOKEN in message

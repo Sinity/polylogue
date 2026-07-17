@@ -1,0 +1,181 @@
+{
+  "entities": {
+    "campaign_conversations_authoritative_census": {
+      "confidence": "source_supported",
+      "count": 27,
+      "evidence": "polylogue-3v1 production incident note"
+    },
+    "canonical_unique_assets": {
+      "confidence": "observed",
+      "count": 28
+    },
+    "captured_sessions_broad_temporal_envelope": {
+      "confidence": "source_supported",
+      "count": 28,
+      "evidence": ".agent/handoffs/polylogue-sol-pro-2026-07-15/README.md"
+    },
+    "exact_duplicate_redownloads": {
+      "confidence": "source_supported",
+      "count": 17
+    },
+    "package_bearing_unique_conversation_ids": {
+      "confidence": "observed",
+      "count": 26
+    },
+    "package_revisions": {
+      "confidence": "observed",
+      "count": 28
+    },
+    "raw_download_observations": {
+      "confidence": "source_supported",
+      "count": 45
+    }
+  },
+  "job_id": "analysis-02",
+  "package_dispositions": {
+    "already_subsumed": 2,
+    "incorporated_pending_delivery": 12,
+    "merged": 4,
+    "rejected": 2,
+    "research_incorporated": 4,
+    "superseded_or_duplicate": 4
+  },
+  "package_size": {
+    "causal_interpretation": "not_supported",
+    "compressed_bytes_total": 65938477,
+    "direct_merge_bytes_share": 0.0029149748181171975,
+    "direct_merge_compressed_bytes_total": 192209,
+    "direct_merge_median_compressed_bytes": 54413.0,
+    "ge_1_mib_compressed_bytes": 64865984,
+    "ge_1_mib_direct_merges": 0,
+    "non_direct_merge_median_compressed_bytes": 76849.5,
+    "packages_ge_1_mib": 10,
+    "uncompressed_bytes_total": 68696641
+  },
+  "schema_version": 1,
+  "scope_note": "Counts use distinct entities. Rates are present only when numerator and denominator share an entity and the denominator is evidenced.",
+  "snapshot": {
+    "branch": "master",
+    "commit": "f654480cadb7cc4c194704e24dfd483199547b35",
+    "dirty": true,
+    "generated_at": "2026-07-17T043202Z"
+  },
+  "stages": [
+    {
+      "confidence": "source_supported",
+      "count": 27,
+      "entity": "provider_conversation",
+      "limitation": "No provider action receipts or raw roster; broad temporal set contains 28 sessions.",
+      "rate": null,
+      "stage": "submitted_conversation"
+    },
+    {
+      "confidence": "unresolved",
+      "count": null,
+      "entity": "provider_turn",
+      "limitation": "Raw canonical session/turn exports are absent. Package existence is not a terminal-turn count.",
+      "rate": null,
+      "stage": "terminal_turn_observed"
+    },
+    {
+      "confidence": "source_supported",
+      "count": 45,
+      "entity": "download",
+      "rate": null,
+      "stage": "asset_download_observation"
+    },
+    {
+      "confidence": "observed",
+      "count": 28,
+      "denominator": 45,
+      "entity": "package_revision",
+      "note": "Denominator is download observations, so this is deduplication efficiency, not conversation conversion.",
+      "rate": 0.6222222222222222,
+      "stage": "asset_acquired_unique"
+    },
+    {
+      "confidence": "observed",
+      "count": 28,
+      "denominator": 28,
+      "entity": "package_revision",
+      "rate": 1.0,
+      "stage": "asset_hash_and_zip_validated"
+    },
+    {
+      "confidence": "observed",
+      "count": 28,
+      "denominator": 28,
+      "entity": "package_revision",
+      "rate": 1.0,
+      "stage": "triaged"
+    },
+    {
+      "confidence": "observed",
+      "count": 20,
+      "definition": "merged + research_incorporated + incorporated_pending_delivery",
+      "denominator": 28,
+      "entity": "package_revision",
+      "rate": 0.7142857142857143,
+      "stage": "new_work_retained"
+    },
+    {
+      "confidence": "observed",
+      "count": 22,
+      "denominator": 28,
+      "entity": "package_revision",
+      "rate": 0.7857142857142857,
+      "stage": "routed_or_already_subsumed"
+    },
+    {
+      "confidence": "source_supported",
+      "count": 4,
+      "denominator": 28,
+      "entity": "package_revision",
+      "rate": 0.14285714285714285,
+      "refs": [
+        "PR#2922",
+        "PR#2923",
+        "PR#2924",
+        "PR#2925"
+      ],
+      "stage": "direct_package_pull_request"
+    },
+    {
+      "confidence": "source_supported",
+      "count": 4,
+      "denominator": 28,
+      "entity": "package_revision",
+      "rate": 0.14285714285714285,
+      "stage": "direct_package_merge"
+    },
+    {
+      "confidence": "lower_bound",
+      "count": 2,
+      "entity": "delivery_track",
+      "limitation": "In-PR repair events and effort were not normalized.",
+      "rate": null,
+      "refs": [
+        "PR#2953 CaptureJobs reimplementation",
+        "PR#2957 parser-drift replay repair"
+      ],
+      "stage": "material_post_package_repair_or_reimplementation"
+    },
+    {
+      "confidence": "observed_at_snapshot",
+      "count": 2,
+      "denominator": 4,
+      "entity": "direct_delivery_track",
+      "rate": 0.5,
+      "stage": "direct_merge_owner_closed"
+    },
+    {
+      "confidence": "derived",
+      "count": 3,
+      "definition": "four direct merges plus one CaptureJobs local reimplementation",
+      "denominator": 5,
+      "entity": "delivery_track",
+      "rate": 0.6,
+      "stage": "code_delivery_track_owner_closed"
+    }
+  ]
+}
