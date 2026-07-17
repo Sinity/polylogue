@@ -1047,7 +1047,7 @@
         "version_status": "ok",
         "table_counts": {
           "assertions": 0,
-          "annotation_schemas": 1,
+          "annotation_schemas": 6,
           "annotation_batches": 0,
           "user_settings": 0,
           "context_deliveries": 0

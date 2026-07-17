@@ -27,7 +27,9 @@ from polylogue.storage.sqlite.archive_tiers.user_annotations import (
     persist_annotation_batch,
     persist_annotation_schema,
     read_annotation_batch,
+    read_durable_annotation_schema,
 )
+from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -102,6 +104,53 @@ class AnnotationBatchImportResult(BaseModel):
 
 
 RefResolver = Callable[[str], Awaitable[bool]]
+
+
+def _resolve_import_schema(
+    user_db_path: Path,
+    request: AnnotationBatchImportRequest,
+    registry: AnnotationSchemaRegistry,
+) -> tuple[AnnotationSchema, AnnotationSchemaRegistry]:
+    """Resolve packaged, caller-supplied, or governed archive-local schemas.
+
+    A promoted archive-specific ontology is durable in ``user.db`` rather than
+    injected into the process-global registry (which would leak one archive's
+    vocabulary into another). The importer builds a one-schema local registry
+    when only the durable definition exists, while still rejecting any
+    caller/global definition that disagrees with the archive authority.
+    """
+
+    try:
+        registered = registry.get(request.schema_id, request.schema_version)
+    except KeyError:
+        registered = None
+
+    conn = open_readonly_connection(user_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        durable = read_durable_annotation_schema(conn, request.schema_id, request.schema_version)
+    finally:
+        conn.close()
+
+    if durable is not None:
+        if registered is not None and (
+            registered.canonical_definition_json() != durable.definition_json
+            or registered.definition_fingerprint != durable.definition_sha256
+        ):
+            raise AnnotationBatchImportError(
+                f"annotation schema {durable.schema.qualified_id!r} disagrees with its durable archive definition"
+            )
+        if registered is not None:
+            return registered, registry
+        local_registry = AnnotationSchemaRegistry()
+        local_registry.register(durable.schema)
+        return durable.schema, local_registry
+
+    if registered is None:
+        raise AnnotationBatchImportError(
+            f"no registered annotation schema {request.schema_id!r}@v{request.schema_version}"
+        )
+    return registered, registry
 
 
 def _ref_preview(ref: str) -> str:
@@ -194,10 +243,9 @@ async def import_annotation_batch(
     """Validate live refs, persist provenance, and write candidates atomically."""
 
     _validate_request_bounds(request)
-    try:
-        schema = registry.get(request.schema_id, request.schema_version)
-    except KeyError as exc:
-        raise AnnotationBatchImportError(str(exc)) from exc
+    user_db_path = Path(poly.archive_root) / "user.db"
+    initialize_archive_database(user_db_path, ArchiveTier.USER)
+    schema, effective_registry = _resolve_import_schema(user_db_path, request, registry)
 
     async def default_resolver(ref: str) -> bool:
         return (await poly.resolve_ref(ref)).resolved
@@ -253,9 +301,7 @@ async def import_annotation_batch(
     abstained_count = sum(
         row.value.get(schema.abstain_field) is True for _, row, _, _ in valid_rows if schema.abstain_field is not None
     )
-    user_db_path = Path(poly.archive_root) / "user.db"
-    initialize_archive_database(user_db_path, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db_path)
+    conn = open_connection(user_db_path)
     conn.row_factory = sqlite3.Row
     imported_outcomes: list[AnnotationImportRowOutcome] = []
     batch: AnnotationBatch
@@ -289,7 +335,7 @@ async def import_annotation_batch(
             envelope = upsert_annotation_assertion(
                 conn,
                 schema=schema,
-                registry=registry,
+                registry=effective_registry,
                 target_ref=request.target_ref,
                 value=row.value,
                 row_key=row.row_key,

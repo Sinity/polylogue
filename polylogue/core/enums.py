@@ -433,6 +433,13 @@ class AssertionKind(PolylogueStrEnum):
     JUDGMENT = "judgment"
     RUN_STATE = "run_state"
     PROMPT_EVAL = "prompt_eval"
+    ONTOLOGY_CANDIDATE = "ontology_candidate"
+    """Agent-proposed archive-specific annotation schema plus nomination evidence.
+    Informal tags/affinity can create this non-injected candidate, never a formal
+    annotation fact or active schema on their own."""
+    ONTOLOGY_GOVERNANCE = "ontology_governance"
+    """Operator-authored receipt for accepting, renaming, splitting, or rejecting
+    an ontology candidate and, when applicable, registering active schema rows."""
     TRANSFORM_CANDIDATE = "transform_candidate"
     PATHOLOGY = "pathology"
     FINDING = "finding"

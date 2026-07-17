@@ -94,7 +94,7 @@ writer_modules:
         - tier: user
           durability: durable
           interruption: atomic
-      entrypoints: [persist_annotation_batch, persist_annotation_schema]
+      entrypoints: [persist_annotation_batch, persist_annotation_schema, persist_builtin_annotation_schemas]
     - path: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
       surfaces:
         - tier: user
