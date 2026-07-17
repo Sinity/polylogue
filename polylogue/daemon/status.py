@@ -2215,6 +2215,7 @@ def daemon_status_payload(
     include_browser_capture_spool_path: bool = False,
     include_raw_replay_backlog: bool = True,
     include_exact_raw_materialization_readiness: bool = True,
+    include_archive_debt: bool = True,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict)."""
     watch_sources = sources if sources is not None else default_sources()
@@ -2242,7 +2243,7 @@ def daemon_status_payload(
         include_raw_replay_backlog=include_raw_replay_backlog,
         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
     )
-    archive_debt = _archive_debt_status_summary()
+    archive_debt = _archive_debt_status_summary() if include_archive_debt else _excluded_archive_debt_status_summary()
 
     return json_document(
         {
@@ -2321,6 +2322,17 @@ def _archive_debt_status_summary() -> dict[str, object]:
         "available": True,
         "rows": [row.model_dump(mode="json", exclude_none=True) for row in payload.rows],
         "totals": payload.totals.model_dump(mode="json"),
+    }
+
+
+def _excluded_archive_debt_status_summary() -> dict[str, object]:
+    """Describe the diagnostic debt endpoint without recomputing it."""
+    return {
+        "endpoint": "/api/archive-debt",
+        "available": False,
+        "reason": "excluded_from_bounded_status_snapshot",
+        "rows": [],
+        "totals": {},
     }
 
 
