@@ -115,6 +115,7 @@ class WatchSource:
     name: str
     root: Path
     suffixes: tuple[str, ...] = (".jsonl",)
+    ignored_dir_names: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
 
     def exists(self) -> bool:
         return self.root.exists()
@@ -122,6 +123,10 @@ class WatchSource:
     def accepts(self, path: Path) -> bool:
         name = path.name.lower()
         return any(name.endswith(suffix) for suffix in self.suffixes)
+
+    def ignores_directory(self, path: Path) -> bool:
+        """Return whether a subtree cannot contain a live source artifact."""
+        return path.name in self.ignored_dir_names
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,8 +408,14 @@ class LiveWatcher:
                 continue
             if source.name == "hooks":
                 continue
-            for suffix in source.suffixes:
-                for path in source.root.rglob(f"*{suffix}"):
+            for directory, dirnames, filenames in os.walk(source.root, followlinks=False):
+                dirnames[:] = [
+                    dirname for dirname in dirnames if not source.ignores_directory(Path(directory) / dirname)
+                ]
+                for filename in filenames:
+                    path = Path(directory) / filename
+                    if not source.accepts(path):
+                        continue
                     try:
                         stat = path.stat()
                     except FileNotFoundError:
@@ -415,7 +426,7 @@ class LiveWatcher:
                         CandidateSourceFile(
                             path=path,
                             source_name=source.name,
-                            suffix=suffix,
+                            suffix=path.suffix,
                             stat=stat,
                         )
                     )
