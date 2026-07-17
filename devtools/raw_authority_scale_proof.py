@@ -40,6 +40,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 @dataclass(frozen=True, slots=True)
 class RawAuthorityScalePass:
     number: int
+    mode: str
     candidate_count: int
     repaired_count: int
     executable_component_count: int
@@ -147,6 +148,77 @@ def _assert_admission(
         )
 
 
+def _generated_archive_id(rows: list[tuple[str, int, str]]) -> str:
+    """Bind the receipt to corpus content rather than its temporary directory."""
+    manifest = {
+        "format": "raw-authority-scale-proof-v1",
+        "rows": [
+            {"blob_hash": blob_hash, "native_id": native_id, "revision": revision}
+            for native_id, revision, blob_hash in rows
+        ],
+    }
+    encoded = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    return f"raw-authority-scale:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _record_repair_pass(
+    *,
+    number: int,
+    mode: str,
+    config: Config,
+    pass_limit: int,
+) -> tuple[RawAuthorityScalePass, str]:
+    """Run one real repair/census pass and reject incomplete evidence."""
+    before = _process_sample()
+    started = time.perf_counter()
+    result = repair.repair_raw_materialization(
+        config,
+        raw_artifact_limit=pass_limit,
+        dry_run=mode == "dry_run",
+    )
+    wall_ms = int((time.perf_counter() - started) * 1000)
+    after = _process_sample()
+    metrics = result.metrics
+    candidate_value = metrics.get("raw_materialization_candidate_count")
+    if (
+        not isinstance(candidate_value, int | float)
+        or isinstance(candidate_value, bool)
+        or not float(candidate_value).is_integer()
+        or candidate_value < 0
+    ):
+        raise RuntimeError(
+            "raw-authority scale proof requires a non-negative integral raw-materialization candidate count"
+        )
+    if result.census_receipt is None:
+        raise RuntimeError("raw-authority scale proof requires a census receipt for every replay pass")
+    receipt = result.census_receipt
+    expected_modes = {"apply", "census"} if mode == "apply" else {"dry_run"}
+    if receipt.mode not in expected_modes:
+        raise RuntimeError(f"raw-authority scale proof expected {mode} census evidence, received {receipt.mode}")
+    return (
+        RawAuthorityScalePass(
+            number=number,
+            mode=receipt.mode,
+            candidate_count=int(candidate_value),
+            repaired_count=result.repaired_count,
+            executable_component_count=int(metrics.get("raw_materialization_selected_executable_component_count", 0)),
+            fixed_point=receipt.fixed_point,
+            wall_ms=wall_ms,
+            peak_rss_bytes=max(_rss_bytes(), before.rss_bytes, after.rss_bytes),
+            peak_pss_bytes=max(value for value in (before.pss_bytes, after.pss_bytes) if value is not None)
+            if before.pss_bytes is not None or after.pss_bytes is not None
+            else None,
+            peak_swap_bytes=max(value for value in (before.swap_bytes, after.swap_bytes) if value is not None)
+            if before.swap_bytes is not None or after.swap_bytes is not None
+            else None,
+            cpu_ms=_delta(after.cpu_ms, before.cpu_ms),
+            read_io_bytes=_delta(after.read_io_bytes, before.read_io_bytes),
+            write_io_bytes=_delta(after.write_io_bytes, before.write_io_bytes),
+        ),
+        receipt.residual_digest,
+    )
+
+
 def run_raw_authority_scale_proof(
     workdir: Path,
     *,
@@ -178,68 +250,58 @@ def run_raw_authority_scale_proof(
         if publisher is None:
             raise RuntimeError("raw-authority scale proof requires a writable blob publisher")
         source_conn = archive._ensure_source_conn()
+        generated_rows: list[tuple[str, int, str]] = []
+        for component, revisions in enumerate(revision_counts):
+            native_id = f"scale-{component:05d}"
+            for revision in range(revisions):
+                blob_hash, _blob_size = publisher.write_from_bytes(_payload(native_id, revision))
+                generated_rows.append((native_id, revision, blob_hash))
+        publisher.flush()
         acquired_at_ms = 0
         with source_conn:
-            for component, revisions in enumerate(revision_counts):
-                native_id = f"scale-{component:05d}"
-                for revision in range(revisions):
-                    payload = _payload(native_id, revision)
-                    blob_hash, _blob_size = publisher.write_from_bytes(payload)
-                    write_source_raw_session(
-                        source_conn,
-                        origin=origin_from_provider(Provider.CODEX),
-                        capture_mode=Provider.CODEX,
-                        source_path=f"/synthetic/raw-authority/{native_id}.jsonl",
-                        source_index=revision,
-                        payload=payload,
-                        acquired_at_ms=acquired_at_ms,
-                        blob_publication_receipt_id=publisher.receipt_id(blob_hash),
-                        manage_transaction=False,
-                    )
-                    acquired_at_ms += 1
-        publisher.flush()
+            for native_id, revision, blob_hash in generated_rows:
+                write_source_raw_session(
+                    source_conn,
+                    origin=origin_from_provider(Provider.CODEX),
+                    capture_mode=Provider.CODEX,
+                    source_path=f"/synthetic/raw-authority/{native_id}.jsonl",
+                    source_index=revision,
+                    payload=_payload(native_id, revision),
+                    acquired_at_ms=acquired_at_ms,
+                    blob_publication_receipt_id=publisher.receipt_id(blob_hash),
+                    manage_transaction=False,
+                )
+                acquired_at_ms += 1
+    archive_id = _generated_archive_id(generated_rows)
     config = Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
     pass_receipts: list[RawAuthorityScalePass] = []
-    fixed_point_digests: list[str] = []
     for number in range(1, (components * 3) + 4):
-        before = _process_sample()
-        started = time.perf_counter()
-        result = repair.repair_raw_materialization(config, raw_artifact_limit=pass_limit)
-        wall_ms = int((time.perf_counter() - started) * 1000)
-        after = _process_sample()
-        metrics = result.metrics
-        candidate_count = int(metrics.get("raw_materialization_candidate_count", 0))
-        executable_components = int(metrics.get("raw_materialization_selected_executable_component_count", 0))
-        fixed_point = bool(metrics.get("raw_materialization_census_fixed_point", 0))
-        pass_receipts.append(
-            RawAuthorityScalePass(
-                number,
-                candidate_count,
-                result.repaired_count,
-                executable_components,
-                fixed_point,
-                wall_ms,
-                max(_rss_bytes(), before.rss_bytes, after.rss_bytes),
-                max(value for value in (before.pss_bytes, after.pss_bytes) if value is not None)
-                if before.pss_bytes is not None or after.pss_bytes is not None
-                else None,
-                max(value for value in (before.swap_bytes, after.swap_bytes) if value is not None)
-                if before.swap_bytes is not None or after.swap_bytes is not None
-                else None,
-                _delta(after.cpu_ms, before.cpu_ms),
-                _delta(after.read_io_bytes, before.read_io_bytes),
-                _delta(after.write_io_bytes, before.write_io_bytes),
-            )
+        pass_receipt, _digest = _record_repair_pass(
+            number=number,
+            mode="apply",
+            config=config,
+            pass_limit=pass_limit,
         )
-        digest = result.census_receipt.residual_digest if result.census_receipt is not None else "unavailable"
-        if candidate_count == 0:
-            fixed_point_digests.append(digest)
-            if len(fixed_point_digests) == 2 and fixed_point_digests[-1] == fixed_point_digests[-2]:
-                break
+        pass_receipts.append(pass_receipt)
+        if pass_receipt.candidate_count == 0:
+            break
     else:
-        raise RuntimeError("raw-authority scale proof did not reach two matching quiescent passes")
+        raise RuntimeError("raw-authority scale proof did not drain bounded apply passes")
+    fixed_point_digests: list[str] = []
+    for _ in range(2):
+        pass_receipt, digest = _record_repair_pass(
+            number=len(pass_receipts) + 1,
+            mode="dry_run",
+            config=config,
+            pass_limit=pass_limit,
+        )
+        if pass_receipt.candidate_count != 0:
+            raise RuntimeError("raw-authority scale proof lost quiescence during fixed-point confirmation")
+        pass_receipts.append(pass_receipt)
+        fixed_point_digests.append(digest)
+    if fixed_point_digests[0] != fixed_point_digests[1] or not pass_receipts[-1].fixed_point:
+        raise RuntimeError("raw-authority scale proof did not reach two matching quiescent fixed-point censuses")
     profile_id = f"workload-profile:synthetic-raw-authority:{components}:{raws}"
-    archive_id = f"raw-authority-scale:{hashlib.sha256(str(root).encode()).hexdigest()}"
     spec = raw_authority_fixed_point_spec(
         profile_id=profile_id,
         archive_id=archive_id,
@@ -263,16 +325,7 @@ def run_raw_authority_scale_proof(
         phases=(
             WorkloadPhaseObservation(name="generate"),
             WorkloadPhaseObservation(name="acquire"),
-            WorkloadPhaseObservation(
-                name="census",
-                wall_ms=total_wall_ms,
-                cpu_ms=total_cpu_ms,
-                peak_rss_bytes=peak_rss,
-                peak_pss_bytes=peak_pss,
-                swap_bytes=peak_swap,
-                read_io_bytes=total_read_io,
-                write_io_bytes=total_write_io,
-            ),
+            WorkloadPhaseObservation(name="census"),
             WorkloadPhaseObservation(
                 name="replay",
                 wall_ms=total_wall_ms,
@@ -290,6 +343,7 @@ def run_raw_authority_scale_proof(
         notes=(
             f"requested_components={components}",
             f"requested_raws={raws}",
+            "repair_raw_materialization combines census and replay; its measured resource totals are recorded once on replay.",
             "This receipt is a generated projection; only an explicit July-15-sized invocation is production-shaped evidence.",
         ),
     )
