@@ -496,7 +496,6 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("compile_context", run)
 
-    @mcp.tool()
     async def archive_list_sessions(
         origin: str | None = None,
         exclude_origin: str | None = None,
@@ -621,7 +620,6 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("archive_list_sessions", run)
 
-    @mcp.tool()
     async def archive_search_sessions(
         query: str,
         origin: str | None = None,
