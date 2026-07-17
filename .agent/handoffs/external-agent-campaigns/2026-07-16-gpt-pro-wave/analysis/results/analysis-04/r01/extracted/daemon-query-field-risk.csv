@@ -1,0 +1,46 @@
+session_query_spec_field,public_input,canonical_semantics,daemon_split_fast_path,classification,minimum_differential_test,owning_bead
+query_terms,query,FTS/ranked search terms,supported via compiled query,aligned subset,seed > limit and compare hits/order/total,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+contains_terms,contains,"literal content term, not DSL",supported by literal append to FTS terms,aligned subset,value with spaces/field-like token,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+exclude_text_terms,exclude_text / DSL exclusion,negative text predicate,compiled spec value not forwarded to ArchiveStore search,dropped,positive and excluded term in same rows,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+retrieval_lane,retrieval_lane,planner lane request,not consumed; search response hardcodes dialogue,dropped/changed,actions/hybrid request and lane/order comparison,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+referenced_path,referenced_path,path-evidence filter,manually forwarded,manual parity risk,multiple paths and exclusions,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+cwd_prefix,cwd_prefix,working-directory prefix,manually forwarded,manual parity risk,nested cwd prefixes,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+action_terms,action,action-type filter,manually forwarded,manual parity risk,single and multiple action types,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+excluded_action_terms,exclude_action,negative action filter,manually forwarded,manual parity risk,include/exclude interaction,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+action_sequence,action_sequence,ordered action sequence,manually forwarded,manual parity risk,sequence versus unordered rows,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+action_text_terms,action_text,action content filter,manually forwarded,manual parity risk,matching tool payload/text,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+tool_terms,tool,tool-name filter,manually forwarded,manual parity risk,canonicalized tool aliases,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+excluded_tool_terms,exclude_tool,negative tool filter,manually forwarded,manual parity risk,include/exclude tool interaction,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+origins,origin / DSL origin,public source-origin filter,merged from DSL and HTTP,manual parity risk,multiple origins and aliases,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+excluded_origins,exclude_origin,negative public origin filter,merged from DSL and HTTP,manual parity risk,included and excluded origins,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+repo_names,repo,repository filter,manually forwarded,manual parity risk,multiple repositories,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+project_refs,DSL `project:`,project reference filter,not in _filter_kw,dropped,"same repo, different projects",polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+tags,tag,user tag filter,merged from DSL and HTTP,manual parity risk,multiple tags,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+excluded_tags,exclude_tag,negative tag filter,merged from DSL and HTTP,manual parity risk,include/exclude tag interaction,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+has_types,has_type,content-type filter,manually forwarded,manual parity risk,mixed type sessions,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+title,title,title predicate,manually forwarded,manual parity risk,case/substring semantics,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+session_id,conv_id / DSL id,resolve exact/prefix session identity,only spec produced from query expression is used; route-built conv_id mapping is discarded,partial/silent ignore risk,"standalone conv_id, DSL id, missing, ambiguous",polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+since,since,lower date bound,manually parsed and forwarded as ms,manual parity risk,relative/absolute boundary rows,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+until,until,upper date bound,manually parsed and forwarded as ms,manual parity risk,inclusive/exclusive boundary rows,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+latest,latest,select latest and alter plan limit/sort,not consumed,dropped,latest versus ordinary order,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+sort,sort,declared sort field,not consumed by fast path,dropped/changed,date/messages/words/random where valid,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+reverse,reverse,reverse declared order,not consumed,dropped/changed,same sort forward/reverse,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+limit,limit,logical page size subject to shared clamp,externally applied,supported,more than two pages,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+sample,sample,sample result semantics/exactness,not consumed,dropped,deterministic seeded sample policy,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+filter_has_tool_use,filter_has_tool_use / has_tool_use route alias,stats pushdown boolean,manual DSL/route alias merge,partial/manual alias risk,true/false and absent,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+filter_has_thinking,filter_has_thinking / has_thinking route alias,stats pushdown boolean,manual DSL/route alias merge,partial/manual alias risk,true/false and absent,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+filter_has_paste,filter_has_paste / has_paste_evidence route alias,paste-evidence boolean,manual DSL/route alias merge,partial/manual alias risk,true/false and absent,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+typed_only,typed_only,typed-message/session constraint,not forwarded,dropped,typed and untyped sessions,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+min_messages,min_messages,inclusive lower count bound; zero is meaningful,forwarded but zero erased by `or ... or None`,changed for zero,"0, 1, exact boundary",polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+max_messages,max_messages,inclusive upper count bound; zero is meaningful,forwarded but zero erased by `or ... or None`,changed for zero,"0, 1, exact boundary",polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+min_words,min_words,inclusive lower word bound; zero is meaningful,forwarded but zero erased by `or ... or None`,changed for zero,"0, 1, exact boundary",polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+max_words,max_words,inclusive upper word bound; zero is meaningful,forwarded but zero erased by `or ... or None`,changed for zero,"0, 1, exact boundary",polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+similar_text,similar_text,semantic/vector selection,route-built value not consumed; fast path lexical only,dropped,embedding-ready and not-ready cases,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+similar_session_id,similar_session_id,semantic neighbors of session,route-built value not consumed,dropped,known session and missing session,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+since_session_id,since_session_id,relative position/time boundary from another session,not consumed,dropped,anchor session boundary,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+message_type,message_type,message-type predicate,not forwarded,dropped,mixed message types,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+offset,offset,page offset,externally applied to ArchiveStore,supported but no stable cursor,page walk under insertion,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+cursor,cursor,opaque keyset continuation,read by route builder but raw params path never applies canonical cursor,dropped,second page from returned cursor,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+boolean_predicate,DSL boolean expression,structured predicate tree,compiled but not passed to ArchiveStore; flattened terms/selected fields only,dropped/changed,AND/OR/NOT grouping that differs from flattening,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+with_units,DSL `with <units>`,post-selection unit projection,not attached by either /api/sessions execution path,route-wide projection gap,request attached actions/messages and compare surfaces,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1
+with_unit_fields,DSL unit field allowlists,post-selection field projection,not attached,route-wide projection gap,field allowlist versus default payload,polylogue-4p1.1;polylogue-yeq.3;polylogue-z9gh.9.1

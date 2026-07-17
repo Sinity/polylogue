@@ -1,0 +1,781 @@
+{
+  "$defs": {
+    "evidence_event": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "details": {
+          "type": "object"
+        },
+        "event_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "event_type": {
+          "enum": [
+            "dispatch_prepared",
+            "submission_requested",
+            "submission_receipt",
+            "conversation_bound",
+            "first_turn_observed",
+            "terminal_turn_observed",
+            "artifact_offered",
+            "artifact_acquisition_started",
+            "artifact_acquired",
+            "artifact_hash_validated",
+            "package_extracted",
+            "package_contract_validated",
+            "triage_decided",
+            "integration_worktree_created",
+            "patch_apply_checked",
+            "local_repair_started",
+            "local_repair_completed",
+            "verification_completed",
+            "pull_request_opened",
+            "merged",
+            "bead_state_observed",
+            "attempt_superseded",
+            "blocked",
+            "rejected"
+          ]
+        },
+        "evidence_ref": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "failure",
+            "partial",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "reason_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recorded_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "source_kind": {
+          "enum": [
+            "provider_receipt",
+            "canonical_capture",
+            "manual_download",
+            "filesystem",
+            "git",
+            "github",
+            "beads",
+            "local_verification",
+            "operator_observation",
+            "historical_import"
+          ]
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "occurred_at",
+        "recorded_at",
+        "source_kind",
+        "evidence_ref",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "verification_run": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "completed_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence_ref": {
+          "type": "string"
+        },
+        "failed": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "limitations": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "failed",
+            "stopped",
+            "not_run"
+          ]
+        },
+        "passed": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "package_self_report",
+            "focused_local",
+            "affected_local",
+            "quick_gate",
+            "broad_local",
+            "live",
+            "deployment"
+          ]
+        },
+        "skipped": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "command",
+        "started_at",
+        "outcome",
+        "evidence_ref"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "polylogue.external-agent-result.v2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Proposed replacement for .agent/handoffs/external-agent-campaigns/schemas/result.schema.json. This remains repository-side orchestration evidence, not a browser/product protocol.",
+  "properties": {
+    "action_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "agent_handle": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "custody_kind": {
+            "enum": [
+              "canonical_capture",
+              "manual_download",
+              "provider_export",
+              "local_generated",
+              "external_reference"
+            ]
+          },
+          "custody_path": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "boolean"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "polylogue_attachment_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_attachment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "sha256",
+          "size_bytes",
+          "custody_path",
+          "custody_kind"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "attempt_id": {
+      "pattern": "^a[0-9]{2}$",
+      "type": "string"
+    },
+    "bead_outcomes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "bead_id": {
+            "type": "string"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_status": {
+            "enum": [
+              "open",
+              "in_progress",
+              "blocked",
+              "closed",
+              "unknown"
+            ]
+          },
+          "residual_owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "satisfied_scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "bead_id",
+          "observed_status",
+          "observed_at",
+          "evidence_ref"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "beads": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "campaign_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "commits": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/evidence_event"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "job_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "local_repair": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "discarded_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "retained_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rewritten_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "mission": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "anti_vacuity_mutation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "avoid_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "owning_beads": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "production_route": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "residual_scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "owning_beads",
+        "depends_on",
+        "allowed_paths",
+        "avoid_paths"
+      ],
+      "type": "object"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "package_metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "compressed_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "copied_input_detected": {
+          "type": "boolean"
+        },
+        "design_metadata_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fixture_snapshot_archive_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "largest_members": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "declared_purpose": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "size_bytes",
+              "declared_purpose"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "member_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "patch_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tests_verification_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uncompressed_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "package_revision": {
+      "pattern": "^r[0-9]{2}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "polylogue_session_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prompt_contract_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prompt_profile": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prompt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "prompt_shape": {
+      "enum": [
+        "implementation",
+        "repair",
+        "analysis",
+        "research",
+        "review"
+      ]
+    },
+    "provider": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider_conversation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider_turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pull_request": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "archive_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "pattern": "^[0-9a-f]{7,40}$",
+          "type": "string"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "generated_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "commit",
+        "dirty",
+        "archive_sha256"
+      ],
+      "type": "object"
+    },
+    "snapshot_identity": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "enum": [
+        "prepared",
+        "submitted",
+        "running",
+        "terminal",
+        "acquired",
+        "validated",
+        "triaged",
+        "integrating",
+        "verified",
+        "published",
+        "rejected",
+        "blocked"
+      ]
+    },
+    "supersedes_attempt_id": {
+      "pattern": "^a[0-9]{2}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "supersedes_package_revision": {
+      "pattern": "^r[0-9]{2}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "terminal_turn_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "triage": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "triage_decision": {
+      "additionalProperties": false,
+      "properties": {
+        "current_source_reconciled": {
+          "type": "boolean"
+        },
+        "disposition": {
+          "enum": [
+            "implementation",
+            "repair",
+            "analysis_or_research",
+            "duplicate",
+            "subsumed",
+            "rejected",
+            "blocked"
+          ]
+        },
+        "next_prerequisite": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner_beads": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "patch_apply_check": {
+          "enum": [
+            "pass",
+            "fail",
+            "not_applicable",
+            "not_run"
+          ]
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "uncertainties": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "needed_evidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "verification_receipts": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "verification_runs": {
+      "items": {
+        "$ref": "#/$defs/verification_run"
+      },
+      "type": "array"
+    },
+    "workload_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "worktree": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "workload_id",
+    "job_id",
+    "attempt_id",
+    "state",
+    "prompt_sha256",
+    "prompt_shape",
+    "mission",
+    "snapshot_identity",
+    "snapshot",
+    "action_id",
+    "run_id",
+    "artifacts",
+    "events"
+  ],
+  "title": "External-agent immutable attempt result with evidence events",
+  "type": "object"
+}

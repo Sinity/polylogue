@@ -1,0 +1,17 @@
+[
+  {
+    "name": "00-polylogue-all.tar(9).gz",
+    "sha256": "3d0c5a2e5024632c05438dbc3a08aae1dcd31529472b1185ad5b80c0cd933e30",
+    "size": 92457778
+  },
+  {
+    "name": "00-slightly-stale-context-testsuite-diet.tar(9).gz",
+    "sha256": "d4fa7fc31c70ff30db076e526836ffc81b8124d3f54c7add5e58d3f57c9dcbff",
+    "size": 934006
+  },
+  {
+    "name": "04-derived-freshness.md",
+    "sha256": "72b34413851a796814cf1bddde0821317ed836382dd55857239598b4c4efe072",
+    "size": 6516
+  }
+]

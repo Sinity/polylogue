@@ -1,0 +1,5 @@
+{
+  "changed_paths_materialized": [],
+  "selected": null,
+  "selection_rule": "highest relevance score among patches that pass git apply --check against the recorded base; +1000 for clean applicability"
+}

@@ -1,1 +1,89 @@
-{"schema_version":1,"campaign_id":"gpt-pro-wave-2026-07-16","workload_id":"testdiet","attempts":[]}
+{
+ "schema_version": 1,
+ "campaign_id": "gpt-pro-wave-2026-07-16",
+ "workload_id": "testdiet",
+ "attempts": [
+  {
+   "job": "testdiet-01",
+   "workload": "testdiet",
+   "zip": "testdiet-01-query-algebra-cardinality-r01.zip",
+   "sha256": "365cb58bf6e1135bc210b62ae422fb5009825cd3f505db0c3adcb41ccd00d2e5",
+   "bytes": 21998,
+   "checked_at": "2026-07-17T10:55:34+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "problems": [],
+   "status": "triaged",
+   "members": [
+    "EVIDENCE.md",
+    "HANDOFF.md",
+    "PATCH.diff",
+    "TESTS.md"
+   ],
+   "patch_lines": 786,
+   "patch_applies": true,
+   "apply_detail": "patch applies cleanly"
+  },
+  {
+   "job": "testdiet-01",
+   "workload": "testdiet",
+   "revision": "r02",
+   "zip": "testdiet-01/r02/raw.zip",
+   "sha256": "557ba43a9f77783ed0e7644eb7dd4c9f6a07e4c416ac6a16c4aae096f2cc3fa8",
+   "bytes": 23470,
+   "checked_at": "2026-07-17T12:21:00+00:00",
+   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+   "status": "integrated_merged",
+   "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
+   "patch_lines": 923,
+   "integration": "admitted after current-master reconciliation as PR #3019 / d42cc1497ee91fded8c46313a46e18733f9084ee; owning Bead yeq.3 records scope, proof, and broad residual AC"
+  },
+  {
+   "job": "testdiet-02",
+   "workload": "testdiet",
+   "zip": "testdiet-02-convergence-liveness-r01.zip",
+   "sha256": "57d52025be0554c45d482073e776b82f77d368127bc6000ef872a894d26fbcb6",
+   "bytes": 22637,
+   "checked_at": "2026-07-17T10:55:43+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "problems": [],
+   "status": "integrated_merged",
+   "members": [
+    "EVIDENCE.md",
+    "HANDOFF.md",
+    "PATCH.diff",
+    "TESTS.md"
+   ],
+   "patch_lines": 917,
+   "patch_applies": true,
+   "apply_detail": "patch applies cleanly",
+   "integration": "admitted after current-master reconciliation as PR #3014 / 76ad3e1379bde4829650392e459cd4804abb721d; owning Bead 5vbs records real restart/debt recovery proof and remaining feeder scope"
+  },
+  {
+   "job": "testdiet-04",
+   "workload": "testdiet",
+   "revision": "r02",
+   "zip": "testdiet-04/r02/raw.zip",
+   "sha256": "225ad872667e579b0d0b0975ff0f463f9e54acd5a07d29825084a93eae79b2b3",
+   "bytes": 6294,
+   "checked_at": "2026-07-17T14:01:00+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "status": "evidence_only_no_candidate",
+   "members": ["derived_freshness_solution/README.md", "derived_freshness_solution/manifest.json", "derived_freshness_solution/requirements/04-derived-freshness.md"],
+   "problems": ["solution.patch is zero bytes", "no selected candidate or changed paths"],
+   "integration": "retained as validated delivery/freshness evidence; authorizes no implementation"
+  },
+  {
+   "job": "testdiet-05",
+   "workload": "testdiet",
+   "revision": "r01",
+   "zip": "testdiet-05/r01/raw.zip",
+   "sha256": "cad064d3c0c4cdfa3c221adf6a7a1000ce59dccf84a8b9944003bfd8c21350f4",
+   "bytes": 33668,
+   "checked_at": "2026-07-17T14:01:00+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "status": "integrated_merged",
+   "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
+   "integration": "admitted after current-master reconciliation as PR #3012 / 876358610; owning Bead z9gh.1 records aggregate execution proof and remaining shared transaction scope"
+  }
+ ]
+}
