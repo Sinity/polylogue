@@ -1423,7 +1423,28 @@ function operatorTakenProviderTransportError() {
   return error;
 }
 
-async function acquireProviderTab(provider) {
+function providerTransportNoSurfaceError() {
+  const error = new Error("provider_transport_no_surface");
+  error.code = "provider_transport_no_surface";
+  return error;
+}
+
+async function observedProviderTab(provider) {
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((tab) => providerForUrl(tab.url || tab.pendingUrl) === provider) || null;
+}
+
+async function acquireProviderTab(provider, { allowCreate = false } = {}) {
+  // Passive capture and inventory use a normal provider page only when the
+  // operator already has one open. They must never materialize a root tab.
+  // Creating a background transport is reserved for an explicit queued
+  // browser action that needs to mutate the provider UI.
+  if (!allowCreate) {
+    const observed = await observedProviderTab(provider);
+    if (!observed) throw providerTransportNoSurfaceError();
+    return { tab: observed, owned: false, cleanupAlarm: null };
+  }
+
   const key = providerTransportSessionKey(provider);
   const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
   const stored = await chrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
@@ -1467,14 +1488,15 @@ async function acquireProviderTab(provider) {
   }
 }
 
-function providerTab(provider) {
-  const inFlight = providerTransportPromises.get(provider);
+function providerTab(provider, { allowCreate = false } = {}) {
+  const transportKey = `${provider}:${allowCreate ? "action" : "observe"}`;
+  const inFlight = providerTransportPromises.get(transportKey);
   if (inFlight) return inFlight;
-  const candidate = acquireProviderTab(provider);
+  const candidate = acquireProviderTab(provider, { allowCreate });
   const tracked = candidate.finally(() => {
-    if (providerTransportPromises.get(provider) === tracked) providerTransportPromises.delete(provider);
+    if (providerTransportPromises.get(transportKey) === tracked) providerTransportPromises.delete(transportKey);
   });
-  providerTransportPromises.set(provider, tracked);
+  providerTransportPromises.set(transportKey, tracked);
   return tracked;
 }
 
@@ -2086,7 +2108,7 @@ function browserActionTargetUrl(action) {
 
 async function prepareBrowserActionTransport(action) {
   if (action.provider !== "chatgpt") throw new Error(`unsupported_browser_action_provider:${action.provider}`);
-  const transport = await providerTab("chatgpt");
+  const transport = await providerTab("chatgpt", { allowCreate: true });
   const targetUrl = browserActionTargetUrl(action);
   const currentUrl = transport.tab.url || transport.tab.pendingUrl || "";
   if (currentUrl !== targetUrl) {
