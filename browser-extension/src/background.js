@@ -2328,6 +2328,16 @@ function archiveProviderForUrl(url) {
   return null;
 }
 
+// ChatGPT emits durable freshness hints and has a bounded sweep queue, so an
+// already-archived ChatGPT conversation can remain receiver-owned until that
+// path reports a change.  Claude and Grok have no equivalent convergence
+// signal yet: suppressing their ordinary lifecycle capture would leave later
+// turns permanently stale.  Keep that distinction explicit rather than
+// treating every provider's `archived` state as equally terminal.
+function hasReceiverFreshnessConvergence(provider) {
+  return provider === "chatgpt";
+}
+
 function conversationIdForUrl(url) {
   try {
     const parsed = new URL(url || "");
@@ -2427,6 +2437,22 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
             providerSessionId,
             event: "held_with_reason",
             reason: "auto_capture_missing",
+            detail: captureResult?.reason || "capture_not_available",
+            tabId: tab?.id || null,
+          });
+        }
+      } else if (state.state === "archived" && !hasReceiverFreshnessConvergence(provider)) {
+        const captureResult = await captureTab(tab, "auto_capture_unconverged_provider", {
+          provider,
+          providerSessionId,
+          url,
+        });
+        if (!captureResult || captureResult.skipped) {
+          await appendConversationTimeline({
+            provider,
+            providerSessionId,
+            event: "held_with_reason",
+            reason: "auto_capture_unconverged_provider",
             detail: captureResult?.reason || "capture_not_available",
             tabId: tab?.id || null,
           });

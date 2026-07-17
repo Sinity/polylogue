@@ -1639,6 +1639,24 @@ describe("background receiver diagnostics", () => {
       .some((event) => event.detail === "background_capture_throttled")).toBe(false);
   });
 
+  it("recaptures an archived Claude conversation until that provider has freshness convergence", async () => {
+    tabs = [{ id: 42, url: "https://claude.ai/chat/claude-freshness", title: "Claude" }];
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "claude-ai",
+      provider_session_id: "claude-freshness",
+      state: "archived",
+      captured: true,
+    }));
+
+    activatedListener({ tabId: 42 });
+
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      type: "polylogue.capturePage",
+      reason: "auto_capture_unconverged_provider",
+    }));
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("captures a missing conversation once during automatic reconciliation", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-missing-on-start", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async (url) => {
