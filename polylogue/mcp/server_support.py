@@ -295,9 +295,12 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
                 from polylogue.archive.query.transaction import QueryContinuation
 
                 decoded = QueryContinuation.decode(raw_continuation)
-                original_items = getattr(payload, "items", None)
-                if not isinstance(original_items, (tuple, list)):
-                    original_items = getattr(payload, "messages", ())
+                raw_original_items: object = getattr(payload, "items", None)
+                if isinstance(raw_original_items, (tuple, list)):
+                    original_items: tuple[object, ...] | list[object] = raw_original_items
+                else:
+                    raw_original_items = getattr(payload, "messages", ())
+                    original_items = raw_original_items if isinstance(raw_original_items, (tuple, list)) else ()
                 narrowed = decoded.request.next(offset=decoded.request.offset - len(original_items) + page[1])
                 continuation = {
                     "tool": "query_units",
