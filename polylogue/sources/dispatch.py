@@ -418,8 +418,12 @@ def _claude_code_grouped_record_specs(payloads: PayloadSequence, fallback_id: st
     if len(groups) <= 1:
         return [_grouped_records_spec(Provider.CLAUDE_CODE, payloads, fallback_id)]
     return [
-        _grouped_records_spec(Provider.CLAUDE_CODE, group_payloads, group_id)
-        for group_id, group_payloads in groups.items()
+        _grouped_records_spec(
+            Provider.CLAUDE_CODE,
+            group_payloads,
+            fallback_id if index == 0 else group_id,
+        )
+        for index, (group_id, group_payloads) in enumerate(groups.items())
     ]
 
 

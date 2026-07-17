@@ -56,16 +56,17 @@ subsequent turns, by a **summary**. From that point the model sees
 - **Claude Code inline**: a `type=user`, `isCompactSummary: true` record
   ("This session is being continued from a previous conversation that ran out of
   context…") inserted in the same session; prior messages retained.
-- **Claude Code auto-compact agent** (`agent-acompact-*`): an agent that
-  re-reads the whole conversation to produce the summary; its transcript is a
-  **100 % copy of the parent + ~2 unique blocks** (the summary). 187 such
-  sessions; polylogue currently mis-stores each as a full duplicate subagent.
+- **Claude Code auto-compact agent** (`agent-acompact-*`): an overloaded
+  artifact family. Roughly 148/187 observed files replay the main-session
+  transcript and add a small summary tail; ~39 are Task-subagent
+  self-compactions with less than 90% parent membership (9 observed at 0%).
 
-Same concept, three encodings. We model it **one way**: a compaction boundary at
-point N with a summary message S; messages before N stay stored once; effective
-context after N = `[S] + post-N`. The `agent-acompact-*` copy is just "a
-compaction that the provider implemented as a copy" — both concept #1 (it is a
-copy → normalize) and #2 (it carries a summary → boundary) apply.
+Same concept, three encodings. We model a true main-session auto-compact as a
+compaction boundary at point N with a summary message S: messages before N stay
+stored once; effective context after N = `[S] + post-N`. A Task self-compaction
+under the same filename prefix is instead a fresh sidechain: its messages stay
+whole and its parent edge is `spawned-fresh`, so composition never prepends the
+main transcript.
 
 ChatGPT / Gemini / Antigravity have neither concept (confirmed: no compaction or
 fork machinery in their parsers).
@@ -178,9 +179,11 @@ official export zips; repo tarballs regenerable) — re-ingest classifies each.
 
 Status as of the prefix-inheritance slices (index schema **v12**):
 
-0. **Done** — `agent-acompact-*` is classified as a compaction continuation, not
-   a generic subagent; Codex `forked_from_id` / `source.subagent.thread_spawn`
-   are detected and set `branch_type` SUBAGENT/FORK.
+0. **Done** — `agent-acompact-*` uses a fresh Task-head marker or a bounded
+   parent-content membership test: true main-session copies are continuations,
+   while mismatched Task self-compactions are `SIDECHAIN` + `spawned-fresh`.
+   Codex `forked_from_id` / `source.subagent.thread_spawn` are detected and set
+   `branch_type` SUBAGENT/FORK.
 1. **Done (prefix-inheritance)** — `session_links` carries
    `branch_point_message_id` + `inheritance` (`prefix-sharing` / `spawned-fresh`).
    Compaction boundaries (range columns) + attachment real-blob-hash remain for
@@ -211,7 +214,7 @@ composed read reconstructs the full 180-message transcript exactly.
   cost fix; aggregate excess = fork replay.
 - Claude per-model vs `stats-cache.json`: 1.09× (stale window + attribution), no
   resume duplication.
-- `agent-acompact-*`: 100 % parent overlap, ~2 unique blocks (n=5 sampled),
-  187 total.
+- `agent-acompact-*`: 187 total in the measured corpus; roughly 148 main-session
+  copies and ~39 Task self-compactions below 90% parent membership (9 at 0%).
 - Fork families: real on-disk rollouts, `forked_from_id` explicit, 100 % block
   overlap with parent, ~30 unique blocks each.
