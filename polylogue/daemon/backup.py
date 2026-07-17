@@ -19,6 +19,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+from collections.abc import Mapping
 from contextlib import AbstractContextManager, closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -136,7 +137,11 @@ def _reject_sqlite_sidecars(path: Path) -> None:
             raise RuntimeError(f"backup tier has an unbound SQLite sidecar: {sidecar}")
 
 
-def _backup_artifact_inventory(backup_root: Path) -> list[dict[str, object]]:
+def _backup_artifact_inventory(
+    backup_root: Path,
+    *,
+    verified_file_hashes: Mapping[str, tuple[int, str]] | None = None,
+) -> list[dict[str, object]]:
     _require_real_backup_directory(backup_root, label="backup root")
     rows: list[dict[str, object]] = []
     for candidate in sorted(backup_root.rglob("*")):
@@ -151,12 +156,15 @@ def _backup_artifact_inventory(backup_root: Path) -> list[dict[str, object]]:
         if candidate.name.endswith(_SQLITE_SIDECAR_SUFFIXES):
             raise RuntimeError(f"backup contains an unbound SQLite sidecar: {candidate}")
         _require_regular_backup_artifact(candidate, backup_root=backup_root, label="backup artifact")
+        verified = (verified_file_hashes or {}).get(str(relative))
+        if verified is not None and verified[0] != metadata.st_size:
+            raise RuntimeError(f"verified backup artifact changed while receipt evidence was built: {candidate}")
         rows.append(
             {
                 "path": str(relative),
                 "type": "file",
                 "size_bytes": metadata.st_size,
-                "sha256": _sha256_file(candidate),
+                "sha256": verified[1] if verified is not None else _sha256_file(candidate),
             }
         )
     return rows
@@ -759,12 +767,15 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         restored_blob_paths = _regular_backup_blob_files(restored)
         restored_blob_count = len(restored_blob_paths)
         restored_hashes: dict[str, int] = {}
+        verified_blob_file_hashes: dict[str, tuple[int, str]] = {}
         hashes_valid = True
         for blob_path in restored_blob_paths:
             blob_hash = blob_path.parent.name + blob_path.name
             payload = blob_path.read_bytes()
             restored_hashes[blob_hash] = len(payload)
-            hashes_valid = hashes_valid and hashlib.sha256(payload).hexdigest() == blob_hash
+            payload_hash = hashlib.sha256(payload).hexdigest()
+            hashes_valid = hashes_valid and payload_hash == blob_hash
+            verified_blob_file_hashes[str(blob_path.relative_to(restored))] = (len(payload), payload_hash)
         blobs_ok = (
             restored_blob_count == blob_count
             and len(expected_blobs) == blob_count
@@ -785,7 +796,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             and source_blobs_resolved
             and index_attachment_blobs_resolved
         )
-        receipt_evidence = _receipt_evidence(restored) if ok else None
+        receipt_evidence = _receipt_evidence(restored, verified_file_hashes=verified_blob_file_hashes) if ok else None
         return {
             "ok": ok,
             "mode": "archive_file_set",
@@ -907,9 +918,13 @@ def _inventory_file_evidence(
     }
 
 
-def _receipt_evidence(backup_root: Path) -> dict[str, object]:
+def _receipt_evidence(
+    backup_root: Path,
+    *,
+    verified_file_hashes: Mapping[str, tuple[int, str]] | None = None,
+) -> dict[str, object]:
     _require_real_backup_directory(backup_root, label="backup root")
-    artifact_inventory = _backup_artifact_inventory(backup_root)
+    artifact_inventory = _backup_artifact_inventory(backup_root, verified_file_hashes=verified_file_hashes)
     file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
     manifest_path = backup_root / "manifest.json"
     _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
