@@ -10,6 +10,23 @@ flags, removed or renamed commands, output changes, breaking schema
 migrations, security fixes. Internal refactors, test additions, and
 documentation polish do not require an entry.
 
+## [0.3.0](https://github.com/Sinity/polylogue/compare/v0.2.0...v0.3.0) (2026-07-11)
+
+
+### Added
+
+* **context:** persist exact delivery receipts ([#2703](https://github.com/Sinity/polylogue/issues/2703)) ([37bdfa0](https://github.com/Sinity/polylogue/commit/37bdfa04c37414d1799deafc66a19c31d3b2f898))
+* **demos:** enforce Demo Packet v2 contracts ([#2704](https://github.com/Sinity/polylogue/issues/2704)) ([0395f83](https://github.com/Sinity/polylogue/commit/0395f83a08c821af64815be7924691436be566ba))
+* **query:** constrain action sequence edges ([#2705](https://github.com/Sinity/polylogue/issues/2705)) ([3926432](https://github.com/Sinity/polylogue/commit/392643214301d6f5dc6d28cfe59fc3bcabae6d8b))
+* **rendering:** add semantic transcript evidence cards ([#2700](https://github.com/Sinity/polylogue/issues/2700)) ([0f50590](https://github.com/Sinity/polylogue/commit/0f5059068f115754070da40df9a55f59c1b8b5d7))
+
+
+### Fixed
+
+* **demos:** bind packet claims to receipt bytes ([#2709](https://github.com/Sinity/polylogue/issues/2709)) ([885b46d](https://github.com/Sinity/polylogue/commit/885b46da313c58e3c87215bc93486b97cb3b3797))
+* **devtools:** count raw artifacts in workload boundary ([#2711](https://github.com/Sinity/polylogue/issues/2711)) ([#2711](https://github.com/Sinity/polylogue/issues/2711)) ([5d2bd72](https://github.com/Sinity/polylogue/commit/5d2bd72dcfbc99097950dd1775499ea582e1bd6c))
+* **storage:** authenticate durable migration receipts ([#2708](https://github.com/Sinity/polylogue/issues/2708)) ([#2708](https://github.com/Sinity/polylogue/issues/2708)) ([a21b907](https://github.com/Sinity/polylogue/commit/a21b907dcfed055349ff1b881017add04ef05324))
+
 ## [0.2.0](https://github.com/Sinity/polylogue/compare/v0.1.0...v0.2.0) (2026-07-11)
 
 
