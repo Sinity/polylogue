@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +17,7 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
+from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -1998,9 +1999,13 @@ def test_raw_materialization_fails_closed_on_plan_conservation_mismatch(
 
     original = repair_mod._raw_replay_conservation_metrics
 
-    def corrupt_outcome_algebra(*args: object, **kwargs: object) -> tuple[int, int, int]:
-        plans, carried_forward, _errors = original(*args, **kwargs)
-        return plans, carried_forward, 1
+    def corrupt_outcome_algebra(
+        plans: Sequence[RawReplayPlan],
+        selected_plan_ids: set[str],
+        outcomes: Sequence[RawReplayPlanOutcome],
+    ) -> tuple[int, int, int]:
+        plan_count, carried_forward, _errors = original(plans, selected_plan_ids, outcomes)
+        return plan_count, carried_forward, 1
 
     monkeypatch.setattr(repair_mod, "_raw_replay_conservation_metrics", corrupt_outcome_algebra)
     result = repair_mod.repair_raw_materialization(_config(tmp_path))
