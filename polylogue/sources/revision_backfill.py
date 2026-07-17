@@ -422,11 +422,23 @@ def backfill_historical_revision_evidence(
 
 def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
     provider, _blob_hash, source_path, kind, payload_size = archive.raw_revision_descriptor(raw_id)
+    return parse_retained_raw_sessions(archive, raw_id), payload_size, kind
+
+
+def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
+    """Parse retained raw evidence without eagerly loading stream records.
+
+    Raw-revision replay is shared by historical repair and the live full and
+    append routes.  Keeping the provider-shape decision here prevents a
+    seemingly harmless live replay helper from reintroducing ``read_all()``
+    for Codex/Claude JSONL evidence.
+    """
+    provider, _blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
     if is_stream_record_provider(source_path, str(provider)):
-        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, stream_kind):
-            return _parse_stream(stream_provider, payload, stream_path), payload_size, stream_kind
-    _provider, eager_payload, _source_path, _kind = archive.raw_revision_material(raw_id)
-    return _parse_one(provider, eager_payload, source_path), len(eager_payload), kind
+        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
+            return _parse_stream(stream_provider, payload, stream_path)
+    _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
+    return _parse_one(provider, eager_payload, source_path)
 
 
 class _ParsedSessionSpill:
@@ -527,4 +539,5 @@ __all__ = [
     "RevisionCensusResult",
     "backfill_historical_revision_evidence",
     "census_historical_revision_evidence",
+    "parse_retained_raw_sessions",
 ]

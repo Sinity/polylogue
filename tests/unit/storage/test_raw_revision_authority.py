@@ -81,7 +81,7 @@ def test_streamed_historical_full_classifier_matches_byte_proof_without_eager_pa
     assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
         (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
     }
-    assert opened
+    assert len(opened) == 7  # three size passes plus two adjacent prefix comparisons
 
 
 @pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])

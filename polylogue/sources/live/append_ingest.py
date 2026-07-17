@@ -77,6 +77,7 @@ def _ingest_append_plans_archive(
     t0 = time.perf_counter()
     from polylogue.sources.decoders import _iter_json_stream
     from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.revision_backfill import parse_retained_raw_sessions
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     _add_timing(timings, "append.imports", t0)
@@ -185,15 +186,7 @@ def _ingest_append_plans_archive(
                         continue
                     parsed_by_raw_id: dict[str, Any] = {}
                     for replay_raw_id in replay_plan.accepted_raw_ids:
-                        replay_provider, replay_payload, replay_source_path, _kind = archive.raw_revision_material(
-                            replay_raw_id
-                        )
-                        replay_sessions = parse_payload(
-                            replay_provider,
-                            list(_iter_json_stream(BytesIO(replay_payload), Path(replay_source_path).name)),
-                            Path(replay_source_path).stem,
-                            source_path=replay_source_path,
-                        )
+                        replay_sessions = parse_retained_raw_sessions(archive, replay_raw_id)
                         if len(replay_sessions) != 1:
                             raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")
                         parsed_by_raw_id[replay_raw_id] = replay_sessions[0]
