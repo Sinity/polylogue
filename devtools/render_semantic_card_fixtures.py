@@ -1,8 +1,10 @@
 """Regenerate or verify semantic-card golden fixture expectations.
 
 The input side of each case is hand-authored. ``expected_contract`` is the
-compact independent oracle reviewers can audit; ``expected_cards`` freezes the
-complete provider-neutral JSON contract emitted by the pure renderer.
+compact independent oracle reviewers can audit; ``expected_cards`` freezes card
+contracts. Cases that exercise prose/notices also carry ``expected_entries`` so
+the complete ordered transcript behavior is reviewable without duplicating it
+for every card-only fixture.
 """
 
 from __future__ import annotations
@@ -76,7 +78,21 @@ def render_case(case: Mapping[str, object], *, case_path: Path) -> list[JSONDocu
     return card_json_documents(build_case_transcript(case, case_path=case_path).cards)
 
 
-def _assert_compact_contract(case: Mapping[str, object], actual: list[JSONDocument], *, case_path: Path) -> list[str]:
+def render_case_entries(case: Mapping[str, object], *, case_path: Path) -> list[JSONDocument]:
+    document = build_case_transcript(case, case_path=case_path).to_document()
+    entries = document.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError(f"{case_path}: renderer did not emit transcript entries")
+    return [cast(JSONDocument, entry) for entry in entries]
+
+
+def _assert_compact_contract(
+    case: Mapping[str, object],
+    actual: list[JSONDocument],
+    actual_entries: list[JSONDocument],
+    *,
+    case_path: Path,
+) -> list[str]:
     contract = case.get("expected_contract")
     if not isinstance(contract, Mapping):
         return [f"{case_path}: expected_contract must be an object"]
@@ -95,6 +111,20 @@ def _assert_compact_contract(case: Mapping[str, object], actual: list[JSONDocume
         outcomes.append(outcome.get("state") if isinstance(outcome, dict) else None)
     if expected_outcomes != outcomes:
         errors.append(f"{case_path}: outcomes expected {expected_outcomes!r}, got {outcomes!r}")
+    if "entry_types" in contract:
+        entry_types = [entry.get("entry_type") for entry in actual_entries]
+        if contract.get("entry_types") != entry_types:
+            errors.append(f"{case_path}: entry_types expected {contract.get('entry_types')!r}, got {entry_types!r}")
+    if "notice_counts" in contract:
+        notice_counts = [
+            cast(Mapping[str, object], entry.get("notice")).get("count")
+            for entry in actual_entries
+            if entry.get("entry_type") == "notice" and isinstance(entry.get("notice"), Mapping)
+        ]
+        if contract.get("notice_counts") != notice_counts:
+            errors.append(
+                f"{case_path}: notice_counts expected {contract.get('notice_counts')!r}, got {notice_counts!r}"
+            )
     return errors
 
 
@@ -129,15 +159,25 @@ def main(argv: list[str] | None = None) -> int:
     for path in paths:
         try:
             case = _load_case(path)
-            actual = render_case(case, case_path=path)
-            failures.extend(_assert_compact_contract(case, actual, case_path=path))
+            transcript = build_case_transcript(case, case_path=path)
+            actual = card_json_documents(transcript.cards)
+            transcript_document = transcript.to_document()
+            raw_entries = transcript_document.get("entries")
+            if not isinstance(raw_entries, list):
+                raise ValueError(f"{path}: renderer did not emit transcript entries")
+            actual_entries = [cast(JSONDocument, entry) for entry in raw_entries]
+            failures.extend(_assert_compact_contract(case, actual, actual_entries, case_path=path))
             if args.write:
                 case["expected_cards"] = actual
+                if case.get("freeze_entries") is True or "expected_entries" in case:
+                    case["expected_entries"] = actual_entries
                 path.write_text(json.dumps(case, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             else:
                 expected = case.get("expected_cards")
                 if expected != actual:
                     failures.append(f"{path}: full expected_cards contract differs from renderer output")
+                if "expected_entries" in case and case.get("expected_entries") != actual_entries:
+                    failures.append(f"{path}: full expected_entries contract differs from renderer output")
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             failures.append(f"{path}: {exc}")
 

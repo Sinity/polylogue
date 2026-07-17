@@ -1017,6 +1017,7 @@ async function loadSession(id, updateURL) {
     var payloads = await Promise.all([fetchJSON(route, {timeoutMs: 10000}), fetchJSON(messagesRoute, {timeoutMs: 10000})]);
     var data = payloads[0];
     data.messages = payloads[1].messages || [];
+    data.semantic_entries = payloads[1].semantic_entries || data.semantic_entries || [];
     data.total = payloads[1].total;
     // Prefix-sharing sessions persist only their divergent tail in the
     // summary row, while the message route recomposes the logical transcript.
@@ -1061,6 +1062,7 @@ async function loadMoreSessionMessages() {
     });
     c.total = payload.total;
     c.message_page = {limit: payload.limit, offset: payload.offset};
+    if (Array.isArray(payload.semantic_entries)) c.semantic_entries = payload.semantic_entries;
   } catch(e) {
     c.messagePageError = routeErrorDetails(e, route);
   }
@@ -2060,12 +2062,15 @@ function renderMain() {
     msgEl.innerHTML = readViewSelector + renderReadViewExecution(c, state.selectedReadView);
     return;
   }
+  var sessionSemanticEntries = semanticSessionEntriesHtml(c);
   if (!c.messages) {
-    msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>Loading messages...</h3></div>';
+    msgEl.innerHTML = readViewSelector + sessionSemanticEntries
+      + '<div class="main-empty"><h3>Loading messages...</h3></div>';
     return;
   }
   if (c.messages.length === 0) {
-    msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
+    msgEl.innerHTML = readViewSelector + sessionSemanticEntries
+      + '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
     return;
   }
   var pageControl = '';
@@ -2077,7 +2082,8 @@ function renderMain() {
     pageControl = '<div class="main-empty"><p>' + esc(String(c.messages.length)) + ' of ' + esc(String(c.total))
       + ' messages loaded.</p><button class="user-action" onclick="loadMoreSessionMessages()">Load more messages</button></div>';
   }
-  msgEl.innerHTML = readViewSelector + renderEvidenceStrip(c) + messageBlocksHtml(c.messages) + pageControl;
+  msgEl.innerHTML = readViewSelector + sessionSemanticEntries + renderEvidenceStrip(c)
+    + messageBlocksHtml(c.messages) + pageControl;
 }
 
 function renderReadViewExecution(c, viewId) {
@@ -2223,10 +2229,14 @@ function renderCorrelationReadView(payload) {
   return html;
 }
 
+function semanticSessionEntriesHtml(session) {
+  if (typeof _polySemanticSessionEntriesHtml !== 'function') return '';
+  return _polySemanticSessionEntriesHtml(session);
+}
+
 function messageBlocksHtml(messages) {
-  // Delegates to the MK3 reader slice (#1202) which owns per-message
-  // action rails, fold policies (tool / thinking / code), and the
-  // keyboard-focused message card. Defined in web_shell_reader.py.
+  // Delegates framing to the MK3 reader slice while semantic entry
+  // classification remains authoritative in rendering/semantic_cards.py.
   return renderMessageBlocks(messages);
 }
 

@@ -1,0 +1,155 @@
+{
+  "session_id": "fixture:message-attachment-envelope",
+  "provider_family": "claude-ai",
+  "freeze_entries": true,
+  "messages": [
+    {
+      "id": "m-attachment",
+      "role": "user",
+      "message_type": "message",
+      "origin": "claude-ai-export",
+      "material_origin": "human",
+      "text": "Review the attached report.",
+      "attachments": [
+        {
+          "id": "att-7",
+          "name": "report.pdf",
+          "mime_type": "application/pdf",
+          "size_bytes": 2048,
+          "path": "attachments/report.pdf",
+          "source_url": "blob:sha256:def",
+          "caption": "Q2 report",
+          "upload_origin": "user_upload"
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "attachment"
+    ],
+    "outcomes": [
+      null
+    ],
+    "entry_types": [
+      "prose",
+      "card"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "attachment",
+      "title": "Attachment",
+      "source": {
+        "session_id": "fixture:message-attachment-envelope",
+        "provider_family": "claude-ai",
+        "origin": "claude-ai-export",
+        "message_id": "m-attachment",
+        "attachment_id": "att-7",
+        "material_origin": "human"
+      },
+      "fields": [
+        {
+          "label": "name",
+          "value": "report.pdf"
+        },
+        {
+          "label": "media type",
+          "value": "application/pdf"
+        },
+        {
+          "label": "size",
+          "value": "2048 bytes"
+        },
+        {
+          "label": "path",
+          "value": "attachments/report.pdf"
+        },
+        {
+          "label": "source URL",
+          "value": "blob:sha256:def"
+        },
+        {
+          "label": "upload origin",
+          "value": "user_upload"
+        },
+        {
+          "label": "caption",
+          "value": "Q2 report"
+        }
+      ],
+      "previews": [],
+      "caveats": [
+        "attachment bytes are not embedded in the transcript document"
+      ],
+      "summary": "report.pdf"
+    }
+  ],
+  "expected_entries": [
+    {
+      "entry_type": "prose",
+      "prose": {
+        "message_id": "m-attachment",
+        "role": "user",
+        "message_type": "message",
+        "provider_family": "claude-ai",
+        "origin": "claude-ai-export",
+        "material_origin": "human",
+        "text": "Review the attached report."
+      }
+    },
+    {
+      "entry_type": "card",
+      "card": {
+        "schema_version": "semantic-card.v1",
+        "kind": "attachment",
+        "title": "Attachment",
+        "source": {
+          "session_id": "fixture:message-attachment-envelope",
+          "provider_family": "claude-ai",
+          "origin": "claude-ai-export",
+          "message_id": "m-attachment",
+          "attachment_id": "att-7",
+          "material_origin": "human"
+        },
+        "fields": [
+          {
+            "label": "name",
+            "value": "report.pdf"
+          },
+          {
+            "label": "media type",
+            "value": "application/pdf"
+          },
+          {
+            "label": "size",
+            "value": "2048 bytes"
+          },
+          {
+            "label": "path",
+            "value": "attachments/report.pdf"
+          },
+          {
+            "label": "source URL",
+            "value": "blob:sha256:def"
+          },
+          {
+            "label": "upload origin",
+            "value": "user_upload"
+          },
+          {
+            "label": "caption",
+            "value": "Q2 report"
+          }
+        ],
+        "previews": [],
+        "caveats": [
+          "attachment bytes are not embedded in the transcript document"
+        ],
+        "summary": "report.pdf"
+      }
+    }
+  ]
+}

@@ -2,17 +2,16 @@
 
 Pins the daemon web shell's contract for the shared CLI/web renderer
 registry: the daemon session-detail routes (``daemon/http.py``) attach
-``semantic_cards``/``semantic_card_suppressed`` to every message from the
-exact ``SemanticCard`` registry the CLI renders to Markdown
+``semantic_entries`` plus compatibility ``semantic_cards`` to every message
+from the exact ``SemanticTranscript`` registry the CLI renders to Markdown
 (``rendering/semantic_cards.py``, exercised by
 ``tests/unit/rendering/test_semantic_cards.py``), and the web reader
-(``daemon/web_shell_semantic_cards.py``) renders that same card JSON to DOM.
+(``daemon/web_shell_semantic_cards.py``) renders that same ordered entry JSON
+to DOM without reclassifying raw roles or prose.
 
-Structure parity between the two backends is proven directly: every card the
-web route emits is validated against the public
-``docs/schemas/semantic-card-v1.schema.json`` contract — the same schema the
-CLI-side golden-case corpus validates against — rather than asserted by
-inspection.
+Structure parity is proven directly against both public schemas on the actual
+paginated message route used by the browser, rather than inferred from the
+full-detail compatibility route.
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ from tests.visual.conftest import (
 )
 
 SEMANTIC_CARD_SCHEMA_PATH = Path("docs/schemas/semantic-card-v1.schema.json")
+SEMANTIC_TRANSCRIPT_SCHEMA_PATH = Path("docs/schemas/semantic-transcript-v1.schema.json")
 
 
 def _message(messages: list[dict[str, object]], message_id: str) -> dict[str, object]:
@@ -73,7 +73,7 @@ def _outcome(card: dict[str, object]) -> dict[str, object]:
 def _semantic_card_session(reader_workspace: ReaderWorkspace) -> tuple[str, dict[str, object]]:
     with running_reader_server(reader_workspace) as (_, base_url):
         seed_reader_semantic_cards(reader_workspace)
-        payload = get_json(base_url, f"/api/sessions/{READER_SEM1}")
+        payload = get_json(base_url, f"/api/sessions/{READER_SEM1}/messages?limit=100&offset=0")
     assert isinstance(payload, dict)
     return base_url, payload
 
@@ -83,6 +83,18 @@ def test_semantic_card_web_json_contract(_semantic_card_session: tuple[str, dict
     messages = cast("list[dict[str, object]]", payload["messages"])
 
     schema = json.loads(SEMANTIC_CARD_SCHEMA_PATH.read_text(encoding="utf-8"))
+    transcript_schema = json.loads(SEMANTIC_TRANSCRIPT_SCHEMA_PATH.read_text(encoding="utf-8"))
+    ordered_entries = cast("list[dict[str, object]]", payload.get("semantic_entries", [])) + [
+        entry for message in messages for entry in cast("list[dict[str, object]]", message["semantic_entries"])
+    ]
+    jsonschema.validate(
+        instance={
+            "schema_version": "semantic-transcript.v1",
+            "session_id": READER_SEM1,
+            "entries": ordered_entries,
+        },
+        schema=transcript_schema,
+    )
     all_cards: list[dict[str, object]] = []
     for message in messages:
         cards = cast("list[dict[str, object]]", message["semantic_cards"])
@@ -155,9 +167,10 @@ def test_semantic_card_web_dom_shape_contract(reader_workspace: ReaderWorkspace,
     # message fully absorbed into another message's card, rather than
     # re-deriving tool semantics from raw ``has_tool_use`` flags alone.
     for phrase in (
-        "_polySemanticCardsForMessage",
+        "_polySemanticEntriesForMessage",
         "semantic_card_suppressed",
-        "_polySemanticCardsHtml",
+        "_polySemanticEntriesHtml",
+        "_polySemanticSessionEntriesHtml",
         'class="sem-card sem-card-',
         "sem-card-header",
         "sem-card-fields",
@@ -176,7 +189,7 @@ def test_semantic_card_web_dom_shape_contract(reader_workspace: ReaderWorkspace,
         checks={
             "status": status,
             "content_type": content_type,
-            "semantic_card_renderer_wired": True,
+            "semantic_transcript_renderer_wired": True,
             "card_kinds_covered": ["shell", "file_edit", "task"],
             "suppression_wired": True,
             "private_path_safe": True,

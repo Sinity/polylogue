@@ -51,12 +51,20 @@
           "value": "session:fixture:lineage-unknown-boundary"
         },
         {
-          "label": "root",
-          "value": "session:fixture:root"
+          "label": "authority",
+          "value": "session_row"
+        },
+        {
+          "label": "availability",
+          "value": "partial"
         },
         {
           "label": "relation",
           "value": "unknown"
+        },
+        {
+          "label": "root",
+          "value": "session:fixture:root"
         },
         {
           "label": "parent",
@@ -65,7 +73,8 @@
       ],
       "previews": [],
       "caveats": [
-        "the parent edge is structural but its narrower lineage relation is unknown"
+        "transcript-composition completeness is unknown from this bounded lineage authority",
+        "the structural lineage relation is unknown"
       ],
       "summary": "session:fixture:lineage-unknown-boundary"
     }
