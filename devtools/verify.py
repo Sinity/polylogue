@@ -1720,6 +1720,8 @@ def _subprocess_env() -> dict[str, str]:
     env = normalize_pytest_basetemp_env(os.environ)
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
     env["TESTMON_DATAFILE"] = str(TESTMON_DATA)

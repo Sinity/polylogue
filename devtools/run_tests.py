@@ -53,6 +53,8 @@ def _managed_env() -> dict[str, str]:
     env, _policy = apply_managed_pytest_runtime_policy(os.environ)
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
