@@ -422,12 +422,12 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/source_freshness.py
-    loc: 1756
+    loc: 1946
     target: polylogue/archive/query/source_freshness.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/source_freshness_surfaces.py
-    loc: 261
+    loc: 272
     target: polylogue/archive/query/source_freshness_surfaces.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -757,7 +757,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2488
+    loc: 2460
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
@@ -821,7 +821,7 @@ files:
     target: polylogue/cli/commands/demo.py
     owner: stable
   - path: polylogue/cli/commands/diagnostics.py
-    loc: 743
+    loc: 759
     target: polylogue/cli/commands/diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/embed.py
@@ -1286,6 +1286,11 @@ files:
     target: polylogue/core/errors.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/evidence_value.py
+    loc: 1227
+    target: polylogue/core/evidence_value.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/hashing.py
     loc: 65
     target: polylogue/core/hashing.py
@@ -1359,6 +1364,11 @@ files:
   - path: polylogue/core/stats.py
     loc: 78
     target: polylogue/core/stats.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/temporal.py
+    loc: 85
+    target: polylogue/core/temporal.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/timestamps.py
@@ -1588,7 +1598,7 @@ files:
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
-    loc: 385
+    loc: 494
     target: polylogue/daemon/status_snapshot.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -1612,7 +1622,7 @@ files:
     target: polylogue/daemon/web_auth.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 3270
+    loc: 3273
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1921,7 +1931,7 @@ files:
     target: polylogue/insights/tag_rollups.py
     owner: stable
   - path: polylogue/insights/temporal_source.py
-    loc: 292
+    loc: 219
     target: polylogue/insights/temporal_source.py
     owner: stable
   - path: polylogue/insights/timeline_renderer.py
@@ -1929,7 +1939,7 @@ files:
     target: polylogue/insights/timeline_renderer.py
     owner: stable
   - path: polylogue/insights/tool_usage.py
-    loc: 202
+    loc: 203
     target: polylogue/insights/tool_usage.py
     owner: stable
   - path: polylogue/insights/topology.py
@@ -2410,11 +2420,11 @@ files:
     target: polylogue/rendering/semantic_card_placement.py
     owner: stable
   - path: polylogue/rendering/semantic_card_registry.py
-    loc: 550
+    loc: 549
     target: polylogue/rendering/semantic_card_registry.py
     owner: stable
   - path: polylogue/rendering/semantic_cards.py
-    loc: 1367
+    loc: 1371
     target: polylogue/rendering/semantic_cards.py
     owner: stable
   - path: polylogue/rendering/semantic_markdown.py
@@ -3575,7 +3585,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 6382
+    loc: 6395
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -4182,7 +4192,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/usage.py
-    loc: 1766
+    loc: 2099
     target: polylogue/storage/usage.py
     owner: storage-root
     reason: storage-root cross-cutting helper

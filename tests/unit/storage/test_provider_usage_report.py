@@ -12,7 +12,12 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from polylogue.storage.usage import provider_usage_coverage_matrix, provider_usage_report_from_connection
+from polylogue.storage.usage import (
+    USAGE_LANE_CATALOG_COST_FAMILY,
+    USAGE_LANE_EXACT_TOKENS_FAMILY,
+    provider_usage_coverage_matrix,
+    provider_usage_report_from_connection,
+)
 
 
 def _connect(path: Path, tier: ArchiveTier = ArchiveTier.INDEX) -> sqlite3.Connection:
@@ -294,29 +299,58 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
     logical_lanes = {lane.provenance: lane for lane in report.logical_pricing_lanes}
     assert report.stored_provider_priced_usd == pytest.approx(1.25)
-    assert report.catalog_api_equivalent_usd == pytest.approx(4.9)
+    assert report.catalog_api_equivalent_usd is None
+    assert report.catalog_priced_subtotal_usd == pytest.approx(4.9)
     assert report.pricing_grain == "physical_session"
     assert report.logical_pricing_grain == "logical_session_model_high_water"
-    assert report.logical_catalog_api_equivalent_usd == pytest.approx(3.6551)
+    assert report.logical_catalog_api_equivalent_usd is None
+    assert report.logical_catalog_priced_subtotal_usd == pytest.approx(3.6551)
     assert lanes["priced"].stored_cost_usd == pytest.approx(1.25)
     assert lanes["priced"].catalog_api_equivalent_usd == pytest.approx(1.25)
+    assert lanes["priced"].catalog_priced_subtotal_usd == pytest.approx(1.25)
     assert lanes["origin_reported"].stored_cost_usd == 0
-    assert lanes["origin_reported"].catalog_api_equivalent_usd == pytest.approx(3.65)
+    assert lanes["origin_reported"].catalog_api_equivalent_usd is None
+    assert lanes["origin_reported"].catalog_priced_subtotal_usd == pytest.approx(3.65)
     assert lanes["origin_reported"].row_count == 3
     assert lanes["origin_reported"].session_count == 2
     assert lanes["origin_reported"].matched_model_row_count == 2
     assert lanes["origin_reported"].unmatched_model_row_count == 1
     assert lanes["origin_reported"].caveats == ("missing_price",)
+    assert lanes["origin_reported"].exact_total_tokens_evidence.value_state == "known"
+    assert lanes["origin_reported"].exact_total_tokens_evidence.value == 2_101_100
+    assert lanes["origin_reported"].catalog_api_equivalent_evidence.value_state == "unknown"
+    assert lanes["origin_reported"].catalog_api_equivalent_evidence.value is None
+    assert lanes["origin_reported"].catalog_api_equivalent_evidence.coverage.supported_count == 2
+    assert lanes["origin_reported"].catalog_api_equivalent_evidence.coverage.exclusions[0].reason == (
+        "unpriced-model-rows:1"
+    )
+    assert USAGE_LANE_EXACT_TOKENS_FAMILY.validate(lanes["origin_reported"].exact_total_tokens_evidence) == ()
+    assert USAGE_LANE_CATALOG_COST_FAMILY.validate(lanes["origin_reported"].catalog_api_equivalent_evidence) == ()
+    assert report.exact_total_tokens_evidence.value_state == "known"
+    assert report.exact_total_tokens_evidence.value == 2_104_200
+    assert report.catalog_api_equivalent_evidence.value_state == "unknown"
+    assert report.catalog_api_equivalent_evidence.value is None
+    assert report.catalog_api_equivalent_evidence.coverage.supported_count == 1
     assert logical_lanes["priced"].stored_cost_usd == 0
     assert logical_lanes["priced"].catalog_api_equivalent_usd == pytest.approx(0.0051)
-    assert logical_lanes["origin_reported"].catalog_api_equivalent_usd == pytest.approx(3.65)
+    assert logical_lanes["origin_reported"].catalog_api_equivalent_usd is None
+    assert logical_lanes["origin_reported"].catalog_priced_subtotal_usd == pytest.approx(3.65)
     assert logical_lanes["origin_reported"].session_count == 2
     payload = report.to_dict()
     assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored+polylogue-curated-overrides"
     assert payload["stored_provider_priced_usd"] == pytest.approx(1.25)
+    assert payload["catalog_api_equivalent_usd"] is None
+    assert payload["catalog_priced_subtotal_usd"] == pytest.approx(4.9)
     assert payload["pricing_grain"] == "physical_session"
     assert payload["logical_pricing_grain"] == "logical_session_model_high_water"
-    assert payload["logical_catalog_api_equivalent_usd"] == pytest.approx(3.6551)
+    assert payload["logical_catalog_api_equivalent_usd"] is None
+    assert payload["logical_catalog_priced_subtotal_usd"] == pytest.approx(3.6551)
+    exact_payload = payload["exact_total_tokens_evidence"]
+    cost_payload = payload["catalog_api_equivalent_evidence"]
+    assert isinstance(exact_payload, dict)
+    assert isinstance(cost_payload, dict)
+    assert exact_payload["value_state"] == "known"
+    assert cost_payload["value_state"] == "unknown"
 
 
 def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_api_equivalent(
@@ -359,17 +393,23 @@ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_ap
     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
 
     priced_lane = lanes["priced"]
-    assert priced_lane.catalog_api_equivalent_usd == pytest.approx(1.25)
+    priced_catalog_cost = priced_lane.catalog_api_equivalent_usd
+    assert priced_catalog_cost is not None
+    assert priced_catalog_cost == pytest.approx(1.25)
     assert priced_lane.subscription_credit_usd == pytest.approx(0.000553, abs=1e-6)
-    assert priced_lane.subscription_credit_usd < priced_lane.catalog_api_equivalent_usd
+    assert priced_lane.subscription_credit_usd < priced_catalog_cost
 
     # gpt-4o has no declared Claude Code credit rate: never fabricate a figure.
     origin_reported_lane = lanes["origin_reported"]
+    origin_catalog_cost = origin_reported_lane.catalog_api_equivalent_usd
+    assert origin_catalog_cost is not None
     assert origin_reported_lane.subscription_credit_usd == 0.0
-    assert origin_reported_lane.catalog_api_equivalent_usd > 0.0
+    assert origin_catalog_cost > 0.0
 
+    report_catalog_cost = report.catalog_api_equivalent_usd
+    assert report_catalog_cost is not None
     assert report.subscription_credit_usd == pytest.approx(priced_lane.subscription_credit_usd)
-    assert report.subscription_credit_usd < report.catalog_api_equivalent_usd
+    assert report.subscription_credit_usd < report_catalog_cost
     assert any("subscription_credit_usd assumes" in caveat for caveat in report.caveats)
 
     payload = report.to_dict()
@@ -387,6 +427,12 @@ def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> No
     report = provider_usage_report_from_connection(conn, archive_root=tmp_path, origin="codex-session")
 
     assert report.origins == ()
+    assert report.catalog_api_equivalent_usd is None
+    assert report.catalog_priced_subtotal_usd == 0.0
+    assert report.exact_total_tokens_evidence.value_state == "unknown"
+    assert report.exact_total_tokens_evidence.value is None
+    assert report.catalog_api_equivalent_evidence.value_state == "unknown"
+    assert report.catalog_api_equivalent_evidence.value is None
     assert "no sessions found for origin 'codex-session'" in report.caveats
 
 
