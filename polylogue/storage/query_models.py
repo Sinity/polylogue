@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from typing_extensions import TypedDict
 
@@ -273,9 +274,21 @@ class RunProjectionListQuery:
     offset: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class WorkEvidenceTraversalQuery:
+    """One-hop, direction-aware graph traversal over a named corpus snapshot."""
+
+    graph_id: str
+    focal_ref: str
+    direction: Literal["incoming", "outgoing", "both"] = "both"
+    edge_kinds: tuple[str, ...] = ()
+    limit: int | None = 100
+
+
 __all__ = [
     "ArtifactObservationListQuery",
     "RunProjectionListQuery",
+    "WorkEvidenceTraversalQuery",
     "SessionCountQueryKwargs",
     "SessionListQueryKwargs",
     "SessionRecordQuery",

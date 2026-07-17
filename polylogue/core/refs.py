@@ -72,6 +72,19 @@ ObjectRefKind: TypeAlias = Literal[
     #     pair. ``::`` is used as the internal separator (matching
     #     EvidenceRef) because session ids themselves may contain ``:``.
     "delegation",
+    # Provider-neutral work-evidence graph. These are topology and claim
+    # identities, not provider-native workflow identifiers; source adapters
+    # retain their native facts as evidence on the graph nodes and edges.
+    "work-invocation",
+    "work-call",
+    "work-attempt",
+    "work-session-segment",
+    "work-result",
+    "work-claim",
+    "work-edge",
+    "artifact",
+    "execution-context",
+    "actor",
 ]
 
 EvidenceRefKind: TypeAlias = Literal["session", "message", "block"]
@@ -122,6 +135,16 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "ranker": "ranker",
     "elicitation-session": "elicitation-session",
     "experiment-analysis": "experiment-analysis",
+    "work-invocation": "work-invocation",
+    "work-call": "work-call",
+    "work-attempt": "work-attempt",
+    "work-session-segment": "work-session-segment",
+    "work-result": "work-result",
+    "work-claim": "work-claim",
+    "work-edge": "work-edge",
+    "artifact": "artifact",
+    "execution-context": "execution-context",
+    "actor": "actor",
 }
 
 

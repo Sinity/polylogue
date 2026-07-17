@@ -1352,7 +1352,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
-    loc: 442
+    loc: 465
     target: polylogue/core/refs.py
     owner: core-primitive
     reason: core primitive
@@ -1954,6 +1954,10 @@ files:
   - path: polylogue/insights/transforms.py
     loc: 2455
     target: polylogue/insights/transforms.py
+    owner: stable
+  - path: polylogue/insights/work_evidence.py
+    loc: 211
+    target: polylogue/insights/work_evidence.py
     owner: stable
   - path: polylogue/logging.py
     loc: 238
@@ -2954,11 +2958,11 @@ files:
     target: polylogue/sources/__init__.py
     owner: stable
   - path: polylogue/sources/assembly.py
-    loc: 95
+    loc: 99
     target: polylogue/sources/assembly.py
     owner: stable
   - path: polylogue/sources/assembly_claude_code.py
-    loc: 200
+    loc: 228
     target: polylogue/sources/assembly_claude_code.py
     owner: stable
   - path: polylogue/sources/assembly_codex.py
@@ -3571,7 +3575,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/query_models.py
-    loc: 286
+    loc: 299
     target: polylogue/storage/query_models.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3602,12 +3606,12 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 6465
+    loc: 6464
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repository/__init__.py
-    loc: 120
+    loc: 122
     target: polylogue/storage/repository/__init__.py
     owner: stable
   - path: polylogue/storage/repository/archive/__init__.py
@@ -3685,6 +3689,10 @@ files:
     target: polylogue/storage/repository/insight/topology_reads.py
     owner: stable
     cross_cut: { layer: read }
+  - path: polylogue/storage/repository/insight/work_evidence.py
+    loc: 45
+    target: polylogue/storage/repository/insight/work_evidence.py
+    owner: stable
   - path: polylogue/storage/repository/raw/__init__.py
     loc: 0
     target: polylogue/storage/repository/raw/__init__.py
@@ -3858,7 +3866,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 1464
+    loc: 1514
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
@@ -3958,7 +3966,7 @@ files:
     target: polylogue/storage/sqlite/holdout_cohorts.py
     owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
-    loc: 270
+    loc: 293
     target: polylogue/storage/sqlite/lifecycle.py
     owner: stable
   - path: polylogue/storage/sqlite/maintenance.py
@@ -3982,7 +3990,7 @@ files:
     target: polylogue/storage/sqlite/migrations/user/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/__init__.py
-    loc: 33
+    loc: 35
     target: polylogue/storage/sqlite/queries/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/_bulk_replace.py
@@ -4156,12 +4164,16 @@ files:
     loc: 183
     target: polylogue/storage/sqlite/queries/tool_usage.py
     owner: stable
+  - path: polylogue/storage/sqlite/queries/work_evidence.py
+    loc: 205
+    target: polylogue/storage/sqlite/queries/work_evidence.py
+    owner: stable
   - path: polylogue/storage/sqlite/query_objects.py
     loc: 540
     target: polylogue/storage/sqlite/query_objects.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store.py
-    loc: 121
+    loc: 123
     target: polylogue/storage/sqlite/query_store.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store_archive.py
@@ -4183,6 +4195,10 @@ files:
   - path: polylogue/storage/sqlite/query_store_maintenance.py
     loc: 97
     target: polylogue/storage/sqlite/query_store_maintenance.py
+    owner: stable
+  - path: polylogue/storage/sqlite/query_store_work_evidence.py
+    loc: 28
+    target: polylogue/storage/sqlite/query_store_work_evidence.py
     owner: stable
   - path: polylogue/storage/sqlite/raw_state_update.py
     loc: 62

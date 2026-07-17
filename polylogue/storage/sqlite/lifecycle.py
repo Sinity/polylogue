@@ -208,6 +208,29 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=38,
+        classes=(DerivedDeltaClass.INDEX_ONLY, DerivedDeltaClass.VIEW_ONLY),
+        operations=(
+            FastForwardOperation(
+                name="v38-action-and-delegation-projections",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "action_pairs"), ("table", "delegation_facts")),
+            ),
+            FastForwardOperation(
+                name="v38-action-and-delegation-projections",
+                kind=FastForwardOperationKind.REPLACE_VIEW,
+                objects=(("view", "actions"), ("view", "delegations")),
+            ),
+        ),
+    ),
+    IndexDeltaDeclaration(
+        version=39,
+        # Work topology derives from admitted provider facts. Reprocess/rebuild
+        # rather than clone-forward so a graph is never retained without the
+        # source evidence its nodes and edges cite.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

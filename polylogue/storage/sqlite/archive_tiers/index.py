@@ -24,7 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-INDEX_SCHEMA_VERSION = 38
+INDEX_SCHEMA_VERSION = 39
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -1119,6 +1119,56 @@ CREATE TABLE IF NOT EXISTS delegation_refresh_scope (
 CREATE TABLE IF NOT EXISTS derived_refresh_guard (
     guard_name TEXT PRIMARY KEY
 ) STRICT;
+
+-- Provider-neutral topology and claims. This remains a derived tier: adapters
+-- materialize admitted source facts here, while this slice deliberately does
+-- not model repository effects or evaluated satisfaction.
+CREATE TABLE IF NOT EXISTS work_evidence_graphs (
+    graph_id              TEXT PRIMARY KEY,
+    corpus_snapshot_ref   TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS work_evidence_nodes (
+    graph_id                       TEXT NOT NULL REFERENCES work_evidence_graphs(graph_id) ON DELETE CASCADE,
+    node_ref                       TEXT NOT NULL,
+    node_kind                      TEXT NOT NULL,
+    label                          TEXT NOT NULL,
+    evidence_refs_json             TEXT NOT NULL,
+    corpus_snapshot_ref            TEXT NOT NULL,
+    authority                      TEXT NOT NULL,
+    confidence                     REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+    occurred_at_ms                 INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0),
+    actor_ref                      TEXT,
+    execution_context_id           TEXT,
+    execution_context_known_json   TEXT NOT NULL DEFAULT '[]',
+    execution_context_unknown_json TEXT NOT NULL DEFAULT '[]',
+    execution_context_addressed    INTEGER CHECK(execution_context_addressed IN (0, 1) OR execution_context_addressed IS NULL),
+    association_state              TEXT NOT NULL,
+    claim_text                     TEXT,
+    PRIMARY KEY(graph_id, node_ref)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS work_evidence_edges (
+    graph_id             TEXT NOT NULL REFERENCES work_evidence_graphs(graph_id) ON DELETE CASCADE,
+    edge_ref             TEXT NOT NULL,
+    edge_kind            TEXT NOT NULL,
+    source_ref           TEXT NOT NULL,
+    target_ref           TEXT NOT NULL,
+    evidence_refs_json   TEXT NOT NULL,
+    corpus_snapshot_ref  TEXT NOT NULL,
+    authority            TEXT NOT NULL,
+    confidence           REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+    occurred_at_ms       INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0),
+    association_state    TEXT NOT NULL,
+    PRIMARY KEY(graph_id, edge_ref),
+    FOREIGN KEY(graph_id, source_ref) REFERENCES work_evidence_nodes(graph_id, node_ref) ON DELETE CASCADE,
+    FOREIGN KEY(graph_id, target_ref) REFERENCES work_evidence_nodes(graph_id, node_ref) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_source
+ON work_evidence_edges(graph_id, source_ref, edge_kind);
+CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_target
+ON work_evidence_edges(graph_id, target_ref, edge_kind);
 
 CREATE VIEW IF NOT EXISTS delegation_facts_source AS
 WITH dispatch_actions AS (
