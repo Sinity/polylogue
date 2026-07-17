@@ -156,15 +156,14 @@
    "bytes": 153265,
    "checked_at": "2026-07-17T15:16:00+00:00",
    "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
-   "status": "candidate_requires_kernel_rebase",
-   "state": "candidate_requires_kernel_rebase",
+   "status": "integrated_merged",
+   "state": "integrated_merged",
    "patch_paths": 18,
    "problems": [
     "the provider did not produce the mandated cohesive result ZIP",
-    "the patch does not apply to current master only because generated topology files drift",
-    "its local FactFamilySpec must be rebased onto the existing o21.1 DeclarationSpec contract rather than introducing a second declaration kernel"
+    "the received patch required generated-topology refresh and a small shared-declaration-kernel rebase before admission"
    ],
-   "integration": "Positive implementation/design input admitted to polylogue-cuxz.2: preserve the three production canaries and composition laws, but rebase the core onto the shared declaration kernel before source admission."
+   "integration": "admitted as PR #3033 / efadb404ebe70ec91f03ffcb7eaf0de7956ece4d after FactFamilySpec was projected through the shared DeclarationRegistry; three real owner-route canaries landed while broader EvidenceValue family migration remains open"
   }
  ]
 }
