@@ -75,7 +75,7 @@
    "checked_at": "2026-07-17T10:55:25+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "problems": [],
-   "status": "triaged",
+  "status": "subsumed_foundation_retained",
    "members": [
     "EVIDENCE.md",
     "HANDOFF.md",
@@ -87,7 +87,8 @@
    "apply_detail": "patch applies cleanly",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "validated"
+  "state": "subsumed_foundation_retained",
+  "integration": "Current-master reconciliation at 66cee5e found the provisional MCP declaration/registration implementation already landed in PR #3004 / ed44be18f. This patch conflicts on the existing registry, adapters, server-family registration, and generated surfaces. Retain its 41-family trust/provenance/role lifecycle evidence for polylogue-t46.8.3; it does not complete tool retirement, URI/prompt surfaces, cold-model proof, telemetry, or t46.9 authorization receipts."
   }
  ]
 }
