@@ -987,6 +987,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("POLYLOGUE_ROOT", "/stale/main")
     monkeypatch.setenv("POLYLOGUE_REPO_ROOT", "/stale/main")
     monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/stale/main/.cache/pycache")
+    monkeypatch.setenv("PYTHONPATH", "/stale/main")
     completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
 
     with patch("devtools.verify.subprocess.run", return_value=completed) as run:
@@ -997,6 +998,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_ROOT"] == str(ROOT)
     assert env["POLYLOGUE_REPO_ROOT"] == str(ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(ROOT / ".cache" / "pycache")
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(ROOT)
     assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(Path.cwd() / PYTEST_EVENTS_PATH)
 
 
