@@ -18,6 +18,7 @@ from polylogue.scenarios.workload import (
     WorkloadRunStatus,
     evaluate_budgets,
     exact_session_actions_canary_spec,
+    raw_authority_fixed_point_spec,
 )
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 
@@ -197,3 +198,21 @@ def test_exact_session_actions_canary_uses_shared_tier_and_receipt_contract() ->
     assert passing.budget_results[0].verdict is BudgetVerdict.PASS
     assert exceeded.budget_results[0].verdict is BudgetVerdict.EXCEEDED
     assert exceeded.spec.semantic_result == "complete"
+
+
+def test_raw_authority_fixed_point_canary_uses_shared_corpus_identity() -> None:
+    spec = raw_authority_fixed_point_spec(
+        profile_id="workload-profile:sha256:raw-authority",
+        archive_id="seeded-archive:sha256:raw-authority",
+        scale_tier=WorkloadScaleTier.ARCHIVE_1X,
+    )
+
+    assert spec.workload_id == "canary:raw-authority-fixed-point"
+    assert spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_1X.value
+    assert spec.inputs[0].distribution_refs == (
+        "archive.raw_revision_shapes",
+        "archive.authority_component_sizes",
+        "operations.cursor_lag",
+        "operations.convergence_debt",
+    )
+    assert spec.phases == ("generate", "acquire", "census", "replay", "postflight", "quiescent")

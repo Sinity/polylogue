@@ -557,6 +557,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-authority-scale-proof",
+        "workspace",
+        "Run bounded raw-authority replay to a two-census fixed point.",
+        "devtools.raw_authority_scale_proof",
+        use_when=(
+            "Generate a receipt-backed raw-authority scenario before a live replay gate. "
+            "Use explicit July-15-shaped component/raw arguments for the contained scale run."
+        ),
+        examples=(
+            "devtools workspace raw-authority-scale-proof --json",
+            "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 --pass-limit 64 --keep --json",
+        ),
+    ),
+    CommandSpec(
         "workspace temporal-read-profile",
         "workspace",
         "Measure read --view temporal phase timings on the active archive.",
