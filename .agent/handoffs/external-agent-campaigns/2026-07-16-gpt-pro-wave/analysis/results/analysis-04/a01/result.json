@@ -5,7 +5,7 @@
   "job_id": "analysis-04",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "acquired",
+  "state": "adjudicated_current_owner_map",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -29,5 +29,5 @@
   "commits": [],
   "pull_request": null,
   "verification_receipts": [],
-  "notes": "analysis retained for Bead adjudication"
+  "notes": "Current-compatible surface semantics map to existing owners: z9gh.9.1 query transaction, 2qx origin boundary, cuxz.2 absence/provenance, t46.9/kwsb.2/71ey mutation execution, t46.8.2 MCP retirement, and s1kr operation parity; no parallel surface model admitted."
 }

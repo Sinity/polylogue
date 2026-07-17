@@ -5,7 +5,7 @@
   "job_id": "analysis-05",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "acquired",
+  "state": "integrated_bead_evidence",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -29,5 +29,5 @@
   "commits": [],
   "pull_request": null,
   "verification_receipts": [],
-  "notes": "analysis retained for Bead adjudication"
+  "notes": "Admitted execution-grade proof refinements to 71ey, fd2s, mhx.7, and s1kr; query recipe and MCP-declaration findings map to z9gh.3/t46.8 without a second registry."
 }
