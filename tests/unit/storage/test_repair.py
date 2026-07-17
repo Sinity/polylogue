@@ -1944,6 +1944,62 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(
     assert second.plan_outcomes[0].input_raw_ids == (raw_ids[1],)
 
 
+def test_raw_materialization_fair_rotation_mutation_recreates_starvation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing durable attempt-age ordering lets one retryable component monopolize a slot."""
+    from polylogue.core.enums import Provider
+    from polylogue.sources import revision_backfill
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    def run(*, remove_fair_rotation: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        root = tmp_path / ("unfair" if remove_fair_rotation else "fair")
+        initialize_active_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            raw_ids = [
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=f'{{"type":"session_meta","payload":{{"id":"fair-{index}"}}}}\n'.encode(),
+                    source_path=f"fair-{index}.jsonl",
+                    acquired_at_ms=index + 1,
+                )
+                for index in range(3)
+            ]
+
+        original_backfill = revision_backfill.backfill_historical_revision_evidence
+        _complete_bounded_raw_census(_config(root), limit=1)
+
+        def retry_oldest(*args: Any, selected_raw_ids: list[str] | None = None, **kwargs: Any) -> Any:
+            if selected_raw_ids == [raw_ids[0]]:
+                raise RuntimeError("injected retryable oldest component")
+            return original_backfill(*args, selected_raw_ids=selected_raw_ids, **kwargs)
+
+        with monkeypatch.context() as mutation:
+            mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", retry_oldest)
+            if remove_fair_rotation:
+
+                def acquisition_only_order(candidates: Any, *, archive_root: Path) -> list[tuple[str, ...]]:
+                    return sorted(
+                        candidates.authority_components,
+                        key=lambda component: min(candidates.raw_acquired_at_ms[raw_id] for raw_id in component),
+                    )
+
+                mutation.setattr(repair_mod, "_raw_materialization_ordered_components", acquisition_only_order)
+            first = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=1)
+            second = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=1)
+
+        assert first.plan_outcomes[0].input_raw_ids == (raw_ids[0],)
+        return first.plan_outcomes[0].input_raw_ids, second.plan_outcomes[0].input_raw_ids
+
+    fair_first, fair_second = run(remove_fair_rotation=False)
+    unfair_first, unfair_second = run(remove_fair_rotation=True)
+
+    assert fair_first == unfair_first
+    assert fair_second != fair_first
+    assert unfair_second == unfair_first
+
+
 def test_raw_materialization_isolates_failed_component_and_continues_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
