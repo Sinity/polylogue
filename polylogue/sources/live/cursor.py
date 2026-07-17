@@ -77,6 +77,18 @@ class CursorRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class CursorObservationRebase:
+    """A proved-safe replacement for a cursor's filesystem observation."""
+
+    path: Path
+    expected: CursorRecord
+    st_dev: int
+    st_ino: int
+    mtime_ns: int
+    tail_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class LiveIngestAttempt:
     """Durable live-ingest attempt snapshot for in-flight diagnostics."""
 
@@ -1035,6 +1047,76 @@ class CursorStore:
             )
         )
 
+    def rebase_authoritative_observation(
+        self,
+        path: Path,
+        *,
+        expected: CursorRecord,
+        stat: os.stat_result,
+        tail_hash: str,
+    ) -> bool:
+        """Adopt a new stat observation after proving the accepted prefix.
+
+        A filesystem remount can change ``st_dev`` while leaving the inode,
+        bytes, and timestamps intact.  The watcher verifies the whole accepted
+        prefix in that situation.  Persisting the new observation is essential:
+        without it every later restart repeats the same proof for every file.
+        The compare-and-replace mutation refuses to overwrite a concurrent
+        append or ingest cursor update.
+        """
+
+        return bool(
+            self.rebase_authoritative_observations(
+                (
+                    CursorObservationRebase(
+                        path=path,
+                        expected=expected,
+                        st_dev=stat.st_dev,
+                        st_ino=stat.st_ino,
+                        mtime_ns=stat.st_mtime_ns,
+                        tail_hash=tail_hash,
+                    ),
+                )
+            )
+        )
+
+    def rebase_authoritative_observations(self, rebases: Iterable[CursorObservationRebase]) -> int:
+        """Persist a catch-up batch of already-proved observation rebases.
+
+        The catch-up planner can prove thousands of stable files after a
+        remount.  Use one ops-tier transaction so that retiring that legacy
+        device identity does not itself become a long-lived SQLite write storm.
+        """
+
+        unique = {rebase.path: rebase for rebase in rebases}
+        if not unique:
+            return 0
+        updated = 0
+
+        def write() -> None:
+            nonlocal updated
+            with self._connect_ops() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for rebase in unique.values():
+                    current = self._get_record_on_conn(conn, rebase.path)
+                    if current != rebase.expected:
+                        continue
+                    self._write_cursor_record_on_conn(
+                        conn,
+                        replace(
+                            current,
+                            updated_at=datetime.now(UTC).isoformat(),
+                            tail_hash=rebase.tail_hash,
+                            st_dev=rebase.st_dev,
+                            st_ino=rebase.st_ino,
+                            mtime_ns=rebase.mtime_ns,
+                        ),
+                    )
+                    updated += 1
+
+        best_effort_cursor_write("archive ops cursor observation rebase", write)
+        return updated
+
     def mark_failed(self, path: Path, *, failed_stat: os.stat_result | None = None) -> None:
         """Increment failure count and set exponential backoff.
 
@@ -1327,6 +1409,7 @@ class CursorStore:
 
 
 __all__ = [
+    "CursorObservationRebase",
     "CursorRecord",
     "CursorStore",
     "LiveConvergenceDebt",

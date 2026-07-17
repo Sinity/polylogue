@@ -72,6 +72,14 @@ def cursor_ctime_ns(authority: str | None) -> int | None:
     return int(authority.rsplit(":", 1)[1])
 
 
+def cursor_tail_hash(authority: str | None) -> str | None:
+    """Return the bounded tail digest embedded in cursor authority."""
+    if cursor_prefix_hash(authority) is None:
+        return None
+    assert authority is not None
+    return authority.split(":")[2]
+
+
 def _archive_blob_exists(archive_root: Path, blob_hash_hex: str) -> bool:
     """Return whether a content-addressed archive blob is present on disk."""
     normalized = blob_hash_hex.lower()

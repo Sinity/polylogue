@@ -34,12 +34,13 @@ from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
     cursor_ctime_ns,
     cursor_prefix_hash,
+    cursor_tail_hash,
     encode_cursor_hash_authority,
     sha256_range_from_path,
     tail_hash_and_last_complete_newline_from_path,
     tail_hash_from_path,
 )
-from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
@@ -437,6 +438,7 @@ class LiveWatcher:
             return CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0)
         cursor_records = self._cursor.get_records(candidate.path for candidate in candidates)
         needed: list[Path] = []
+        rebases: list[CursorObservationRebase] = []
         skipped = 0
         needed_bytes = 0
         for candidate in candidates:
@@ -446,11 +448,14 @@ class LiveWatcher:
                 candidate.path,
                 stat=candidate.stat,
                 cursor=cursor_records.get(candidate.path),
+                rebase_queue=rebases,
             ):
                 needed.append(candidate.path)
                 needed_bytes += candidate.stat.st_size
             else:
                 skipped += 1
+        if rebases:
+            self._cursor.rebase_authoritative_observations(rebases)
         return CatchUpPlan(
             candidates=candidates,
             needed=tuple(needed),
@@ -664,7 +669,14 @@ class LiveWatcher:
         cursor = self._cursor.get_record(path)
         return self._needs_work_from_state(path, stat=stat, cursor=cursor)
 
-    def _needs_work_from_state(self, path: Path, *, stat: os.stat_result, cursor: CursorRecord | None) -> bool:
+    def _needs_work_from_state(
+        self,
+        path: Path,
+        *,
+        stat: os.stat_result,
+        cursor: CursorRecord | None,
+        rebase_queue: list[CursorObservationRebase] | None = None,
+    ) -> bool:
         size = stat.st_size
         if cursor is None:
             if not self._reconcile_archived_cursor(path, stat=stat):
@@ -731,13 +743,31 @@ class LiveWatcher:
                 final_stat = path.stat()
             except (EOFError, OSError):
                 return True
-            return current_prefix_hash != prefix_hash or (
+            observation_changed = (
                 final_stat.st_dev,
                 final_stat.st_ino,
                 final_stat.st_size,
                 final_stat.st_mtime_ns,
                 final_stat.st_ctime_ns,
             ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if current_prefix_hash != prefix_hash or observation_changed:
+                return True
+            tail_hash = cursor_tail_hash(cursor.tail_hash)
+            if tail_hash is None:
+                return True
+            rebase = CursorObservationRebase(
+                path=path,
+                expected=cursor,
+                st_dev=final_stat.st_dev,
+                st_ino=final_stat.st_ino,
+                mtime_ns=final_stat.st_mtime_ns,
+                tail_hash=encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=final_stat.st_ctime_ns),
+            )
+            if rebase_queue is None:
+                self._cursor.rebase_authoritative_observations((rebase,))
+            else:
+                rebase_queue.append(rebase)
+            return False
         if size > cursor.byte_offset:
             # A previous incomplete-tail probe recorded this exact filesystem
             # state.  The next useful observation is a write notification (or
