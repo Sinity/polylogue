@@ -606,7 +606,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace raw-authority-scale-proof --json",
-            "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 --pass-limit 64 --keep --json",
+            "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 --expanded-raws 21398 --pass-limit 64 --keep --json",
         ),
     ),
     CommandSpec(

@@ -834,7 +834,7 @@ def test_raw_materialization_receipts_partition_terminal_deferred_and_executable
     assert candidates.adoption_deferred == 1
 
 
-def test_raw_materialization_retires_only_complete_governed_bundle_membership(tmp_path: Path) -> None:
+def test_raw_materialization_replays_complete_governed_bundle_membership_after_index_loss(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
@@ -892,7 +892,7 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
 
     candidates = repair_mod._raw_materialization_candidate_ids(config)
 
-    assert set(candidates.raw_ids) == {raw_ids[0], raw_ids[2]}
+    assert set(candidates.raw_ids) == {raw_ids[0], raw_ids[2], raw_ids[3]}
     assert candidates.authority_quarantined == 1
 
 

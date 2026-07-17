@@ -19,6 +19,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TextIO, cast
@@ -258,12 +259,16 @@ def _write_payload(path: Path, *, native_id: str, revision: int, target_size: in
             remaining -= amount
 
 
-def _independent_payload(*, native_id: str, target_size: int) -> bytes:
-    """Build one bounded standalone JSONL raw without a disk staging file."""
-    header = f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n'.encode()
-    if target_size < len(header):
-        raise ValueError("scenario payload allocation cannot preserve valid JSONL evidence")
-    return header + (b" " * (target_size - len(header)))
+def _explicit_component_cohorts(
+    *, components: int, direct_candidates: int, expanded_candidates: int
+) -> tuple[tuple[int, int, int], ...]:
+    """Build an exact aggregate topology without inventing an unexpanded corpus."""
+    direct = _component_counts(direct_candidates, components=components)
+    expanded = _component_counts(expanded_candidates, components=components)
+    return tuple(
+        (raw_count, direct_count, count)
+        for (raw_count, direct_count), count in sorted(Counter(zip(expanded, direct, strict=True)).items())
+    )
 
 
 def _component_counts(total: int, *, components: int) -> list[int]:
@@ -507,6 +512,12 @@ def _record_repair_pass(
     wall_ms = int((time.perf_counter() - started) * 1000)
     after = _process_sample()
     metrics = result.metrics
+    hard_failure_metrics = (
+        "raw_materialization_plan_conservation_error_count",
+        "raw_materialization_unresolved_blocker_count",
+    )
+    if not result.success and any(float(metrics.get(key, 0)) > 0 for key in hard_failure_metrics):
+        raise RuntimeError(f"raw-authority scale proof repair pass failed: {result.detail}")
     candidate_value = metrics.get("raw_materialization_candidate_count")
     executable_candidate_value = metrics.get("raw_materialization_executable_candidate_count", candidate_value)
     if (
@@ -566,6 +577,7 @@ def run_raw_authority_scale_proof(
     *,
     components: int = 16,
     raws: int = 24,
+    expanded_raws: int | None = None,
     scenario: RawAuthorityScaleScenario | None = None,
     pass_limit: int = 4,
     keep: bool = False,
@@ -582,11 +594,17 @@ def run_raw_authority_scale_proof(
     if scenario is None:
         if components < 1 or raws < components:
             raise ValueError("require components >= 1 and raws >= components")
+        expanded = raws if expanded_raws is None else expanded_raws
         scenario = RawAuthorityScaleScenario(
             components=components,
             direct_candidates=raws,
-            expanded_candidates=raws,
-            total_payload_bytes=raws * 1024,
+            expanded_candidates=expanded,
+            total_payload_bytes=expanded * 1024,
+            component_cohorts=(
+                _explicit_component_cohorts(components=components, direct_candidates=raws, expanded_candidates=expanded)
+                if expanded != raws
+                else None
+            ),
         )
     if components != 16 and components != scenario.components:
         raise ValueError("components and scenario.components disagree")
@@ -601,6 +619,7 @@ def run_raw_authority_scale_proof(
         max_memory_full_avg10=max_memory_full_avg10,
     )
     generation_samples = [admission_sample]
+    replay_samples: list[ProcessSample] = []
 
     def check_generation_pressure() -> None:
         sample = _process_sample()
@@ -610,6 +629,15 @@ def run_raw_authority_scale_proof(
             max_memory_full_avg10=max_memory_full_avg10,
         )
         generation_samples.append(sample)
+
+    def check_replay_pressure() -> None:
+        sample = _process_sample()
+        _assert_admission(
+            sample,
+            max_io_full_avg10=max_io_full_avg10,
+            max_memory_full_avg10=max_memory_full_avg10,
+        )
+        replay_samples.append(sample)
 
     root = workdir.expanduser().resolve() / "raw-authority-scale-proof"
     if root.exists():
@@ -647,21 +675,16 @@ def run_raw_authority_scale_proof(
                         if not _uses_independent_component_members(scenario)
                         else f"{session_native_id}-member-{member:05d}"
                     )
-                    if _uses_independent_component_members(scenario):
-                        blob_hash, blob_size = publisher.write_from_bytes(
-                            _independent_payload(native_id=row_native_id, target_size=row_size)
-                        )
-                    else:
-                        payload_path = temporary_root / f"{source_label}.jsonl"
-                        _write_payload(
-                            payload_path,
-                            native_id=row_native_id,
-                            revision=member,
-                            target_size=row_size,
-                            previous=previous,
-                        )
-                        blob_hash, blob_size = publisher.write_from_path(payload_path)
-                        payload_path.unlink()
+                    payload_path = temporary_root / f"{source_label}.jsonl"
+                    _write_payload(
+                        payload_path,
+                        native_id=row_native_id,
+                        revision=member,
+                        target_size=row_size,
+                        previous=None if _uses_independent_component_members(scenario) else previous,
+                    )
+                    blob_hash, blob_size = publisher.write_from_path(payload_path)
+                    payload_path.unlink()
                     previous = publisher.blob_path(blob_hash)
                     source_path = component_source_path
                     pending_rows.append((row_native_id, source_path, blob_hash, blob_size, terminalized, component))
@@ -793,6 +816,7 @@ def run_raw_authority_scale_proof(
         )
     pass_receipts: list[RawAuthorityScalePass] = []
     for number in range(1, (scenario.components * 3) + 4):
+        check_replay_pressure()
         pass_receipt, _digest = _record_repair_pass(
             number=number,
             mode="apply",
@@ -807,6 +831,7 @@ def run_raw_authority_scale_proof(
         raise RuntimeError("raw-authority scale proof did not drain bounded apply passes")
     fixed_point_digests: list[str] = []
     for _ in range(2):
+        check_replay_pressure()
         pass_receipt, digest = _record_repair_pass(
             number=len(pass_receipts) + 1,
             mode="dry_run",
@@ -878,6 +903,7 @@ def run_raw_authority_scale_proof(
         "achieved_shape": achieved_shape,
         "admission_sample": asdict(admission_sample),
         "generation_samples": [asdict(sample) for sample in generation_samples],
+        "replay_samples": [asdict(sample) for sample in replay_samples],
         "passes": [asdict(item) for item in pass_receipts],
         "fixed_point_digests": fixed_point_digests,
         "receipt": receipt.to_payload(),
@@ -893,6 +919,12 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser.add_argument("--workdir", type=Path, default=Path(".cache") / "raw-authority-scale-proof")
     parser.add_argument("--components", type=int, default=16)
     parser.add_argument("--raws", type=int, default=24)
+    parser.add_argument(
+        "--expanded-raws",
+        type=int,
+        default=None,
+        help="Exact expanded authority candidates; defaults to --raws when omitted.",
+    )
     parser.add_argument(
         "--scenario-profile",
         type=Path,
@@ -938,6 +970,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         args.workdir,
         components=args.components,
         raws=args.raws,
+        expanded_raws=args.expanded_raws,
         scenario=scenario,
         pass_limit=args.pass_limit,
         keep=args.keep,

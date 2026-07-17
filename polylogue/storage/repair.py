@@ -3768,8 +3768,11 @@ def _raw_materialization_candidate_ids(
                 continue
             if bool(row["application_terminal"]):
                 continue
-            if bool(row["membership_authority_complete"]):
-                continue
+            # Membership authority describes how to replay a shared raw; it is
+            # not evidence that the rebuildable index still contains the
+            # governed sessions.  The candidate query has already proved this
+            # raw has no materialized index row, so retain complete censuses
+            # as replay inputs after an index reset.
             if bool(row["membership_authority_quarantined"]):
                 authority_quarantined += 1
                 authority_quarantined_raw_ids.append(row_raw_id)
@@ -3920,6 +3923,7 @@ def _raw_authority_scope(
     source_family: str | None,
     source_root: Path | None,
     raw_artifact_limit: int | None,
+    max_payload_bytes: int,
 ) -> dict[str, object]:
     return {
         "raw_artifact_id": raw_artifact_id,
@@ -3927,6 +3931,7 @@ def _raw_authority_scope(
         "source_family": source_family,
         "source_root": str(source_root) if source_root is not None else None,
         "raw_artifact_limit": raw_artifact_limit,
+        "max_payload_bytes": max_payload_bytes,
     }
 
 
@@ -3959,6 +3964,8 @@ def _raw_authority_residual(
 def _raw_authority_postflight_snapshot(
     archive_root: Path,
     candidates: RawMaterializationCandidates,
+    *,
+    max_payload_bytes: int,
 ) -> tuple[tuple[RawReplayPlan, ...], dict[str, object]]:
     """Build the complete post-pass plan inventory and typed residual debt."""
     components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
@@ -3968,7 +3975,7 @@ def _raw_authority_postflight_snapshot(
             plan.plan_id
             for component, plan in zip(components, plans, strict=True)
             if sum(_raw_materialization_component_blob_bytes(candidates, member) for member in component)
-            > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+            > max_payload_bytes
         )
     )
     return plans, _raw_authority_residual(candidates, resource_blocked_plan_ids=blocked_plan_ids)
@@ -5571,10 +5578,15 @@ def repair_raw_materialization(
     archive_root = _raw_materialization_archive_root(config)
     recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
     for recovered_census_id, recovered_scope in recovered_censuses:
+        recovered_envelope = recovered_scope.get("max_payload_bytes")
+        recovered_max_payload_bytes = (
+            recovered_envelope if isinstance(recovered_envelope, int) and recovered_envelope > 0 else max_payload_bytes
+        )
         recovered_candidates = _raw_authority_candidates_for_scope(config, recovered_scope)
         recovered_post_plans, recovered_post_residual = _raw_authority_postflight_snapshot(
             archive_root,
             recovered_candidates,
+            max_payload_bytes=recovered_max_payload_bytes,
         )
         finalize_raw_authority_census(
             archive_root,
@@ -5682,6 +5694,7 @@ def repair_raw_materialization(
                 source_family=source_family,
                 source_root=source_root,
                 raw_artifact_limit=raw_artifact_limit,
+                max_payload_bytes=max_payload_bytes,
             ),
             residual=residual,
         )
@@ -5753,13 +5766,13 @@ def repair_raw_materialization(
     ]
     all_blocked_component_raw_ids = {raw_id for component in all_blocked_components for raw_id in component}
     resource_blocked_candidate_raw_ids = set(candidate_raw_ids).intersection(all_blocked_component_raw_ids)
-    selected_components = (
-        ordered_components[:raw_artifact_limit] if raw_artifact_limit is not None else ordered_components
-    )
     deferred_plan_ids = raw_replay_plan_deferred_for_envelope(archive_root, max_payload_bytes=max_payload_bytes)
-    selected_components = [
-        component for component in selected_components if plan_by_component[component].plan_id not in deferred_plan_ids
+    admissible_components = [
+        component for component in ordered_components if plan_by_component[component].plan_id not in deferred_plan_ids
     ]
+    selected_components = (
+        admissible_components[:raw_artifact_limit] if raw_artifact_limit is not None else admissible_components
+    )
     blocked_components = [
         component for component in selected_components if all_blocked_component_raw_ids.intersection(component)
     ]
@@ -5837,6 +5850,7 @@ def repair_raw_materialization(
         source_family=source_family,
         source_root=source_root,
         raw_artifact_limit=raw_artifact_limit,
+        max_payload_bytes=max_payload_bytes,
     )
     if not dry_run and not selected_components and deferred_plan_ids:
         retained_census_receipt = latest_raw_authority_census_receipt(archive_root, scope=scope)
@@ -5994,6 +6008,7 @@ def repair_raw_materialization(
         stale_post_plans, stale_post_residual = _raw_authority_postflight_snapshot(
             archive_root,
             stale_candidates,
+            max_payload_bytes=max_payload_bytes,
         )
         census_receipt = finalize_raw_authority_census(
             archive_root,
@@ -6158,7 +6173,9 @@ def repair_raw_materialization(
         }
     )
     plan_outcomes = tuple(execution_outcomes) + blocked_plan_outcomes
-    post_plans, post_residual = _raw_authority_postflight_snapshot(archive_root, remaining)
+    post_plans, post_residual = _raw_authority_postflight_snapshot(
+        archive_root, remaining, max_payload_bytes=max_payload_bytes
+    )
     census_receipt = finalize_raw_authority_census(
         archive_root,
         census_receipt.census_id,

@@ -26,6 +26,7 @@ from polylogue.storage.raw_authority import (
     read_raw_authority_detail,
     record_raw_authority_census,
     record_raw_replay_outcome,
+    recover_interrupted_raw_authority_censuses,
     reject_stale_raw_replay_plan,
     resolve_raw_authority_blocker,
     validate_raw_replay_plan,
@@ -729,6 +730,58 @@ def test_identical_stale_rejection_after_resolution_creates_new_open_blocker(tmp
     blockers = cast(list[object], detail["blockers"])
     assert len(blockers) == 1
     assert cast(dict[str, object], blockers[0])["blocker_id"] == second_blocker
+
+
+def test_recovery_returns_planned_census_after_all_outcomes_are_recorded(tmp_path: Path) -> None:
+    """A crash after outcome commit still needs durable postflight finalization."""
+    initialize_active_archive_root(tmp_path)
+    plan = RawReplayPlan(
+        plan_id="raw-replay:outcome-recorded",
+        input_digest="a" * 64,
+        input_raw_ids=("raw-outcome-recorded",),
+        logical_keys=("codex:outcome-recorded",),
+        authority_witness={},
+        source_preconditions={},
+        index_preconditions={},
+    )
+    census = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids={plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "outcome-recorded"},
+        residual={},
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        census.census_id,
+        RawReplayPlanOutcome(plan.plan_id, plan.input_raw_ids, RawReplayPlanStatus.EXECUTED, "done", "none"),
+    )
+
+    assert recover_interrupted_raw_authority_censuses(tmp_path) == ((census.census_id, {"test": "outcome-recorded"}),)
+
+
+def test_frontier_preview_cannot_claim_one_plan_twice(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    plan = RawReplayPlan(
+        plan_id="raw-authority-frontier:" + "a" * 64,
+        input_digest="b" * 64,
+        input_raw_ids=("raw-once",),
+        logical_keys=("codex:once",),
+        authority_witness={"schema": "polylogue.raw-authority-frontier-plan.v1"},
+        source_preconditions={},
+        index_preconditions={},
+    )
+    scope = {"schema": "polylogue.raw-authority-frontier-scope.v1", "preview_census_id": "preview:once"}
+    record_raw_authority_census(
+        tmp_path, (plan,), selected_plan_ids={plan.plan_id}, mode="apply", quiescent=True, scope=scope, residual={}
+    )
+
+    with pytest.raises(RuntimeError, match="already claimed"):
+        record_raw_authority_census(
+            tmp_path, (plan,), selected_plan_ids={plan.plan_id}, mode="apply", quiescent=True, scope=scope, residual={}
+        )
 
 
 def test_fixed_point_compares_residual_identity_and_parser_fingerprint(tmp_path: Path) -> None:

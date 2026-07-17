@@ -94,6 +94,45 @@ def test_raw_authority_scale_proof_rechecks_pressure_during_generation(
         )
 
 
+def test_raw_authority_scale_proof_rechecks_pressure_during_replay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    samples = iter(
+        (
+            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
+            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
+            ProcessSample(1, 1, 0, 0, 0, 0, 2.1, 0.0),
+        )
+    )
+    monkeypatch.setattr("devtools.raw_authority_scale_proof._process_sample", lambda: next(samples))
+
+    with pytest.raises(RuntimeError, match="I/O pressure gate"):
+        run_raw_authority_scale_proof(tmp_path, components=1, raws=1, max_io_full_avg10=2.0, max_memory_full_avg10=None)
+
+
+def test_raw_authority_scale_proof_rejects_unsuccessful_production_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        repair,
+        "repair_raw_materialization",
+        lambda *_args, **_kwargs: type(
+            "Failure",
+            (),
+            {
+                "success": False,
+                "detail": "conservation mismatch",
+                "metrics": {"raw_materialization_plan_conservation_error_count": 1},
+            },
+        )(),
+    )
+
+    with pytest.raises(RuntimeError, match="repair pass failed: conservation mismatch"):
+        run_raw_authority_scale_proof(
+            tmp_path, components=1, raws=1, max_io_full_avg10=None, max_memory_full_avg10=None
+        )
+
+
 def test_raw_authority_scale_proof_consumes_reservations_and_has_stable_corpus_identity(tmp_path: Path) -> None:
     first = run_raw_authority_scale_proof(
         tmp_path / "first",
@@ -373,7 +412,7 @@ def test_raw_authority_scale_proof_preserves_private_free_joint_byte_cohorts(tmp
     assert int(largest_blob[0]) < 4_096
 
 
-def test_explicit_cohorts_publish_bounded_payloads_without_disk_staging(
+def test_explicit_cohorts_stream_bounded_payloads_without_allocating_full_bytes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     scenario = RawAuthorityScaleScenario(
@@ -385,10 +424,10 @@ def test_explicit_cohorts_publish_bounded_payloads_without_disk_staging(
         component_byte_cohorts=((2, 2, 2048, 1),),
     )
 
-    def reject_staged_publication(*_args: object, **_kwargs: object) -> tuple[str, int]:
-        raise AssertionError("explicit cohorts must publish bytes without a staged payload path")
+    def reject_full_payload(*_args: object, **_kwargs: object) -> tuple[str, int]:
+        raise AssertionError("explicit cohorts must not allocate a full payload bytes object")
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", reject_staged_publication)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_bytes", reject_full_payload)
     payload = run_raw_authority_scale_proof(
         tmp_path,
         scenario=scenario,
