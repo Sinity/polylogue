@@ -205,7 +205,11 @@ def test_raw_materialization_ready_agrees_with_archived_devloop_classification()
     """
     for totals in _FIXED_ARCHIVE_STATES:
         devloop_state = _devloop_status_raw_materialization_state(totals)
-        payload = {"available": True, **totals}
+        payload = {
+            "available": True,
+            "raw_authority_frontier": {"lifecycle_status": "completed"},
+            **totals,
+        }
         product_ready = raw_materialization_ready(payload)
         assert product_ready == (devloop_state == "ready"), (
             f"parity mismatch for {totals}: devloop_state={devloop_state!r} product_ready={product_ready!r}"

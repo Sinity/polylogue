@@ -22,7 +22,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from polylogue.config import Source
+from polylogue.config import Config, Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.scenarios.workload import (
@@ -34,6 +34,8 @@ from polylogue.scenarios.workload import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticArtifactFacts
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 
 _ARTIFACT_PROTOCOL_VERSION = 1
 _CACHE_ROOT = Path("/realm/tmp/polylogue-seeded-artifacts")
@@ -42,6 +44,8 @@ _RECIPE_PATHS = (
     Path("polylogue/schemas/synthetic/core.py"),
     Path("polylogue/pipeline/services/archive_ingest.py"),
     Path("polylogue/storage/sqlite/archive_tiers/bootstrap.py"),
+    Path("polylogue/storage/raw_reconciler.py"),
+    Path("polylogue/storage/archive_readiness.py"),
 )
 _ARCHIVE_DB_NAMES = ("source.db", "index.db", "user.db", "ops.db", "embeddings.db")
 
@@ -193,7 +197,16 @@ def _archive_build_spec(
                 profile_id=profile_id,
             ),
         ),
-        phases=("generate", "acquire", "parse", "materialize", "index", "validate", "publish"),
+        phases=(
+            "generate",
+            "acquire",
+            "parse",
+            "materialize",
+            "index",
+            "raw_authority_frontier",
+            "validate",
+            "publish",
+        ),
     )
 
 
@@ -292,6 +305,13 @@ def _validate_facts(root: Path, facts: tuple[SyntheticArtifactFacts, ...]) -> No
             raise RuntimeError(f"missing planted tool action for {fact.expected_session_id}")
 
 
+def _validate_frontier_convergence(root: Path) -> None:
+    """Require a published artifact to be query-ready, not merely ingested."""
+    readiness = raw_materialization_readiness_snapshot(root)
+    if not raw_materialization_ready(readiness):
+        raise RuntimeError("seeded archive is missing completed raw-authority frontier convergence")
+
+
 def _read_manifest(path: Path) -> SeededArchiveManifest:
     payload = json.loads(path.read_text(encoding="utf-8"))
     facts = tuple(SyntheticArtifactFacts(**item) for item in payload.pop("facts"))
@@ -313,6 +333,7 @@ def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifa
                 return None
         _sqlite_integrity(root)
         _validate_facts(root, manifest.facts)
+        _validate_frontier_convergence(root)
     except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         return None
     return SeededArchiveArtifact(root=root, manifest=manifest)
@@ -369,9 +390,18 @@ def build_seeded_archive(
             ]
             with _configured_archive_root(staging):
                 asyncio.run(parse_sources_archive(staging, sources))
+            inspect_raw_authority_frontier(
+                Config(
+                    archive_root=staging,
+                    render_root=staging / "render",
+                    sources=[],
+                    db_path=staging / "index.db",
+                )
+            )
             facts = tuple(item.facts for written in written_batches for item in written.batch.artifacts)
             _sqlite_integrity(staging)
             _validate_facts(staging, facts)
+            _validate_frontier_convergence(staging)
             archive_id = f"archive:seeded:{final_root.name}"
             profile_id = _profile_id(key)
             receipt = WorkloadReceipt.from_observations(
@@ -388,6 +418,7 @@ def build_seeded_archive(
                     WorkloadPhaseObservation(name="parse"),
                     WorkloadPhaseObservation(name="materialize"),
                     WorkloadPhaseObservation(name="index"),
+                    WorkloadPhaseObservation(name="raw_authority_frontier"),
                     WorkloadPhaseObservation(name="validate"),
                     WorkloadPhaseObservation(name="publish", cleanup_complete=True, quiescent=True),
                 ),

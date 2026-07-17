@@ -635,9 +635,18 @@ def empty_archive_template(
     tmp_path_factory: pytest.TempPathFactory,
     worker_id: str,
 ) -> Path:
-    """Build the empty five-tier archive once per pytest run, shared read-only."""
+    """Build a census-complete empty archive once per pytest run.
+
+    A complete five-tier layout alone is no longer sufficient to claim raw
+    materialization readiness: the raw-authority frontier must have a
+    completed census too.  The shared fixture represents a usable empty
+    archive, so establish that real durable state through the production
+    census route before sharing clones with CLI and insight tests.
+    """
     import fcntl
 
+    from polylogue.config import Config
+    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     worker_base = tmp_path_factory.getbasetemp()
@@ -656,6 +665,14 @@ def empty_archive_template(
         try:
             with ArchiveStore(building):
                 pass
+            inspect_raw_authority_frontier(
+                Config(
+                    archive_root=building,
+                    render_root=building / "render",
+                    sources=[],
+                    db_path=building / "index.db",
+                )
+            )
             building.replace(template)
             ready.touch()
         finally:

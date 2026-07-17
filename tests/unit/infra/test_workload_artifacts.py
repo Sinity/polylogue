@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
 
@@ -22,6 +23,10 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_pat
     assert len(first.facts) == 64
     assert first.facts[0].expected_session_id == "codex-session:c03-target"
     assert first.root.joinpath("index.db").exists()
+    assert raw_materialization_ready(raw_materialization_readiness_snapshot(first.root))
+    phases = first.manifest.receipt["phases"]
+    assert isinstance(phases, list)
+    assert any(isinstance(phase, dict) and phase.get("name") == "raw_authority_frontier" for phase in phases)
     assert not (first.root.stat().st_mode & os.W_OK)
 
 

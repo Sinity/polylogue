@@ -73,6 +73,16 @@ def _healthy_raw_frontier_integrity() -> dict[str, Any]:
     }
 
 
+def _completed_raw_materialization_readiness() -> dict[str, Any]:
+    """Minimal raw-readiness evidence that can honestly support a green claim."""
+    return {
+        "available": True,
+        "total": 0,
+        "affected_total": 0,
+        "raw_authority_frontier": {"lifecycle_status": "completed"},
+    }
+
+
 def _fresh_status_snapshot(frozen_clock: FrozenClock) -> dict[str, object]:
     return {
         "state": "fresh",
@@ -1133,7 +1143,7 @@ class TestNoArchiveStatus:
             patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
             patch(
                 monkeypatch_target,
-                return_value={"available": True, "total": 0, "affected_total": 0},
+                return_value=_completed_raw_materialization_readiness(),
             ),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
@@ -1179,7 +1189,7 @@ class TestNoArchiveStatus:
             patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
             patch(
                 "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
-                return_value={"available": True, "total": 0, "affected_total": 0},
+                return_value=_completed_raw_materialization_readiness(),
             ),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
@@ -1265,7 +1275,7 @@ class TestNoArchiveStatus:
             patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
             patch(
                 "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
-                return_value={"available": True, "total": 0, "affected_total": 0},
+                return_value=_completed_raw_materialization_readiness(),
             ),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
@@ -1305,7 +1315,7 @@ class TestNoArchiveStatus:
             patch("polylogue.paths.archive_root", return_value=tmp_path),
             patch(
                 "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
-                return_value={"available": True, "total": 0, "affected_total": 0},
+                return_value=_completed_raw_materialization_readiness(),
             ),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
@@ -1336,7 +1346,7 @@ class TestNoArchiveStatus:
             "raw_frontier_integrity": {"state": "ready", "summary": "ready"},
             "search": {"state": "ready", "summary": "ready"},
         }
-        raw_materialization_readiness = {"available": True, "total": 0, "affected_total": 0}
+        raw_materialization_readiness = _completed_raw_materialization_readiness()
         raw_frontier_integrity = {"overall_status": "healthy"}
 
         for unavailable_workload in (
