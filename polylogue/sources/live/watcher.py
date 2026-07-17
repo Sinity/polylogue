@@ -56,8 +56,8 @@ _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 # recovery mechanism for notifications missed while the daemon was unavailable
 # or a watch backend was briefly unhealthy.  Keeping it at the watch cadence
 # made a large, otherwise-idle archive continuously rescan itself.
-_PERIODIC_CATCH_UP_INTERVAL_S = 15.0
-_PERIODIC_CATCH_UP_MAX_INTERVAL_S = 15.0 * 60.0
+_PERIODIC_CATCH_UP_INTERVAL_S = 5.0 * 60.0
+_PERIODIC_CATCH_UP_MAX_INTERVAL_S = 60.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
 
 
