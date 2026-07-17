@@ -2344,6 +2344,24 @@ components:
           - type: 'null'
           default: null
           title: Next Offset
+        query_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Query Ref
+        result_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Result Ref
+        continuation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Continuation
       required:
       - unit
       - query
@@ -2473,6 +2491,24 @@ components:
           - type: 'null'
           default: null
           title: Next Offset
+        query_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Query Ref
+        result_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Result Ref
+        continuation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Continuation
       required:
       - unit
       - query

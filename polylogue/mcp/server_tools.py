@@ -15,7 +15,7 @@ from polylogue.coordination import build_coordination_envelope
 from polylogue.coordination.payloads import AgentCoordinationPayload
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.mcp.archive_support import (
-    archive_messages_payload,
+    archive_message_page_payload,
     archive_query_unit_payload,
     archive_search_payload,
     archive_session_list_payload,
@@ -192,7 +192,11 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from dataclasses import replace as dc_replace
 
-            from polylogue.surfaces.payloads import InvalidSearchCursorError, decode_search_cursor
+            from polylogue.surfaces.payloads import (
+                InvalidSearchCursorError,
+                decode_search_cursor,
+                search_cursor_request_identity,
+            )
 
             clamped_limit = hooks.clamp_limit(request.limit)
             clamped_offset = max(0, request.offset)
@@ -213,22 +217,36 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                 )
             config = hooks.get_config()
             archive_root = mcp_archive_root(config)
-            with (
-                ArchiveStore.open_existing(archive_root) as archive,
-                hooks.response_context("search", request.response_arguments()),
-            ):
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
+            transaction = QueryTransaction(
+                archive_root,
+                QueryTransactionRequest(
+                    operation="search",
+                    arguments=request.response_arguments(),
+                    page_size=clamped_limit,
+                    offset=clamped_offset,
+                    projection="search-envelope",
+                    stable_order=request.sort or "date",
+                ),
+            )
+            with hooks.response_context("search", request.response_arguments()):
                 return hooks.json_payload(
-                    archive_search_payload(
-                        archive,
-                        spec,
-                        query=request.query or "",
-                        limit=clamped_limit,
-                        offset=clamped_offset,
-                        retrieval_lane=request.retrieval_lane or "dialogue",
-                        sort=request.sort,
-                        config=config,
-                        archive_root=archive_root,
-                        include_affordances=request.include_affordances,
+                    await transaction.run(
+                        lambda archive: archive_search_payload(
+                            archive,
+                            spec,
+                            query=request.query or "",
+                            limit=clamped_limit,
+                            offset=clamped_offset,
+                            retrieval_lane=request.retrieval_lane or "dialogue",
+                            sort=request.sort,
+                            config=config,
+                            archive_root=archive_root,
+                            include_affordances=request.include_affordances,
+                            cursor=decoded_cursor,
+                            request_identity=search_cursor_request_identity(request.response_arguments()),
+                        )
                     )
                 )
 
@@ -274,20 +292,45 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
         min_words: MCPCountBound = None,
         max_words: MCPCountBound = None,
         message_type: str | None = None,
+        continuation: str | None = None,
     ) -> str:
         """Return terminal rows for explicit unit-source query expressions."""
 
+        requested_expression = expression
+
         async def run() -> str:
-            from polylogue.archive.query.execution_control import (
-                QueryExecutionContext,
-                classify_unit_expression_workload,
-                execute_archive_read,
-            )
+            from polylogue.archive.query.execution_control import classify_unit_expression_workload
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+            from polylogue.archive.query.transaction import QueryContinuation, QueryTransaction, QueryTransactionRequest
 
             config = hooks.get_config()
+            effective_expression = requested_expression
+            effective_limit = limit
+            effective_offset = offset
+            continuation_request = None
+            if continuation is not None:
+                try:
+                    continuation_request = QueryContinuation.decode(continuation).request
+                except ValueError as exc:
+                    return hooks.error_json(str(exc), code="invalid_continuation", tool="query_units")
+                if continuation_request.operation != "query_units":
+                    return hooks.error_json(
+                        "continuation belongs to a different query operation",
+                        code="invalid_continuation",
+                        tool="query_units",
+                    )
+                effective_expression = str(continuation_request.arguments.get("expression", requested_expression))
+                effective_offset = continuation_request.offset
+                effective_limit = continuation_request.page_size
+                session_filters = continuation_request.arguments.get("session_filters")
+                if not isinstance(session_filters, dict):
+                    return hooks.error_json(
+                        "continuation has invalid session filters", code="invalid_continuation", tool="query_units"
+                    )
+            else:
+                session_filters = None
             try:
-                if parse_unit_source_expression(expression) is None:
+                if parse_unit_source_expression(effective_expression) is None:
                     return hooks.error_json(
                         "query_units requires a terminal unit expression",
                         code="invalid_query",
@@ -295,56 +338,96 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     )
             except ExpressionCompileError as exc:
                 return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
-            # Client disconnects surface as asyncio.CancelledError here;
-            # execute_archive_read translates that into shared cancellation
-            # state plus a connection interrupt — no MCP-local deadline or
-            # cancellation machinery (polylogue-z9gh.1).
-            ctx = QueryExecutionContext.create(
-                query_text=expression,
-                workload_class=classify_unit_expression_workload(expression),
-                owner_ref="mcp.query_units",
-            )
             try:
-                return hooks.json_payload(
-                    await execute_archive_read(
-                        mcp_archive_root(config),
-                        lambda archive: archive_query_unit_payload(
-                            archive,
-                            expression=expression,
-                            limit=hooks.clamp_limit(limit),
-                            offset=max(0, offset),
-                            execution_context=ctx,
-                            origin=origin,
-                            exclude_origin=exclude_origin,
-                            tag=tag,
-                            exclude_tag=exclude_tag,
-                            repo=repo,
-                            project=project,
-                            has_type=has_type,
-                            referenced_path=referenced_path,
-                            cwd_prefix=cwd_prefix,
-                            action=action,
-                            exclude_action=exclude_action,
-                            action_sequence=action_sequence,
-                            action_text=action_text,
-                            tool=tool,
-                            exclude_tool=exclude_tool,
-                            title=title,
-                            since=since,
-                            until=until,
-                            has_tool_use=has_tool_use,
-                            has_thinking=has_thinking,
-                            has_paste=has_paste_evidence,
-                            typed_only=typed_only,
-                            min_messages=min_messages,
-                            max_messages=max_messages,
-                            min_words=min_words,
-                            max_words=max_words,
-                            message_type=message_type,
-                        ),
-                        ctx=ctx,
-                    )
+                replay_arguments = {
+                    "expression": effective_expression,
+                    "limit": hooks.clamp_limit(effective_limit),
+                    "offset": max(0, effective_offset),
+                    "origin": origin,
+                    "exclude_origin": exclude_origin,
+                    "tag": tag,
+                    "exclude_tag": exclude_tag,
+                    "repo": repo,
+                    "project": project,
+                    "has_type": has_type,
+                    "referenced_path": referenced_path,
+                    "cwd_prefix": cwd_prefix,
+                    "action": action,
+                    "exclude_action": exclude_action,
+                    "action_sequence": action_sequence,
+                    "action_text": action_text,
+                    "tool": tool,
+                    "exclude_tool": exclude_tool,
+                    "title": title,
+                    "since": since,
+                    "until": until,
+                    "has_tool_use": has_tool_use,
+                    "has_thinking": has_thinking,
+                    "has_paste_evidence": has_paste_evidence,
+                    "typed_only": typed_only,
+                    "min_messages": min_messages,
+                    "max_messages": max_messages,
+                    "min_words": min_words,
+                    "max_words": max_words,
+                    "message_type": message_type,
+                }
+                replay_arguments = {
+                    key: value for key, value in replay_arguments.items() if value not in (None, False, ())
+                }
+                clamped_limit = hooks.clamp_limit(effective_limit)
+                clamped_offset = max(0, effective_offset)
+                transaction = QueryTransaction(
+                    mcp_archive_root(config),
+                    QueryTransactionRequest(
+                        operation="query_units",
+                        arguments=replay_arguments,
+                        page_size=clamped_limit,
+                        offset=clamped_offset,
+                        projection="terminal-unit-envelope",
+                        stable_order="canonical",
+                    ),
+                    workload_class=classify_unit_expression_workload(effective_expression),
                 )
+                with hooks.response_context("query_units", replay_arguments):
+                    return hooks.json_payload(
+                        await transaction.run(
+                            lambda archive: archive_query_unit_payload(
+                                archive,
+                                expression=effective_expression,
+                                limit=clamped_limit,
+                                offset=clamped_offset,
+                                execution_context=transaction.context,
+                                origin=origin,
+                                exclude_origin=exclude_origin,
+                                tag=tag,
+                                exclude_tag=exclude_tag,
+                                repo=repo,
+                                project=project,
+                                has_type=has_type,
+                                referenced_path=referenced_path,
+                                cwd_prefix=cwd_prefix,
+                                action=action,
+                                exclude_action=exclude_action,
+                                action_sequence=action_sequence,
+                                action_text=action_text,
+                                tool=tool,
+                                exclude_tool=exclude_tool,
+                                title=title,
+                                since=since,
+                                until=until,
+                                has_tool_use=has_tool_use,
+                                has_thinking=has_thinking,
+                                has_paste=has_paste_evidence,
+                                typed_only=typed_only,
+                                min_messages=min_messages,
+                                max_messages=max_messages,
+                                min_words=min_words,
+                                max_words=max_words,
+                                message_type=message_type,
+                                session_filters=session_filters,
+                            ),
+                        )
+                    )
             except ExpressionCompileError as exc:
                 return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
 
@@ -368,12 +451,26 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             spec = request.build_spec(hooks.clamp_limit)
             config = hooks.get_config()
             archive_root = mcp_archive_root(config)
-            with (
-                ArchiveStore.open_existing(archive_root) as archive,
-                hooks.response_context("list_sessions", request.response_arguments()),
-            ):
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
+            transaction = QueryTransaction(
+                archive_root,
+                QueryTransactionRequest(
+                    operation="list_sessions",
+                    arguments=request.response_arguments(),
+                    page_size=hooks.clamp_limit(request.limit),
+                    offset=max(0, request.offset),
+                    projection="session-summary",
+                    stable_order=request.sort or "date",
+                ),
+            )
+            with hooks.response_context("list_sessions", request.response_arguments()):
                 return hooks.json_payload(
-                    archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
+                    await transaction.run(
+                        lambda archive: archive_session_list_payload(
+                            archive, spec, config=config, archive_root=archive_root
+                        )
+                    )
                 )
 
         return await hooks.async_safe_call("list_sessions", run)
@@ -673,9 +770,14 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def stats() -> str:
         async def run() -> str:
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
             config = hooks.get_config()
-            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-                archive_stats = archive.stats()
+            transaction = QueryTransaction(
+                mcp_archive_root(config),
+                QueryTransactionRequest(operation="stats", arguments={}, page_size=1, projection="stats"),
+            )
+            archive_stats = await transaction.run(lambda archive: archive.stats())
             payload = MCPArchiveStatsPayload.from_archive_stats(
                 archive_stats,
                 include_embedded=True,
@@ -939,14 +1041,29 @@ def register_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_session_summary(id: str) -> str:
         async def run() -> str:
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
             config = hooks.get_config()
             try:
-                with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
+                transaction = QueryTransaction(
+                    mcp_archive_root(config),
+                    QueryTransactionRequest(
+                        operation="get_session_summary",
+                        arguments={"id": id},
+                        page_size=1,
+                        projection="session-summary",
+                        stable_order="session,message,block",
+                    ),
+                )
+
+                def read(archive: ArchiveStore) -> str:
                     session_id = archive.resolve_session_id(id)
                     archive_summary = archive.read_summary(session_id)
                     session = archive.read_session(session_id)
                     phases = archive.get_session_phase_insights(session_id)
                     return hooks.json_payload(_session_summary_payload(archive_summary, session, phases))
+
+                return await transaction.run(read)
             except (KeyError, ValueError, sqlite3.OperationalError):
                 return hooks.error_json(f"Session not found: {id}", code="not_found")
 
@@ -1054,38 +1171,55 @@ def register_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                 )
             config = hooks.get_config()
             try:
-                with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-                    resolved_session_id = archive.resolve_session_id(session_id)
-                    session = archive.read_session(resolved_session_id)
+                from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
+                replay_arguments = {
+                    "session_id": session_id,
+                    "message_role": message_role,
+                    "message_type": message_type,
+                    "material_origin": material_origin,
+                    "limit": hooks.clamp_limit(limit),
+                    "offset": max(0, offset),
+                    "offset_from": normalized_offset_from,
+                    "max_chars_per_message": max_chars_per_message,
+                    "excerpt": excerpt,
+                    "match_query": match_query,
+                }
+                transaction = QueryTransaction(
+                    mcp_archive_root(config),
+                    QueryTransactionRequest(
+                        operation="get_messages",
+                        arguments=replay_arguments,
+                        page_size=hooks.clamp_limit(limit),
+                        offset=max(0, offset),
+                        projection="message-page",
+                        stable_order="session,message,block",
+                    ),
+                )
                 with hooks.response_context(
                     "get_messages",
-                    {
-                        "session_id": session_id,
-                        "message_role": message_role,
-                        "message_type": message_type,
-                        "material_origin": material_origin,
-                        "limit": hooks.clamp_limit(limit),
-                        "offset": max(0, offset),
-                        "offset_from": normalized_offset_from,
-                        "max_chars_per_message": max_chars_per_message,
-                        "excerpt": excerpt,
-                        "match_query": match_query,
-                    },
+                    replay_arguments,
                 ):
-                    return hooks.json_payload(
-                        archive_messages_payload(
-                            session,
-                            roles=(message_role,) if message_role else (),
-                            message_type=normalized_message_type,
-                            material_origins=(material_origin,) if material_origin else (),
-                            limit=hooks.clamp_limit(limit),
-                            offset=max(0, offset),
-                            offset_from=normalized_offset_from,
-                            max_chars_per_message=max_chars_per_message,
-                            excerpt=excerpt,
-                            match_query=match_query,
+
+                    def read(archive: ArchiveStore) -> str:
+                        resolved_session_id = archive.resolve_session_id(session_id)
+                        return hooks.json_payload(
+                            archive_message_page_payload(
+                                archive,
+                                resolved_session_id,
+                                roles=(message_role,) if message_role else (),
+                                message_type=normalized_message_type,
+                                material_origins=(material_origin,) if material_origin else (),
+                                limit=hooks.clamp_limit(limit),
+                                offset=max(0, offset),
+                                offset_from=normalized_offset_from,
+                                max_chars_per_message=max_chars_per_message,
+                                excerpt=excerpt,
+                                match_query=match_query,
+                            )
                         )
-                    )
+
+                    return await transaction.run(read)
             except (KeyError, ValueError, sqlite3.OperationalError):
                 return hooks.error_json(f"Session not found: {session_id}", code="not_found")
 

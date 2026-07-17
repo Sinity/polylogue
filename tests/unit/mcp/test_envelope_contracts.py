@@ -437,6 +437,24 @@ def test_action_affordance_capability_resource_matches_catalog(read_server: MCPS
     assert payload["action_affordances"]
 
 
+def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
+    read_server: MCPServerUnderTest,
+) -> None:
+    """Discovery must teach protocol roles and executable query grammar together."""
+    from tests.infra.mcp import invoke_surface
+
+    result = invoke_surface(_resource(read_server, "polylogue://capabilities/query"))
+    payload = json.loads(result)
+    root = payload
+
+    assert root["mcp_algebra"]["read_transactions"]
+    assert root["mcp_algebra"]["resources"]
+    assert root["mcp_algebra"]["prompts"]
+    assert root["grammar"]["terminal_sources"]
+    assert root["grammar"]["terminal_form"] == "<terminal-source> where <predicate>"
+    assert all("authority" in unit and "coverage" in unit for unit in root["units"])
+
+
 class TestResourceErrorEnvelopes:
     """All 8 MCP resources must emit the structured error envelope.
 

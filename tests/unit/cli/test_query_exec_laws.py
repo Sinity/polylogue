@@ -2948,6 +2948,19 @@ SEARCH_FORMAT_CASES = [
 class TestSearchQueryContracts:
     """Matrix coverage for search filters and output formats."""
 
+    def test_bounded_pages_report_indexed_total(self, search_workspace: SearchWorkspace) -> None:
+        """A bounded page keeps the exact match count separate from page size."""
+        from polylogue.cli import cli
+
+        del search_workspace
+        result = CliRunner().invoke(cli, ["--plain", "--no-daemon", "find", "query", "-f", "json", "--limit", "1"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert len(payload["items"]) == 1
+        assert payload["total"] == 2
+        assert payload["next_cursor"] is not None
+
     def test_debug_timing_keeps_query_output_on_stdout(
         self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
     ) -> None:

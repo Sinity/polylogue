@@ -410,7 +410,7 @@ class InterruptibleSQLiteRead:
         with self._store_lock:
             self._store = store
         try:
-            store.set_read_progress_guard(_guard, n_opcodes=progress_opcodes)
+            _set_progress_guard(store, _guard, n_opcodes=progress_opcodes)
             # An abort that landed before ownership begins must not start the
             # caller's statement or acquire a read snapshot.
             if ctx.should_abort():
@@ -436,20 +436,69 @@ class InterruptibleSQLiteRead:
             ctx.receipt.run_s = time.monotonic() - started
             with self._store_lock:
                 self._store = None
-            try:
-                store.clear_read_progress_guard()
-            finally:
-                try:
-                    store.end_read_snapshot()
-                finally:
-                    store.close()
+            _close_store(store)
             ctx.mark_cleanup_complete()
+
+    @contextmanager
+    def open_context(self, archive_root: Path, *, read_timeout: float = 5.0) -> Iterator[ArchiveStore]:
+        """Yield the controlled store to synchronous read-surface adapters."""
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        ctx = self._ctx
+        with default_admission_controller().admit_blocking(ctx):
+            # Keep lightweight archive doubles compatible with the positional
+            # open contract; the real store supplies its bounded busy timeout.
+            store = ArchiveStore.open_existing(archive_root)
+            with self._store_lock:
+                self._store = store
+            try:
+                _set_progress_guard(store, lambda: 1 if ctx.should_abort() else 0)
+                if ctx.should_abort():
+                    raise _abort_error(ctx)
+                begin_snapshot = getattr(store, "begin_read_snapshot", None)
+                if callable(begin_snapshot):
+                    begin_snapshot()
+                ctx.receipt.state = "running"
+                yield store
+                if ctx.should_abort():
+                    raise _abort_error(ctx)
+                ctx.receipt.state = "completed"
+            except Exception as exc:
+                ctx.receipt.state = "failed"
+                ctx.receipt.error = f"{type(exc).__name__}"
+                raise
+            finally:
+                with self._store_lock:
+                    self._store = None
+                _close_store(store)
+                ctx.mark_cleanup_complete()
 
 
 def _is_interrupt_error(exc: Exception) -> bool:
     import sqlite3
 
     return isinstance(exc, sqlite3.OperationalError) and "interrupt" in str(exc).lower()
+
+
+def _set_progress_guard(
+    store: ArchiveStore, guard: Callable[[], int], *, n_opcodes: int = PROGRESS_GUARD_OPCODES
+) -> None:
+    setter = getattr(store, "set_read_progress_guard", None)
+    if callable(setter):
+        setter(guard, n_opcodes=n_opcodes)
+
+
+def _close_store(store: ArchiveStore) -> None:
+    """Clear read state and close full stores while tolerating test doubles."""
+    clear_guard = getattr(store, "clear_read_progress_guard", None)
+    if callable(clear_guard):
+        clear_guard()
+    end_snapshot = getattr(store, "end_read_snapshot", None)
+    if callable(end_snapshot):
+        end_snapshot()
+    closer = getattr(store, "close", None)
+    if callable(closer):
+        closer()
 
 
 def _abort_error(

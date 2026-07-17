@@ -641,6 +641,17 @@
           "recall-pack"
         ],
         "uri_template": "polylogue://recall-pack/{id}"
+      },
+      {
+        "authority": "executable query vocabulary and recovery guidance; no mutation authority",
+        "migration_owner": "polylogue-z9gh.3",
+        "minimum_role": "read",
+        "object_kinds": [
+          "capability",
+          "query",
+          "result-set"
+        ],
+        "uri_template": "polylogue://capabilities/query"
       }
     ]
   },

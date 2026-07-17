@@ -9,6 +9,7 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.query.transaction import run_archive_read
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 
@@ -527,7 +528,6 @@ async def _tools(
     from typing import cast
 
     from polylogue.insights.tool_usage import ToolUsageInsightQuery
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.surfaces.payloads import (
         ToolCountBasis,
         ToolCountDetailLevel,
@@ -600,99 +600,142 @@ async def _tools(
         since_ms=since_ms,
         limit=limit,
     )
-    with ArchiveStore.open_existing(env.config.archive_root) as archive:
-        if compare_family:
-            family = compare_family.strip().lower()
-            if not family:
-                raise click.UsageError("--compare-family must not be empty")
-            mcp_family = family.replace("-", "_")
-            action_patterns = tuple(dict.fromkeys((family, *detail_patterns)))
-            mcp_query = ToolUsageInsightQuery(
-                origin=origin,
-                mcp_server=mcp_family,
-                action_kind=action_kind,
-                since_ms=since_ms,
-                limit=limit,
-            )
-            action_query = ToolUsageInsightQuery(
-                origin=origin,
-                action_kind=action_kind,
-                since_ms=since_ms,
-                limit=limit,
-            )
-            call_payload = payload_for(
-                rows=archive.list_tool_call_count_rows(mcp_query),
-                payload_basis="tool-use-blocks",
-                kind_value="tool_call_counts",
-                detail_value="tool_use_block_call_counts",
-                payload_tool=None,
-                payload_mcp_server=mcp_family,
-                payload_detail_patterns=(),
-            )
-            event_payload = payload_for(
-                rows=archive.list_tool_observed_event_count_rows(mcp_query),
-                payload_basis="observed-events",
-                kind_value="tool_observed_event_counts",
-                detail_value="tool_finished_observed_events",
-                payload_tool=None,
-                payload_mcp_server=mcp_family,
-                payload_detail_patterns=(),
-            )
-            action_payload = payload_for(
-                rows=archive.list_tool_action_evidence_count_rows(
+    if compare_family:
+        family = compare_family.strip().lower()
+        if not family:
+            raise click.UsageError("--compare-family must not be empty")
+        mcp_family = family.replace("-", "_")
+        action_patterns = tuple(dict.fromkeys((family, *detail_patterns)))
+        mcp_query = ToolUsageInsightQuery(
+            origin=origin,
+            mcp_server=mcp_family,
+            action_kind=action_kind,
+            since_ms=since_ms,
+            limit=limit,
+        )
+        action_query = ToolUsageInsightQuery(
+            origin=origin,
+            action_kind=action_kind,
+            since_ms=since_ms,
+            limit=limit,
+        )
+        call_rows, event_rows, action_rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.compare-family",
+            arguments={
+                "origin": origin,
+                "family": family,
+                "action_kind": action_kind,
+                "since_ms": since_ms,
+                "limit": limit,
+            },
+            work=lambda archive: (
+                archive.list_tool_call_count_rows(mcp_query),
+                archive.list_tool_observed_event_count_rows(mcp_query),
+                archive.list_tool_action_evidence_count_rows(
                     action_query,
                     detail_patterns=action_patterns,
                     since_ms=since_ms,
                 ),
-                payload_basis="actions",
-                kind_value="tool_action_evidence_counts",
-                detail_value="canonical_action_evidence_counts",
-                payload_tool=None,
-                payload_mcp_server=None,
-                payload_detail_patterns=action_patterns,
-            )
-            comparison = ToolFamilyComparisonPayload(
-                kind="tool_family_evidence_comparison",
-                archive_root=str(env.config.archive_root),
-                family=family,
-                bases=(call_payload, event_payload, action_payload),
-                caveats=(
-                    "Counts are grouped by evidence basis and must not be summed across bases.",
-                    "Observed-event sections count source-derived tool_finished outcomes, not raw tool_use calls.",
-                    "Action evidence can include command/path/input detail matches for tools used outside MCP rows.",
-                ),
-            )
-            if output_format == "json":
-                click.echo(comparison.to_json(exclude_none=True))
-                return
-            env.ui.console.print(f"\n[bold]Tool family evidence comparison: {family}[/bold]")
-            for basis_payload in comparison.bases:
-                env.ui.console.print(f"  {basis_payload.filters.basis}: {len(basis_payload.items)} row(s)")
-                for item in basis_payload.items:
-                    count = item.event_count if basis_payload.filters.basis == "observed-events" else item.call_count
-                    evidence = f" [{item.evidence_kind}]" if item.evidence_kind else ""
-                    env.ui.console.print(f"    {item.origin}  {item.normalized_tool_name}{evidence}: {count or 0}")
-            env.ui.console.print("  caveat: counts are basis-specific; do not sum them across sections")
+            ),
+            page_size=limit,
+            projection="tool-usage-comparison",
+            workload_class="scan",
+        )
+        call_payload = payload_for(
+            rows=call_rows,
+            payload_basis="tool-use-blocks",
+            kind_value="tool_call_counts",
+            detail_value="tool_use_block_call_counts",
+            payload_tool=None,
+            payload_mcp_server=mcp_family,
+            payload_detail_patterns=(),
+        )
+        event_payload = payload_for(
+            rows=event_rows,
+            payload_basis="observed-events",
+            kind_value="tool_observed_event_counts",
+            detail_value="tool_finished_observed_events",
+            payload_tool=None,
+            payload_mcp_server=mcp_family,
+            payload_detail_patterns=(),
+        )
+        action_payload = payload_for(
+            rows=action_rows,
+            payload_basis="actions",
+            kind_value="tool_action_evidence_counts",
+            detail_value="canonical_action_evidence_counts",
+            payload_tool=None,
+            payload_mcp_server=None,
+            payload_detail_patterns=action_patterns,
+        )
+        comparison = ToolFamilyComparisonPayload(
+            kind="tool_family_evidence_comparison",
+            archive_root=str(env.config.archive_root),
+            family=family,
+            bases=(call_payload, event_payload, action_payload),
+            caveats=(
+                "Counts are grouped by evidence basis and must not be summed across bases.",
+                "Observed-event sections count source-derived tool_finished outcomes, not raw tool_use calls.",
+                "Action evidence can include command/path/input detail matches for tools used outside MCP rows.",
+            ),
+        )
+        if output_format == "json":
+            click.echo(comparison.to_json(exclude_none=True))
             return
-        if basis == "observed-events":
-            rows = archive.list_tool_observed_event_count_rows(query)
-            kind = "tool_observed_event_counts"
-            detail = "tool_finished_observed_events"
-            count_key = "event_count"
-        elif basis == "actions":
-            rows = archive.list_tool_action_evidence_count_rows(
+        env.ui.console.print(f"\n[bold]Tool family evidence comparison: {family}[/bold]")
+        for basis_payload in comparison.bases:
+            env.ui.console.print(f"  {basis_payload.filters.basis}: {len(basis_payload.items)} row(s)")
+            for item in basis_payload.items:
+                count = item.event_count if basis_payload.filters.basis == "observed-events" else item.call_count
+                evidence = f" [{item.evidence_kind}]" if item.evidence_kind else ""
+                env.ui.console.print(f"    {item.origin}  {item.normalized_tool_name}{evidence}: {count or 0}")
+        env.ui.console.print("  caveat: counts are basis-specific; do not sum them across sections")
+        return
+
+    if basis == "observed-events":
+        rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.observed-events",
+            arguments={"query": query, "limit": limit},
+            work=lambda archive: archive.list_tool_observed_event_count_rows(query),
+            page_size=limit,
+            projection="tool-usage",
+            workload_class="scan",
+        )
+        kind = "tool_observed_event_counts"
+        detail = "tool_finished_observed_events"
+        count_key = "event_count"
+    elif basis == "actions":
+        rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.actions",
+            arguments={"query": query, "detail_patterns": detail_patterns, "since_ms": since_ms, "limit": limit},
+            work=lambda archive: archive.list_tool_action_evidence_count_rows(
                 query,
                 detail_patterns=detail_patterns,
                 since_ms=since_ms,
-            )
-            kind = "tool_action_evidence_counts"
-            detail = "canonical_action_evidence_counts"
-            count_key = "call_count"
-        else:
-            rows = archive.list_tool_call_count_rows(query)
-            kind = "tool_call_counts"
-            detail = "tool_use_block_call_counts"
-            count_key = "call_count"
+            ),
+            page_size=limit,
+            projection="tool-usage",
+            workload_class="scan",
+        )
+        kind = "tool_action_evidence_counts"
+        detail = "canonical_action_evidence_counts"
+        count_key = "call_count"
+    else:
+        rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.calls",
+            arguments={"query": query, "limit": limit},
+            work=lambda archive: archive.list_tool_call_count_rows(query),
+            page_size=limit,
+            projection="tool-usage",
+            workload_class="scan",
+        )
+        kind = "tool_call_counts"
+        detail = "tool_use_block_call_counts"
+        count_key = "call_count"
     if output_format == "json":
         payload = payload_for(
             rows=rows,

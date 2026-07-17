@@ -39,6 +39,7 @@ from polylogue.archive.query.spec import (
     normalize_action_terms,
     parse_query_date,
 )
+from polylogue.archive.query.transaction import archive_read_context
 from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
@@ -142,7 +143,12 @@ def execute_delete_by_session_ids(
     config = load_effective_config(env)
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
-    with ArchiveStore.open_existing(archive_root) as archive:
+    with archive_read_context(
+        archive_root,
+        operation="cli.delete.resolve",
+        arguments={"session_ids": session_ids, "dry_run": dry_run},
+        projection="delete-preview",
+    ) as archive:
         _emit_delete(env, archive, tuple(session_ids), params=params)
 
 
@@ -371,7 +377,22 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         raise click.UsageError("Root query cannot combine delete with --set.")
 
     db_open_started_at = perf_counter()
-    with ArchiveStore.open_existing(archive_root) as archive:
+    with archive_read_context(
+        archive_root,
+        operation="cli.root_query",
+        arguments={
+            "query": query,
+            "unit_source": unit_source_query,
+            "limit": limit,
+            "offset": page_offset,
+            "params": params,
+        },
+        page_size=limit,
+        offset=page_offset,
+        projection=output_format,
+        stable_order=sort or "date,session_id",
+        workload_class="scan" if unit_source is not None or params.get("stats_only") else "interactive",
+    ) as archive:
         env.record_timing("db-open", db_open_started_at)
         if unit_source is not None:
             if any(
@@ -601,6 +622,13 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         page_hits,
                         archive=archive,
                         query=similar_text or query,
+                        total=_count_root_matches(
+                            archive,
+                            query=query,
+                            similar_text=similar_text,
+                            session_id=session_id,
+                            filter_kwargs=filter_kwargs,
+                        ),
                         limit=limit,
                         offset=page_offset,
                         next_cursor=next_cursor,
@@ -711,6 +739,13 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 page_hits,
                 archive=archive,
                 query=similar_text or query,
+                total=_count_root_matches(
+                    archive,
+                    query=query,
+                    similar_text=similar_text,
+                    session_id=None,
+                    filter_kwargs=filter_kwargs,
+                ),
                 limit=limit,
                 offset=page_offset,
                 next_cursor=next_cursor,
@@ -765,6 +800,17 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             return
         _emit_list(
             page_summaries,
+            total=(
+                None
+                if sample_count is not None
+                else _count_root_matches(
+                    archive,
+                    query="",
+                    similar_text=None,
+                    session_id=None,
+                    filter_kwargs=filter_kwargs,
+                )
+            ),
             limit=limit,
             offset=page_offset,
             next_cursor=next_cursor,
@@ -861,6 +907,35 @@ def _query_hits(
         for index, (session_id, _score) in enumerate(page, start=1)
         if session_id in hit_by_session
     ], "hybrid"
+
+
+def _count_root_matches(
+    archive: ArchiveStore,
+    *,
+    query: str,
+    similar_text: str | None,
+    session_id: str | None,
+    filter_kwargs: _ArchiveFilterKwargs,
+) -> int | None:
+    """Return an exact indexed total for lexical/list pages.
+
+    Vector and hybrid retrieval have no cheap count relation: their result set
+    is ranked from embeddings and/or fused candidate windows.  Reporting the
+    page length for those lanes would be a false total, so the envelope uses
+    ``null`` there.  Lexical and browse pages have exact indexed count
+    primitives and retain the full total even when the page itself is bounded.
+    """
+
+    if similar_text is not None:
+        return None
+    counter = getattr(archive, "count_search_sessions" if query else "count_sessions", None)
+    if not callable(counter):
+        # Some narrow adapter doubles implement only the page primitives. A
+        # missing count is genuinely unknown; never substitute page length.
+        return None
+    if query:
+        return int(counter(query, session_id=session_id, **filter_kwargs))
+    return int(counter(session_id=session_id, **filter_kwargs))
 
 
 def _try_emit_daemon_session_page(
@@ -1713,6 +1788,7 @@ def _emit_missing_archive_empty_read(
     if params.get("list_mode") and not query:
         _emit_list(
             [],
+            total=0,
             limit=_limit(params),
             offset=_offset(params),
             next_cursor=None,
@@ -1943,6 +2019,7 @@ def _inject_attached_units(
 def _emit_list(
     summaries: list[ArchiveSessionSummary],
     *,
+    total: int | None,
     limit: int,
     offset: int,
     next_cursor: str | None,
@@ -1965,7 +2042,7 @@ def _emit_list(
         "mode": "list",
         "origin": origin,
         "items": items,
-        "total": len(items),
+        "total": total,
         "limit": limit,
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,
@@ -1982,6 +2059,7 @@ def _emit_search(
     *,
     archive: ArchiveStore,
     query: str,
+    total: int | None,
     limit: int,
     offset: int,
     next_cursor: str | None,
@@ -2014,7 +2092,7 @@ def _emit_search(
         "query": query,
         "retrieval_lane": retrieval_lane,
         "items": items,
-        "total": len(items),
+        "total": total,
         "limit": limit,
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,

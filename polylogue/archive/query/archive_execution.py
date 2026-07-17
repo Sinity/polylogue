@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, TypedDict, TypeVar
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import MaterialOrigin, Origin
 from polylogue.core.timestamps import parse_archive_datetime
@@ -374,10 +375,10 @@ def _summaries_from_hits(archive: ArchiveStore, hits: list[ArchiveSessionSearchH
     return summaries
 
 
-def _open_archive(archive_root: Path) -> ArchiveStore:
+def _open_archive_for_write(archive_root: Path) -> ArchiveStore:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    return ArchiveStore.open_existing(archive_root)
+    return ArchiveStore.open_existing(archive_root, read_only=False)
 
 
 def _attach_units_to_domain(
@@ -415,7 +416,8 @@ async def list_summaries_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> builtins.list[SessionSummary]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
-    with _open_archive(archive_root) as archive:
+
+    def read(archive: ArchiveStore) -> list[SessionSummary]:
         archive_rows = _archive_summaries(
             plan,
             archive,
@@ -429,6 +431,18 @@ async def list_summaries_archive(
             with_units,
             with_unit_fields,
         )
+        return summaries
+
+    summaries = await run_archive_read(
+        archive_root,
+        operation="archive.query.list-summaries",
+        arguments={"plan": plan, "default_limit": default_limit, "with_units": with_units},
+        work=read,
+        page_size=plan.limit,
+        offset=plan.offset,
+        projection="session-summaries",
+        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
+    )
     filtered = plan._apply_common_filters(summaries, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_summaries(filtered)
     return plan._finalize(ordered)
@@ -444,7 +458,8 @@ async def list_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> builtins.list[Session]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
-    with _open_archive(archive_root) as archive:
+
+    def read(archive: ArchiveStore) -> list[Session]:
         archive_rows = _archive_summaries(
             plan,
             archive,
@@ -458,6 +473,18 @@ async def list_archive(
             with_units,
             with_unit_fields,
         )
+        return sessions
+
+    sessions = await run_archive_read(
+        archive_root,
+        operation="archive.query.list",
+        arguments={"plan": plan, "default_limit": default_limit, "with_units": with_units},
+        work=read,
+        page_size=plan.limit,
+        offset=plan.offset,
+        projection="sessions",
+        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
+    )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_sessions(filtered)
     return plan._finalize(ordered)
@@ -487,7 +514,14 @@ async def count_archive(
     ):
         filter_kwargs = _plan_filter_kwargs(plan)
         query_text = _plan_text_query(plan)
-        with _open_archive(archive_root) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="archive.query.count",
+            arguments={"plan": plan},
+            page_size=1,
+            projection="count",
+            workload_class="scan",
+        ) as archive:
             if query_text is not None:
                 return int(archive.count_search_sessions(query_text, **filter_kwargs))
             return int(archive.count_sessions(**filter_kwargs))
@@ -516,6 +550,7 @@ def archive_search_hits(
     archive_root: Path,
     config: Config | None,
     default_limit: int = 50,
+    archive: ArchiveStore | None = None,
 ) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
     """Resolve a search plan to archive session hits paired with summaries.
 
@@ -529,7 +564,8 @@ def archive_search_hits(
     limit = plan.limit if plan.limit is not None else default_limit
     offset = plan.offset
     filter_kwargs = _plan_filter_kwargs(plan)
-    with _open_archive(archive_root) as archive:
+
+    def read(archive: ArchiveStore) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
         if plan.similar_session_id is not None:
             pool = max(limit + offset, limit) * 3
             scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
@@ -592,6 +628,19 @@ def archive_search_hits(
         ]
         return _pair_hits(archive, ranked), "hybrid"
 
+    if archive is not None:
+        return read(archive)
+    with archive_read_context(
+        archive_root,
+        operation="archive.query.search-hits",
+        arguments={"plan": plan, "default_limit": default_limit},
+        page_size=plan.limit,
+        offset=plan.offset,
+        projection="search-hits",
+        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
+    ) as controlled_archive:
+        return read(controlled_archive)
+
 
 def _pair_hits(
     archive: ArchiveStore,
@@ -624,7 +673,7 @@ async def delete_archive(
         session_ids = tuple(str(session.id) for session in sessions)
     if not session_ids:
         return 0
-    with _open_archive(archive_root) as archive:
+    with _open_archive_for_write(archive_root) as archive:
         return archive.delete_sessions(session_ids)
 
 

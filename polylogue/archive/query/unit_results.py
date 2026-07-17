@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
+from polylogue.archive.query.execution_control import QueryExecutionContext
 from polylogue.archive.query.expression import (
     ExpressionCompileError,
     QueryUnitPipeline,
@@ -26,6 +27,7 @@ from polylogue.archive.query.spec import (
     parse_query_date,
     split_csv,
 )
+from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.payloads import (
@@ -34,9 +36,6 @@ from polylogue.surfaces.payloads import (
     build_query_unit_aggregate_envelope,
     build_query_unit_envelope,
 )
-
-if TYPE_CHECKING:
-    from polylogue.archive.query.execution_control import QueryExecutionContext
 
 
 def _pipeline_stage_payloads(pipeline: QueryUnitPipeline) -> tuple[dict[str, object], ...]:
@@ -212,6 +211,32 @@ class TerminalExecutionContext:
 TerminalExecutor = Callable[[TerminalExecutionContext], QueryUnitResultEnvelope]
 
 
+_AGGREGATE_ROW_FIELDS: dict[str, dict[str, str]] = {
+    "message": {"role": "role", "type": "message_type", "session.origin": "origin"},
+    "action": {
+        "tool": "tool_name",
+        "action": "semantic_type",
+        "type": "semantic_type",
+        "is_error": "is_error",
+        "exit_code": "exit_code",
+        "followup_class": "followup_class",
+        "session.origin": "origin",
+    },
+    "block": {"type": "block_type", "tool": "tool_name", "action": "semantic_type", "session.origin": "origin"},
+    "file": {"path": "path", "session.origin": "origin"},
+    "delegation": {
+        "basis": "instruction_tool_use_block_id",
+        "mapping_state": "mapping_state",
+        "result_status": "result_status",
+        "requested_model": "requested_model",
+        "dispatch_model": "dispatch_turn_model",
+        "child_model": "child_session_dominant_model",
+        "session.origin": "parent_origin",
+    },
+}
+_MISSING_GROUP_KEY = "[missing]"
+
+
 def _aggregate_group_fields(group_by: str | None) -> tuple[str, ...]:
     return () if group_by is None else tuple(field.strip() for field in group_by.split(",") if field.strip())
 
@@ -301,6 +326,7 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
                 pipeline_stages=_pipeline_stage_payloads(pipeline),
             ),
         )
+
     aggregate_page = ctx.archive.query_unit_multi_counts(
         pipeline.source_unit,
         pipeline.predicate,
@@ -479,8 +505,7 @@ def query_unit_envelope(
     execution_context: QueryExecutionContext | None = None,
 ) -> QueryUnitResultEnvelope:
     """Execute a compiled terminal query-unit request."""
-
-    return query_unit_rows(
+    envelope = query_unit_rows(
         archive,
         request.source,
         query=request.expression,
@@ -488,6 +513,32 @@ def query_unit_envelope(
         offset=request.offset,
         session_filters=request.session_filters,
         execution_context=execution_context,
+    )
+    transaction_request = QueryTransactionRequest(
+        operation="query_units",
+        arguments={
+            "expression": request.expression,
+            "session_filters": dict(request.session_filters or {}),
+        },
+        page_size=request.limit,
+        offset=request.offset,
+    )
+    result_ref = "result:" + transaction_request.query_ref.removeprefix("query:")
+    next_offset = getattr(envelope, "next_offset", None)
+    continuation = (
+        QueryContinuation(
+            request=transaction_request.next(offset=next_offset),
+            result_ref=result_ref,
+        ).encode()
+        if next_offset is not None
+        else None
+    )
+    return envelope.model_copy(
+        update={
+            "query_ref": transaction_request.query_ref,
+            "result_ref": result_ref,
+            "continuation": continuation,
+        }
     )
 
 

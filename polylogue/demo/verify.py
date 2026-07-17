@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from polylogue.archive.query.transaction import run_archive_read_sync
 from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 from .constructs import construct_problem_messages, evaluate_demo_constructs
 from .models import DemoVerifyResult
@@ -72,12 +72,19 @@ def verify_demo_archive(
     try:
         session_count = _session_count(archive_root)
         message_count = _message_count(archive_root)
-        with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-            rows = archive.list_summaries(limit=100)
-            session_ids = {row.session_id for row in rows}
-            query_hits = tuple(
-                sorted(dict.fromkeys(hit.session_id for hit in archive.search_summaries("pytest", limit=10)))
-            )
+        rows, hits = run_archive_read_sync(
+            archive_root,
+            operation="demo.verify.read",
+            arguments={"limit": 100, "query": "pytest"},
+            work=lambda archive: (
+                archive.list_summaries(limit=100),
+                archive.search_summaries("pytest", limit=10),
+            ),
+            page_size=100,
+            projection="demo-verification",
+        )
+        session_ids = {row.session_id for row in rows}
+        query_hits = tuple(sorted(dict.fromkeys(hit.session_id for hit in hits)))
     except (OSError, sqlite3.Error) as exc:
         return DemoVerifyResult(
             archive_root=archive_root,

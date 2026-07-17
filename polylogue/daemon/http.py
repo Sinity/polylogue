@@ -25,6 +25,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
+from polylogue.archive.query.transaction import archive_read_context
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.errors import DatabaseError, PolylogueError
@@ -2202,13 +2203,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @daemon_safe_handler
     def _handle_overview(self) -> None:
         """Return one bounded, privacy-safe cockpit landing projection."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
         archive_root = _web_reader_archive_root()
         if archive_root is None:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             origin_rows = archive._conn.execute(
                 "SELECT origin, COUNT(*) FROM sessions GROUP BY origin ORDER BY origin"
             ).fetchall()
@@ -2427,7 +2431,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.expression import compile_expression
         from polylogue.archive.query.search_hits import search_query_text
         from polylogue.archive.query.spec import QuerySpecError, parse_query_date
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         # Parse/lower only the ``query`` param through the shared expression path
         # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
@@ -2576,7 +2579,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             or has_thinking
         )
 
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             # Resolve an ``id:`` clause once, up front, so both branches share one
             # miss/ambiguous policy. list_summaries/search_summaries resolve the
             # token internally and raise KeyError (miss) / ValueError (ambiguous);
@@ -2670,14 +2678,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
                         ],
                     }
-                route_state_name, route_state_reason = _session_list_state(len(hits), filtered=True)
+                total = self._run_archive_bounded_query(
+                    archive,
+                    deadline_s=None,
+                    compute=lambda: archive.count_search_sessions(
+                        fts_query,
+                        session_id=resolved_session_id,
+                        **_filter_kw,  # type: ignore[arg-type]
+                    ),
+                )
+                route_state_name, route_state_reason = _session_list_state(total, filtered=True)
                 payload: dict[str, object] = {
                     "query": fts_query,
                     "retrieval_lane": "dialogue",
                     "ranking_policy": "mixed-bm25-rrf-vector",
                     "ranking_policy_version": "1",
                     "hits": [self._archive_search_hit_payload(hit) for hit in hits],
-                    "total": len(hits),
+                    "total": total,
                     "limit": limit,
                     "offset": offset,
                     "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
@@ -2820,9 +2837,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _do_archive_get_session_summary(self, archive_root: Path, conv_id: str) -> object | None:
         """Read detail metadata without hydrating a session transcript."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             try:
                 summary = archive.read_summary(archive.resolve_session_id(conv_id))
             except KeyError:
@@ -2923,9 +2943,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         }
 
     def _do_archive_get_session(self, archive_root: Path, conv_id: str) -> object | None:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session(session_id)
@@ -3109,13 +3132,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @daemon_safe_handler
     def _handle_get_session_evidence_summary(self, conv_id: str) -> None:
         """Return bounded structural counts for the reader evidence strip."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
         archive_root = _web_reader_archive_root()
         if archive_root is None:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 summary = archive.read_summary(session_id)
@@ -3997,9 +4023,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session(session_id)

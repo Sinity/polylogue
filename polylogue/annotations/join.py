@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -14,7 +15,6 @@ from polylogue.annotations.schema import ANNOTATION_SCHEMA_REGISTRY, validate_an
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import ObjectRef
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import read_durable_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveAssertionEnvelope,
@@ -37,6 +37,8 @@ class StructuralJoinArchive(Protocol):
     def archive_root(self) -> Path: ...
 
     async def resolve_ref(self, ref: str) -> Any: ...
+
+    async def get_session_summary(self, session_id: str) -> object | None: ...
 
 
 class AnnotationStructuralJoinError(ValueError):
@@ -157,17 +159,16 @@ def _batch_ref(value: object, scope_ref: str | None) -> str | None:
     return scope_ref if scope_ref and scope_ref.startswith("annotation-batch:") else None
 
 
-def _summary_for_ref(
-    archive: ArchiveStore,
+async def _summary_for_ref(
+    poly: StructuralJoinArchive,
     session_ref: str | None,
-    cache: dict[str, ArchiveSessionSummary | None],
-) -> ArchiveSessionSummary | None:
+    cache: dict[str, object | None],
+) -> object | None:
     if session_ref is None:
         return None
     session_id = session_ref.removeprefix("session:")
     if session_id not in cache:
-        summaries = archive.list_summaries(session_id=session_id, limit=1)
-        cache[session_id] = summaries[0] if summaries else None
+        cache[session_id] = await poly.get_session_summary(session_id)
     return cache[session_id]
 
 
@@ -176,21 +177,32 @@ def _structural_document(
     target_ref: str,
     payload_kind: str | None,
     payload: dict[str, object] | None,
-    summary: ArchiveSessionSummary | None,
+    summary: object | None,
 ) -> JSONDocument:
     target_kind = ObjectRef.parse(target_ref).kind
     attempt_raw = payload.get("attempt") if payload else None
     attempt = cast(dict[str, object], attempt_raw) if isinstance(attempt_raw, dict) else None
     model = attempt.get("dispatch_turn_model") if attempt else None
     mapping_state = attempt.get("mapping_state") if attempt else None
+    session_id = getattr(summary, "session_id", None) if summary is not None else None
+    if session_id is None and summary is not None:
+        session_id = getattr(summary, "id", None)
+    origin = getattr(summary, "origin", None) if summary is not None else None
+    repo = getattr(summary, "git_repository_url", None) if summary is not None else None
+    created_at = getattr(summary, "created_at", None) if summary is not None else None
+    updated_at = getattr(summary, "updated_at", None) if summary is not None else None
+
+    def json_value(value: object) -> object:
+        return value.isoformat() if isinstance(value, datetime) else value
+
     document: dict[str, object] = {
         "target_kind": target_kind,
         "payload_kind": payload_kind,
-        "session_id": summary.session_id if summary else None,
-        "origin": summary.origin if summary else None,
-        "repo": summary.git_repository_url if summary else None,
-        "created_at": summary.created_at if summary else None,
-        "updated_at": summary.updated_at if summary else None,
+        "session_id": str(session_id) if session_id is not None else None,
+        "origin": str(origin) if origin is not None else None,
+        "repo": repo,
+        "created_at": json_value(created_at),
+        "updated_at": json_value(updated_at),
         "model": model if isinstance(model, str) else None,
         "mapping_state": mapping_state if isinstance(mapping_state, str) else None,
     }
@@ -303,7 +315,7 @@ async def join_typed_annotations(
     missing_count = 0
     ambiguous_count = 0
     invalid_count = 0
-    summary_cache: dict[str, ArchiveSessionSummary | None] = {}
+    summary_cache: dict[str, object | None] = {}
 
     def diagnose(code: AnnotationJoinDiagnosticCode, assertion_ref: str, target_ref: str, detail: str) -> None:
         if len(diagnostics) < _MAX_DIAGNOSTICS:
@@ -324,82 +336,79 @@ async def join_typed_annotations(
             f"row schema {_schema_stamp(drift.value)!r}; expected {qualified_id!r}",
         )
 
-    with ArchiveStore.open_existing(poly.archive_root) as archive:
-        for assertion in selected:
-            assertion_ref = f"assertion:{assertion.assertion_id}"
-            stamp = _schema_stamp(assertion.value)
-            if registry_drift:
-                diagnose(
-                    "schema_drift",
-                    assertion_ref,
-                    assertion.target_ref,
-                    f"row schema {stamp!r}; expected {qualified_id!r}",
-                )
-                continue
-            value = _typed_value(assertion.value)
-            errors = (
-                ["annotation value is not a JSON object"]
-                if value is None
-                else validate_annotation_row(
-                    schema,
-                    target_ref=assertion.target_ref,
-                    value=value,
-                    evidence_refs=assertion.evidence_refs,
-                )
+    for assertion in selected:
+        assertion_ref = f"assertion:{assertion.assertion_id}"
+        stamp = _schema_stamp(assertion.value)
+        if registry_drift:
+            diagnose(
+                "schema_drift",
+                assertion_ref,
+                assertion.target_ref,
+                f"row schema {stamp!r}; expected {qualified_id!r}",
             )
-            if errors:
-                invalid_count += 1
-                diagnose("invalid_value", assertion_ref, assertion.target_ref, "; ".join(errors))
-                continue
-            resolution = await poly.resolve_ref(assertion.target_ref)
-            if not resolution.resolved:
-                missing_count += 1
-                diagnose(
-                    "missing_target", assertion_ref, assertion.target_ref, "; ".join(resolution.caveats) or "not found"
-                )
-                continue
-            payload = resolution.payload
-            attempt_raw = payload.get("attempt") if payload else None
-            attempt = cast(dict[str, object], attempt_raw) if isinstance(attempt_raw, dict) else None
-            if attempt is not None and attempt.get("mapping_state") == "ambiguous":
-                ambiguous_count += 1
-                diagnose(
-                    "ambiguous_target", assertion_ref, assertion.target_ref, "delegation mapping_state is ambiguous"
-                )
-            session_ref = next((ref for ref in resolution.object_refs if ref.startswith("session:")), None)
-            summary = _summary_for_ref(archive, session_ref, summary_cache)
-            structural = _structural_document(
+            continue
+        value = _typed_value(assertion.value)
+        errors = (
+            ["annotation value is not a JSON object"]
+            if value is None
+            else validate_annotation_row(
+                schema,
                 target_ref=assertion.target_ref,
-                payload_kind=resolution.payload_kind,
-                payload=payload,
-                summary=summary,
+                value=value,
+                evidence_refs=assertion.evidence_refs,
             )
-            source_ref = next((ref for ref in assertion.supersedes if ref in source_candidates), assertion_ref)
-            source = source_candidates.get(source_ref)
-            judgment = judgments.get(source_ref)
-            judgment_value = judgment.value if judgment is not None and isinstance(judgment.value, dict) else {}
-            rows.append(
-                AnnotationStructuralJoinRow(
-                    assertion_ref=assertion_ref,
-                    batch_ref=_batch_ref(assertion.value, assertion.scope_ref),
-                    schema_id=schema.schema_id,
-                    schema_version=schema.version,
-                    status=assertion.status,
-                    labeler_ref=source.author_ref if source is not None else assertion.author_ref,
-                    adjudicator_ref=judgment.author_ref if judgment is not None else None,
-                    source_assertion_ref=source_ref,
-                    judgment_ref=None if judgment is None else f"assertion:{judgment.assertion_id}",
-                    judgment_decision=(
-                        str(judgment_value["decision"]) if isinstance(judgment_value.get("decision"), str) else None
-                    ),
-                    judgment_reason=judgment.body_text if judgment is not None else None,
-                    supersedes=tuple(assertion.supersedes),
-                    target_ref=assertion.target_ref,
-                    value=require_json_document(value, context="joined annotation value"),
-                    evidence_refs=tuple(assertion.evidence_refs),
-                    structural=structural,
-                )
+        )
+        if errors:
+            invalid_count += 1
+            diagnose("invalid_value", assertion_ref, assertion.target_ref, "; ".join(errors))
+            continue
+        resolution = await poly.resolve_ref(assertion.target_ref)
+        if not resolution.resolved:
+            missing_count += 1
+            diagnose(
+                "missing_target", assertion_ref, assertion.target_ref, "; ".join(resolution.caveats) or "not found"
             )
+            continue
+        payload = resolution.payload
+        attempt_raw = payload.get("attempt") if payload else None
+        attempt = cast(dict[str, object], attempt_raw) if isinstance(attempt_raw, dict) else None
+        if attempt is not None and attempt.get("mapping_state") == "ambiguous":
+            ambiguous_count += 1
+            diagnose("ambiguous_target", assertion_ref, assertion.target_ref, "delegation mapping_state is ambiguous")
+        session_ref = next((ref for ref in resolution.object_refs if ref.startswith("session:")), None)
+        summary = await _summary_for_ref(poly, session_ref, summary_cache)
+        structural = _structural_document(
+            target_ref=assertion.target_ref,
+            payload_kind=resolution.payload_kind,
+            payload=payload,
+            summary=summary,
+        )
+        source_ref = next((ref for ref in assertion.supersedes if ref in source_candidates), assertion_ref)
+        source = source_candidates.get(source_ref)
+        judgment = judgments.get(source_ref)
+        judgment_value = judgment.value if judgment is not None and isinstance(judgment.value, dict) else {}
+        rows.append(
+            AnnotationStructuralJoinRow(
+                assertion_ref=assertion_ref,
+                batch_ref=_batch_ref(assertion.value, assertion.scope_ref),
+                schema_id=schema.schema_id,
+                schema_version=schema.version,
+                status=assertion.status,
+                labeler_ref=source.author_ref if source is not None else assertion.author_ref,
+                adjudicator_ref=judgment.author_ref if judgment is not None else None,
+                source_assertion_ref=source_ref,
+                judgment_ref=None if judgment is None else f"assertion:{judgment.assertion_id}",
+                judgment_decision=(
+                    str(judgment_value["decision"]) if isinstance(judgment_value.get("decision"), str) else None
+                ),
+                judgment_reason=judgment.body_text if judgment is not None else None,
+                supersedes=tuple(assertion.supersedes),
+                target_ref=assertion.target_ref,
+                value=require_json_document(value, context="joined annotation value"),
+                evidence_refs=tuple(assertion.evidence_refs),
+                structural=structural,
+            )
+        )
 
     target_counts = Counter(row.target_ref for row in rows)
     multi_label_target_count = sum(count > 1 for count in target_counts.values())
