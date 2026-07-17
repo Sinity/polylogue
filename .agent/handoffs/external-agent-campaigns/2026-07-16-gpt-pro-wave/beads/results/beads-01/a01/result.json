@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-01",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "rejected",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "4d3423ac988f78674b6a397f1276d0b0c5fe773f2178511affc8240372fa778b",
+  "snapshot_identity": null,
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "polylogue-config-closure.zip",
+      "sha256": "dcef7122d477232585c6169d5306d5dc30ce9924ab86dda92915c95c2c4dcd26",
+      "size_bytes": 35210095,
+      "custody_path": "/realm/inbox/download/polylogue-config-closure.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "locally inspected and checksum-validated",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "zero-byte patch and copied repository snapshot; source download remains outside Git"
+}

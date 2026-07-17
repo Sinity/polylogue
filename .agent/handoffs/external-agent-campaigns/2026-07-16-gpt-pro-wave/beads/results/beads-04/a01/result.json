@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-04",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "validated",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "86edd43f3b66a917949a0d69bf1ca0a42165ced4cec61db607adb036c292feb7",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "beads-04-mcp-context-migration-r01.zip",
+      "sha256": "fe1c8a99a89372da83db8068ec97fa2bec671302248696bd99e6d907de13d8a9",
+      "size_bytes": 40602,
+      "custody_path": "beads/results/beads-04/a01/raw/beads-04-mcp-context-migration-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "locally inspected and checksum-validated",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "valid package; preserved pending current-master reconciliation"
+}

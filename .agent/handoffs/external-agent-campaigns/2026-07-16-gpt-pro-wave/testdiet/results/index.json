@@ -12,7 +12,7 @@
    "checked_at": "2026-07-17T10:55:34+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "problems": [],
-   "status": "triaged",
+   "status": "blocked",
    "members": [
     "EVIDENCE.md",
     "HANDOFF.md",
@@ -21,7 +21,10 @@
    ],
    "patch_lines": 786,
    "patch_applies": true,
-   "apply_detail": "patch applies cleanly"
+   "apply_detail": "patch applies cleanly",
+   "attempt_id": "a01",
+   "package_revision": "r01",
+   "state": "blocked"
   },
   {
    "job": "testdiet-02",
@@ -32,7 +35,7 @@
    "checked_at": "2026-07-17T10:55:43+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "problems": [],
-   "status": "triaged",
+   "status": "blocked",
    "members": [
     "EVIDENCE.md",
     "HANDOFF.md",
@@ -41,7 +44,10 @@
    ],
    "patch_lines": 917,
    "patch_applies": true,
-   "apply_detail": "patch applies cleanly"
+   "apply_detail": "patch applies cleanly",
+   "attempt_id": "a01",
+   "package_revision": "r01",
+   "state": "blocked"
   }
  ]
 }

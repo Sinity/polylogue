@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-03",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "validated",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "410f7d2493a956c44eee713367deb04a3ffa9d4bcde27b00d6a9551cfba67d09",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "beads-03-mcp-read-migration-r01.zip",
+      "sha256": "195e7f898c298c29a39006247e2836e981b51549ce92ba46a43db938c4365830",
+      "size_bytes": 76818,
+      "custody_path": "beads/results/beads-03/a01/raw/beads-03-mcp-read-migration-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "locally inspected and checksum-validated",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "valid package; preserved pending current-master reconciliation"
+}
