@@ -602,11 +602,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.raw_authority_scale_proof",
         use_when=(
             "Generate a receipt-backed raw-authority scenario before a live replay gate. "
-            "Use explicit July-15-shaped component/raw arguments for the contained scale run."
+            "The command defaults to the July-15 topology: 15,264 direct candidates and "
+            "21,398 expanded memberships."
         ),
         examples=(
             "devtools workspace raw-authority-scale-proof --json",
-            "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 --expanded-raws 21398 --pass-limit 64 --keep --json",
+            "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 --expanded-raws 21398 --pass-limit 15264 --keep --json",
         ),
     ),
     CommandSpec(
