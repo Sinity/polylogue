@@ -46,6 +46,7 @@ logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
 TResult = TypeVar("TResult")
 MCP_RESPONSE_BUDGET_BYTES = 25_000
+MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES = 4_096
 _QUERY_ERROR_VALID_VALUES: dict[str, tuple[str, ...]] = {
     "sort": ("date", "tokens", "messages", "words", "longest", "random"),
     "origin": enum_values(Origin),
@@ -190,7 +191,11 @@ def _fallback_response_arguments(fn_name: str, session_id: str | None) -> dict[s
     return {_SESSION_ID_ARGUMENT_NAMES.get(fn_name, "session_id"): session_id}
 
 
-def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] | None:
+def _narrow_continuation(
+    context: _ResponseContext | None,
+    *,
+    consumed: int | None = None,
+) -> dict[str, object] | None:
     """Build a direct MCP call descriptor that re-reads the same evidence safely."""
     if context is None:
         return None
@@ -211,6 +216,10 @@ def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] 
     limit = arguments.get("limit")
     if isinstance(limit, int) and not isinstance(limit, bool):
         arguments["limit"] = max(1, min(limit, 3))
+    if consumed is not None:
+        offset = arguments.get("offset")
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            arguments["offset"] = offset + consumed
     if context.tool == "get_messages":
         requested_max_chars = arguments.get("max_chars_per_message")
         max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 4096
@@ -231,11 +240,47 @@ def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] 
     }
 
 
+def _serialize_payload(payload: BaseModel, *, exclude_none: bool) -> str:
+    """Serialize a payload without applying the response budget recursively."""
+    to_json = getattr(payload, "to_json", None)
+    if callable(to_json):
+        result = to_json(exclude_none=exclude_none)
+        if not isinstance(result, str):
+            raise TypeError(f"{type(payload).__name__}.to_json() returned {type(result).__name__}, expected str")
+        return result
+    return serialize_surface_payload(payload, exclude_none=exclude_none)
+
+
+def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseModel, int] | None:
+    """Find the largest useful prefix that fits the transport budget."""
+    raw_items = getattr(payload, "items", None)
+    if not isinstance(raw_items, (tuple, list)) or not raw_items:
+        return None
+    items = tuple(raw_items)
+    low, high = 1, len(items)
+    best: tuple[BaseModel, int] | None = None
+    while low <= high:
+        count = (low + high) // 2
+        updates: dict[str, object] = {"items": items[:count]}
+        if hasattr(payload, "next_offset"):
+            offset = getattr(payload, "offset", 0)
+            updates["next_offset"] = offset + count
+        candidate = payload.model_copy(update=updates)
+        size = len(_serialize_payload(candidate, exclude_none=exclude_none).encode("utf-8"))
+        if size <= MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES:
+            best = (candidate, count)
+            low = count + 1
+        else:
+            high = count - 1
+    return best
+
+
 def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: bool) -> str:
-    """Return a bounded metadata-only response instead of truncating JSON."""
+    """Return a useful bounded page, never a metadata-only retry trap."""
     body = payload.model_dump(mode="json", exclude_none=exclude_none)
     context = _response_context_var.get()
-    continuation = _narrow_continuation(context)
+    page = _bounded_item_page(payload, exclude_none=exclude_none)
+    continuation = _narrow_continuation(context, consumed=page[1] if page is not None else None)
     envelope = {
         "ok": True,
         "status": "response_budget_exceeded",
@@ -245,9 +290,11 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
         "original_bytes": original_bytes,
         "payload_type": type(payload).__name__,
         "metadata": _compact_metadata(body),
+        "page": page[0].model_dump(mode="json", exclude_none=exclude_none) if page is not None else None,
+        "returned_items": page[1] if page is not None else 0,
         "continuation": continuation,
         "next_action": (
-            "Use continuation.tool with continuation.arguments to retrieve the same evidence in a bounded page."
+            "Use continuation.tool with continuation.arguments to advance from the returned page."
             if continuation is not None
             else "Request a narrower page or projection for this response."
         ),
@@ -257,18 +304,7 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
 
 def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
     """Serialize typed MCP output, replacing oversized bodies with a safe envelope."""
-    to_json = getattr(payload, "to_json", None)
-    if callable(to_json):
-        result = to_json(exclude_none=exclude_none)
-        if isinstance(result, str):
-            original_bytes = len(result.encode("utf-8"))
-            return (
-                result
-                if original_bytes <= MCP_RESPONSE_BUDGET_BYTES
-                else _budget_envelope(payload, original_bytes=original_bytes, exclude_none=exclude_none)
-            )
-        raise TypeError(f"{type(payload).__name__}.to_json() returned {type(result).__name__}, expected str")
-    result = serialize_surface_payload(payload, exclude_none=exclude_none)
+    result = _serialize_payload(payload, exclude_none=exclude_none)
     original_bytes = len(result.encode("utf-8"))
     return (
         result

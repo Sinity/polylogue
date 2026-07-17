@@ -104,7 +104,11 @@ if TYPE_CHECKING:
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveSessionSearchHit,
+        ArchiveSessionSummary,
+        ArchiveStore,
+    )
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
@@ -3932,10 +3936,49 @@ class PolylogueArchiveMixin:
         until: str | None = None,
     ) -> int:
         """Count sessions in the index tier."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.count_sessions(
+        arguments = {
+            "origin": origin,
+            "excluded_origins": tuple(excluded_origins),
+            "tags": tuple(tags),
+            "excluded_tags": tuple(excluded_tags),
+            "repo_names": tuple(repo_names),
+            "project_refs": tuple(project_refs),
+            "has_types": tuple(has_types),
+            "has_tool_use": has_tool_use,
+            "has_thinking": has_thinking,
+            "has_paste": has_paste,
+            "tool_terms": tuple(tool_terms),
+            "excluded_tool_terms": tuple(excluded_tool_terms),
+            "action_terms": tuple(action_terms),
+            "excluded_action_terms": tuple(excluded_action_terms),
+            "action_sequence": tuple(action_sequence),
+            "action_text_terms": tuple(action_text_terms),
+            "referenced_paths": tuple(referenced_paths),
+            "cwd_prefix": cwd_prefix,
+            "typed_only": typed_only,
+            "message_type": message_type,
+            "title": title,
+            "min_messages": min_messages,
+            "max_messages": max_messages,
+            "min_words": min_words,
+            "max_words": max_words,
+            "since": since,
+            "until": until,
+        }
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_count_sessions",
+                arguments=arguments,
+                page_size=1,
+                projection="count",
+                stable_order="canonical",
+            ),
+        )
+        return await transaction.run(
+            lambda archive: archive.count_sessions(
                 origin=origin,
                 excluded_origins=tuple(excluded_origins),
                 tags=tuple(tags),
@@ -3964,6 +4007,7 @@ class PolylogueArchiveMixin:
                 since_ms=_archive_query_date_ms("since", since),
                 until_ms=_archive_query_date_ms("until", until),
             )
+        )
 
     async def archive_list_sessions(
         self,
@@ -4000,10 +4044,19 @@ class PolylogueArchiveMixin:
         sample: bool = False,
     ) -> list[ArchiveSessionSummary]:
         """List session summaries."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return list(
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_list_sessions",
+                arguments={"origin": origin, "cwd_prefix": cwd_prefix, "since": since, "until": until},
+                page_size=limit,
+                offset=max(0, offset),
+            ),
+        )
+        return await transaction.run(
+            lambda archive: list(
                 archive.list_summaries(
                     origin=origin,
                     excluded_origins=tuple(excluded_origins),
@@ -4037,6 +4090,7 @@ class PolylogueArchiveMixin:
                     sample=sample,
                 )
             )
+        )
 
     async def archive_search_sessions(
         self,
@@ -4072,10 +4126,18 @@ class PolylogueArchiveMixin:
         limit: int = 20,
     ) -> list[ArchiveSessionSearchHit]:
         """Search session block text."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return list(
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_search_sessions",
+                arguments={"query": query, "origin": origin, "cwd_prefix": cwd_prefix, "since": since, "until": until},
+                page_size=limit,
+            ),
+        )
+        return await transaction.run(
+            lambda archive: list(
                 archive.search_summaries(
                     query,
                     origin=origin,
@@ -4108,17 +4170,31 @@ class PolylogueArchiveMixin:
                     limit=limit,
                 )
             )
+        )
 
     async def archive_get_session(self, session_id: str) -> ArchiveSessionEnvelope | None:
         """Read a full session envelope by exact id or prefix."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_get_session",
+                arguments={"session_id": session_id},
+                page_size=1,
+                projection="session-envelope",
+                stable_order="session,message,block",
+            ),
+        )
+
+        def read(archive: ArchiveStore) -> ArchiveSessionEnvelope | None:
             try:
                 resolved_id = archive.resolve_session_id(session_id)
             except KeyError:
                 return None
             return archive.read_session(resolved_id)
+
+        return await transaction.run(read)
 
     async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

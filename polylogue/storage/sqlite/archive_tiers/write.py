@@ -52,6 +52,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
     ArchiveSessionPhase,
@@ -64,6 +65,7 @@ from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
     upsert_session_tag,
     upsert_session_work_event,
 )
+from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
 
 logger = get_logger(__name__)
 
@@ -269,6 +271,7 @@ def write_parsed_session_to_archive(
     # per session; nullcontext leaves BEGIN/COMMIT to the caller.
     transaction = conn if manage_transaction else nullcontext()
     with transaction:
+        conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
         t0 = time.perf_counter()
         conn.execute(
             """
@@ -399,6 +402,9 @@ def write_parsed_session_to_archive(
             )
             add_timing("index.blocks", t0)
             t0 = time.perf_counter()
+            refresh_action_pairs(conn, session_id)
+            add_timing("index.action_pairs", t0)
+            t0 = time.perf_counter()
             _write_web_constructs(
                 conn,
                 session,
@@ -512,6 +518,10 @@ def write_parsed_session_to_archive(
             add_timing=add_timing,
         )
         add_timing("index.graph_resolve", t0)
+        t0 = time.perf_counter()
+        refresh_delegation_facts_for_session(conn, session_id)
+        add_timing("index.delegation_facts", t0)
+        conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
         if merge_append and session.ingest_flags:
             t0 = time.perf_counter()
             _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
@@ -593,6 +603,7 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
     )
     _purge_session_message_fts_when_delete_trigger_missing(conn, session_id)
     for table in (
+        "action_pairs",
         "blocks",
         "attachment_refs",
         "paste_spans",
@@ -1424,6 +1435,9 @@ def _replace_full_session_messages_and_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
         add_timing("blocks", t0)
+        t0 = time.perf_counter()
+        refresh_action_pairs(conn, session_id)
+        add_timing("action_pairs", t0)
         t0 = time.perf_counter()
         _write_web_constructs(
             conn,

@@ -2686,6 +2686,9 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    query_ref: str | None = None
+    result_ref: str | None = None
+    continuation: str | None = None
 
 
 class QueryUnitAggregateEnvelope(SurfacePayloadModel):
@@ -2707,6 +2710,9 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    query_ref: str | None = None
+    result_ref: str | None = None
+    continuation: str | None = None
 
 
 QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope
@@ -2785,6 +2791,9 @@ def build_query_unit_envelope(
     has_next: bool,
     pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
+    query_ref: str | None = None,
+    result_ref: str | None = None,
+    continuation: str | None = None,
 ) -> QueryUnitEnvelope:
     """Construct the canonical terminal query-unit response envelope."""
 
@@ -2799,6 +2808,9 @@ def build_query_unit_envelope(
         limit=limit,
         offset=offset,
         next_offset=offset + limit if has_next else None,
+        query_ref=query_ref,
+        result_ref=result_ref,
+        continuation=continuation,
     )
 
 
@@ -2812,6 +2824,9 @@ def build_query_unit_aggregate_envelope(
     has_next: bool,
     pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
+    query_ref: str | None = None,
+    result_ref: str | None = None,
+    continuation: str | None = None,
 ) -> QueryUnitAggregateEnvelope:
     """Construct the canonical terminal aggregate response envelope."""
 
@@ -2826,6 +2841,9 @@ def build_query_unit_aggregate_envelope(
         limit=limit,
         offset=offset,
         next_offset=offset + limit if has_next else None,
+        query_ref=query_ref,
+        result_ref=result_ref,
+        continuation=continuation,
     )
 
 

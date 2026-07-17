@@ -15,15 +15,16 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.storage.fts.sql import FTS_TRIGGER_DDL
-from polylogue.storage.sqlite.action_relation import action_relation_select_sql
+from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
     check,
     json_object_check,
     nullable_check,
 )
+from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-INDEX_SCHEMA_VERSION = 37
+INDEX_SCHEMA_VERSION = 38
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -447,6 +448,39 @@ END;
 
 {FTS_FRESHNESS_STATE_DDL}
 
+CREATE TABLE IF NOT EXISTS action_pairs (
+    tool_use_block_id      TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE,
+    session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    message_id             TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+    tool_id                TEXT,
+    use_rank               INTEGER,
+    tool_name              TEXT,
+    semantic_type          TEXT,
+    tool_command           TEXT,
+    tool_path              TEXT,
+    tool_input             TEXT,
+    tool_result_block_id   TEXT REFERENCES blocks(block_id) ON DELETE SET NULL,
+    output_text            TEXT,
+    is_error               INTEGER CHECK(is_error IN (0, 1) OR is_error IS NULL),
+    exit_code              INTEGER,
+    FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_action_pairs_session_order
+ON action_pairs(session_id, message_id, tool_use_block_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_message
+ON action_pairs(message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_tool
+ON action_pairs(tool_name, session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_semantic
+ON action_pairs(semantic_type, session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_path
+ON action_pairs(tool_path, session_id, message_id)
+WHERE tool_path IS NOT NULL AND tool_path != '';
+CREATE INDEX IF NOT EXISTS idx_action_pairs_outcome
+ON action_pairs(is_error, exit_code, session_id, message_id)
+WHERE is_error IS NOT NULL OR exit_code IS NOT NULL;
+
 -- xnkf: a plain equality join on tool_id fans out when a provider re-emits
 -- the same tool_id on distinct messages (verified live: identical toolu_
 -- ids as 2 tool_use + 2 tool_result blocks at different positions, NOT
@@ -464,7 +498,11 @@ END;
 -- empty-string guard stops '' specifically from cross-joining as if it
 -- were a real shared id (parsers currently only ever emit NULL, not '').
 CREATE VIEW IF NOT EXISTS actions AS
-{action_relation_select_sql()};
+SELECT
+    session_id, message_id, tool_use_block_id, tool_name, semantic_type,
+    tool_command, tool_path, tool_input, output_text, is_error, exit_code,
+    tool_result_block_id
+FROM action_pairs;
 
 CREATE TABLE IF NOT EXISTS session_events (
     event_id                   TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
@@ -1035,7 +1073,54 @@ ON session_profiles(canonical_session_date DESC);
 --
 -- 100% derivable from existing tables -- VIEW, not a table, matching the
 -- `actions` precedent (derived tier, no convergence stage needed).
-CREATE VIEW IF NOT EXISTS delegations AS
+CREATE TABLE IF NOT EXISTS delegation_facts (
+    delegation_id                         TEXT PRIMARY KEY,
+    parent_session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    child_session_id                      TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+    mapping_state                         TEXT NOT NULL,
+    link_confidence                       REAL,
+    link_method                           TEXT,
+    inheritance                            TEXT,
+    branch_point_message_id               TEXT,
+    instruction_message_id               TEXT,
+    instruction_tool_use_block_id        TEXT,
+    instruction_payload                   TEXT,
+    dispatch_turn_model                  TEXT,
+    requested_model                      TEXT,
+    artifact_block_id                    TEXT,
+    artifact_text                        TEXT,
+    result_is_error                      INTEGER,
+    result_exit_code                     INTEGER,
+    result_status                        TEXT NOT NULL,
+    parent_origin                        TEXT NOT NULL,
+    parent_session_dominant_model        TEXT,
+    parent_session_dominant_model_family TEXT,
+    parent_terminal_state                TEXT,
+    child_session_dominant_model         TEXT,
+    child_session_dominant_model_family  TEXT,
+    child_cost_usd                       REAL,
+    child_cost_is_estimated              INTEGER,
+    child_tokens                         INTEGER,
+    child_wall_ms                        INTEGER,
+    child_terminal_state                 TEXT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_parent_order
+ON delegation_facts(parent_session_id, instruction_message_id, delegation_id);
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_state
+ON delegation_facts(mapping_state, parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_model
+ON delegation_facts(requested_model, dispatch_turn_model, child_session_dominant_model);
+
+CREATE TABLE IF NOT EXISTS delegation_refresh_scope (
+    parent_session_id TEXT PRIMARY KEY
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS derived_refresh_guard (
+    guard_name TEXT PRIMARY KEY
+) STRICT;
+
+CREATE VIEW IF NOT EXISTS delegation_facts_source AS
 WITH dispatch_actions AS (
     SELECT
         a.session_id                           AS parent_session_id,
@@ -1055,6 +1140,10 @@ WITH dispatch_actions AS (
     FROM actions a
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = a.session_id
+      )
 ),
 resolved_children AS (
     SELECT
@@ -1072,6 +1161,10 @@ resolved_children AS (
     WHERE l.link_type = 'subagent'
       AND l.resolved_dst_session_id IS NOT NULL
       AND (l.status IS NULL OR l.status != 'quarantined')
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = l.resolved_dst_session_id
+      )
 ),
 dispatch_counts AS (
     SELECT parent_session_id, COUNT(*) AS n FROM dispatch_actions GROUP BY parent_session_id
@@ -1180,6 +1273,10 @@ quarantined_rows AS (
     WHERE l.link_type = 'subagent'
       AND l.status = 'quarantined'
       AND l.resolved_dst_session_id IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = l.resolved_dst_session_id
+      )
 ),
 attempts AS (
     SELECT * FROM resolved_rows
@@ -1227,6 +1324,83 @@ FROM attempts att
 JOIN sessions p ON p.session_id = att.parent_session_id
 LEFT JOIN session_profiles pp ON pp.session_id = att.parent_session_id
 LEFT JOIN session_profiles cp ON cp.session_id = att.child_session_id;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ai
+AFTER INSERT ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
+    {action_pairs_refresh_sql("NEW.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ad
+AFTER DELETE ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = OLD.session_id;
+    {action_pairs_refresh_sql("OLD.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = OLD.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (OLD.session_id);
+    {delegation_facts_insert_sql("OLD.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_ai
+AFTER INSERT ON session_links
+WHEN NEW.resolved_dst_session_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.resolved_dst_session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.resolved_dst_session_id);
+    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_ai
+AFTER INSERT ON session_profiles
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_au
+AFTER UPDATE ON session_links
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts
+    WHERE parent_session_id IN (OLD.resolved_dst_session_id, NEW.resolved_dst_session_id);
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
+    SELECT parent_session_id
+    FROM (
+        SELECT OLD.resolved_dst_session_id AS parent_session_id
+        UNION
+        SELECT NEW.resolved_dst_session_id
+    )
+    WHERE parent_session_id IS NOT NULL;
+    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_au
+AFTER UPDATE ON session_profiles
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE VIEW IF NOT EXISTS delegations AS
+SELECT
+    parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance,
+    branch_point_message_id, instruction_message_id, instruction_tool_use_block_id, instruction_payload,
+    dispatch_turn_model, requested_model, artifact_block_id, artifact_text, result_is_error, result_exit_code,
+    result_status, parent_origin, parent_session_dominant_model, parent_session_dominant_model_family,
+    parent_terminal_state, child_session_dominant_model, child_session_dominant_model_family, child_cost_usd,
+    child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state
+FROM delegation_facts;
 
 CREATE TABLE IF NOT EXISTS session_tag_rollups (
     tag                          TEXT NOT NULL,

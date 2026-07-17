@@ -1,0 +1,10 @@
+{
+  "resume": ["session:resume-1"],
+  "forensic-debug": ["session:debug-1", "file:src/app.py"],
+  "prior-art": ["session:prior-1"],
+  "decision": ["assertion:decision-1"],
+  "postmortem": ["run:failed-1", "action:failed-1"],
+  "cost": ["usage:run-1"],
+  "self-inspection": ["capability:query"],
+  "parallel-claude-incident": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"]
+}

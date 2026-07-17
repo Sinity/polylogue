@@ -3496,6 +3496,14 @@ TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = tuple(
         migration_owner="polylogue-t46.8.2" if kind != "recall-pack" else "polylogue-t46.8.3",
     )
     for kind in ("session", "message", "block", "action", "file", "query", "result-set", "recall-pack")
+) + (
+    MCPResourceDeclaration(
+        uri_template="polylogue://capabilities/query",
+        object_kinds=("capability", "query", "result-set"),
+        minimum_role="read",
+        authority="executable query vocabulary and recovery guidance; no mutation authority",
+        migration_owner="polylogue-z9gh.3",
+    ),
 )
 
 TARGET_PROMPTS: Final[tuple[MCPPromptDeclaration, ...]] = (

@@ -34,9 +34,14 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://stats")
     async def stats_resource() -> str:
         try:
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
             config = hooks.get_config()
-            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-                archive_stats = archive.stats()
+            transaction = QueryTransaction(
+                mcp_archive_root(config),
+                QueryTransactionRequest(operation="resource.stats", arguments={}, page_size=1, projection="stats"),
+            )
+            archive_stats = await transaction.run(lambda archive: archive.stats())
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to retrieve archive stats: {exc}",
@@ -55,10 +60,22 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://sessions")
     async def sessions_resource() -> str:
         try:
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
             spec = MCPSessionQueryRequest().build_spec(hooks.clamp_limit)
             config = hooks.get_config()
-            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-                payload = archive_session_list_payload(archive, spec)
+            transaction = QueryTransaction(
+                mcp_archive_root(config),
+                QueryTransactionRequest(
+                    operation="resource.sessions",
+                    arguments={"limit": spec.limit, "offset": spec.offset, "sort": spec.sort},
+                    page_size=spec.limit or 10,
+                    offset=spec.offset,
+                    projection="session-summary",
+                    stable_order="date",
+                ),
+            )
+            payload = await transaction.run(lambda archive: archive_session_list_payload(archive, spec))
             return hooks.json_payload(payload)
         except Exception as exc:
             return hooks.error_json(
@@ -70,14 +87,28 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://session/{conv_id}")
     async def session_resource(conv_id: str) -> str:
         try:
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
             config = hooks.get_config()
-            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
+            transaction = QueryTransaction(
+                mcp_archive_root(config),
+                QueryTransactionRequest(
+                    operation="resource.session",
+                    arguments={"conv_id": conv_id},
+                    page_size=1,
+                    projection="session-summary",
+                ),
+            )
+
+            def read(archive: ArchiveStore) -> str:
                 try:
                     session_id = archive.resolve_session_id(conv_id)
                     archive_summary = archive.read_summary(session_id)
                 except (KeyError, ValueError):
                     return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
                 return hooks.json_payload(archive_summary_payload(archive_summary))
+
+            return await transaction.run(read)
         except sqlite3.OperationalError:
             return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
         except Exception as exc:
@@ -108,11 +139,66 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         payload = action_affordance_list_payload()
         return hooks.json_payload(MCPRootPayload(root={"action_affordances": payload.model_dump(mode="json")}))
 
+    @mcp.resource("polylogue://capabilities/query")
+    def query_capabilities_resource() -> str:
+        """Expose the executable query vocabulary as bounded model-facing data."""
+        from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_source_list
+
+        units = []
+        for descriptor in query_unit_descriptors(terminal_supported=True):
+            units.append(
+                {
+                    "unit": descriptor.unit,
+                    "source": descriptor.plural_source,
+                    "description": descriptor.description,
+                    "example": descriptor.terminal_example or descriptor.example,
+                    "fields": [
+                        {"name": field.name, "description": field.description, "example": field.example}
+                        for field in descriptor.fields
+                    ],
+                    "aggregate_group_fields": list(descriptor.aggregate_group_fields),
+                    "stable_order": "time" if descriptor.time_sort_supported else "canonical",
+                    "execution": {
+                        "result_semantics": "exhaustive_page",
+                        "continuation": "query_units response continuation",
+                        "cost": "bounded page; aggregate/group stages may queue as scan work",
+                    },
+                }
+            )
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={
+                    "version": 1,
+                    "kind": "query-capability-catalog",
+                    "terminal_sources": terminal_query_source_list(),
+                    "grammar": {
+                        "terminal_form": "<sources> where <predicate>",
+                        "pipeline_form": "<sources> where <predicate> | group by <field> | count",
+                        "required_recovery": "Use the returned continuation to advance; do not replay the same page.",
+                    },
+                    "units": units,
+                }
+            )
+        )
+
     @mcp.resource("polylogue://messages/{conv_id}")
     async def messages_resource(conv_id: str) -> str:
         try:
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
             config = hooks.get_config()
-            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
+            transaction = QueryTransaction(
+                mcp_archive_root(config),
+                QueryTransactionRequest(
+                    operation="resource.messages",
+                    arguments={"conv_id": conv_id, "limit": 20, "offset": 0},
+                    page_size=20,
+                    projection="message-page",
+                    stable_order="session,message,block",
+                ),
+            )
+
+            def read(archive: ArchiveStore) -> str:
                 try:
                     session_id = archive.resolve_session_id(conv_id)
                     session = archive.read_session(session_id)
@@ -128,6 +214,8 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     },
                 ):
                     return hooks.json_payload(archive_messages_payload(session, limit=20, offset=0))
+
+            return await transaction.run(read)
         except sqlite3.OperationalError:
             return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
         except Exception as exc:
@@ -152,10 +240,21 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://origin/{name}/recent")
     async def origin_recent_resource(name: str) -> str:
         try:
+            from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
             spec = MCPSessionQueryRequest(origin=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
             config = hooks.get_config()
-            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-                payload = archive_session_list_payload(archive, spec)
+            transaction = QueryTransaction(
+                mcp_archive_root(config),
+                QueryTransactionRequest(
+                    operation="resource.origin_recent",
+                    arguments={"origin": name, "limit": 10, "offset": 0, "sort": "date"},
+                    page_size=10,
+                    projection="session-summary",
+                    stable_order="date",
+                ),
+            )
+            payload = await transaction.run(lambda archive: archive_session_list_payload(archive, spec))
             return hooks.json_payload(payload)
         except Exception as exc:
             return hooks.error_json(

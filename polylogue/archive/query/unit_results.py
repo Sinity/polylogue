@@ -27,6 +27,7 @@ from polylogue.archive.query.spec import (
     parse_query_date,
     split_csv,
 )
+from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.payloads import (
@@ -520,14 +521,39 @@ def query_unit_rows(
 
 def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> QueryUnitResultEnvelope:
     """Execute a compiled terminal query-unit request."""
-
-    return query_unit_rows(
+    envelope = query_unit_rows(
         archive,
         request.source,
         query=request.expression,
         limit=request.limit,
         offset=request.offset,
         session_filters=request.session_filters,
+    )
+    transaction_request = QueryTransactionRequest(
+        operation="query_units",
+        arguments={
+            "expression": request.expression,
+            "session_filters": dict(request.session_filters or {}),
+        },
+        page_size=request.limit,
+        offset=request.offset,
+    )
+    result_ref = "result:" + transaction_request.query_ref.removeprefix("query:")
+    next_offset = getattr(envelope, "next_offset", None)
+    continuation = (
+        QueryContinuation(
+            request=transaction_request.next(offset=next_offset),
+            result_ref=result_ref,
+        ).encode()
+        if next_offset is not None
+        else None
+    )
+    return envelope.model_copy(
+        update={
+            "query_ref": transaction_request.query_ref,
+            "result_ref": result_ref,
+            "continuation": continuation,
+        }
     )
 
 
