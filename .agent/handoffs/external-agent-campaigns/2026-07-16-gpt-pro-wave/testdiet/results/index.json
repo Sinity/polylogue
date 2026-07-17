@@ -130,6 +130,39 @@
       "bytes": 91343599
     },
     {
+      "job": "testdiet-03",
+      "workload": "testdiet",
+      "state": "triaged_snapshot_relative",
+      "attempt_id": "a02",
+      "package_revision": "r01",
+      "artifact": "testdiet-03/a02/raw/testdiet-03-rebuild-equivalence-r01(1).zip",
+      "sha256": "cf01225f0af536dd5142f9f374d4eb174a0abf6e1800fbc2aebe262351453258",
+      "bytes": 25098,
+      "integration": "Raw and extracted evidence retained. Current-master apply check fails; reconcile with the already-merged testdiet-03 delivery before source admission."
+    },
+    {
+      "job": "testdiet-04",
+      "workload": "testdiet",
+      "state": "triaged_snapshot_relative",
+      "attempt_id": "a02",
+      "package_revision": "r01",
+      "artifact": "testdiet-04/a02/raw/testdiet-04-derived-freshness-r01.zip",
+      "sha256": "226be0e25fae6de8cfd087d84eefcaf8c9ca2b7797d341c66b26d8785e66ce8e",
+      "bytes": 61199,
+      "integration": "Clipboard corroborates the provider report. Current-master apply check fails; reconcile the proposed freshness protocol with current derived tiers before source admission."
+    },
+    {
+      "job": "testdiet-14",
+      "workload": "testdiet",
+      "state": "rejected_validation_failed",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-14/a01/raw/testdiet-14-config-path-coherence-r01.zip",
+      "sha256": "3af2cc3ec0a1772a590dcfeab3f2e4273e4c9a672cfed1c648d387219a42256e",
+      "bytes": 3624,
+      "integration": "Incomplete recovery package retained as mission research only; it authorizes no implementation."
+    },
+    {
       "job": "testdiet-15",
       "workload": "testdiet",
       "state": "triaged",

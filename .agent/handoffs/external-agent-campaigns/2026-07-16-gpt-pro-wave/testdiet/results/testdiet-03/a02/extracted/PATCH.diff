@@ -1,0 +1,1382 @@
+diff --git a/polylogue/sources/dispatch.py b/polylogue/sources/dispatch.py
+index c898ce519..3d2e0cd53 100644
+--- a/polylogue/sources/dispatch.py
++++ b/polylogue/sources/dispatch.py
+@@ -583,11 +583,12 @@ def _lower_drive_like_payload(
+         if _looks_like_chunked_session_list(payloads):
+             nested_specs: list[LoweredPayloadSpec] = []
+             for index, item in enumerate(payloads):
++                nested_fallback_id = fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}"
+                 nested_specs.extend(
+                     _lower_payload_specs(
+                         provider,
+                         item,
+-                        f"{fallback_id}-{index}",
++                        nested_fallback_id,
+                         depth=depth + 1,
+                         schema_resolution=schema_resolution,
+                     )
+@@ -899,11 +900,12 @@ def parse_drive_payload(
+         nested_sessions: list[ParsedSession] = []
+         for index, item in enumerate(payloads):
+             if _looks_like_chunked_session(item):
++                nested_fallback_id = fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}"
+                 nested_sessions.extend(
+                     parse_drive_payload(
+                         runtime_provider,
+                         item,
+-                        f"{fallback_id}-{index}",
++                        nested_fallback_id,
+                         _depth + 1,
+                     )
+                 )
+diff --git a/tests/unit/sources/test_source_laws.py b/tests/unit/sources/test_source_laws.py
+index 335c71740..884b22831 100644
+--- a/tests/unit/sources/test_source_laws.py
++++ b/tests/unit/sources/test_source_laws.py
+@@ -888,6 +888,26 @@ def test_parse_drive_payload_contract(
+     assert all(session.source_name == expected_provider for session in sessions)
+ 
+ 
++def test_singleton_drive_document_sequence_preserves_source_fallback_identity() -> None:
++    """A one-document JSON source is replayed as a one-item parsed sequence."""
++    payload = [
++        {
++            "chunkedPrompt": {
++                "chunks": [
++                    {"id": "u1", "role": "user", "text": "hello"},
++                    {"id": "a1", "role": "model", "text": "hi"},
++                ]
++            }
++        }
++    ]
++
++    parsed = parse_payload(Provider.GEMINI, payload, "stable-source-id")
++    adapted = parse_drive_payload(Provider.GEMINI, payload, "stable-source-id")
++
++    assert [session.provider_session_id for session in parsed] == ["stable-source-id"]
++    assert [session.provider_session_id for session in adapted] == ["stable-source-id"]
++
++
+ def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+     sentinel_messages = [_parsed_message("m1", role="user", text="hello")]
+ 
+diff --git a/tests/unit/storage/test_incremental_rebuild_equivalence.py b/tests/unit/storage/test_incremental_rebuild_equivalence.py
+new file mode 100644
+index 000000000..a167d0d57
+--- /dev/null
++++ b/tests/unit/storage/test_incremental_rebuild_equivalence.py
+@@ -0,0 +1,1313 @@
++"""Incremental, targeted-repair, restart, and fresh-rebuild equivalence.
++
++The oracle in this module is the planted demo source plus declared transform
++invariants.  It deliberately does not serialize the incremental database and
++call that the expected rebuild result.  The two active generations are
++projected independently through exact derivation keys and each projection is
++also checked against hard-coded fixture facts.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import contextlib
++import hashlib
++import json
++import os
++import sqlite3
++from collections.abc import Iterator, Mapping, Sequence
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++import pytest
++from click.testing import CliRunner
++
++from polylogue.cli.click_app import cli
++from polylogue.config import Config, Source
++from polylogue.demo.seed import seed_demo_archive
++from polylogue.pipeline.services.archive_ingest import parse_sources_archive
++from polylogue.scenarios.corpus import (
++    DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
++    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
++    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
++    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
++    DEMO_GEMINI_SESSION_ID,
++)
++from polylogue.scenarios.workload import (
++    WorkloadEnvelopeSpec,
++    WorkloadInputRef,
++    WorkloadPhaseObservation,
++    WorkloadReceipt,
++    WorkloadRunStatus,
++)
++from polylogue.storage.archive_identity import ArchiveIdentity
++from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
++from polylogue.storage.index_generation import source_revision_snapshot
++from polylogue.storage.repair import repair_session_insights
++from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
++from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
++from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
++from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
++
++_SELECTED_SESSION_IDS = (
++    DEMO_GEMINI_SESSION_ID,
++    DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
++    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
++    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
++    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
++)
++
++_SOURCE_PATHS = {
++    DEMO_GEMINI_SESSION_ID: Path("gemini/demo-00.json"),
++    DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: Path("claude-ai/temporary-demo.json"),
++    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: Path("codex/lineage-parent.jsonl"),
++    DEMO_CODEX_LINEAGE_FORK_SESSION_ID: Path("codex/lineage-fork.jsonl"),
++    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID: Path("codex/lineage-subagent.jsonl"),
++    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: Path("codex/terminal-error.jsonl"),
++}
++
++_UPDATE_NATIVE_ID = "testdiet-equivalence-update-0001"
++_UPDATE_MESSAGE_ID = f"{DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}:{_UPDATE_NATIVE_ID}"
++_UPDATE_BLOCK_ID = f"{_UPDATE_MESSAGE_ID}:0"
++_UPDATE_TEXT = "rebuild equivalence sentinel preserves terminal evidence"
++_OVERLAY_ASSERTION_ID = "testdiet-equivalence-overlay"
++
++_SESSION_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:sessions("
++    "session_id,native_id,origin,parent_session_id,root_session_id,branch_type,"
++    "active_leaf_message_id,session_kind,message_count)"
++)
++_MESSAGE_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:messages("
++    "message_id,session_id,native_id,parent_message_id,position,role,message_type,"
++    "material_origin,variant_index,is_active_path,is_active_leaf,content_hash)"
++)
++_BLOCK_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:blocks("
++    "block_id,message_id,session_id,position,block_type,text,tool_name,tool_id,"
++    "tool_result_is_error,tool_result_exit_code,search_text,content_hash)"
++)
++_ATTACHMENT_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:attachments+attachment_refs("
++    "attachment_id,display_name,media_type,byte_count,blob_hash,acquisition_status,"
++    "session_id,message_id,position,upload_origin,source_url,caption)"
++)
++_LINEAGE_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:session_links("
++    "src_session_id,dst_origin,dst_native_id,link_type,resolved_dst_session_id,"
++    "branch_point_message_id,inheritance,status,method,confidence)"
++)
++_SEARCH_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:messages_fts+blocks("
++    "block_id,message_id,session_id,position,block_type,search_text,content_hash)"
++)
++_PROFILE_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:session_profiles@materializer-v"
++    f"{SESSION_INSIGHT_MATERIALIZER_VERSION}(session_id,materializer_version,"
++    "input_high_water_mark_source,input_row_count,source_name,message_count,"
++    "attachment_count,work_event_count,phase_count,tool_use_count,workflow_shape,"
++    "terminal_state,terminal_state_method,terminal_state_confidence,"
++    "total_input_tokens,total_output_tokens)"
++)
++_MATERIALIZATION_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:insight_materialization@materializer-v"
++    f"{SESSION_INSIGHT_MATERIALIZER_VERSION}(insight_type,session_id,"
++    "materializer_version,input_high_water_mark_source,input_row_count)"
++)
++_THREAD_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:threads+thread_sessions@materializer-v"
++    f"{SESSION_INSIGHT_MATERIALIZER_VERSION}(thread_id,materializer_version,"
++    "input_high_water_mark_source,input_row_count,session_ids_json,session_count,"
++    "depth,branch_count,total_messages,work_event_breakdown_json)"
++)
++_ABSENCE_CONTRACT = (
++    f"index-v{INDEX_SCHEMA_VERSION}:absence-unknown("
++    "attachment.display_name,attachment.source_url,attachment.caption,"
++    "session_profile.terminal_state,session_profile.terminal_state_method)"
++)
++
++_MATERIALIZATION_TYPES = (
++    "context_snapshots",
++    "latency",
++    "observed_events",
++    "phases",
++    "provider_usage",
++    "runs",
++    "session_profile",
++    "thread",
++    "work_events",
++)
++
++
++@dataclass(frozen=True, order=True, slots=True)
++class DerivationKey:
++    """Test-local exact identity for one compared derived fact."""
++
++    subject: str
++    source_identity: str
++    recipe_identity: str
++    output_contract: str
++
++
++@dataclass(frozen=True, slots=True)
++class SourceIdentity:
++    raw_id: str
++    origin: str
++    native_id: str | None
++    source_path: str
++    source_index: int
++    blob_sha256: str
++    blob_size: int
++
++    @property
++    def canonical(self) -> str:
++        return json.dumps(
++            {
++                "raw_id": self.raw_id,
++                "origin": self.origin,
++                "native_id": self.native_id,
++                "source_path": self.source_path,
++                "source_index": self.source_index,
++                "blob_sha256": self.blob_sha256,
++                "blob_size": self.blob_size,
++            },
++            sort_keys=True,
++            separators=(",", ":"),
++        )
++
++
++@dataclass(frozen=True, slots=True)
++class RouteSnapshot:
++    source_snapshot: str
++    generation_id: str
++    recipe_identity: str
++    source_identities: Mapping[str, SourceIdentity]
++    facts: Mapping[DerivationKey, tuple[tuple[Any, ...], ...]]
++
++
++@contextlib.contextmanager
++def _pushd(path: Path) -> Iterator[None]:
++    previous = Path.cwd()
++    os.chdir(path)
++    try:
++        yield
++    finally:
++        os.chdir(previous)
++
++
++def _normalized(value: Any) -> Any:
++    return value.hex() if isinstance(value, bytes) else value
++
++
++def _rows(
++    conn: sqlite3.Connection,
++    sql: str,
++    params: Sequence[object] = (),
++) -> tuple[tuple[Any, ...], ...]:
++    return tuple(tuple(_normalized(value) for value in row) for row in conn.execute(sql, params))
++
++
++def _recipe_identity(repo_root: Path) -> str:
++    """Hash the exact production recipe files and versioned output schemas."""
++    recipe_files = (
++        "polylogue/sources/dispatch.py",
++        "polylogue/pipeline/services/archive_ingest.py",
++        "polylogue/maintenance/replay.py",
++        "polylogue/storage/fts/fts_lifecycle.py",
++        "polylogue/storage/insights/session/rebuild.py",
++        "polylogue/cli/commands/maintenance/_rebuild_index.py",
++    )
++    digest = hashlib.sha256()
++    for relative in recipe_files:
++        digest.update(relative.encode())
++        digest.update(b"\0")
++        digest.update((repo_root / relative).read_bytes())
++        digest.update(b"\0")
++    digest.update(
++        (
++            f"source-v{SOURCE_SCHEMA_VERSION}|index-v{INDEX_SCHEMA_VERSION}|"
++            f"session-insight-v{SESSION_INSIGHT_MATERIALIZER_VERSION}"
++        ).encode()
++    )
++    return f"sha256:{digest.hexdigest()}"
++
++
++def _bundle_source_identity(source_identities: Mapping[str, SourceIdentity], session_ids: Sequence[str]) -> str:
++    return json.dumps(
++        [source_identities[session_id].canonical for session_id in session_ids],
++        separators=(",", ":"),
++    )
++
++
++def _project_route(archive_root: Path, *, generation_id: str, recipe_identity: str) -> RouteSnapshot:
++    placeholders = ",".join("?" for _ in _SELECTED_SESSION_IDS)
++    index_db = archive_root / "index.db"
++    source_db = archive_root / "source.db"
++
++    with sqlite3.connect(index_db) as conn:
++        session_raw_rows = _rows(
++            conn,
++            f"""
++            SELECT session_id, raw_id
++            FROM sessions
++            WHERE session_id IN ({placeholders})
++            ORDER BY session_id
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++        sessions = _rows(
++            conn,
++            f"""
++            SELECT session_id, native_id, origin, parent_session_id, root_session_id,
++                   branch_type, active_leaf_message_id, session_kind, message_count
++            FROM sessions
++            WHERE session_id IN ({placeholders})
++            ORDER BY session_id
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++        messages = _rows(
++            conn,
++            f"""
++            SELECT message_id, session_id, native_id, parent_message_id, position,
++                   role, message_type, material_origin, variant_index,
++                   is_active_path, is_active_leaf, content_hash
++            FROM messages
++            WHERE session_id IN ({placeholders})
++            ORDER BY session_id, position, message_id
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++        blocks = _rows(
++            conn,
++            f"""
++            SELECT block_id, message_id, session_id, position, block_type, text,
++                   tool_name, tool_id, tool_result_is_error, tool_result_exit_code,
++                   search_text, content_hash
++            FROM blocks
++            WHERE session_id IN ({placeholders})
++            ORDER BY session_id, message_id, position, block_id
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++        attachments = _rows(
++            conn,
++            """
++            SELECT a.attachment_id, a.display_name, a.media_type, a.byte_count,
++                   a.blob_hash, a.acquisition_status, r.session_id, r.message_id,
++                   r.position, r.upload_origin, r.source_url, r.caption
++            FROM attachments AS a
++            JOIN attachment_refs AS r USING (attachment_id)
++            WHERE r.session_id = ?
++            ORDER BY r.message_id, r.position
++            """,
++            (DEMO_GEMINI_SESSION_ID,),
++        )
++        links = _rows(
++            conn,
++            f"""
++            SELECT src_session_id, dst_origin, dst_native_id, link_type,
++                   resolved_dst_session_id, branch_point_message_id, inheritance,
++                   status, method, confidence
++            FROM session_links
++            WHERE src_session_id IN ({placeholders})
++            ORDER BY src_session_id, link_type
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++        search = _rows(
++            conn,
++            """
++            SELECT b.block_id, b.message_id, b.session_id, b.position, b.block_type,
++                   b.search_text, b.content_hash
++            FROM messages_fts AS f
++            JOIN blocks AS b ON b.rowid = f.rowid
++            WHERE messages_fts MATCH 'rebuild equivalence sentinel'
++            ORDER BY b.block_id
++            """,
++        )
++        profiles = _rows(
++            conn,
++            f"""
++            SELECT session_id, materializer_version, input_high_water_mark_source,
++                   input_row_count, source_name, message_count, attachment_count,
++                   work_event_count, phase_count, tool_use_count, workflow_shape,
++                   terminal_state, terminal_state_method, terminal_state_confidence,
++                   total_input_tokens, total_output_tokens
++            FROM session_profiles
++            WHERE session_id IN ({placeholders})
++            ORDER BY session_id
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++        materialization = _rows(
++            conn,
++            f"""
++            SELECT insight_type, session_id, materializer_version,
++                   input_high_water_mark_source, input_row_count
++            FROM insight_materialization
++            WHERE session_id IN ({placeholders})
++            ORDER BY session_id, insight_type
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++        threads = _rows(
++            conn,
++            f"""
++            SELECT DISTINCT t.thread_id, t.materializer_version,
++                   t.input_high_water_mark_source, t.input_row_count,
++                   t.session_ids_json, t.session_count, t.depth, t.branch_count,
++                   t.total_messages, t.work_event_breakdown_json
++            FROM threads AS t
++            JOIN thread_sessions AS ts ON ts.thread_id = t.thread_id
++            WHERE ts.session_id IN ({placeholders})
++            ORDER BY t.thread_id
++            """,
++            _SELECTED_SESSION_IDS,
++        )
++
++    raw_ids = dict(session_raw_rows)
++    assert set(raw_ids) == set(_SELECTED_SESSION_IDS)
++    source_identities: dict[str, SourceIdentity] = {}
++    with sqlite3.connect(source_db) as conn:
++        for session_id, raw_id in raw_ids.items():
++            row = conn.execute(
++                """
++                SELECT raw_id, origin, native_id, source_path, source_index,
++                       blob_hash, blob_size
++                FROM raw_sessions
++                WHERE raw_id = ?
++                """,
++                (raw_id,),
++            ).fetchone()
++            assert row is not None
++            source_identities[session_id] = SourceIdentity(
++                raw_id=str(row[0]),
++                origin=str(row[1]),
++                native_id=None if row[2] is None else str(row[2]),
++                source_path=str(row[3]),
++                source_index=int(row[4]),
++                blob_sha256=bytes(row[5]).hex(),
++                blob_size=int(row[6]),
++            )
++
++    session_rows = {str(row[0]): (row,) for row in sessions}
++    message_rows = {
++        session_id: tuple(row for row in messages if row[1] == session_id) for session_id in _SELECTED_SESSION_IDS
++    }
++    block_rows = {
++        session_id: tuple(row for row in blocks if row[2] == session_id) for session_id in _SELECTED_SESSION_IDS
++    }
++    profile_rows = {str(row[0]): (row,) for row in profiles}
++    materialization_rows = {
++        session_id: tuple(row for row in materialization if row[1] == session_id)
++        for session_id in _SELECTED_SESSION_IDS
++    }
++
++    facts: dict[DerivationKey, tuple[tuple[Any, ...], ...]] = {}
++    for session_id in _SELECTED_SESSION_IDS:
++        source_identity = source_identities[session_id].canonical
++        for contract, value in (
++            (_SESSION_CONTRACT, session_rows[session_id]),
++            (_MESSAGE_CONTRACT, message_rows[session_id]),
++            (_BLOCK_CONTRACT, block_rows[session_id]),
++            (_PROFILE_CONTRACT, profile_rows[session_id]),
++            (_MATERIALIZATION_CONTRACT, materialization_rows[session_id]),
++        ):
++            facts[DerivationKey(session_id, source_identity, recipe_identity, contract)] = value
++
++    facts[
++        DerivationKey(
++            DEMO_GEMINI_SESSION_ID,
++            source_identities[DEMO_GEMINI_SESSION_ID].canonical,
++            recipe_identity,
++            _ATTACHMENT_CONTRACT,
++        )
++    ] = attachments
++
++    for session_id in (DEMO_CODEX_LINEAGE_FORK_SESSION_ID, DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID):
++        facts[
++            DerivationKey(
++                session_id,
++                source_identities[session_id].canonical,
++                recipe_identity,
++                _LINEAGE_CONTRACT,
++            )
++        ] = tuple(row for row in links if row[0] == session_id)
++
++    facts[
++        DerivationKey(
++            DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
++            source_identities[DEMO_CODEX_TERMINAL_ERROR_SESSION_ID].canonical,
++            recipe_identity,
++            _SEARCH_CONTRACT,
++        )
++    ] = search
++
++    thread_members = {
++        DEMO_GEMINI_SESSION_ID: (DEMO_GEMINI_SESSION_ID,),
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: (DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,),
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: (
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
++            DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
++        ),
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: (DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,),
++    }
++    for thread in threads:
++        thread_id = str(thread[0])
++        facts[
++            DerivationKey(
++                thread_id,
++                _bundle_source_identity(source_identities, thread_members[thread_id]),
++                recipe_identity,
++                _THREAD_CONTRACT,
++            )
++        ] = (thread,)
++
++    gemini_profile = profile_rows[DEMO_GEMINI_SESSION_ID][0]
++    temporary_profile = profile_rows[DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID][0]
++    attachment = attachments[0] if attachments else (None,) * 12
++    facts[
++        DerivationKey(
++            DEMO_GEMINI_SESSION_ID,
++            source_identities[DEMO_GEMINI_SESSION_ID].canonical,
++            recipe_identity,
++            _ABSENCE_CONTRACT,
++        )
++    ] = ((attachment[1], attachment[10], attachment[11], gemini_profile[11], gemini_profile[12]),)
++    facts[
++        DerivationKey(
++            DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
++            source_identities[DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID].canonical,
++            recipe_identity,
++            _ABSENCE_CONTRACT,
++        )
++    ] = ((None, None, None, temporary_profile[11], temporary_profile[12]),)
++
++    return RouteSnapshot(
++        source_snapshot=source_revision_snapshot(archive_root),
++        generation_id=generation_id,
++        recipe_identity=recipe_identity,
++        source_identities=source_identities,
++        facts=facts,
++    )
++
++
++def _fact(snapshot: RouteSnapshot, subject: str, contract: str) -> tuple[tuple[Any, ...], ...]:
++    matches = [
++        value for key, value in snapshot.facts.items() if key.subject == subject and key.output_contract == contract
++    ]
++    assert len(matches) == 1
++    return matches[0]
++
++
++def _assert_planted_invariants(snapshot: RouteSnapshot, source_root: Path) -> None:
++    """Assert source-authored facts, never facts copied from the other route."""
++    expected_sessions = {
++        DEMO_GEMINI_SESSION_ID: (
++            DEMO_GEMINI_SESSION_ID,
++            "demo-00",
++            "aistudio-drive",
++            None,
++            DEMO_GEMINI_SESSION_ID,
++            None,
++            f"{DEMO_GEMINI_SESSION_ID}:chunk-4",
++            "standard",
++            4,
++        ),
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: (
++            DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
++            "demo-temporary-claude-ai",
++            "claude-ai-export",
++            None,
++            DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
++            None,
++            f"{DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID}:temporary-a1",
++            "temporary",
++            2,
++        ),
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: (
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            "demo-lineage-parent",
++            "codex-session",
++            None,
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            None,
++            f"{DEMO_CODEX_LINEAGE_PARENT_SESSION_ID}:parent-a2",
++            "standard",
++            3,
++        ),
++        DEMO_CODEX_LINEAGE_FORK_SESSION_ID: (
++            DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
++            "demo-lineage-fork",
++            "codex-session",
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            None,
++            f"{DEMO_CODEX_LINEAGE_FORK_SESSION_ID}:fork-a3",
++            "standard",
++            2,
++        ),
++        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID: (
++            DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
++            "demo-lineage-subagent",
++            "codex-session",
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            "subagent",
++            f"{DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID}:subagent-a0",
++            "standard",
++            1,
++        ),
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: (
++            DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
++            "demo-terminal-error",
++            "codex-session",
++            None,
++            DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
++            None,
++            _UPDATE_MESSAGE_ID,
++            "standard",
++            5,
++        ),
++    }
++    for session_id, expected in expected_sessions.items():
++        assert _fact(snapshot, session_id, _SESSION_CONTRACT) == (expected,)
++
++    expected_message_shapes = {
++        DEMO_GEMINI_SESSION_ID: (
++            (f"{DEMO_GEMINI_SESSION_ID}:chunk-1", "chunk-1", 0, "user", "message", 1, 0),
++            (f"{DEMO_GEMINI_SESSION_ID}:chunk-2", "chunk-2", 1, "assistant", "message", 1, 0),
++            (f"{DEMO_GEMINI_SESSION_ID}:chunk-3", "chunk-3", 2, "user", "message", 1, 0),
++            (f"{DEMO_GEMINI_SESSION_ID}:chunk-4", "chunk-4", 3, "assistant", "message", 1, 1),
++        ),
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: (
++            (
++                f"{DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID}:temporary-u0",
++                "temporary-u0",
++                0,
++                "user",
++                "message",
++                1,
++                0,
++            ),
++            (
++                f"{DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID}:temporary-a1",
++                "temporary-a1",
++                1,
++                "assistant",
++                "message",
++                1,
++                1,
++            ),
++        ),
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: (
++            (
++                f"{DEMO_CODEX_LINEAGE_PARENT_SESSION_ID}:parent-u0",
++                "parent-u0",
++                0,
++                "user",
++                "message",
++                1,
++                0,
++            ),
++            (
++                f"{DEMO_CODEX_LINEAGE_PARENT_SESSION_ID}:parent-a1",
++                "parent-a1",
++                1,
++                "assistant",
++                "message",
++                1,
++                0,
++            ),
++            (
++                f"{DEMO_CODEX_LINEAGE_PARENT_SESSION_ID}:parent-a2",
++                "parent-a2",
++                2,
++                "assistant",
++                "tool_use",
++                1,
++                1,
++            ),
++        ),
++        DEMO_CODEX_LINEAGE_FORK_SESSION_ID: (
++            (f"{DEMO_CODEX_LINEAGE_FORK_SESSION_ID}:fork-u2", "fork-u2", 2, "user", "message", 1, 0),
++            (
++                f"{DEMO_CODEX_LINEAGE_FORK_SESSION_ID}:fork-a3",
++                "fork-a3",
++                3,
++                "assistant",
++                "message",
++                1,
++                1,
++            ),
++        ),
++        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID: (
++            (
++                f"{DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID}:subagent-a0",
++                "subagent-a0",
++                0,
++                "assistant",
++                "message",
++                1,
++                1,
++            ),
++        ),
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: (
++            (
++                f"{DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}:terminal-error-u0",
++                "terminal-error-u0",
++                0,
++                "user",
++                "message",
++                1,
++                0,
++            ),
++            (
++                f"{DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}:fc-terminal-error",
++                "fc-terminal-error",
++                1,
++                "assistant",
++                "tool_use",
++                1,
++                0,
++            ),
++            (
++                f"{DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}:call-terminal-error",
++                "call-terminal-error",
++                2,
++                "tool",
++                "tool_result",
++                1,
++                0,
++            ),
++            (
++                f"{DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}:terminal-error-a1",
++                "terminal-error-a1",
++                3,
++                "assistant",
++                "message",
++                1,
++                0,
++            ),
++            (_UPDATE_MESSAGE_ID, _UPDATE_NATIVE_ID, 4, "assistant", "message", 1, 1),
++        ),
++    }
++    for session_id, expected in expected_message_shapes.items():
++        messages = _fact(snapshot, session_id, _MESSAGE_CONTRACT)
++        shape = tuple((row[0], row[2], row[4], row[5], row[6], row[9], row[10]) for row in messages)
++        assert shape == expected
++        assert all(len(str(row[11])) == 64 for row in messages)
++
++    expected_block_counts = {
++        DEMO_GEMINI_SESSION_ID: 5,
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: 3,
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: 5,
++        DEMO_CODEX_LINEAGE_FORK_SESSION_ID: 2,
++        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID: 1,
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: 5,
++    }
++    blocks_by_id: dict[str, tuple[Any, ...]] = {}
++    for session_id, expected_count in expected_block_counts.items():
++        blocks = _fact(snapshot, session_id, _BLOCK_CONTRACT)
++        assert len(blocks) == expected_count
++        assert all(len(str(row[11])) == 64 for row in blocks)
++        blocks_by_id.update({str(row[0]): row for row in blocks})
++
++    assert blocks_by_id[f"{DEMO_GEMINI_SESSION_ID}:chunk-1:1"][4:11] == (
++        "document",
++        None,
++        None,
++        None,
++        None,
++        None,
++        "",
++    )
++    assert blocks_by_id[f"{DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}:fc-terminal-error:0"][4:11] == (
++        "tool_use",
++        None,
++        "exec_command",
++        "call-terminal-error",
++        None,
++        None,
++        "exec_command pytest tests/missing_test.py",
++    )
++    terminal_result = blocks_by_id[f"{DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}:call-terminal-error:0"]
++    assert terminal_result[4] == "tool_result"
++    assert terminal_result[8:10] == (1, 4)
++    assert "tests/missing_test.py" in str(terminal_result[5])
++    update_block = blocks_by_id[_UPDATE_BLOCK_ID]
++    assert update_block[4:11] == ("text", _UPDATE_TEXT, None, None, None, None, _UPDATE_TEXT)
++
++    assert _fact(snapshot, DEMO_GEMINI_SESSION_ID, _ATTACHMENT_CONTRACT) == (
++        (
++            "5bbeee0bb81b97b47baa86943ee0e098a9a5f02c861fa11d75ad998a3b3e05ab",
++            None,
++            "text/plain",
++            53,
++            "5237ef68d704a0cf52e279a6c4d73d2e244e14d86919cc1ba49cf3739d7491d1",
++            "acquired",
++            DEMO_GEMINI_SESSION_ID,
++            f"{DEMO_GEMINI_SESSION_ID}:chunk-1",
++            2790139956,
++            "paste",
++            None,
++            None,
++        ),
++    )
++
++    assert _fact(snapshot, DEMO_CODEX_LINEAGE_FORK_SESSION_ID, _LINEAGE_CONTRACT) == (
++        (
++            DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
++            "codex-session",
++            "demo-lineage-parent",
++            "branch",
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            f"{DEMO_CODEX_LINEAGE_PARENT_SESSION_ID}:parent-a1",
++            "prefix-sharing",
++            None,
++            "parser-parent",
++            1.0,
++        ),
++    )
++    assert _fact(snapshot, DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID, _LINEAGE_CONTRACT) == (
++        (
++            DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
++            "codex-session",
++            "demo-lineage-parent",
++            "subagent",
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            None,
++            "spawned-fresh",
++            None,
++            "parser-parent",
++            1.0,
++        ),
++    )
++
++    search = _fact(snapshot, DEMO_CODEX_TERMINAL_ERROR_SESSION_ID, _SEARCH_CONTRACT)
++    assert len(search) == 1
++    assert search[0][:6] == (
++        _UPDATE_BLOCK_ID,
++        _UPDATE_MESSAGE_ID,
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
++        0,
++        "text",
++        _UPDATE_TEXT,
++    )
++
++    expected_profiles = {
++        DEMO_GEMINI_SESSION_ID: (4, "aistudio-drive", 4, 1, 1, 1, 0, "chat", "unknown", None, 0.2, 30, 0),
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: (
++            2,
++            "claude-ai-export",
++            2,
++            0,
++            1,
++            1,
++            0,
++            "chat",
++            "unknown",
++            None,
++            0.2,
++            22,
++            0,
++        ),
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: (
++            3,
++            "codex-session",
++            3,
++            0,
++            1,
++            1,
++            1,
++            "subagent_dispatch",
++            "unknown",
++            None,
++            0.2,
++            30,
++            0,
++        ),
++        DEMO_CODEX_LINEAGE_FORK_SESSION_ID: (
++            2,
++            "codex-session",
++            2,
++            0,
++            1,
++            1,
++            0,
++            "chat",
++            "unknown",
++            None,
++            0.2,
++            21,
++            0,
++        ),
++        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID: (
++            1,
++            "codex-session",
++            1,
++            0,
++            1,
++            1,
++            0,
++            "chat",
++            "unknown",
++            None,
++            0.2,
++            18,
++            0,
++        ),
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: (
++            5,
++            "codex-session",
++            5,
++            0,
++            1,
++            1,
++            2,
++            "exploratory",
++            "error_left",
++            None,
++            0.78,
++            33,
++            0,
++        ),
++    }
++    for session_id, expected in expected_profiles.items():
++        [profile] = _fact(snapshot, session_id, _PROFILE_CONTRACT)
++        assert profile[1:3] == (SESSION_INSIGHT_MATERIALIZER_VERSION, "provider_ts")
++        assert profile[3:] == expected
++
++    expected_materialization_counts = {
++        DEMO_GEMINI_SESSION_ID: (1, 0, 1, 1, 0, 1, 4, 1, 1),
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: (1, 0, 1, 1, 0, 1, 2, 1, 1),
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: (2, 0, 3, 1, 0, 2, 3, 3, 1),
++        DEMO_CODEX_LINEAGE_FORK_SESSION_ID: (1, 0, 1, 1, 0, 1, 2, 3, 1),
++        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID: (1, 0, 1, 1, 0, 1, 1, 3, 1),
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: (1, 0, 3, 1, 0, 1, 5, 1, 1),
++    }
++    for session_id, expected_counts in expected_materialization_counts.items():
++        rows = _fact(snapshot, session_id, _MATERIALIZATION_CONTRACT)
++        assert tuple(row[0] for row in rows) == _MATERIALIZATION_TYPES
++        assert tuple(row[2] for row in rows) == (SESSION_INSIGHT_MATERIALIZER_VERSION,) * 9
++        assert tuple(row[3] for row in rows) == ("provider_ts",) * 9
++        assert tuple(row[4] for row in rows) == expected_counts
++
++    expected_threads = {
++        DEMO_GEMINI_SESSION_ID: (
++            DEMO_GEMINI_SESSION_ID,
++            SESSION_INSIGHT_MATERIALIZER_VERSION,
++            "provider_ts",
++            1,
++            json.dumps([DEMO_GEMINI_SESSION_ID], separators=(",", ":")),
++            1,
++            0,
++            1,
++            4,
++            '{"session":1}',
++        ),
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: (
++            DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
++            SESSION_INSIGHT_MATERIALIZER_VERSION,
++            "provider_ts",
++            1,
++            json.dumps([DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID], separators=(",", ":")),
++            1,
++            0,
++            1,
++            2,
++            '{"session":1}',
++        ),
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: (
++            DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++            SESSION_INSIGHT_MATERIALIZER_VERSION,
++            "provider_ts",
++            3,
++            json.dumps(
++                [
++                    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
++                    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
++                    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
++                ],
++                separators=(",", ":"),
++            ),
++            3,
++            1,
++            2,
++            6,
++            '{"implementation":1,"session":2}',
++        ),
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: (
++            DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
++            SESSION_INSIGHT_MATERIALIZER_VERSION,
++            "provider_ts",
++            1,
++            json.dumps([DEMO_CODEX_TERMINAL_ERROR_SESSION_ID], separators=(",", ":")),
++            1,
++            0,
++            1,
++            5,
++            '{"implementation":1}',
++        ),
++    }
++    for thread_id, expected in expected_threads.items():
++        assert _fact(snapshot, thread_id, _THREAD_CONTRACT) == (expected,)
++
++    assert _fact(snapshot, DEMO_GEMINI_SESSION_ID, _ABSENCE_CONTRACT) == ((None, None, None, "unknown", None),)
++    assert _fact(snapshot, DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID, _ABSENCE_CONTRACT) == (
++        (None, None, None, "unknown", None),
++    )
++
++    expected_origins = {
++        DEMO_GEMINI_SESSION_ID: "aistudio-drive",
++        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID: "claude-ai-export",
++        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID: "codex-session",
++        DEMO_CODEX_LINEAGE_FORK_SESSION_ID: "codex-session",
++        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID: "codex-session",
++        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID: "codex-session",
++    }
++    for session_id, relative_path in _SOURCE_PATHS.items():
++        source_bytes = (source_root / relative_path).read_bytes()
++        planted_bytes = (
++            json.dumps(json.loads(source_bytes), separators=(",", ":")).encode()
++            if relative_path.suffix == ".json"
++            else source_bytes
++        )
++        identity = snapshot.source_identities[session_id]
++        assert identity.origin == expected_origins[session_id]
++        assert identity.source_path == relative_path.as_posix()
++        assert identity.source_index == 0
++        assert identity.blob_sha256 == hashlib.sha256(planted_bytes).hexdigest()
++        assert identity.blob_size == len(planted_bytes)
++
++    assert all(key.recipe_identity == snapshot.recipe_identity for key in snapshot.facts)
++    assert all(key.source_identity for key in snapshot.facts)
++    assert all(key.output_contract for key in snapshot.facts)
++
++
++def _append_incremental_update(path: Path) -> None:
++    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
++    records.append(
++        {
++            "type": "response_item",
++            "payload": {
++                "type": "message",
++                "id": _UPDATE_NATIVE_ID,
++                "role": "assistant",
++                "timestamp": "2026-07-04T10:05:05Z",
++                "content": [{"type": "output_text", "text": _UPDATE_TEXT}],
++            },
++        }
++    )
++    path.write_text(
++        "\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n",
++        encoding="utf-8",
++    )
++
++
++def _source_row_count(archive_root: Path) -> int:
++    with sqlite3.connect(archive_root / "source.db") as conn:
++        row = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()
++    assert row is not None
++    return int(row[0])
++
++
++def _overlay_snapshot(archive_root: Path) -> tuple[tuple[Any, ...], ...]:
++    with sqlite3.connect(archive_root / "user.db") as conn:
++        return _rows(conn, "SELECT * FROM assertions ORDER BY assertion_id")
++
++
++def _content_identity(archive_root: Path) -> tuple[tuple[Any, ...], ...]:
++    placeholders = ",".join("?" for _ in _SELECTED_SESSION_IDS)
++    with sqlite3.connect(archive_root / "source.db") as conn:
++        source_rows = _rows(
++            conn,
++            """
++            SELECT raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size
++            FROM raw_sessions
++            ORDER BY raw_id
++            """,
++        )
++    with sqlite3.connect(archive_root / "index.db") as conn:
++        index_rows = _rows(
++            conn,
++            f"""
++            SELECT 'session', session_id, raw_id, NULL
++            FROM sessions
++            WHERE session_id IN ({placeholders})
++            UNION ALL
++            SELECT 'message', message_id, session_id, content_hash
++            FROM messages
++            WHERE session_id IN ({placeholders})
++            UNION ALL
++            SELECT 'block', block_id, session_id, content_hash
++            FROM blocks
++            WHERE session_id IN ({placeholders})
++            ORDER BY 1, 2
++            """,
++            (*_SELECTED_SESSION_IDS, *_SELECTED_SESSION_IDS, *_SELECTED_SESSION_IDS),
++        )
++    return source_rows + index_rows
++
++
++def _insert_overlay(archive_root: Path) -> None:
++    with sqlite3.connect(archive_root / "user.db") as conn:
++        upsert_assertion(
++            conn,
++            assertion_id=_OVERLAY_ASSERTION_ID,
++            target_ref=f"session:{DEMO_GEMINI_SESSION_ID}",
++            kind="note",
++            body_text="overlay remains durable across index generation promotion",
++            author_ref="user:testdiet",
++            author_kind="user",
++            now_ms=1_783_166_400_000,
++        )
++
++
++def _workload_spec(source_snapshot: str, recipe_identity: str) -> WorkloadEnvelopeSpec:
++    return WorkloadEnvelopeSpec(
++        workload_id="testdiet-03:demo-incremental-rebuild-equivalence",
++        family_id="incremental-rebuild-equivalence",
++        version=1,
++        inputs=(
++            WorkloadInputRef(
++                input_id="polylogue-demo+terminal-update",
++                corpus_id=source_snapshot,
++                profile_id=recipe_identity,
++                package_ref="polylogue/demo/seed.py",
++                seed=1843,
++                distribution_refs=tuple(path.as_posix() for path in _SOURCE_PATHS.values()),
++            ),
++        ),
++        phases=("route",),
++    )
++
++
++def _receipt(
++    spec: WorkloadEnvelopeSpec,
++    snapshot: RouteSnapshot,
++    *,
++    archive_id: str,
++    runtime_id: str,
++) -> WorkloadReceipt:
++    return WorkloadReceipt.from_observations(
++        spec=spec,
++        status=WorkloadRunStatus.SUCCEEDED,
++        build_id="b9052e09103502017c0f510ecc699aac395de23c",
++        runtime_id=runtime_id,
++        archive_id=archive_id,
++        generation_id=snapshot.generation_id,
++        frame_id=None,
++        phases=(
++            WorkloadPhaseObservation(
++                name="route",
++                progress_completed=len(snapshot.facts),
++                progress_total=len(snapshot.facts),
++                cleanup_complete=True,
++                quiescent=True,
++            ),
++        ),
++        evidence_refs=tuple(
++            sorted(
++                f"{key.subject}|{key.source_identity}|{key.recipe_identity}|{key.output_contract}"
++                for key in snapshot.facts
++            )
++        ),
++        cleanup_complete=True,
++        notes=("canonical facts selected from the active generation",),
++    )
++
++
++def test_incremental_and_rebuild_public_facts_match(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++    cli_runner: CliRunner,
++) -> None:
++    """One planted workload converges through incremental and fresh routes.
++
++    Production dependencies exercised: ``parse_sources_archive`` for update and
++    idempotent reprocess, scoped ``repair_message_fts_index_sync``, scoped
++    ``repair_session_insights`` after a connection restart, and the real
++    ``maintenance rebuild-index`` blue/green generation command.
++
++    Anti-vacuity mutations this test kills include removing the rebuild command's
++    ``repair_session_insights`` stage, skipping the scoped FTS repair, retaining
++    stale terminal materialization rows, or suffixing the one-document Gemini
++    replay identity as ``demo-00-0``.  Row counts can remain plausible under
++    those mutations; the exact derivation-key projections cannot.
++    """
++    archive_root = tmp_path / "archive"
++    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
++    monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(archive_root / "render"))
++    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
++    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
++
++    seed = asyncio.run(seed_demo_archive(archive_root, force=True, with_overlays=True))
++    update_path = seed.source_root / _SOURCE_PATHS[DEMO_CODEX_TERMINAL_ERROR_SESSION_ID]
++    _append_incremental_update(update_path)
++
++    with _pushd(seed.source_root):
++        update_source = Source(name="codex", path=_SOURCE_PATHS[DEMO_CODEX_TERMINAL_ERROR_SESSION_ID])
++        first_update = asyncio.run(parse_sources_archive(archive_root, [update_source]))
++        rows_after_update = _source_row_count(archive_root)
++        repeated_update = asyncio.run(parse_sources_archive(archive_root, [update_source]))
++        rows_after_repeat = _source_row_count(archive_root)
++
++    assert first_update.processed_ids == {DEMO_CODEX_TERMINAL_ERROR_SESSION_ID}
++    assert repeated_update.processed_ids == set()
++    assert rows_after_repeat == rows_after_update
++
++    identity_before_overlay = _content_identity(archive_root)
++    source_snapshot_before_overlay = source_revision_snapshot(archive_root)
++    _insert_overlay(archive_root)
++    identity_after_overlay = _content_identity(archive_root)
++    assert identity_after_overlay == identity_before_overlay
++    assert source_revision_snapshot(archive_root) == source_snapshot_before_overlay
++    overlays_before_rebuild = _overlay_snapshot(archive_root)
++    assert any(row[0] == _OVERLAY_ASSERTION_ID for row in overlays_before_rebuild)
++
++    # Plant stale dependent rows, close the writer, and repair through freshly
++    # opened production connections.  This is the targeted + restarted route.
++    with sqlite3.connect(archive_root / "index.db") as conn:
++        conn.execute(
++            """
++            DELETE FROM messages_fts
++            WHERE rowid IN (SELECT rowid FROM blocks WHERE session_id = ?)
++            """,
++            (DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,),
++        )
++        for table in (
++            "session_profiles",
++            "session_latency_profiles",
++            "session_work_events",
++            "session_phases",
++            "insight_materialization",
++            "thread_sessions",
++        ):
++            conn.execute(
++                f"DELETE FROM {table} WHERE session_id = ?",
++                (DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,),
++            )
++        conn.execute(
++            "DELETE FROM threads WHERE thread_id = ?",
++            (DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,),
++        )
++
++    with sqlite3.connect(archive_root / "index.db") as conn:
++        assert conn.execute(
++            """
++            SELECT COUNT(*)
++            FROM messages_fts AS f
++            JOIN blocks AS b ON b.rowid = f.rowid
++            WHERE b.session_id = ?
++            """,
++            (DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,),
++        ).fetchone() == (0,)
++        repair_message_fts_index_sync(conn, [DEMO_CODEX_TERMINAL_ERROR_SESSION_ID])
++
++    config = Config(
++        archive_root=archive_root,
++        render_root=archive_root / "render",
++        sources=[],
++        db_path=archive_root / "index.db",
++    )
++    targeted_repair = repair_session_insights(
++        config,
++        session_ids=(DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,),
++        archive_root_override=archive_root,
++    )
++    assert targeted_repair.success is True
++    assert targeted_repair.repaired_count > 0
++
++    repo_root = Path(__file__).resolve().parents[3]
++    recipe_identity = _recipe_identity(repo_root)
++    incremental_generation = ArchiveIdentity.resolve(archive_root).active_generation
++    incremental = _project_route(
++        archive_root,
++        generation_id=incremental_generation,
++        recipe_identity=recipe_identity,
++    )
++    _assert_planted_invariants(incremental, seed.source_root)
++
++    rebuild = cli_runner.invoke(
++        cli,
++        ["--plain", "ops", "maintenance", "rebuild-index", "--output-format", "json"],
++        catch_exceptions=False,
++    )
++    assert rebuild.exit_code == 0, rebuild.output
++    payload = json.loads(rebuild.output)
++    assert payload["status"] == "replayed"
++    assert payload["materialized"] is True
++    assert payload["materialization"]["success"] is True
++    assert payload["generation"]["state"] == "active"
++    assert payload["generation"]["source_snapshot"] == incremental.source_snapshot
++    assert payload["authority_selection_expanded"] is True
++    assert payload["replayed_logical_source_count"] >= len(_SELECTED_SESSION_IDS)
++    rebuild_generation = str(payload["generation"]["generation_id"])
++    assert rebuild_generation != incremental.generation_id
++
++    generation_root = Path(str(payload["generation"]["index_path"])).parent
++    assert os.path.samefile(generation_root / "source.db", archive_root / "source.db")
++    assert os.path.samefile(generation_root / "user.db", archive_root / "user.db")
++    assert (archive_root / "index.db").resolve() == Path(str(payload["generation"]["index_path"])).resolve()
++
++    rebuilt = _project_route(
++        archive_root,
++        generation_id=rebuild_generation,
++        recipe_identity=recipe_identity,
++    )
++    _assert_planted_invariants(rebuilt, seed.source_root)
++
++    assert rebuilt.source_snapshot == incremental.source_snapshot
++    assert rebuilt.source_identities == incremental.source_identities
++    assert rebuilt.facts == incremental.facts
++    assert _overlay_snapshot(archive_root) == overlays_before_rebuild
++
++    workload = _workload_spec(incremental.source_snapshot, recipe_identity)
++    durable_archive_id = ArchiveIdentity.resolve(archive_root).durable_id
++    incremental_receipt = _receipt(
++        workload,
++        incremental,
++        archive_id=durable_archive_id,
++        runtime_id="incremental+targeted+restart",
++    )
++    rebuild_receipt = _receipt(
++        workload,
++        rebuilt,
++        archive_id=durable_archive_id,
++        runtime_id="fresh-blue-green-rebuild",
++    )
++    assert incremental_receipt.spec.spec_id == rebuild_receipt.spec.spec_id
++    assert incremental_receipt.generation_id != rebuild_receipt.generation_id
++    assert incremental_receipt.receipt_id != rebuild_receipt.receipt_id
++
++
++def test_overlay_state_does_not_change_rebuild_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    """User-tier state changes neither source/content nor workload identity."""
++    archive_root = tmp_path / "archive"
++    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
++    monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(archive_root / "render"))
++    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
++    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
++
++    asyncio.run(seed_demo_archive(archive_root, force=True, with_overlays=False))
++    repo_root = Path(__file__).resolve().parents[3]
++    recipe_identity = _recipe_identity(repo_root)
++    source_identity_before = source_revision_snapshot(archive_root)
++    content_identity_before = _content_identity(archive_root)
++    workload_before = _workload_spec(source_identity_before, recipe_identity)
++
++    _insert_overlay(archive_root)
++
++    source_identity_after = source_revision_snapshot(archive_root)
++    content_identity_after = _content_identity(archive_root)
++    workload_after = _workload_spec(source_identity_after, recipe_identity)
++    assert source_identity_after == source_identity_before
++    assert content_identity_after == content_identity_before
++    assert workload_after.spec_id == workload_before.spec_id
++    assert any(row[0] == _OVERLAY_ASSERTION_ID for row in _overlay_snapshot(archive_root))

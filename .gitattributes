@@ -49,6 +49,7 @@ docs/topology-status.md linguist-generated -diff
 # Immutable external result patches are acquired evidence, not working-source
 # diffs. Preserve their exact bytes (including whitespace) for later review.
 .agent/handoffs/external-agent-campaigns/**/results/**/raw/PATCH.diff -text -diff
+.agent/handoffs/external-agent-campaigns/**/results/**/extracted/PATCH.diff whitespace=-trailing-space
 
 # Fixtures / captured payloads — not first-party code (keep diffs: they're edited).
 **/representatives/*.json linguist-vendored

@@ -87,6 +87,17 @@
       "integration": "Current-master reconciliation at 66cee5e found the provisional MCP declaration/registration implementation already landed in PR #3004 / ed44be18f. This patch conflicts on the existing registry, adapters, server-family registration, and generated surfaces. Retain its 41-family trust/provenance/role lifecycle evidence for polylogue-t46.8.3; it does not complete tool retirement, URI/prompt surfaces, cold-model proof, telemetry, or t46.9 authorization receipts."
     },
     {
+      "job": "beads-06",
+      "workload": "beads",
+      "state": "triaged_snapshot_relative",
+      "attempt_id": "a01",
+      "package_revision": "r04",
+      "artifact": "beads-06/a01/raw/beads-06-agent-manual-install-r04.zip",
+      "sha256": "27c53ff948b0432052c981a35de15b29a7cbefd0cbdf67972d4d586b0f17048b",
+      "bytes": 84777,
+      "integration": "Raw and extracted evidence retained for polylogue-3gd.2 and polylogue-3gd.3. Current-master apply check fails; provider-run checks are not local verification."
+    },
+    {
       "job": "beads-05",
       "workload": "beads",
       "state": "superseded_by_revision",
