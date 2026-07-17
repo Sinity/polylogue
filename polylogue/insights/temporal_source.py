@@ -62,92 +62,25 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Literal, Protocol, TypeGuard, get_args
+from typing import Protocol
 
-TemporalSource = Literal[
-    "provider_ts",
-    "hook_event_ts",
-    "sort_key",
-    "file_mtime",
-    "materialization_ts",
-    "fallback_date",
-]
-
-TEMPORAL_SOURCE_VALUES: frozenset[TemporalSource] = frozenset(get_args(TemporalSource))
-
-# Public rendering contract for timestamps.  This is intentionally separate
-# from TemporalSource: consumers normally need to decide whether an observed
-# value may be shown as event time, not learn every storage-clock detail.
-#
-# ``unknown`` is the explicit no-time state.  It must render as unknown rather
-# than substituting materialization time or a deterministic fallback date.
-TimeConfidence = Literal["recorded", "estimated", "unknown"]
-TIME_CONFIDENCE_VALUES: frozenset[TimeConfidence] = frozenset(get_args(TimeConfidence))
+from polylogue.core.temporal import (
+    TEMPORAL_SOURCE_VALUES,
+    TIME_CONFIDENCE_VALUES,
+    TemporalSource,
+    TimeConfidence,
+    is_valid_temporal_source,
+    time_confidence_for_source,
+    time_confidence_for_sources,
+    weakest_of,
+    weakest_source,
+)
 
 
 class HasTemporalSource(Protocol):
     """Structural contract for a consumer record carrying temporal provenance."""
 
     input_high_water_mark_source: str | None
-
-
-# Provenance lattice, strongest first. A lower rank is a stronger (more
-# trustworthy/recency-anchored) signal; ``weakest_source`` picks the higher
-# rank between two values. Order matches the docstring above verbatim.
-_SOURCE_RANK: dict[TemporalSource, int] = {source: rank for rank, source in enumerate(get_args(TemporalSource))}
-
-_TIME_CONFIDENCE_BY_SOURCE: dict[TemporalSource, TimeConfidence] = {
-    "provider_ts": "recorded",
-    "hook_event_ts": "recorded",
-    "sort_key": "estimated",
-    "file_mtime": "estimated",
-    "materialization_ts": "unknown",
-    "fallback_date": "unknown",
-}
-
-
-def weakest_source(a: TemporalSource, b: TemporalSource) -> TemporalSource:
-    """Return the weaker (less trustworthy) of two temporal sources."""
-
-    return a if _SOURCE_RANK[a] >= _SOURCE_RANK[b] else b
-
-
-def weakest_of(sources: Sequence[TemporalSource]) -> TemporalSource | None:
-    """Reduce a non-empty sequence to its weakest member; ``None`` if empty."""
-
-    if not sources:
-        return None
-    result = sources[0]
-    for source in sources[1:]:
-        result = weakest_source(result, source)
-    return result
-
-
-def time_confidence_for_source(source: str | None) -> TimeConfidence:
-    """Project a source clock into the consumer-facing time-confidence signal.
-
-    Provider and hook timestamps are recorded event time. Sort keys and file
-    mtimes preserve ordering evidence but are estimates of event time. A
-    materialization timestamp, deterministic fallback date, missing tag, or
-    unrecognized legacy tag says nothing reliable about when the event happened
-    and therefore returns ``unknown``. Consumers must render that state without
-    fabricating a timestamp.
-    """
-
-    if source is None or not is_valid_temporal_source(source):
-        return "unknown"
-    return _TIME_CONFIDENCE_BY_SOURCE[source]
-
-
-def time_confidence_for_sources(sources: Sequence[TemporalSource]) -> TimeConfidence:
-    """Return aggregate confidence using the temporal lattice's weakest input.
-
-    This keeps confidence propagation aligned with provenance propagation: one
-    weak contributor degrades the aggregate rather than being laundered by a
-    stronger timestamp elsewhere in the input set.
-    """
-
-    return time_confidence_for_source(weakest_of(sources))
 
 
 def time_confidence_for_record(record: HasTemporalSource) -> TimeConfidence:
@@ -265,12 +198,6 @@ def audit_temporal_source_leaf_callers(package_root: str) -> list[str]:
         if count == 0:
             violations.append(f"{name}: no call sites found under {package_root} — contract unverifiable")
     return violations
-
-
-def is_valid_temporal_source(value: str) -> TypeGuard[TemporalSource]:
-    """Return True when *value* is a recognized temporal source token."""
-
-    return value in TEMPORAL_SOURCE_VALUES
 
 
 __all__ = [

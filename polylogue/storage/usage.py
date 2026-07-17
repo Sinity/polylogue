@@ -12,8 +12,9 @@ import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal, cast
 
 from polylogue.archive.semantic.pricing import (
     CATALOG_EFFECTIVE_DATE,
@@ -29,6 +30,16 @@ from polylogue.archive.semantic.subscription_pricing import (
     credits_to_usd,
 )
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.evidence_value import (
+    CoverageExclusion,
+    EvidenceValue,
+    FactFamilySpec,
+    FrameCoverage,
+    FreshnessProvenance,
+    TemporalProvenance,
+    sum_evidence_values,
+)
+from polylogue.core.refs import ObjectRef
 from polylogue.storage.table_existence import table_exists as _table_exists
 
 UsageReportDetail = Literal["headline", "full"]
@@ -42,6 +53,70 @@ _MODEL_NAME_STRIP_CHARS = (
     " \x85\xa0\u1680"
     "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
     "\u2028\u2029\u202f\u205f\u3000"
+)
+
+_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="usage-lane-exact-total-tokens:v1",
+)
+USAGE_LANE_EXACT_TOKENS_FAMILY: Final = FactFamilySpec(
+    family="usage.pricing_lane_exact_total_tokens",
+    owner="polylogue.storage.usage",
+    source_adapter="_pricing_lane_reports",
+    public_field="pricing_lanes[].exact_total_tokens_evidence",
+    renderer_label="exact total tokens",
+    value_schema="integer",
+    unit="tokens",
+    grain="pricing_lane",
+    denominator="session_model_usage rows in the declared lane",
+    definition_ref=_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"provider-reported", "model-derived", "structural"}),
+    authority_precedence=("provider-reported", "structural", "model-derived"),
+)
+
+_USAGE_LANE_CATALOG_COST_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="usage-lane-catalog-api-equivalent-cost:v1",
+)
+USAGE_LANE_CATALOG_COST_FAMILY: Final = FactFamilySpec(
+    family="usage.pricing_lane_catalog_api_equivalent_cost",
+    owner="polylogue.storage.usage",
+    source_adapter="_pricing_lane_reports",
+    public_field="pricing_lanes[].catalog_api_equivalent_evidence",
+    renderer_label="catalog API-equivalent cost",
+    value_schema="number",
+    unit="USD",
+    grain="pricing_lane",
+    denominator="session_model_usage rows in the declared lane",
+    definition_ref=_USAGE_LANE_CATALOG_COST_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"catalog-derived"}),
+    authority_precedence=("catalog-derived",),
 )
 
 
@@ -326,16 +401,12 @@ class OriginUsageReport:
 
 @dataclass(frozen=True, slots=True)
 class PricingLaneReport:
-    """Fast repricing headline for one ``session_model_usage`` provenance lane.
+    """Repricing evidence for one ``session_model_usage`` provenance lane.
 
-    Carries two independent cost bases (polylogue-f2qv.3 / polylogue-5hf):
-    ``catalog_api_equivalent_usd`` is what the lane's usage would cost at
-    API list price, and ``subscription_credit_usd`` is what it would cost
-    against the curated Claude Code subscription credit model (cache reads
-    free, output billed at 5x input). They are never conflated into one
-    number; see docs/cost-model.md for the subscription-tier assumption and
-    non-authoritative caveats. ``subscription_credit_usd`` is 0.0 for lanes/
-    models without a declared credit rate (e.g. non-Claude models).
+    Exact tokens and catalog cost are deliberately independent. Missing model
+    prices keep the exact token total known while the complete catalog cost is
+    ``None``/``unknown``; ``catalog_priced_subtotal_usd`` preserves the priced
+    subset rather than silently treating unmatched rows as zero-cost.
     """
 
     provenance: str
@@ -345,9 +416,18 @@ class PricingLaneReport:
     unmatched_model_row_count: int = 0
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
-    catalog_api_equivalent_usd: float = 0.0
+    catalog_api_equivalent_usd: float | None = None
+    catalog_priced_subtotal_usd: float = 0.0
     subscription_credit_usd: float = 0.0
+    grain: str = "physical_session"
+    observed_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     caveats: tuple[str, ...] = ()
+    exact_total_tokens_evidence: EvidenceValue[int] = field(init=False, repr=False)
+    catalog_api_equivalent_evidence: EvidenceValue[float] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "exact_total_tokens_evidence", _pricing_lane_token_evidence(self))
+        object.__setattr__(self, "catalog_api_equivalent_evidence", _pricing_lane_cost_evidence(self))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -358,8 +438,13 @@ class PricingLaneReport:
             "unmatched_model_row_count": self.unmatched_model_row_count,
             "usage": self.usage.to_dict(),
             "stored_cost_usd": round(self.stored_cost_usd, 6),
-            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
+            "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
+            "catalog_priced_subtotal_usd": round(self.catalog_priced_subtotal_usd, 6),
             "subscription_credit_usd": round(self.subscription_credit_usd, 6),
+            "grain": self.grain,
+            "observed_at": self.observed_at,
+            "exact_total_tokens_evidence": self.exact_total_tokens_evidence.to_dict(),
+            "catalog_api_equivalent_evidence": self.catalog_api_equivalent_evidence.to_dict(),
             "caveats": list(self.caveats),
         }
 
@@ -394,20 +479,67 @@ class ProviderUsageReport:
     logical_pricing_lanes: tuple[PricingLaneReport, ...] = ()
     logical_pricing_grain: str = "logical_session_model_high_water"
     stored_provider_priced_usd: float = 0.0
-    catalog_api_equivalent_usd: float = 0.0
-    logical_catalog_api_equivalent_usd: float = 0.0
-    # Dual cost view (polylogue-f2qv.3 / polylogue-5hf): subscription_credit_usd
-    # is the API-equivalent usage priced against the curated Claude Code
-    # subscription credit model instead of API list price (cache reads free,
-    # output at 5x input); it is always <= the API-equivalent figure for the
-    # same usage and is 0.0 for models without a declared credit rate. The two
-    # bases are reported separately and never summed into one number.
+    catalog_api_equivalent_usd: float | None = None
+    catalog_priced_subtotal_usd: float = 0.0
+    logical_catalog_api_equivalent_usd: float | None = None
+    logical_catalog_priced_subtotal_usd: float = 0.0
     subscription_credit_catalog_provenance: str = SUBSCRIPTION_CATALOG_PROVENANCE
     subscription_credit_catalog_effective_date: str = SUBSCRIPTION_CATALOG_EFFECTIVE_DATE
     subscription_credit_usd: float = 0.0
     logical_subscription_credit_usd: float = 0.0
+    observed_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     caveats: tuple[str, ...] = ()
     coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
+    exact_total_tokens_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+    catalog_api_equivalent_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+    logical_exact_total_tokens_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+    logical_catalog_api_equivalent_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "exact_total_tokens_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.pricing_lanes,
+                spec=USAGE_LANE_EXACT_TOKENS_FAMILY,
+                metric="exact-total-tokens",
+                observed_at=self.observed_at,
+                logical=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "catalog_api_equivalent_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.pricing_lanes,
+                spec=USAGE_LANE_CATALOG_COST_FAMILY,
+                metric="catalog-api-equivalent-cost",
+                observed_at=self.observed_at,
+                logical=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "logical_exact_total_tokens_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.logical_pricing_lanes,
+                spec=USAGE_LANE_EXACT_TOKENS_FAMILY,
+                metric="exact-total-tokens",
+                observed_at=self.observed_at,
+                logical=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "logical_catalog_api_equivalent_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.logical_pricing_lanes,
+                spec=USAGE_LANE_CATALOG_COST_FAMILY,
+                metric="catalog-api-equivalent-cost",
+                observed_at=self.observed_at,
+                logical=True,
+            ),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -425,15 +557,178 @@ class ProviderUsageReport:
             "logical_pricing_lanes": [lane.to_dict() for lane in self.logical_pricing_lanes],
             "logical_pricing_grain": self.logical_pricing_grain,
             "stored_provider_priced_usd": round(self.stored_provider_priced_usd, 6),
-            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
-            "logical_catalog_api_equivalent_usd": round(self.logical_catalog_api_equivalent_usd, 6),
+            "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
+            "catalog_priced_subtotal_usd": round(self.catalog_priced_subtotal_usd, 6),
+            "logical_catalog_api_equivalent_usd": _round_optional(self.logical_catalog_api_equivalent_usd),
+            "logical_catalog_priced_subtotal_usd": round(self.logical_catalog_priced_subtotal_usd, 6),
             "subscription_credit_catalog_provenance": self.subscription_credit_catalog_provenance,
             "subscription_credit_catalog_effective_date": self.subscription_credit_catalog_effective_date,
             "subscription_credit_usd": round(self.subscription_credit_usd, 6),
             "logical_subscription_credit_usd": round(self.logical_subscription_credit_usd, 6),
+            "observed_at": self.observed_at,
+            "exact_total_tokens_evidence": self.exact_total_tokens_evidence.to_dict(),
+            "catalog_api_equivalent_evidence": self.catalog_api_equivalent_evidence.to_dict(),
+            "logical_exact_total_tokens_evidence": self.logical_exact_total_tokens_evidence.to_dict(),
+            "logical_catalog_api_equivalent_evidence": self.logical_catalog_api_equivalent_evidence.to_dict(),
             "origins": [origin.to_dict() for origin in self.origins],
             "caveats": list(self.caveats),
         }
+
+
+def _pricing_lane_storage_ref(lane: PricingLaneReport) -> ObjectRef:
+    return ObjectRef(
+        kind="insight",
+        object_id=f"session-model-usage:{lane.grain}:{lane.provenance}",
+    )
+
+
+def _pricing_lane_fact_ref(lane: PricingLaneReport, metric: str) -> ObjectRef:
+    return ObjectRef(
+        kind="insight",
+        object_id=f"session-model-usage:{lane.grain}:{lane.provenance}:{metric}",
+    )
+
+
+def _usage_lane_authority(provenance: str) -> Literal["provider-reported", "model-derived", "structural"]:
+    if provenance == "estimated":
+        return "model-derived"
+    if provenance in {"priced", "origin_reported"}:
+        return "provider-reported"
+    return "structural"
+
+
+def _pricing_lane_token_evidence(lane: PricingLaneReport) -> EvidenceValue[int]:
+    storage_ref = _pricing_lane_storage_ref(lane)
+    fact_ref = _pricing_lane_fact_ref(lane, "exact-total-tokens")
+    known = lane.row_count > 0
+    evidence = EvidenceValue(
+        family=USAGE_LANE_EXACT_TOKENS_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if known else "unknown",
+        value=lane.usage.total_tokens if known else None,
+        measurement_authority=(_usage_lane_authority(lane.provenance),),
+        weakest_measurement_authority=_usage_lane_authority(lane.provenance),
+        evidence_refs=(storage_ref,),
+        definition_ref=USAGE_LANE_EXACT_TOKENS_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(
+            observed_at=lane.observed_at,
+            time_source="materialization_ts",
+        ),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"{lane.grain} session_model_usage rows for {lane.provenance!r}",
+            grain=USAGE_LANE_EXACT_TOKENS_FAMILY.grain,
+            denominator=USAGE_LANE_EXACT_TOKENS_FAMILY.denominator,
+            intended_count=lane.row_count,
+            observed_count=lane.row_count,
+            supported_count=lane.row_count if known else 0,
+            complete=known,
+        ),
+        freshness=FreshnessProvenance(
+            state="fresh",
+            evaluated_at=lane.observed_at,
+        ),
+    )
+    USAGE_LANE_EXACT_TOKENS_FAMILY.require(cast(EvidenceValue[object], evidence))
+    return evidence
+
+
+def _pricing_lane_cost_evidence(lane: PricingLaneReport) -> EvidenceValue[float]:
+    storage_ref = _pricing_lane_storage_ref(lane)
+    catalog_ref = ObjectRef(
+        kind="insight",
+        object_id=f"pricing-catalog:{CATALOG_EFFECTIVE_DATE}",
+    )
+    fact_ref = _pricing_lane_fact_ref(lane, "catalog-api-equivalent-cost")
+    known = lane.row_count > 0 and lane.unmatched_model_row_count == 0 and lane.catalog_api_equivalent_usd is not None
+    exclusions: tuple[CoverageExclusion, ...] = ()
+    if lane.unmatched_model_row_count > 0:
+        exclusions = (
+            CoverageExclusion(
+                subject_ref=storage_ref,
+                reason=f"unpriced-model-rows:{lane.unmatched_model_row_count}",
+            ),
+        )
+    elif lane.row_count > 0 and lane.catalog_api_equivalent_usd is None:
+        exclusions = (
+            CoverageExclusion(
+                subject_ref=storage_ref,
+                reason="catalog-cost-not-materialized",
+            ),
+        )
+    evidence = EvidenceValue(
+        family=USAGE_LANE_CATALOG_COST_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if known else "unknown",
+        value=lane.catalog_api_equivalent_usd if known else None,
+        measurement_authority=("catalog-derived",),
+        weakest_measurement_authority="catalog-derived",
+        evidence_refs=(storage_ref, catalog_ref),
+        definition_ref=USAGE_LANE_CATALOG_COST_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(
+            observed_at=lane.observed_at,
+            time_source="materialization_ts",
+        ),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"{lane.grain} session_model_usage rows for {lane.provenance!r}",
+            grain=USAGE_LANE_CATALOG_COST_FAMILY.grain,
+            denominator=USAGE_LANE_CATALOG_COST_FAMILY.denominator,
+            intended_count=lane.row_count,
+            observed_count=lane.row_count,
+            supported_count=lane.matched_model_row_count,
+            complete=known,
+            exclusions=exclusions,
+        ),
+        freshness=FreshnessProvenance(
+            state="fresh",
+            evaluated_at=lane.observed_at,
+        ),
+    )
+    USAGE_LANE_CATALOG_COST_FAMILY.require(cast(EvidenceValue[object], evidence))
+    return evidence
+
+
+def _aggregate_pricing_lane_evidence(
+    lanes: tuple[PricingLaneReport, ...],
+    *,
+    spec: FactFamilySpec,
+    metric: str,
+    observed_at: str,
+    logical: bool,
+) -> EvidenceValue[int | float]:
+    values: tuple[EvidenceValue[int | float], ...]
+    if spec is USAGE_LANE_EXACT_TOKENS_FAMILY:
+        values = cast(
+            tuple[EvidenceValue[int | float], ...],
+            tuple(lane.exact_total_tokens_evidence for lane in lanes),
+        )
+    elif spec is USAGE_LANE_CATALOG_COST_FAMILY:
+        values = cast(
+            tuple[EvidenceValue[int | float], ...],
+            tuple(lane.catalog_api_equivalent_evidence for lane in lanes),
+        )
+    else:
+        raise ValueError(f"unsupported usage evidence family: {spec.family}")
+    prefix = "logical-" if logical else "physical-"
+    return sum_evidence_values(
+        values,
+        spec=spec,
+        fact_ref=ObjectRef(kind="insight", object_id=f"provider-usage:{prefix}{metric}:total"),
+        observed_at=observed_at,
+        intended_frame=f"{prefix.rstrip('-')} provider usage pricing lanes",
+        expected_fact_refs=tuple(value.fact_ref for value in values),
+    )
+
+
+def _complete_catalog_total(lanes: tuple[PricingLaneReport, ...]) -> float | None:
+    if not lanes or any(lane.catalog_api_equivalent_usd is None for lane in lanes):
+        return None
+    return round(sum(cast(float, lane.catalog_api_equivalent_usd) for lane in lanes), 6)
+
+
+def _round_optional(value: float | None) -> float | None:
+    return None if value is None else round(value, 6)
 
 
 def provider_usage_report_for_archive_root(
@@ -470,10 +765,12 @@ def provider_usage_report_from_connection(
     origin: str | None = None,
     limit: int | None = 25,
     detail: UsageReportDetail = "full",
+    observed_at: str | None = None,
 ) -> ProviderUsageReport:
     """Return a provider usage report for an already-open index connection."""
 
     conn.row_factory = sqlite3.Row
+    report_observed_at = observed_at or datetime.now(UTC).isoformat()
     caveats: list[str] = [
         "provider usage events, transcript text volume, and model rollups are separate evidence streams",
         "this report does not query provider billing and is not a precise cost report",
@@ -487,6 +784,7 @@ def provider_usage_report_from_connection(
             archive_root=str(archive_root),
             origins=(),
             detail_level=detail,
+            observed_at=report_observed_at,
             caveats=tuple(caveats + ["sessions table is missing"]),
         )
 
@@ -497,8 +795,10 @@ def provider_usage_report_from_connection(
     logical_model_by_origin = _logical_model_rollup_stats(conn, origin) if model_table_present else {}
     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
-    pricing_lanes = _pricing_lane_reports(conn, origin) if model_table_present else ()
-    logical_pricing_lanes = _pricing_lane_reports(conn, origin, logical=True) if model_table_present else ()
+    pricing_lanes = _pricing_lane_reports(conn, origin, observed_at=report_observed_at) if model_table_present else ()
+    logical_pricing_lanes = (
+        _pricing_lane_reports(conn, origin, logical=True, observed_at=report_observed_at) if model_table_present else ()
+    )
     raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
         conn, archive_root=Path(archive_root), origin=origin, limit=limit
     )
@@ -632,6 +932,11 @@ def provider_usage_report_from_connection(
             "(cache reads free, output at 5x input) and is 0.0 for models without a "
             "declared credit rate; it is not vendor-authoritative billing"
         )
+    if any(lane.catalog_api_equivalent_usd is None for lane in pricing_lanes):
+        caveats.append(
+            "catalog_api_equivalent_usd is unknown because at least one model row has no catalog price; "
+            "catalog_priced_subtotal_usd preserves the known priced subset"
+        )
     return ProviderUsageReport(
         archive_root=str(archive_root),
         origins=tuple(reports),
@@ -641,10 +946,19 @@ def provider_usage_report_from_connection(
         pricing_lanes=pricing_lanes,
         logical_pricing_lanes=logical_pricing_lanes,
         stored_provider_priced_usd=sum(lane.stored_cost_usd for lane in pricing_lanes if lane.provenance == "priced"),
-        catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in pricing_lanes),
-        logical_catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in logical_pricing_lanes),
+        catalog_api_equivalent_usd=_complete_catalog_total(pricing_lanes),
+        catalog_priced_subtotal_usd=round(
+            sum(lane.catalog_priced_subtotal_usd for lane in pricing_lanes),
+            6,
+        ),
+        logical_catalog_api_equivalent_usd=_complete_catalog_total(logical_pricing_lanes),
+        logical_catalog_priced_subtotal_usd=round(
+            sum(lane.catalog_priced_subtotal_usd for lane in logical_pricing_lanes),
+            6,
+        ),
         subscription_credit_usd=sum(lane.subscription_credit_usd for lane in pricing_lanes),
         logical_subscription_credit_usd=sum(lane.subscription_credit_usd for lane in logical_pricing_lanes),
+        observed_at=report_observed_at,
         caveats=tuple(caveats),
     )
 
@@ -1232,6 +1546,7 @@ def _pricing_lane_reports(
     origin: str | None,
     *,
     logical: bool = False,
+    observed_at: str,
 ) -> tuple[PricingLaneReport, ...]:
     if logical:
         session_count_rows = conn.execute(
@@ -1398,8 +1713,13 @@ def _pricing_lane_reports(
                 unmatched_model_row_count=bucket.unmatched_model_row_count,
                 usage=bucket.usage,
                 stored_cost_usd=round(bucket.stored_cost_usd, 6),
-                catalog_api_equivalent_usd=round(bucket.catalog_api_equivalent_usd, 6),
+                catalog_api_equivalent_usd=(
+                    None if bucket.unmatched_model_row_count > 0 else round(bucket.catalog_api_equivalent_usd, 6)
+                ),
+                catalog_priced_subtotal_usd=round(bucket.catalog_api_equivalent_usd, 6),
                 subscription_credit_usd=round(bucket.subscription_credit_usd, 6),
+                grain=("logical_session_model_high_water" if logical else "physical_session"),
+                observed_at=observed_at,
                 caveats=tuple(sorted(caveats_by_provenance.get(provenance, ()))),
             )
         )

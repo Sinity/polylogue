@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import UTC, datetime
@@ -27,9 +28,53 @@ from typing import Any, Final, Literal, cast
 from urllib.parse import quote
 
 from polylogue.core.dates import utc_now
+from polylogue.core.evidence_value import (
+    CoverageExclusion,
+    EvidenceValue,
+    FactFamilySpec,
+    FrameCoverage,
+    FreshnessProvenance,
+    TemporalProvenance,
+    ValueState,
+    sum_evidence_values,
+)
+from polylogue.core.refs import ObjectRef
 
 _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"
 _REPLAY_PREVENTION_OWNER: Final = "polylogue-yla8"
+
+_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="source-cursor-byte-lag:v1",
+)
+SOURCE_CURSOR_BYTE_LAG_FAMILY: Final = FactFamilySpec(
+    family="archive.source_cursor_byte_lag",
+    owner="polylogue.archive.query.source_freshness",
+    source_adapter="project_named_source_freshness",
+    public_field="byte_lag",
+    renderer_label="cursor byte lag",
+    value_schema="integer",
+    unit="bytes",
+    grain="source_path",
+    denominator="declared exact source paths",
+    definition_ref=_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown", "unavailable"}),
+    allowed_authorities=frozenset({"structural"}),
+    authority_precedence=("structural",),
+    requires_last_good_when_degraded=True,
+)
 
 
 class NamedSourceStage(str, Enum):
@@ -247,6 +292,7 @@ class NamedSourceFreshness:
     operational_reason: NamedSourceOperationalReason
     source_stat: SourceStatEvidence
     cursor: CursorEvidence
+    byte_lag: EvidenceValue[int]
     retry: RetryEvidence
     accepted_raw_revision: RawRevisionEvidence | None
     raw_revisions: tuple[RawRevisionEvidence, ...]
@@ -427,6 +473,7 @@ def project_named_source_freshness(
         receipt=receipt,
         errors=errors,
     )
+    byte_lag = _source_cursor_byte_lag(source_key, source_stat, cursor, observed=observed)
     retry = _load_retry_evidence(
         archive_root,
         source_key,
@@ -511,6 +558,7 @@ def project_named_source_freshness(
         "operational_reason": operational_reason.value,
         "source_stat": _jsonable(source_stat),
         "cursor": _jsonable(cursor),
+        "byte_lag": _jsonable(byte_lag),
         "retry": _jsonable(retry),
         "accepted_raw_revision": _jsonable(accepted_raw),
         "raw_revisions": _jsonable(raw_revisions),
@@ -541,6 +589,7 @@ def project_named_source_freshness(
         operational_reason=operational_reason,
         source_stat=source_stat,
         cursor=cursor,
+        byte_lag=byte_lag,
         retry=retry,
         accepted_raw_revision=accepted_raw,
         raw_revisions=raw_revisions,
@@ -556,6 +605,143 @@ def project_named_source_freshness(
         errors=tuple(errors),
         projection_sha256=digest,
     )
+
+
+def aggregate_named_source_byte_lag(
+    freshnesses: Iterable[NamedSourceFreshness],
+    *,
+    expected_source_paths: Sequence[str | Path],
+    now: datetime | None = None,
+) -> EvidenceValue[int]:
+    """Conserve byte-lag totals across a declared exact-source frame.
+
+    Repeated projections for the same source deduplicate by ``file`` identity;
+    contradictory duplicates, missing sources, or unknown lag keep the total
+    unknown instead of contributing a numeric zero.
+    """
+
+    expected_refs = tuple(
+        sorted(
+            {ObjectRef(kind="file", object_id=os.fspath(path)) for path in expected_source_paths},
+            key=lambda ref: ref.format(),
+        )
+    )
+    normalized = "\n".join(ref.format() for ref in expected_refs)
+    aggregate_ref = ObjectRef(
+        kind="insight",
+        object_id="source-cursor-byte-lag-total:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+    )
+    observed_at = _as_utc(now or utc_now()).isoformat()
+    return sum_evidence_values(
+        (freshness.byte_lag for freshness in freshnesses),
+        spec=SOURCE_CURSOR_BYTE_LAG_FAMILY,
+        fact_ref=aggregate_ref,
+        observed_at=observed_at,
+        intended_frame="named source byte lag for exact source paths",
+        expected_fact_refs=expected_refs,
+    )
+
+
+def _source_cursor_byte_lag(
+    source_key: str,
+    source_stat: SourceStatEvidence,
+    cursor: CursorEvidence,
+    *,
+    observed: datetime,
+) -> EvidenceValue[int]:
+    fact_ref = ObjectRef(kind="file", object_id=source_key)
+    cursor_ref = ObjectRef(kind="run", object_id=f"ingest-cursor:{source_key}")
+    evidence_refs = (fact_ref, cursor_ref) if cursor.present else (fact_ref,)
+    exclusions = (CoverageExclusion(subject_ref=fact_ref, reason="ingest-cursor-excluded"),) if cursor.excluded else ()
+
+    value_state: ValueState
+    if source_stat.error is not None:
+        value_state = "unavailable"
+        value = None
+        freshness = FreshnessProvenance(
+            state="unavailable",
+            evaluated_at=observed.isoformat(),
+            cause="source-stat-error",
+        )
+    elif cursor.pending_bytes is None:
+        value_state = "unknown"
+        value = None
+        if cursor.present:
+            freshness = FreshnessProvenance(
+                state="degraded",
+                evaluated_at=observed.isoformat(),
+                cause="source-size-or-cursor-offset-unavailable",
+                last_good_at=_timestamp_iso(cursor.updated_at_ms),
+                last_good_evidence_refs=(cursor_ref,),
+            )
+        else:
+            freshness = FreshnessProvenance(
+                state="unavailable",
+                evaluated_at=observed.isoformat(),
+                cause="cursor-missing",
+            )
+    else:
+        value_state = "known"
+        value = cursor.pending_bytes
+        degradation_cause: str | None = None
+        if cursor.excluded:
+            degradation_cause = "cursor-excluded"
+        elif cursor.failure_count > 0:
+            degradation_cause = "cursor-retrying"
+        elif (cursor.cursor_ahead_bytes or 0) > 0 or (cursor.observed_size_ahead_bytes or 0) > 0:
+            degradation_cause = "cursor-ahead"
+        elif not source_stat.exists:
+            degradation_cause = "source-missing"
+        if degradation_cause is None:
+            freshness = FreshnessProvenance(
+                state="fresh",
+                evaluated_at=observed.isoformat(),
+            )
+        else:
+            freshness = FreshnessProvenance(
+                state="degraded",
+                evaluated_at=observed.isoformat(),
+                cause=degradation_cause,
+                last_good_at=_timestamp_iso(cursor.updated_at_ms),
+                last_good_evidence_refs=(cursor_ref,),
+            )
+
+    evidence = EvidenceValue(
+        family=SOURCE_CURSOR_BYTE_LAG_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state=value_state,
+        value=value,
+        measurement_authority=("structural",),
+        weakest_measurement_authority="structural",
+        evidence_refs=evidence_refs,
+        definition_ref=SOURCE_CURSOR_BYTE_LAG_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(
+            observed_at=observed.isoformat(),
+            time_source="materialization_ts",
+        ),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame="one exact source path",
+            grain=SOURCE_CURSOR_BYTE_LAG_FAMILY.grain,
+            denominator=SOURCE_CURSOR_BYTE_LAG_FAMILY.denominator,
+            intended_count=1,
+            observed_count=1,
+            supported_count=1 if value_state == "known" else 0,
+            complete=value_state == "known" and not cursor.excluded,
+            intended_refs=(fact_ref,),
+            observed_refs=(fact_ref,),
+            exclusions=exclusions,
+        ),
+        freshness=freshness,
+    )
+    SOURCE_CURSOR_BYTE_LAG_FAMILY.require(cast(EvidenceValue[object], evidence))
+    return evidence
+
+
+def _timestamp_iso(value_ms: int | None) -> str | None:
+    if value_ms is None:
+        return None
+    return datetime.fromtimestamp(value_ms / 1000.0, tz=UTC).isoformat()
 
 
 def _stat_source(source_path: Path) -> SourceStatEvidence:
@@ -1725,6 +1911,8 @@ def _jsonable(value: object) -> object:
         return str(value)
     if isinstance(value, bytes):
         return value.hex()
+    if isinstance(value, EvidenceValue):
+        return value.to_dict()
     if is_dataclass(value) and not isinstance(value, type):
         return {field.name: _jsonable(getattr(value, field.name)) for field in fields(value)}
     if isinstance(value, dict):
@@ -1751,6 +1939,8 @@ __all__ = [
     "RawRevisionEvidence",
     "RetryEvidence",
     "RevisionApplicationEvidence",
+    "SOURCE_CURSOR_BYTE_LAG_FAMILY",
     "SourceStatEvidence",
+    "aggregate_named_source_byte_lag",
     "project_named_source_freshness",
 ]

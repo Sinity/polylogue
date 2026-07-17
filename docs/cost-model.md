@@ -113,6 +113,16 @@ elsewhere:
   `tests/unit/storage/test_cost_queries.py`). It is `0.0` for models without
   a declared credit rate (non-Claude models) — never a fabricated figure.
 
+Catalog coverage is explicit. When any model row lacks a catalog price, the
+complete `catalog_api_equivalent_usd` is `null` and its evidence value is
+`unknown`; exact token evidence remains `known`.
+`catalog_priced_subtotal_usd` retains the numeric subtotal for matched rows,
+with the unmatched row count and coverage exclusion explaining why it is not
+the complete total. Empty usage frames are unknown rather than a measured
+zero. The same contract is carried by each lane and the physical/logical
+archive totals through `exact_total_tokens_evidence` and
+`catalog_api_equivalent_evidence`.
+
 The two bases are always reported separately and never summed; a
 cache-heavy Claude session's `subscription_credit_usd` is strictly below its
 `catalog_api_equivalent_usd` for the same lane. Both draw from the shared

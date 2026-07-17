@@ -1818,6 +1818,7 @@ function renderAnalyzePanel() {
   var html = '<div class="verb-panel">';
   html += '<div class="panel-section"><h3>Archive-wide estimate</h3><div class="stat-row">'
     + statTile('Catalog API-equivalent', formatUsd(data.catalog_api_equivalent_usd))
+    + statTile('Known priced subtotal', formatUsd(data.catalog_priced_subtotal_usd))
     + statTile('Logical (deduped)', formatUsd(data.logical_catalog_api_equivalent_usd))
     + statTile('Provider-priced (stored)', formatUsd(data.stored_provider_priced_usd))
     + '</div></div>';
@@ -2632,7 +2633,9 @@ function retryCostPanel(id) {
 }
 
 function formatUsd(value) {
-  var n = Number(value || 0);
+  if (value === null || value === undefined || value === '') return 'unknown';
+  var n = Number(value);
+  if (!Number.isFinite(n)) return 'unknown';
   if (n === 0) return '$0.00';
   if (n < 0.01) return '$' + n.toFixed(4);
   if (n < 1) return '$' + n.toFixed(3);

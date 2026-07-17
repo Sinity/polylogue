@@ -14,11 +14,19 @@ import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.evidence_value import (
+    EvidenceValue,
+    FactFamilySpec,
+    FrameCoverage,
+    FreshnessProvenance,
+    TemporalProvenance,
+)
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.refs import ObjectRef
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.paths import active_index_db_path
 from polylogue.readiness.capability import (
@@ -31,6 +39,39 @@ _SNAPSHOT_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
 _RUNTIME_COMPONENT_LOCK = threading.Lock()
 _SNAPSHOT: StatusSnapshot | None = None
+
+_STATUS_SNAPSHOT_STATE_DEFINITION_REF = ObjectRef(
+    kind="insight",
+    object_id="daemon-status-snapshot-state:v1",
+)
+STATUS_SNAPSHOT_STATE_FAMILY = FactFamilySpec(
+    family="daemon.status_snapshot_state",
+    owner="polylogue.daemon.status_snapshot",
+    source_adapter="StatusSnapshot.with_metadata",
+    public_field="status_snapshot.state_evidence",
+    renderer_label="status snapshot state",
+    value_schema="string",
+    unit="state",
+    grain="status_snapshot",
+    denominator="one cached daemon status snapshot",
+    definition_ref=_STATUS_SNAPSHOT_STATE_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known"}),
+    allowed_authorities=frozenset({"structural"}),
+    authority_precedence=("structural",),
+    requires_last_good_when_degraded=True,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,14 +106,76 @@ class StatusSnapshot:
             base_payload,
             snapshot_state=state,
         )
+        evaluated_at = (
+            datetime.fromisoformat(self.captured_at.replace("Z", "+00:00")) + timedelta(seconds=age_s)
+        ).isoformat()
         payload["status_snapshot"] = {
             "state": state,
             "captured_at": self.captured_at,
             "age_s": round(age_s, 3),
             "refresh_error": self.refresh_error,
+            "state_evidence": _status_snapshot_state_evidence(
+                state=state,
+                captured_at=self.captured_at,
+                evaluated_at=evaluated_at,
+            ).to_dict(),
         }
         payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
         return json_document(payload)
+
+
+def _status_snapshot_state_evidence(
+    *,
+    state: str,
+    captured_at: str,
+    evaluated_at: str,
+) -> EvidenceValue[str]:
+    snapshot_ref = ObjectRef(kind="run", object_id=f"status-snapshot:{captured_at}")
+    if state == "fresh":
+        freshness = FreshnessProvenance(state="fresh", evaluated_at=evaluated_at)
+    elif state == "stale":
+        freshness = FreshnessProvenance(
+            state="stale",
+            evaluated_at=evaluated_at,
+            cause=f"snapshot-age-exceeded-{STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:g}s",
+            last_good_at=captured_at,
+            last_good_evidence_refs=(snapshot_ref,),
+        )
+    else:
+        freshness = FreshnessProvenance(
+            state="unavailable",
+            evaluated_at=evaluated_at,
+            cause="rich-status-refresh-in-progress" if state == "refreshing" else "rich-status-unavailable",
+        )
+    evidence = EvidenceValue(
+        family=STATUS_SNAPSHOT_STATE_FAMILY.family,
+        fact_ref=snapshot_ref,
+        value_state="known",
+        value=state,
+        measurement_authority=("structural",),
+        weakest_measurement_authority="structural",
+        evidence_refs=(snapshot_ref,),
+        definition_ref=STATUS_SNAPSHOT_STATE_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(
+            observed_at=evaluated_at,
+            time_source="materialization_ts",
+        ),
+        enumeration="not-applicable",
+        coverage=FrameCoverage(
+            intended_frame="one cached daemon status snapshot",
+            grain=STATUS_SNAPSHOT_STATE_FAMILY.grain,
+            denominator=STATUS_SNAPSHOT_STATE_FAMILY.denominator,
+            intended_count=1,
+            observed_count=1,
+            supported_count=1,
+            complete=True,
+            intended_refs=(snapshot_ref,),
+            observed_refs=(snapshot_ref,),
+        ),
+        freshness=freshness,
+    )
+    STATUS_SNAPSHOT_STATE_FAMILY.require(evidence)
+    return evidence
 
 
 def configure_runtime_components(
@@ -197,6 +300,11 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
             "captured_at": now,
             "age_s": 0.0,
             "refresh_error": refresh_error,
+            "state_evidence": _status_snapshot_state_evidence(
+                state="refreshing" if refresh_in_progress else "minimal",
+                captured_at=now,
+                evaluated_at=now,
+            ).to_dict(),
         },
     }
     payload["component_readiness"] = _minimal_component_readiness(payload)
@@ -377,6 +485,7 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
 
 
 __all__ = [
+    "STATUS_SNAPSHOT_STATE_FAMILY",
     "configure_runtime_components",
     "get_status_snapshot_payload",
     "refresh_status_snapshot",

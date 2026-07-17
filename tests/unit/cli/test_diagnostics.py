@@ -94,7 +94,8 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
         logical_model_rollup_grain="logical_session_model_high_water",
         logical_model_rollup_usage=SimpleNamespace(to_dict=lambda: {}),
         stored_provider_priced_usd=12.5,
-        catalog_api_equivalent_usd=18.75,
+        catalog_api_equivalent_usd=None,
+        catalog_priced_subtotal_usd=18.75,
         logical_pricing_grain="logical_session_model_high_water",
         logical_catalog_api_equivalent_usd=14.25,
         pricing_lanes=(
@@ -105,6 +106,7 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
                 unmatched_model_row_count=0,
                 stored_cost_usd=12.5,
                 catalog_api_equivalent_usd=12.5,
+                catalog_priced_subtotal_usd=12.5,
             ),
             SimpleNamespace(
                 provenance="origin_reported",
@@ -112,7 +114,8 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
                 matched_model_row_count=1,
                 unmatched_model_row_count=0,
                 stored_cost_usd=0.0,
-                catalog_api_equivalent_usd=6.25,
+                catalog_api_equivalent_usd=None,
+                catalog_priced_subtotal_usd=6.25,
             ),
         ),
         logical_pricing_lanes=(
@@ -122,6 +125,7 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
                 matched_model_row_count=1,
                 unmatched_model_row_count=0,
                 catalog_api_equivalent_usd=4.25,
+                catalog_priced_subtotal_usd=4.25,
             ),
         ),
     )
@@ -130,9 +134,11 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
 
     rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
     assert "stored/origin-priced cost: $12.50" in rendered
-    assert "catalog API-equivalent cost: $18.75" in rendered
+    assert "catalog API-equivalent cost: unknown" in rendered
+    assert "known catalog-priced subtotal: $18.75" in rendered
     assert "catalog API-equivalent cost (logical_session_model_high_water): $14.25" in rendered
     assert "pricing lane origin_reported" in rendered
+    assert "catalog=unknown catalog_subtotal=$6.25" in rendered
     assert "logical pricing lane origin_reported" in rendered
 
 

@@ -7,6 +7,7 @@ import inspect
 import json
 import sqlite3
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,12 +16,14 @@ import pytest
 
 import polylogue.archive.query.source_freshness as source_freshness_module
 from polylogue.archive.query.source_freshness import (
+    SOURCE_CURSOR_BYTE_LAG_FAMILY,
     NamedSourceOperationalReason,
     NamedSourceOperationalState,
     NamedSourceStage,
     ProjectionLimits,
     SourceStatEvidence,
     _unsafe_plan_details,
+    aggregate_named_source_byte_lag,
     project_named_source_freshness,
 )
 from polylogue.archive.query.source_freshness_surfaces import (
@@ -356,6 +359,14 @@ def test_excluded_growing_source_is_degraded_before_idle_and_retains_reason(tmp_
     assert projection.cursor.excluded is True
     assert projection.cursor.pending_bytes == expected["pending_bytes"]
     assert projection.cursor.unobserved_growth_bytes == expected["unobserved_growth_bytes"]
+    assert projection.byte_lag.value_state == "known"
+    assert projection.byte_lag.value == expected["pending_bytes"]
+    assert projection.byte_lag.freshness.state == "degraded"
+    assert projection.byte_lag.freshness.cause == "cursor-excluded"
+    assert projection.byte_lag.freshness.last_good_evidence_refs
+    assert projection.byte_lag.coverage.complete is False
+    assert projection.byte_lag.coverage.exclusions[0].reason == "ingest-cursor-excluded"
+    assert SOURCE_CURSOR_BYTE_LAG_FAMILY.validate(projection.byte_lag) == ()
     assert projection.retry.reason == fixture["attempt_error"]
     assert projection.accepted_raw_revision is not None
     assert projection.accepted_raw_revision.raw_id == expected["accepted_raw_id"]
@@ -413,6 +424,12 @@ def test_healthy_quiet_source_reports_every_checkpoint(tmp_path: Path) -> None:
     assert projection.stage.value == expected["stage"]
     assert projection.cursor.pending_bytes == expected["pending_bytes"]
     assert projection.cursor.unobserved_growth_bytes == expected["unobserved_growth_bytes"]
+    assert projection.byte_lag.value_state == "known"
+    assert projection.byte_lag.value == expected["pending_bytes"]
+    assert projection.byte_lag.freshness.state == "fresh"
+    assert projection.byte_lag.freshness.cause is None
+    assert projection.byte_lag.coverage.exclusions == ()
+    assert SOURCE_CURSOR_BYTE_LAG_FAMILY.validate(projection.byte_lag) == ()
     assert projection.accepted_raw_revision is not None
     assert projection.accepted_raw_revision.raw_id == expected["accepted_raw_id"]
     assert projection.accepted_raw_revision.authority_owner == "polylogue-lkrc"
@@ -531,6 +548,9 @@ def test_existing_source_without_cursor_is_active(tmp_path: Path) -> None:
     assert projection.stage is NamedSourceStage.UNSEEN
     assert projection.operational_state is NamedSourceOperationalState.ACTIVE
     assert projection.operational_reason is NamedSourceOperationalReason.CURSOR_MISSING
+    assert projection.byte_lag.value_state == "unknown"
+    assert projection.byte_lag.value is None
+    assert projection.byte_lag.freshness.state == "unavailable"
 
 
 def test_source_without_filesystem_or_archive_evidence_is_unseen(tmp_path: Path) -> None:
@@ -875,6 +895,10 @@ def test_status_cli_and_mcp_adapters_preserve_typed_projection(
     assert status["source_size_bytes"] == 64
     assert status["cursor_observed_size_bytes"] == 64
     assert status["cursor_byte_offset"] == 64
+    assert status["pending_bytes"] == 0
+    assert status["byte_lag"] == projection.byte_lag.to_dict()
+    assert status["byte_lag"]["value_state"] == "known"
+    assert status["byte_lag"]["value"] == 0
     assert status["revision_authority_owner"] == "polylogue-lkrc"
     assert status["replay_prevention_owner"] == "polylogue-yla8"
     assert status["revision_application_count"] == 1
@@ -888,16 +912,25 @@ def test_status_cli_and_mcp_adapters_preserve_typed_projection(
     assert "operational_reason=caught-up" in rendered
     assert "file_size=64" in rendered
     assert "cursor_offset=64" in rendered
+    assert "pending_bytes=0" in rendered
+    assert "byte_lag_evidence=fresh" in rendered
     assert "errors=0" in rendered
 
     exit_code = source_freshness_cli(["--archive-root", str(root), "--source", str(source), "--format", "json"])
     assert exit_code == 0
-    assert json.loads(capsys.readouterr().out)["stage"] == "searchable"
+    cli_payload = json.loads(capsys.readouterr().out)
+    assert cli_payload["stage"] == "searchable"
+    assert cli_payload["byte_lag"]["value_state"] == "known"
+    assert cli_payload["byte_lag"]["value"] == 0
 
     handler = make_source_freshness_mcp_handler(root)
     assert tuple(inspect.signature(handler).parameters) == ("source_path",)
     payload: dict[str, object] = asyncio.run(_invoke_handler(handler, str(source)))
     assert payload["stage"] == "searchable"
+    mcp_byte_lag = payload["byte_lag"]
+    assert isinstance(mcp_byte_lag, dict)
+    assert mcp_byte_lag["value_state"] == "known"
+    assert mcp_byte_lag["value"] == 0
 
     class FakeMcp:
         registered_name: str | None = None
@@ -916,3 +949,114 @@ def test_status_cli_and_mcp_adapters_preserve_typed_projection(
     registered = register_source_freshness_mcp_tool(server, handler)
     assert server.registered_name == "named_source_freshness"
     assert registered is handler
+
+
+def test_named_source_byte_lag_aggregate_conserves_disjoint_sources_and_deduplicates_identity(
+    tmp_path: Path,
+) -> None:
+    left_root = tmp_path / "left-archive"
+    right_root = tmp_path / "right-archive"
+    _create_schema(left_root)
+    _create_schema(right_root)
+    left_source = _source(left_root, size=100)
+    right_source = _source(right_root, size=250)
+    _seed_cursor(left_root, left_source, observed_size=70, offset=70)
+    _seed_cursor(right_root, right_source, observed_size=200, offset=200)
+    left = project_named_source_freshness(left_root, left_source, now=_NOW)
+    right = project_named_source_freshness(right_root, right_source, now=_NOW)
+    expected = (left_source, right_source)
+
+    direct = aggregate_named_source_byte_lag((left, right), expected_source_paths=expected, now=_NOW)
+    reordered_duplicate = aggregate_named_source_byte_lag(
+        (right, left, left),
+        expected_source_paths=(right_source, left_source, left_source),
+        now=_NOW,
+    )
+
+    assert direct.value_state == "known"
+    assert direct.value == 80
+    assert direct.to_dict() == reordered_duplicate.to_dict()
+    assert direct.coverage.intended_count == 2
+    assert direct.coverage.observed_count == 2
+    assert direct.coverage.supported_count == 2
+    assert len(direct.contributions) == 2
+
+
+def test_excluded_source_aggregate_retains_known_lag_but_degrades_coverage(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=96)
+    _seed_cursor(root, source, observed_size=64, offset=64, excluded=True)
+    projection = project_named_source_freshness(root, source, now=_NOW)
+
+    total = aggregate_named_source_byte_lag(
+        (projection,),
+        expected_source_paths=(source,),
+        now=_NOW,
+    )
+
+    assert total.value_state == "known"
+    assert total.value == 32
+    assert total.coverage.complete is False
+    assert {item.reason for item in total.coverage.exclusions} == {
+        "ingest-cursor-excluded",
+        "contribution-coverage-incomplete",
+    }
+    assert total.freshness.state == "degraded"
+    assert total.freshness.last_good_evidence_refs
+
+
+def test_named_source_byte_lag_aggregate_dropped_source_and_unknown_lag_never_become_zero(
+    tmp_path: Path,
+) -> None:
+    known_root = tmp_path / "known-archive"
+    unknown_root = tmp_path / "unknown-archive"
+    _create_schema(known_root)
+    unknown_root.mkdir()
+    known_source = _source(known_root, size=64)
+    unknown_source = _source(unknown_root, size=64)
+    _seed_cursor(known_root, known_source, observed_size=32, offset=32)
+    known = project_named_source_freshness(known_root, known_source, now=_NOW)
+    unknown = project_named_source_freshness(unknown_root, unknown_source, now=_NOW)
+    expected = (known_source, unknown_source)
+
+    with_unknown = aggregate_named_source_byte_lag((known, unknown), expected_source_paths=expected, now=_NOW)
+    dropped = aggregate_named_source_byte_lag((known,), expected_source_paths=expected, now=_NOW)
+
+    assert with_unknown.value_state == "unknown"
+    assert with_unknown.value is None
+    assert with_unknown.coverage.observed_count == 2
+    assert with_unknown.coverage.supported_count == 1
+    assert dropped.value_state == "unknown"
+    assert dropped.value is None
+    assert dropped.coverage.observed_count == 1
+    assert dropped.coverage.exclusions[0].reason == "missing-contribution"
+
+
+def test_named_source_byte_lag_aggregate_rejects_contradictory_duplicate_instead_of_order_winner(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=64)
+    _seed_cursor(root, source, observed_size=32, offset=32)
+    projection = project_named_source_freshness(root, source, now=_NOW)
+    changed_evidence = replace(
+        projection.byte_lag,
+        value=12,
+        evidence_refs=(*projection.byte_lag.evidence_refs, projection.byte_lag.definition_ref),
+    )
+    contradictory = replace(projection, byte_lag=changed_evidence)
+
+    total = aggregate_named_source_byte_lag(
+        (projection, contradictory),
+        expected_source_paths=(source,),
+        now=_NOW,
+    )
+
+    assert total.value_state == "unknown"
+    assert total.value is None
+    assert len(total.conflicts) == 1
+    assert {observation.value for observation in total.conflicts[0].observations} == {12, 32}

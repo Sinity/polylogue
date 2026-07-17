@@ -719,6 +719,14 @@ class TestPrivacyContract:
 
         assert sentinel not in WEB_SHELL_HTML
 
+    def test_web_shell_usage_cost_preserves_unknown_and_known_subtotal(self) -> None:
+        """The current web rewrite boundary must not coerce absent price to zero."""
+        from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+        assert "statTile('Known priced subtotal', formatUsd(data.catalog_priced_subtotal_usd))" in WEB_SHELL_HTML
+        assert "if (value === null || value === undefined || value === '') return 'unknown';" in WEB_SHELL_HTML
+        assert "var n = Number(value || 0);" not in WEB_SHELL_HTML
+
     def test_load_status_success_path_clears_the_status_route_notice(self) -> None:
         """Dogfood regression (2026-07-08): loadStatus()'s success path set
         state.routeStates.status to 'ready' but never called renderFacets(),
