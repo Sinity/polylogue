@@ -5855,6 +5855,13 @@ def repair_raw_materialization(
     if not dry_run and not selected_components and deferred_plan_ids:
         retained_census_receipt = latest_raw_authority_census_receipt(archive_root, scope=scope)
         if retained_census_receipt is None:
+            # v1 receipts predate envelope identity.  They are safe to reuse
+            # only in this all-deferred branch: the persisted deferred-plan
+            # reason was already matched against this active envelope above.
+            legacy_scope = dict(scope)
+            legacy_scope.pop("max_payload_bytes")
+            retained_census_receipt = latest_raw_authority_census_receipt(archive_root, scope=legacy_scope)
+        if retained_census_receipt is None:
             raise RuntimeError("resource-deferred raw replay lacks a completed durable census receipt")
         return _internal_derived_repair_result(
             "raw_materialization",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -1850,6 +1851,52 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
     assert repeated.plan_outcomes == ()
     assert "unchanged plan(s) remain deferred" in repeated.detail
     assert "aggregate payload exceeds 1.0 GiB" in result.detail
+
+
+def test_raw_materialization_reuses_pre_envelope_deferred_receipt(tmp_path: Path) -> None:
+    """Upgrading does not strand a completed deferred receipt without envelope identity."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"legacy-deferred"}}\n',
+            source_path="legacy-deferred.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, raw_id),
+        )
+        conn.commit()
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    assert first.census_receipt is not None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        scope = json.loads(
+            str(
+                conn.execute(
+                    "SELECT scope_json FROM raw_authority_censuses WHERE census_id = ?",
+                    (first.census_receipt.census_id,),
+                ).fetchone()[0]
+            )
+        )
+        scope.pop("max_payload_bytes")
+        conn.execute(
+            "UPDATE raw_authority_censuses SET scope_json = ? WHERE census_id = ?",
+            (json.dumps(scope, sort_keys=True, separators=(",", ":")), first.census_receipt.census_id),
+        )
+        conn.commit()
+
+    repeated = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+
+    assert repeated.success is True
+    assert repeated.census_receipt is not None
+    assert repeated.census_receipt.census_id == first.census_receipt.census_id
 
 
 def test_raw_materialization_processes_independent_components_across_bounded_passes(tmp_path: Path) -> None:
