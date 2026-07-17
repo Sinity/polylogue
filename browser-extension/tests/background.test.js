@@ -630,7 +630,7 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled();
   });
 
-  it("routes backfill inventory through a dedicated inactive provider page", async () => {
+  it("routes backfill inventory through an existing provider page without creating a tab", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const captureJobResponse = captureJobFixtureResponse(url, options);
@@ -649,12 +649,8 @@ describe("background receiver diagnostics", () => {
     });
 
     expect(started.ok).toBe(true);
-    await vi.waitFor(() => expect(globalThis.chrome.tabs.create).toHaveBeenCalledWith({
-      url: "https://chatgpt.com/",
-      active: false,
-    }));
     await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
-      target: { tabId: 99 },
+      target: { tabId: 42 },
       world: "MAIN",
       func: expect.any(Function),
       args: [expect.objectContaining({ provider: "chatgpt", operation: "inventory" })],
@@ -668,15 +664,10 @@ describe("background receiver diagnostics", () => {
     }
     expect(fetchCalls.filter((call) => String(call.url).includes("/v1/browser-captures/capabilities"))).toHaveLength(1);
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
   });
 
-  it("shares one extension-owned provider transport across concurrent backfill jobs", async () => {
-    tabs = [];
-    globalThis.chrome.tabs.create.mockImplementation(async ({ url, active }) => {
-      const tab = { id: 99, url, active, status: "complete" };
-      tabs.push(tab);
-      return tab;
-    });
+  it("shares an existing provider surface across concurrent backfill jobs", async () => {
     globalThis.fetch = vi.fn(async (url) => {
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
@@ -693,10 +684,8 @@ describe("background receiver diagnostics", () => {
     await Promise.all(requests);
 
     await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
-    const chatGptTabs = globalThis.chrome.tabs.create.mock.calls.filter(([request]) => request.url === "https://chatgpt.com/");
-    expect(chatGptTabs).toHaveLength(1);
-    expect(globalThis.chrome.tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
-    expect(globalThis.chrome.scripting.executeScript.mock.calls.every(([details]) => details.target.tabId === 99)).toBe(true);
+    expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
+    expect(globalThis.chrome.scripting.executeScript.mock.calls.every(([details]) => details.target.tabId === 42)).toBe(true);
   });
 
   it("does not replace a provider transport tab once the operator activates it", async () => {
@@ -1222,6 +1211,10 @@ describe("background receiver diagnostics", () => {
   });
 
   it("adopts and merges every provider checkpoint without replaying acknowledged work", async () => {
+    tabs = [
+      { id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" },
+      { id: 43, url: "https://claude.ai/new", title: "Claude" },
+    ];
     const checkpoints = Object.fromEntries(["chatgpt", "claude-ai"].map((provider) => [provider, {
       version: 1,
       jobs: [{
@@ -1443,7 +1436,7 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls.some((call) => String(call.url).includes("/v1/backfill-checkpoint") && (call.options.method || "GET") === "GET")).toBe(false);
   });
 
-  it("does not reuse unsupported provider subdomains as authenticated transport roots", async () => {
+  it("defers backfill when no supported provider surface is open", async () => {
     tabs = [{ id: 43, url: "https://help.chatgpt.com/article", title: "Help" }];
 
     const started = await sendRuntimeMessage({
@@ -1453,8 +1446,15 @@ describe("background receiver diagnostics", () => {
     });
 
     expect(started.ok).toBe(true);
-    await vi.waitFor(() => expect(globalThis.chrome.tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false }));
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: 99 } }));
+    await vi.waitFor(async () => {
+      const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+      expect(status.jobs[0]?.status).toBe("paused");
+    });
+    expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: expect.any(Number) },
+      world: "MAIN",
+    }));
   });
 
   it("preserves page-bridge Retry-After through the adapter and coordinator", async () => {
@@ -1517,24 +1517,16 @@ describe("background receiver diagnostics", () => {
     expect(status.transport_failures).toBe(0);
   });
 
-  it("schedules cleanup before waiting and removes an inactive tab when readiness fails", async () => {
+  it("never creates a transport tab when passive backfill has no provider page", async () => {
     tabs = [];
-    globalThis.chrome.tabs.create = vi.fn(async ({ url, active }) => ({ id: 99, url, active, status: "loading" }));
-    globalThis.chrome.tabs.get = vi.fn(async () => { throw new Error("synthetic_tab_load_failure"); });
-
     const started = await sendRuntimeMessage({
       type: "polylogue.backfill.start",
       provider: "chatgpt",
       cutoff: "2026-01-01T00:00:00Z",
     });
     expect(started.ok, started.error).toBe(true);
-    await vi.waitFor(() => expect(globalThis.chrome.tabs.remove).toHaveBeenCalledWith(99));
-
-    expect(globalThis.chrome.alarms.create).toHaveBeenCalledWith(
-      "polylogueBackfillTransportCleanup:chatgpt:99",
-      expect.objectContaining({ when: expect.any(Number) }),
-    );
-    expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith("polylogueBackfillTransportCleanup:chatgpt:99");
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled());
+    expect(globalThis.chrome.tabs.remove).not.toHaveBeenCalled();
   });
 
   it("surfaces a stale Claude UI selection as a cancel-and-restart reason", async () => {
