@@ -16,6 +16,7 @@ from polylogue.archive.raw_materialization import (
 )
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.logging import get_logger
+from polylogue.storage.raw_authority import raw_authority_detail_query_handle
 
 logger = get_logger(__name__)
 
@@ -90,6 +91,9 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     # run it here (see paths._merge_raw_materialization_debt). Readiness that
     # required the classifier cannot be claimed when the classifier failed.
     if readiness.get("debt_classifier_error"):
+        return False
+    frontier = readiness.get("raw_authority_frontier")
+    if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
         return False
     blocking_keys = (
         "critical",
@@ -331,7 +335,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                     {
                         "blocker_id": str(blocker_id),
                         "plan_id": str(plan_id),
-                        "detail_query_handle": (f"polylogue://raw-authority-detail/{census_id}/{plan_id}/0"),
+                        "detail_query_handle": raw_authority_detail_query_handle(str(census_id), str(plan_id)),
                     }
                     for blocker_id, plan_id, census_id in conn.execute(
                         """

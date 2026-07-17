@@ -13,6 +13,20 @@ def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], snapshot["category_counts"])
 
 
+def test_raw_materialization_readiness_requires_completed_frontier_census() -> None:
+    counters_green: dict[str, object] = {"available": True}
+
+    assert raw_materialization_ready(counters_green) is False
+    assert (
+        raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "interrupted"}})
+        is False
+    )
+    assert (
+        raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "completed"}})
+        is True
+    )
+
+
 def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
@@ -773,6 +787,7 @@ def test_raw_materialization_ready_rejects_failed_debt_classifier() -> None:
     """
     clean = {
         "available": True,
+        "raw_authority_frontier": {"lifecycle_status": "completed"},
         "critical": 0,
         "warning": 0,
         "actionable": 0,

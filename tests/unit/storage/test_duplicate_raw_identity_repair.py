@@ -21,7 +21,11 @@ from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
-from polylogue.storage.raw_authority import finalize_raw_authority_census, record_raw_replay_outcome
+from polylogue.storage.raw_authority import (
+    finalize_raw_authority_census,
+    read_raw_authority_detail,
+    record_raw_replay_outcome,
+)
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
@@ -213,6 +217,8 @@ def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(t
     assert raw_materialization_ready(readiness) is False
     refs = readiness["raw_authority_frontier_remediation_refs"]
     assert isinstance(refs, list) and refs[0]["plan_id"] == missing.plan_id
+    detail = read_raw_authority_detail(tmp_path, str(refs[0]["detail_query_handle"]))
+    assert missing.plan_id in str(detail["chunk"])
 
     blob_path.parent.mkdir(parents=True, exist_ok=True)
     blob_path.write_bytes(b"wrong bytes at the expected content-addressed path")

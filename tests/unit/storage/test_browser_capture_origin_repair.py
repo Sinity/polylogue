@@ -800,6 +800,19 @@ def test_inspect_conflicts_membership_precondition_evidence(tmp_path: Path) -> N
     assert "membership row" in item.divergence_note
     assert "superseded_equivalent" in item.divergence_note
 
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    unresolved = next(frontier_item for frontier_item in census.items if frontier_item.raw_id == raw_id)
+    assert unresolved.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
+    assert unresolved.actuator is RawAuthorityActuator.NONE
+    assert unresolved.executable is False
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        observed = source.execute(
+            "SELECT observed_json FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            (unresolved.plan_id,),
+        ).fetchone()
+    assert observed is not None
+    assert "judgment_assertion_id" not in json.loads(str(observed[0]))
+
 
 def test_inspect_conflicts_matching_hash_is_membership_shaped_not_a_divergence(tmp_path: Path) -> None:
     """Equal content hashes mean the actuator's block is precondition-shaped, not authority conflict."""

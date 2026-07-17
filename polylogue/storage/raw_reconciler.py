@@ -588,6 +588,24 @@ def _strategy_overrides(
         for conflict_item in conflicts.items:
             if conflict_item.raw_id in overrides:
                 continue
+            if conflict_item.competing_raw_id is None:
+                overrides[conflict_item.raw_id] = _StrategyOverride(
+                    state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
+                    actuator=RawAuthorityActuator.NONE,
+                    reason=(
+                        "browser-origin evidence has a retained membership precondition but no "
+                        "canonical authority that an operator could retain"
+                    ),
+                    witness=json_document(
+                        {
+                            "schema": "polylogue.raw-authority-strategy-witness.v1",
+                            "kind": "browser_membership_precondition",
+                            "evidence": dataclasses.asdict(conflict_item),
+                        }
+                    ),
+                    input_raw_ids=(conflict_item.raw_id,),
+                )
+                continue
             overrides[conflict_item.raw_id] = _StrategyOverride(
                 state=RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
                 actuator=RawAuthorityActuator.REQUEST_JUDGMENT,
@@ -599,15 +617,7 @@ def _strategy_overrides(
                         "evidence": dataclasses.asdict(conflict_item),
                     }
                 ),
-                input_raw_ids=tuple(
-                    sorted(
-                        {
-                            raw_id
-                            for raw_id in (conflict_item.raw_id, conflict_item.competing_raw_id)
-                            if raw_id is not None
-                        }
-                    )
-                ),
+                input_raw_ids=tuple(sorted({conflict_item.raw_id, conflict_item.competing_raw_id})),
             )
     quarantine_ids = sorted(
         {
@@ -772,8 +782,10 @@ def _reconcile_frontier_obligations(
                 "actuator": item.actuator.value,
                 "reason": item.reason,
                 "evidence_digest": item.evidence_digest,
-                "judgment_assertion_id": judgment_refs.get(item.plan_id),
             }
+            judgment_assertion_id = judgment_refs.get(item.plan_id)
+            if judgment_assertion_id is not None:
+                observed["judgment_assertion_id"] = judgment_assertion_id
             conn.execute(
                 """
                 INSERT INTO raw_authority_blockers (

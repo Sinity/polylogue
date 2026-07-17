@@ -144,6 +144,8 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
 
 
 def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
+    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+
     for filename, tier in (
         ("source.db", ArchiveTier.SOURCE),
         ("index.db", ArchiveTier.INDEX),
@@ -154,6 +156,9 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "embeddings.db") as conn:
         conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
         conn.commit()
+    inspect_raw_authority_frontier(
+        Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
+    )
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
