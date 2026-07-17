@@ -177,6 +177,15 @@
       "package_revision": "r02"
     },
     {
+      "job": "testdiet-03",
+      "workload": "testdiet",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "testdiet-03-rebuild-equivalence-r01.zip",
+      "sha256": "c3843babc8fc0126401e471c9eaee1db26ad5ccdcabf0e1697d01157e591e47e",
+      "bytes": 26025
+    },
+    {
       "job": "testdiet-04",
       "workload": "testdiet",
       "zip": "testdiet-04/r02/raw.zip",
@@ -257,6 +266,60 @@
       ],
       "integration": "admitted as PR #3033 / efadb404ebe70ec91f03ffcb7eaf0de7956ece4d after FactFamilySpec was projected through the shared DeclarationRegistry; three real owner-route canaries landed while broader EvidenceValue family migration remains open",
       "package_revision": "r01"
+    },
+    {
+      "job": "testdiet-07",
+      "workload": "testdiet",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "testdiet-07-public-fact-parity-r01.zip",
+      "sha256": "95e7bbdfa984daca703160d154a36c39e01e35c23643debf60180b6b9962acbd",
+      "bytes": 24694
+    },
+    {
+      "job": "testdiet-08",
+      "workload": "testdiet",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "testdiet-08-chatgpt-normalization-r01.zip",
+      "sha256": "602019b069c47f9490ed31953a8cfd2bf1201d6ea6c14176a827155c8e6f9f66",
+      "bytes": 25012
+    },
+    {
+      "job": "testdiet-09",
+      "workload": "testdiet",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "testdiet-09-claude-code-normalization-r01.zip",
+      "sha256": "ff1220a65cfa3e882d4887e257a68cfadd34e686f77042fd6a35058912646047",
+      "bytes": 25182
+    },
+    {
+      "job": "testdiet-10",
+      "workload": "testdiet",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "testdiet-10-claude-web-normalization-r01.zip",
+      "sha256": "b73e7d46d640dcfbf9a3feec7842ee4ed029e19ef7fe36b49413ef98bffdb91f",
+      "bytes": 32845
+    },
+    {
+      "job": "testdiet-12",
+      "workload": "testdiet",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "testdiet-12-gemini-drive-normalization-r01.zip",
+      "sha256": "5d3b0e9e8f6813ef28690dfa3889822f86c6fd156033d6c12c936eed77133e3e",
+      "bytes": 32474
+    },
+    {
+      "job": "testdiet-15",
+      "workload": "testdiet",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "testdiet-15-temporal-equivalence-r01.zip",
+      "sha256": "693fa6b09b9d69d6662a576ed1195ef9ea0836ab0a796a8241d826165b92b5b5",
+      "bytes": 24864
     }
   ]
 }

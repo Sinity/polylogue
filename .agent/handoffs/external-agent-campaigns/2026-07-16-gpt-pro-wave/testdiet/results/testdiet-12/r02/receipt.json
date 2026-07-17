@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-12",
+  "package_revision": "r02",
+  "state": "integrated_merged",
+  "artifact": {"filename": "testdiet-12-gemini-drive-normalization-r01.zip", "sha256": "5d3b0e9e8f6813ef28690dfa3889822f86c6fd156033d6c12c936eed77133e3e", "size_bytes": 32474, "custody_path": "testdiet/results/testdiet-12/a01/raw/testdiet-12-gemini-drive-normalization-r01.zip"},
+  "local_adjudication": "Tight Drive detection, recursive lowering, Gemini/Drive typed facts, and Gemini CLI normalization are admitted through real parser routes.",
+  "beads": ["polylogue-2qx", "polylogue-2qx.1"],
+  "merge_commit": "1d3145afa5f07a8f90ffceefc33ba425c877a8ad",
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3044",
+  "verification": "Focused new-law set and devtools verify --quick passed.",
+  "scope": "Gemini/Drive normalization slice; full provider declaration work remains open."
+}
