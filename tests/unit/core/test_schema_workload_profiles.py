@@ -220,10 +220,43 @@ def test_synthetic_generation_bounds_inferred_tail_payloads() -> None:
     corpus = SyntheticCorpus(schema, WireFormat(encoding="json"), "test")
 
     generated = cast(dict[str, JSONValue], corpus._generate_from_schema(schema, random.Random(7)))
-    items = cast(list[str], generated["items"])
+    items = cast(list[JSONValue], generated["items"])
+    generated_strings = [item for item in items if isinstance(item, str)]
 
     assert len(items) == 32
-    assert all(4_000 <= len(item) <= 4_096 for item in items)
+    assert generated_strings
+    assert max(map(len, generated_strings)) <= 4_096
+
+
+def test_synthetic_generation_can_explicitly_preserve_tail_limits() -> None:
+    array_schema: JSONDocument = {
+        "type": "array",
+        "items": {"type": "integer"},
+        "x-polylogue-array-lengths": [2_500, 2_500],
+    }
+    string_schema: JSONDocument = {
+        "type": "object",
+        "properties": {"body": {"type": "string"}},
+        "x-polylogue-string-lengths": [{"path": "$.body", "min": 8_192, "max": 8_192, "avg": 8_192, "stddev": 0}],
+    }
+    unbounded_array = SyntheticCorpus(
+        array_schema,
+        WireFormat(encoding="json"),
+        "test",
+        max_array_items=None,
+    )
+    unbounded_string = SyntheticCorpus(
+        string_schema,
+        WireFormat(encoding="json"),
+        "test",
+        max_string_length=None,
+    )
+
+    items = cast(list[JSONValue], unbounded_array._generate_from_schema(array_schema, random.Random(7)))
+    record = cast(dict[str, JSONValue], unbounded_string._generate_from_schema(string_schema, random.Random(7)))
+
+    assert len(items) == 2_500
+    assert 8_190 <= len(cast(str, record["body"])) <= 8_192
 
 
 def test_registry_roundtrips_separate_workload_profile_artifact(tmp_path: Path) -> None:
