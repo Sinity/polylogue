@@ -864,7 +864,13 @@ def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BA
 
 
 def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
-    """Retry due derived convergence debt without rereading source payloads."""
+    """Retry due derived convergence debt without rereading source payloads.
+
+    Debt identity is stage-scoped. A retry therefore runs only the recorded
+    stage for the recorded subject and updates that same ops-ledger row on a
+    further deferral/failure. The legacy ``convergence`` stage remains an
+    all-stage fallback for older generic rows.
+    """
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.sources.live.cursor import CursorStore
@@ -878,60 +884,109 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     ]
     if not due_debt:
         return 0
-    session_ids = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "session_id"))
-    paths = tuple(dict.fromkeys([Path(debt.subject_id) for debt in due_debt if debt.subject_type == "source_path"]))
+
     fts_surfaces = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "fts_surface"))
-    if not paths and not session_ids and not fts_surfaces:
-        return 0
     fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
-    converger = DaemonConverger(stages=make_default_convergence_stages(db), max_workers=2)
-    path_states, _path_timings = converger.converge_batch(paths)
-    session_states, _session_timings = converger.converge_sessions(session_ids)
+
+    subject_states: dict[tuple[str, str, str], object] = {}
+    retryable_debt = tuple(debt for debt in due_debt if debt.subject_type in {"source_path", "session_id"})
+    if retryable_debt:
+        default_stages = make_default_convergence_stages(db)
+        stages_by_name = {stage.name: stage for stage in default_stages}
+        for stage_name in dict.fromkeys(debt.stage for debt in retryable_debt):
+            selected_stages = (
+                default_stages
+                if stage_name == "convergence"
+                else (stages_by_name[stage_name],)
+                if stage_name in stages_by_name
+                else ()
+            )
+            if not selected_stages:
+                continue
+            stage_debt = tuple(debt for debt in retryable_debt if debt.stage == stage_name)
+            paths = tuple(
+                dict.fromkeys(Path(debt.subject_id) for debt in stage_debt if debt.subject_type == "source_path")
+            )
+            session_ids = tuple(
+                dict.fromkeys(debt.subject_id for debt in stage_debt if debt.subject_type == "session_id")
+            )
+            converger = DaemonConverger(stages=selected_stages, max_workers=2)
+            path_states, _path_timings = converger.converge_batch(paths)
+            session_states, _session_timings = converger.converge_sessions(session_ids)
+            subject_states.update(
+                ((stage_name, "source_path", str(path)), state) for path, state in path_states.items()
+            )
+            subject_states.update(
+                ((stage_name, "session_id", session_id), state) for session_id, state in session_states.items()
+            )
+
     retried = 0
     for debt in due_debt:
-        subject_states: list[object | None]
-        if debt.subject_type == "session_id":
-            subject_states = [session_states.get(debt.subject_id)]
-        elif debt.subject_type == "fts_surface":
+        retried += 1
+        if debt.subject_type == "fts_surface":
             if fts_surface_results.get(debt.subject_id) is True:
-                cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
-                retried += 1
+                cursor.clear_convergence_debt(
+                    stage=debt.stage,
+                    subject_type=debt.subject_type,
+                    subject_id=debt.subject_id,
+                )
                 continue
-            cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
             cursor.record_convergence_debt(
                 stage=debt.stage,
                 subject_type=debt.subject_type,
                 subject_id=debt.subject_id,
                 error="FTS freshness convergence did not converge",
+                materializer_version=debt.materializer_version,
             )
-            retried += 1
             continue
-        else:
-            subject_states = [path_states.get(Path(debt.subject_id))]
-        converged = all(state is not None and bool(getattr(state, "converged", False)) for state in subject_states)
-        if converged:
-            cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
-            retried += 1
+
+        state = subject_states.get((debt.stage, debt.subject_type, debt.subject_id))
+        if state is None:
+            cursor.record_convergence_debt(
+                stage=debt.stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+                error=f"convergence retry stage unavailable: {debt.stage}",
+                materializer_version=debt.materializer_version,
+            )
             continue
-        failed_stages: tuple[str, ...] = ()
-        last_error: object = None
-        for state in subject_states:
-            stages = getattr(state, "stages", {}) if state is not None else {}
-            last_error = getattr(state, "last_error", None) if state is not None else None
-            failed_stages = _failed_convergence_stage_names(stages)
-            if failed_stages:
-                break
-        if not failed_stages:
-            failed_stages = ("convergence",)
-        cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
+        if bool(getattr(state, "converged", False)):
+            cursor.clear_convergence_debt(
+                stage=debt.stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+            )
+            continue
+
+        last_error = getattr(state, "last_error", None)
+        retry_error = last_error if isinstance(last_error, str) and last_error else "retry did not converge"
+        if debt.stage != "convergence":
+            cursor.record_convergence_debt(
+                stage=debt.stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+                error=retry_error,
+                materializer_version=debt.materializer_version,
+            )
+            continue
+
+        # Generic rows predate stage-scoped retry identity. Preserve the old
+        # migration behavior by replacing only that generic row with the exact
+        # stages that remain pending; other stage rows for the subject survive.
+        failed_stages = _failed_convergence_stage_names(getattr(state, "stages", {})) or ("convergence",)
+        cursor.clear_convergence_debt(
+            stage=debt.stage,
+            subject_type=debt.subject_type,
+            subject_id=debt.subject_id,
+        )
         for stage in failed_stages:
             cursor.record_convergence_debt(
                 stage=stage,
                 subject_type=debt.subject_type,
                 subject_id=debt.subject_id,
-                error=last_error if isinstance(last_error, str) and last_error else "retry did not converge",
+                error=retry_error,
+                materializer_version=debt.materializer_version,
             )
-        retried += 1
     return retried
 
 
