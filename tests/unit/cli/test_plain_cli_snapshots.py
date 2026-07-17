@@ -434,8 +434,8 @@ def test_analyze_facets_include_deferred_materializes_expensive_families(
     assert payload["material_origins"]
     # The named ``cli-chatgpt`` workload is deliberately generated through
     # the schema-backed production route; its deterministic seed currently
-    # realizes 12 message blocks across its two sessions.
-    assert payload["message_types"] == {"message": 12}
+    # realizes 15 message blocks across its two sessions.
+    assert payload["message_types"] == {"message": 15}
 
 
 def test_analyze_facets_default_marks_detail_families_deferred_not_authoritative(
