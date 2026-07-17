@@ -177,6 +177,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_quality_reference",
     ),
     CommandSpec(
+        "render mcp-equivalence",
+        "generated surfaces",
+        "Render docs/generated/mcp-equivalence.json from executable MCP declarations.",
+        "devtools.render_mcp_equivalence",
+        use_when=(
+            "Refresh or verify MCP discovery names, input/output contracts, role gates, operation owners, "
+            "Python parity expectations, and disjoint migration ownership after changing the compatibility surface."
+        ),
+        examples=("devtools render mcp-equivalence", "devtools render mcp-equivalence --check"),
+    ),
+    CommandSpec(
         "render mcp-tool-index",
         "generated surfaces",
         "Render the generated exhaustive tool-name appendix into docs/mcp-reference.md.",

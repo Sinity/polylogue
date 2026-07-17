@@ -106,6 +106,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render demo-corpus-datasheet` | Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive. |
 | `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
+| `devtools render mcp-equivalence` | Render docs/generated/mcp-equivalence.json from executable MCP declarations. |
 | `devtools render mcp-tool-index` | Render the generated exhaustive tool-name appendix into docs/mcp-reference.md. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |

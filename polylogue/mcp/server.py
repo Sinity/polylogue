@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.mcp.declarations.adapter import DeclaredToolRegistrar
 from polylogue.mcp.server_prompts import register_prompts
 from polylogue.mcp.server_resources import register_resources
 from polylogue.mcp.server_support import (
@@ -62,7 +63,9 @@ def build_server(*, role: MCPRole = "read") -> FastMCP:
         response_context=_response_context,
         role=role,
     )
-    register_tools(mcp, hooks)
+    declared_mcp = DeclaredToolRegistrar(mcp, role=role)
+    register_tools(declared_mcp, hooks)
+    declared_mcp.finalize()
     register_resources(mcp, hooks)
     register_prompts(mcp, hooks)
     return mcp

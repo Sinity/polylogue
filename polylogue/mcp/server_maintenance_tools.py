@@ -11,8 +11,7 @@ from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 
@@ -53,7 +52,7 @@ def _build_mcp_scope_filter(
     )
 
 
-def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_maintenance_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def maintenance_preview(
         targets: list[str] | None = None,

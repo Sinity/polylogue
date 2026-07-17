@@ -61,9 +61,9 @@ from polylogue.mcp.archive_support import (
     archive_search_payload,
     archive_session_list_payload,
 )
+from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATION_BY_NAME
 from polylogue.mcp.payloads import MCPRootPayload
 from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES, _json_payload
-from polylogue.mcp.server_tools import _MCP_READ_TOOL_SPECS
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import TagMutationResult
@@ -1371,11 +1371,12 @@ class TestGetSessionSummaryTool:
 
 
 class TestReadViewProfilesTool:
-    def test_read_tools_use_registered_specs(self, mcp_server: MCPServerUnderTest) -> None:
-        for name, spec in _MCP_READ_TOOL_SPECS.items():
-            tool = mcp_server._tool_manager._tools[name]
-            assert tool.fn.__name__ == spec.name
-            assert tool.fn.__doc__ == spec.description
+    def test_read_tool_uses_declared_registration_metadata(self, mcp_server: MCPServerUnderTest) -> None:
+        declaration = MCP_TOOL_DECLARATION_BY_NAME["list_read_view_profiles"]
+        tool = mcp_server._tool_manager._tools[declaration.name]
+
+        assert tool.fn.__name__ == declaration.name
+        assert tool.fn.__doc__ == declaration.description
 
     def test_list_read_view_profiles_uses_facade_contract(self, mcp_server: MCPServerUnderTest) -> None:
         profiles = read_view_profile_payloads()

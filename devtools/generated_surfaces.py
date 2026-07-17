@@ -11,6 +11,7 @@ from devtools import (
     render_demo_corpus_datasheet,
     render_devtools_reference,
     render_docs_surface,
+    render_mcp_equivalence,
     render_mcp_tool_index,
     render_openapi,
     render_pages,
@@ -183,12 +184,24 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         ),
     ),
     GeneratedSurface(
+        name="mcp-equivalence",
+        label="MCP algebra equivalence map",
+        description="Render the executable MCP contract and migration map as generated JSON.",
+        command=control_plane_argv("render mcp-equivalence"),
+        main=render_mcp_equivalence.main,
+        inputs=(
+            "devtools/render_mcp_equivalence.py",
+            "polylogue/declarations/",
+            "polylogue/mcp/declarations/",
+        ),
+    ),
+    GeneratedSurface(
         name="mcp-tool-index",
         label="MCP tool index",
         description="Render the exhaustive generated tool-name appendix into docs/mcp-reference.md.",
         command=control_plane_argv("render mcp-tool-index"),
         main=render_mcp_tool_index.main,
-        inputs=("devtools/render_mcp_tool_index.py", "tests/infra/mcp.py"),
+        inputs=("devtools/render_mcp_tool_index.py", "polylogue/mcp/declarations/registry.py"),
     ),
     GeneratedSurface(
         name="topology-status",

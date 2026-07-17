@@ -25,8 +25,7 @@ from polylogue.mcp.payloads import MCPRootPayload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 
@@ -46,7 +45,7 @@ def _object_int(value: object) -> int:
 
 
 def _register_list_tool(
-    mcp: FastMCP,
+    mcp: ToolRegistrar,
     hooks: ServerCallbacks,
     pt: InsightType,
 ) -> None:
@@ -99,7 +98,7 @@ def _register_list_tool(
     mcp.tool()(wrapper)
 
 
-def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_insight_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     """Register all insight-type list tools plus special tools."""
 
     # Register generic list tools from the registry

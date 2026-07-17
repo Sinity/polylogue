@@ -23,6 +23,7 @@ from polylogue.mcp.archive_support import (
     blackboard_note_payload,
     mcp_archive_root,
 )
+from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
     MCPArchiveSearchHitPayload,
     MCPArchiveSearchPayload,
@@ -61,9 +62,8 @@ from polylogue.mcp.server_support import role_allows
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
     from polylogue.config import Config
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 
@@ -133,29 +133,6 @@ def _stats_embedding_overrides(config: Config) -> dict[str, object]:
     }
 
 
-@dataclass(frozen=True)
-class _MCPReadToolSpec:
-    name: str
-    description: str
-    linked_read_view: str | None = None
-    output_model: str | None = None
-
-
-_MCP_READ_TOOL_SPECS: dict[str, _MCPReadToolSpec] = {
-    "list_read_view_profiles": _MCPReadToolSpec(
-        name="list_read_view_profiles",
-        description="List executable read-view profile metadata for agents.",
-        output_model="MCPRootPayload",
-    ),
-}
-
-
-def _register_mcp_read_tool(mcp: FastMCP, handler: Any, spec: _MCPReadToolSpec) -> None:
-    handler.__name__ = spec.name
-    handler.__doc__ = spec.description
-    mcp.tool()(handler)
-
-
 def _split_archive_csv(value: str | None) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -206,7 +183,7 @@ def _session_summary_payload(
     return MCPRootPayload(root=cast(dict[str, object], base))
 
 
-def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     async def _search(**kwargs: object) -> str:
         if "query" not in kwargs:
             raise TypeError("search() missing required keyword argument: 'query'")
@@ -795,7 +772,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("provider_usage", run)
 
 
-def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     # Exact source freshness is a read-only diagnostic. Configuration chooses
     # the archive; callers can supply only the exact source path and cannot
     # turn this into an arbitrary local-file inspection route.
@@ -1222,7 +1199,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("list_read_view_profiles", run)
 
-    _register_mcp_read_tool(mcp, list_read_view_profiles, _MCP_READ_TOOL_SPECS["list_read_view_profiles"])
+    register_declared_handler(mcp, list_read_view_profiles, name="list_read_view_profiles")
 
     @mcp.tool()
     async def explain_query_expression(expression: str) -> str:
@@ -1309,7 +1286,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("action_affordances", run)
 
 
-def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     register_query_tools(mcp, hooks)
     register_read_tools(mcp, hooks)
     register_context_tools(mcp, hooks)
