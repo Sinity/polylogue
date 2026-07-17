@@ -36,7 +36,7 @@
    "checked_at": "2026-07-17T10:55:43+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "problems": [],
-   "status": "blocked",
+   "status": "integrated_merged",
    "members": [
     "EVIDENCE.md",
     "HANDOFF.md",
@@ -48,7 +48,8 @@
    "apply_detail": "patch applies cleanly",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "blocked"
+   "state": "integrated_merged",
+   "integration": "admitted after current-master reconciliation as PR #3014 / 76ad3e1379bde4829650392e459cd4804abb721d; real restart/debt recovery proof landed, while the missing live FTS-debt feeder remains explicit residual scope"
   },
   {
    "job": "testdiet-04",
@@ -78,6 +79,35 @@
     "changed_paths is empty"
    ],
    "integration": "ZIP CRC and manifest checked. Retained as delivery/freshness evidence only; it authorizes no implementation or Bead closure."
+  },
+  {
+   "job": "testdiet-01",
+   "workload": "testdiet",
+   "revision": "r02",
+   "zip": "testdiet-01/r02/raw.zip",
+   "sha256": "557ba43a9f77783ed0e7644eb7dd4c9f6a07e4c416ac6a16c4aae096f2cc3fa8",
+   "bytes": 23470,
+   "checked_at": "2026-07-17T12:21:00+00:00",
+   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+   "status": "integrated_merged",
+   "state": "integrated_merged",
+   "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
+   "patch_lines": 923,
+   "integration": "admitted after current-master reconciliation as PR #3019 / d42cc1497ee91fded8c46313a46e18733f9084ee; native Codex action-cardinality survivor is a query-law seed, not closure of the broad cross-surface/cancellation/receipt scope"
+  },
+  {
+   "job": "testdiet-05",
+   "workload": "testdiet",
+   "revision": "r01",
+   "zip": "testdiet-05/r01/raw.zip",
+   "sha256": "cad064d3c0c4cdfa3c221adf6a7a1000ce59dccf84a8b9944003bfd8c21350f4",
+   "bytes": 33668,
+   "checked_at": "2026-07-17T14:01:00+00:00",
+   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+   "status": "integrated_merged",
+   "state": "integrated_merged",
+   "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
+   "integration": "admitted after current-master reconciliation as PR #3012 / 876358610ebd8c7532d3d6865df6bc5fc01712b1; bounded aggregate execution is proven, while shared resumable query transaction scope remains open"
   }
  ]
 }
