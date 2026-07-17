@@ -7,6 +7,15 @@ from typing import cast
 
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.raw_authority import (
+    RawReplayPlan,
+    RawReplayPlanOutcome,
+    RawReplayPlanStatus,
+    finalize_raw_authority_census,
+    record_raw_authority_census,
+    record_raw_replay_outcome,
+)
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
@@ -25,6 +34,58 @@ def test_raw_materialization_readiness_requires_completed_frontier_census() -> N
         raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "completed"}})
         is True
     )
+
+
+def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -> None:
+    """An applied repair must not remain blocked by its immutable preflight."""
+    initialize_active_archive_root(tmp_path)
+    plan = RawReplayPlan(
+        plan_id="raw-authority-frontier:" + "a" * 64,
+        input_digest="b" * 64,
+        input_raw_ids=("raw-1",),
+        logical_keys=("chatgpt-export:conversation-1",),
+        authority_witness={"schema": "polylogue.raw-authority-frontier-plan.v1"},
+        source_preconditions={},
+        index_preconditions={},
+    )
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids={plan.plan_id},
+        executable_plan_ids={plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={
+            "schema": "polylogue.raw-authority-frontier-scope.v1",
+            "state_counts": {"missing_source_bytes": 1},
+        },
+        residual={
+            "schema": "polylogue.raw-authority-frontier-residual.v1",
+            "state_counts": {"missing_source_bytes": 1},
+        },
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        receipt.census_id,
+        RawReplayPlanOutcome(
+            plan_id=plan.plan_id,
+            input_raw_ids=plan.input_raw_ids,
+            status=RawReplayPlanStatus.EXECUTED,
+            reason="fixture repaired the exact plan",
+            next_action="none",
+        ),
+    )
+    finalize_raw_authority_census(
+        tmp_path,
+        receipt.census_id,
+        post_plans=(),
+        post_residual={"schema": "polylogue.raw-authority-frontier-residual.v1", "state_counts": {}},
+    )
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["raw_authority_frontier_blocking_count"] == 0
+    assert raw_materialization_ready(snapshot) is True
 
 
 def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path: Path) -> None:

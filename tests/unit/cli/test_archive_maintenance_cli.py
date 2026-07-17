@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -1467,6 +1468,21 @@ def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
     )
     assert apply_without_confirmation.exit_code == 1
     assert "without --yes" in apply_without_confirmation.output
+
+
+def test_raw_authority_frontier_cli_refuses_durable_census_while_daemon_runs(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """A census reconciles durable obligations, so it needs writer exclusion."""
+    with patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=123):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "raw-authority-frontier", "--output-format", "json"],
+        )
+
+    assert result.exit_code == 1
+    assert "Refusing offline maintenance while polylogued PID 123 is running" in result.output
 
 
 def test_archive_read_cli_lists_archive_sessions(

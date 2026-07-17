@@ -943,7 +943,18 @@ def _residual(state_counts: JSONDocument) -> JSONDocument:
 
 
 def inspect_raw_authority_frontier(config: Config) -> RawAuthorityFrontierCensus:
-    """Persist one complete accepted-frontier census without applying repairs."""
+    """Persist one complete accepted-frontier census without applying repairs.
+
+    A census is not a read operation: publishing it also reconciles durable
+    frontier blockers and judgment obligations.  Offline callers therefore
+    need the same daemon exclusion boundary as an apply; daemon convergence is
+    admitted through its active write lease.
+    """
+    from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
+
+    block_reason = offline_maintenance_block_reason(config, active=True, dry_run=False)
+    if block_reason is not None:
+        raise RuntimeError(block_reason)
     root = _archive_root(config)
     all_items, accepted_head_count, terminal_superseded_count = _frontier_items(config)
     state_counts_counter = Counter(item.state.value for item in all_items)

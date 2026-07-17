@@ -290,7 +290,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                     """
                     SELECT census_id, sequence_no, inventory_digest, residual_digest,
                            plan_count, executable_plan_count, residual_plan_count,
-                           lifecycle_status, completed_at_ms, scope_json
+                           lifecycle_status, completed_at_ms, scope_json,
+                           post_residual_json
                     FROM source.raw_authority_censuses
                     WHERE lifecycle_status IN ('completed', 'interrupted')
                       AND json_extract(scope_json, '$.schema') =
@@ -302,8 +303,19 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                     import json
 
                     frontier_scope = json.loads(str(frontier_row["scope_json"]))
+                    # An apply census records its pre-application scope for
+                    # auditability, then publishes the actual frontier in the
+                    # postflight residual.  Readiness must reflect that
+                    # terminal state rather than keep an already repaired plan
+                    # blocking until some later inspection happens to run.
+                    frontier_post_residual = json.loads(str(frontier_row["post_residual_json"] or "{}"))
+                    postflight_state_counts = frontier_post_residual.get("state_counts")
+                    scope_state_counts = frontier_scope.get("state_counts")
+                    state_counts_source = (
+                        postflight_state_counts if isinstance(postflight_state_counts, Mapping) else scope_state_counts
+                    )
                     frontier_state_counts = {
-                        str(key): int(value) for key, value in dict(frontier_scope.get("state_counts") or {}).items()
+                        str(key): int(value) for key, value in dict(state_counts_source or {}).items()
                     }
                     nonblocking_states = {"proven_current", "superseded"}
                     authority_frontier_blocking_count = sum(
