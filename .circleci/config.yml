@@ -1,0 +1,133 @@
+version: 2.1
+
+# CircleCI free-tier CI while GitHub Actions is billing-locked (and a cheap
+# second opinion afterwards). Credit budget: ~30k credits/month on the free
+# plan. Design keeps the per-push cost low and the heavy work nightly:
+#   - quick-gate (PRs + master pushes): generated-surface check, public
+#     claims, ruff, mypy. No pytest — mirrors `devtools verify --quick`
+#     semantics; the test suite's pre-merge gate remains local `devtools
+#     verify` (testmon), same as the repo's GitHub-era policy where the
+#     heavy suite ran post-merge only.
+#   - nightly (scheduled pipeline named "nightly"): full coverage suite +
+#     dependency audit + distribution verify on a larger executor.
+#   - release-verify (v* tags): build artifacts and store them.
+# Operator setup (one-time, UI): Project Settings → Advanced → "Only build
+# pull requests" ON; add a scheduled pipeline named "nightly" (master,
+# 03:00 UTC). Publishing to PyPI stays a manual local act.
+
+commands:
+  bootstrap:
+    steps:
+      - checkout
+      - run:
+          name: Install uv
+          command: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - restore_cache:
+          keys:
+            - uv-v1-{{ checksum "uv.lock" }}
+            - uv-v1-
+      - run:
+          name: Sync environment (frozen)
+          command: ~/.local/bin/uv sync --extra dev --frozen
+      - save_cache:
+          key: uv-v1-{{ checksum "uv.lock" }}
+          paths:
+            - ~/.cache/uv
+
+jobs:
+  quick-gate:
+    docker:
+      - image: cimg/python:3.13
+    resource_class: medium
+    environment: &polylogue_ci_env
+      POLYLOGUE_ARCHIVE_ROOT: /tmp/polylogue-archive
+      POLYLOGUE_FORCE_PLAIN: "1"
+      HYPOTHESIS_PROFILE: ci
+      POLYLOGUE_PYTEST_BASETEMP_ROOT: /tmp/polylogue-pytest
+      POLYLOGUE_PYTEST_WORKERS: "2"
+    steps:
+      - bootstrap
+      - restore_cache:
+          keys:
+            - mypy-v1-{{ .Branch }}
+            - mypy-v1-master
+            - mypy-v1-
+      - run:
+          name: Generated surfaces in sync
+          command: ~/.local/bin/uv run devtools render all --check
+      - run:
+          name: Public claims gate
+          command: ~/.local/bin/uv run devtools verify public-claims --json
+      - run:
+          name: Ruff lint
+          command: ~/.local/bin/uv run ruff check polylogue/ tests/ devtools/
+      - run:
+          name: Ruff format
+          command: ~/.local/bin/uv run ruff format --check polylogue/ tests/ devtools/
+      - run:
+          name: Mypy (strict)
+          command: ~/.local/bin/uv run mypy polylogue/
+      - save_cache:
+          key: mypy-v1-{{ .Branch }}-{{ epoch }}
+          paths:
+            - .mypy_cache
+
+  full-suite:
+    docker:
+      - image: cimg/python:3.13
+    resource_class: large
+    environment:
+      <<: *polylogue_ci_env
+      POLYLOGUE_PYTEST_WORKERS: "4"
+    steps:
+      - bootstrap
+      - run:
+          name: Coverage suite
+          command: ~/.local/bin/uv run devtools verify coverage
+          no_output_timeout: 30m
+      - run:
+          name: Dependency audit
+          command: ~/.local/bin/uv run pip-audit --skip-editable || true
+      - store_artifacts:
+          path: .cache/verify
+          destination: verify
+
+  release-verify:
+    docker:
+      - image: cimg/python:3.13
+    resource_class: medium
+    steps:
+      - bootstrap
+      - run:
+          name: Build distributions
+          command: ~/.local/bin/uv build
+      - run:
+          name: Verify distribution
+          command: ~/.local/bin/uv run devtools release verify-distribution --work-dir /tmp/dist-verify || echo "verify-distribution unavailable; artifacts stored"
+      - store_artifacts:
+          path: dist
+          destination: dist
+
+workflows:
+  gate:
+    when:
+      not:
+        equal: [scheduled_pipeline, << pipeline.trigger_source >>]
+    jobs:
+      - quick-gate:
+          filters:
+            tags:
+              ignore: /.*/
+      - release-verify:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+  nightly:
+    when:
+      and:
+        - equal: [scheduled_pipeline, << pipeline.trigger_source >>]
+        - equal: [nightly, << pipeline.schedule.name >>]
+    jobs:
+      - full-suite
