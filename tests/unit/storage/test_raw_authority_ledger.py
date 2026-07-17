@@ -26,7 +26,6 @@ from polylogue.storage.raw_authority import (
     read_raw_authority_detail,
     record_raw_authority_census,
     record_raw_replay_outcome,
-    recover_interrupted_raw_authority_censuses,
     reject_stale_raw_replay_plan,
     resolve_raw_authority_blocker,
     validate_raw_replay_plan,
@@ -733,7 +732,7 @@ def test_identical_stale_rejection_after_resolution_creates_new_open_blocker(tmp
 
 
 def test_recovery_returns_planned_census_after_all_outcomes_are_recorded(tmp_path: Path) -> None:
-    """A crash after outcome commit still needs durable postflight finalization."""
+    """A crash after outcome commit finalizes the planned census on restart."""
     initialize_active_archive_root(tmp_path)
     plan = RawReplayPlan(
         plan_id="raw-replay:outcome-recorded",
@@ -759,7 +758,16 @@ def test_recovery_returns_planned_census_after_all_outcomes_are_recorded(tmp_pat
         RawReplayPlanOutcome(plan.plan_id, plan.input_raw_ids, RawReplayPlanStatus.EXECUTED, "done", "none"),
     )
 
-    assert recover_interrupted_raw_authority_censuses(tmp_path) == ((census.census_id, {"test": "outcome-recorded"}),)
+    recovered = repair_raw_materialization(_config(tmp_path))
+
+    assert recovered.metrics["raw_materialization_recovered_census_count"] == 1.0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT lifecycle_status FROM raw_authority_censuses WHERE census_id = ?", (census.census_id,)
+        ).fetchone() == ("interrupted",)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_censuses WHERE lifecycle_status = 'planned'"
+        ).fetchone() == (0,)
 
 
 def test_frontier_preview_cannot_claim_one_plan_twice(tmp_path: Path) -> None:
