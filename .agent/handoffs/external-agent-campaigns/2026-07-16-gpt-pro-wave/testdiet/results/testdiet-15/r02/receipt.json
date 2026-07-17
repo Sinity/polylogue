@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-15",
+  "package_revision": "r02",
+  "state": "integrated_merged",
+  "artifact": {"filename": "testdiet-15-temporal-equivalence-r01.zip", "sha256": "693fa6b09b9d69d6662a576ed1195ef9ea0836ab0a796a8241d826165b92b5b5", "size_bytes": 24864, "custody_path": "testdiet/results/testdiet-15/a01/raw/testdiet-15-temporal-equivalence-r01.zip"},
+  "local_adjudication": "Canonical UTC public instants, normalized bounds, and explicit inferred event-gap semantics were reconciled with the current freshness test seam.",
+  "beads": ["polylogue-896y"],
+  "merge_commit": "1d3145afa5f07a8f90ffceefc33ba425c877a8ad",
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3044",
+  "verification": "238 temporal/affected-route tests and devtools verify --quick passed.",
+  "scope": "Temporal public-surface equivalence slice; broader time-authority audit remains open."
+}
