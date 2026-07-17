@@ -612,6 +612,34 @@ def partial_convergence_canary_spec(
     )
 
 
+def raw_authority_fixed_point_spec(
+    *,
+    profile_id: str,
+    archive_id: str,
+    scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
+) -> WorkloadEnvelopeSpec:
+    """Declare the bounded raw-authority census and replay fixed-point route.
+
+    This is intentionally an envelope over the shared schema-derived corpus,
+    rather than another synthetic archive format.  A production-shaped run
+    binds its revision skew, component closure, and cursor/head conflict
+    distributions to the same profile and receipt as the input corpus.
+    """
+    return _schema_profile_canary_spec(
+        workload_id="canary:raw-authority-fixed-point",
+        profile_id=profile_id,
+        archive_id=archive_id,
+        phases=("generate", "acquire", "census", "replay", "postflight", "quiescent"),
+        distribution_refs=(
+            "archive.raw_revision_shapes",
+            "archive.authority_component_sizes",
+            "operations.cursor_lag",
+            "operations.convergence_debt",
+        ),
+        scale_tier=scale_tier,
+    )
+
+
 def _identity(namespace: str, payload: JSONDocument) -> str:
     encoded = json.dumps(
         payload,
@@ -640,6 +668,7 @@ __all__ = [
     "exact_session_actions_canary_spec",
     "lineage_replay_canary_spec",
     "partial_convergence_canary_spec",
+    "raw_authority_fixed_point_spec",
     "tool_pairing_canary_spec",
     "watcher_append_cohort_canary_spec",
 ]
