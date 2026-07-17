@@ -447,7 +447,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 556
+    loc: 555
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1352,7 +1352,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
-    loc: 308
+    loc: 442
     target: polylogue/core/refs.py
     owner: core-primitive
     reason: core primitive
@@ -1848,7 +1848,7 @@ files:
     target: polylogue/insights/judgment/rankers.py
     owner: stable
   - path: polylogue/insights/judgment/types.py
-    loc: 199
+    loc: 220
     target: polylogue/insights/judgment/types.py
     owner: stable
   - path: polylogue/insights/measurement/__init__.py
@@ -2986,7 +2986,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 996
+    loc: 1011
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3108,6 +3108,10 @@ files:
   - path: polylogue/sources/live/watcher.py
     loc: 1177
     target: polylogue/sources/live/watcher.py
+    owner: stable
+  - path: polylogue/sources/origin_specs.py
+    loc: 284
+    target: polylogue/sources/origin_specs.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
     loc: 472
@@ -3300,7 +3304,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_readiness.py
-    loc: 845
+    loc: 846
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_views.py
@@ -3581,11 +3585,11 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_authority.py
-    loc: 1690
+    loc: 1709
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
-    loc: 1426
+    loc: 1417
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_retention.py
@@ -3594,7 +3598,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 6441
+    loc: 6465
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
