@@ -119,6 +119,19 @@ polylogue-mcp = "polylogue.mcp.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["polylogue", "devtools"]
 
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "polylogue",
+  "devtools",
+  "packaging",
+  "tests",
+  "docs",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "uv.lock",
+]
+
 [tool.hatch.build.hooks.custom]
 path = "packaging/hatch_build.py"
 
