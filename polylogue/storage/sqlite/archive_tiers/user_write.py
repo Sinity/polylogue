@@ -11,7 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
@@ -57,6 +58,27 @@ _ASSERTION_TERMINAL_JUDGED_STATUSES: Final[frozenset[AssertionStatus]] = frozens
 #: coerced to unless it is already terminal-judged (37t.15). Matches the
 #: shape existing candidate writers (transform/pathology) already set by hand.
 _ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"inject": False, "promotion_required": True}
+
+
+@contextmanager
+def _immediate_user_write_transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """Start the outer user-tier write scope before observing mutable state.
+
+    Assertion callers retain ownership of a successful transaction and commit it
+    using their existing unit-of-work boundary.  The helper only establishes an
+    immediate transaction when none exists, and rolls that transaction back if
+    the guarded operation fails.  Nested bulk operations already hold the
+    immediate transaction and continue to use savepoints for item isolation.
+    """
+    if conn.in_transaction:
+        yield
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _default_context_policy() -> dict[str, JSONValue]:
@@ -1052,52 +1074,53 @@ def upsert_assertion(
     per-call-site deliberately; it is never inferred from ``kind``/
     ``author_kind`` inside this function.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
-    timestamp = now_ms if now_ms is not None else _now_ms()
-    existing = conn.execute(
-        "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
-        (assertion_id,),
-    ).fetchone()
-    created_at_ms = int(existing[0]) if existing is not None else timestamp
-    existing_status = (
-        _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
-    )
+    with _immediate_user_write_transaction(conn):
+        conn.execute("PRAGMA foreign_keys = ON")
+        timestamp = now_ms if now_ms is not None else _now_ms()
+        existing = conn.execute(
+            "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
+            (assertion_id,),
+        ).fetchone()
+        created_at_ms = int(existing[0]) if existing is not None else timestamp
+        existing_status = (
+            _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
+        )
 
-    normalized_target_ref = normalize_object_ref_text(target_ref)
-    normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
-    normalized_author_ref = (
-        normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
-        if author_ref is not None
-        else ASSERTION_DEFAULT_AUTHOR_REF
-    )
-    resolved_kind = _normalize_assertion_kind(kind)
-    resolved_value = _normalize_assertion_value(value)
-    resolved_staleness = _normalize_assertion_staleness(staleness)
-    normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
-    resolved_status = _normalize_assertion_status(status)
-    resolved_visibility = _normalize_assertion_visibility(visibility)
-    resolved_author_kind = _normalize_assertion_author_kind(author_kind)
-    resolved_context_policy = _normalize_assertion_context_policy(context_policy)
+        normalized_target_ref = normalize_object_ref_text(target_ref)
+        normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
+        normalized_author_ref = (
+            normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+            if author_ref is not None
+            else ASSERTION_DEFAULT_AUTHOR_REF
+        )
+        resolved_kind = _normalize_assertion_kind(kind)
+        resolved_value = _normalize_assertion_value(value)
+        resolved_staleness = _normalize_assertion_staleness(staleness)
+        normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
+        resolved_status = _normalize_assertion_status(status)
+        resolved_visibility = _normalize_assertion_visibility(visibility)
+        resolved_author_kind = _normalize_assertion_author_kind(author_kind)
+        resolved_context_policy = _normalize_assertion_context_policy(context_policy)
 
-    if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
-        if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
-            resolved_status = existing_status
-        else:
-            resolved_status = AssertionStatus.CANDIDATE
-            resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
+        if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
+            if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
+                resolved_status = existing_status
+            else:
+                resolved_status = AssertionStatus.CANDIDATE
+                resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
 
-    resolved_context_policy = constrain_assertion_context_policy(
-        resolved_context_policy,
-        author_kind=resolved_author_kind,
-        author_ref=normalized_author_ref,
-        status=resolved_status,
-    )
+        resolved_context_policy = constrain_assertion_context_policy(
+            resolved_context_policy,
+            author_kind=resolved_author_kind,
+            author_ref=normalized_author_ref,
+            status=resolved_status,
+        )
 
-    evidence_refs_json = _dumps_optional(normalized_evidence_refs)
-    supersedes_json = _dumps_optional(list(supersedes or ()))
+        evidence_refs_json = _dumps_optional(normalized_evidence_refs)
+        supersedes_json = _dumps_optional(list(supersedes or ()))
 
-    conn.execute(
-        """
+        conn.execute(
+            """
         INSERT INTO assertions (
             assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
             author_ref, author_kind, evidence_refs_json, status, visibility, confidence,
@@ -1121,32 +1144,32 @@ def upsert_assertion(
             supersedes_json = excluded.supersedes_json,
             updated_at_ms = excluded.updated_at_ms
         """,
-        (
-            assertion_id,
-            normalized_scope_ref,
-            normalized_target_ref,
-            key,
-            resolved_kind.value,
-            _dumps_optional(resolved_value.as_json_value()),
-            body_text,
-            normalized_author_ref,
-            resolved_author_kind,
-            evidence_refs_json,
-            resolved_status.value,
-            resolved_visibility.value,
-            confidence,
-            _dumps_optional(
-                None if resolved_staleness is None else resolved_staleness.as_json_document(),
+            (
+                assertion_id,
+                normalized_scope_ref,
+                normalized_target_ref,
+                key,
+                resolved_kind.value,
+                _dumps_optional(resolved_value.as_json_value()),
+                body_text,
+                normalized_author_ref,
+                resolved_author_kind,
+                evidence_refs_json,
+                resolved_status.value,
+                resolved_visibility.value,
+                confidence,
+                _dumps_optional(
+                    None if resolved_staleness is None else resolved_staleness.as_json_document(),
+                ),
+                _dumps_optional(resolved_context_policy.as_json_document()),
+                supersedes_json,
+                created_at_ms,
+                timestamp,
             ),
-            _dumps_optional(resolved_context_policy.as_json_document()),
-            supersedes_json,
-            created_at_ms,
-            timestamp,
-        ),
-    )
-    envelope = read_assertion_envelope(conn, assertion_id)
-    assert envelope is not None
-    return envelope
+        )
+        envelope = read_assertion_envelope(conn, assertion_id)
+        assert envelope is not None
+        return envelope
 
 
 def upsert_transform_candidate_assertions(
@@ -1636,6 +1659,34 @@ def judge_assertion_candidate(
 ) -> ArchiveAssertionJudgmentEnvelope:
     """Record an explicit operator judgment for one candidate assertion."""
 
+    with _immediate_user_write_transaction(conn):
+        return _judge_assertion_candidate_in_transaction(
+            conn,
+            candidate_ref=candidate_ref,
+            decision=decision,
+            reason=reason,
+            actor_ref=actor_ref,
+            inject=inject,
+            replacement_kind=replacement_kind,
+            replacement_body_text=replacement_body_text,
+            replacement_value=replacement_value,
+            now_ms=now_ms,
+        )
+
+
+def _judge_assertion_candidate_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    candidate_ref: str,
+    decision: str,
+    reason: str | None,
+    actor_ref: str,
+    inject: bool,
+    replacement_kind: str | AssertionKind | None,
+    replacement_body_text: str | None,
+    replacement_value: object | None,
+    now_ms: int | None,
+) -> ArchiveAssertionJudgmentEnvelope:
     normalized_decision = decision.strip().lower()
     if normalized_decision not in {"accept", "reject", "defer", "supersede"}:
         raise ValueError("candidate assertion decision must be accept, reject, defer, or supersede")
@@ -1754,6 +1805,16 @@ def judge_assertion_candidates(
     create duplicate review history for the same candidate.
     """
 
+    with _immediate_user_write_transaction(conn):
+        return _judge_assertion_candidates_in_transaction(conn, items, now_ms=now_ms)
+
+
+def _judge_assertion_candidates_in_transaction(
+    conn: sqlite3.Connection,
+    items: Sequence[ArchiveAssertionBulkJudgmentItemEnvelope],
+    *,
+    now_ms: int | None,
+) -> ArchiveAssertionBulkJudgmentEnvelope:
     unique_items: dict[str, ArchiveAssertionBulkJudgmentItemEnvelope] = {}
     ordered_candidate_ids: list[str] = []
     result_order: list[str | ArchiveAssertionBulkJudgmentResultEnvelope] = []

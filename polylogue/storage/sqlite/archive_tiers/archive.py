@@ -238,6 +238,8 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 from polylogue.storage.sqlite.connection_profile import (
     READ_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    open_connection,
+    open_readonly_connection,
 )
 from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
@@ -4817,7 +4819,7 @@ class ArchiveStore:
         user_db_path = self.user_db_path
         initialize_archive_database(user_db_path, ArchiveTier.USER)
         changed = 0
-        user_conn = sqlite3.connect(user_db_path)
+        user_conn = open_connection(user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -4856,7 +4858,7 @@ class ArchiveStore:
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
         removed = 0
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 for session_id in resolved_session_ids:
@@ -5640,7 +5642,7 @@ class ArchiveStore:
         """Set human-owned metadata as archive user.db assertions."""
         user_db_path = self.user_db_path
         initialize_archive_database(user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(user_db_path)
+        user_conn = open_connection(user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             changed = 0
@@ -5678,7 +5680,7 @@ class ArchiveStore:
         resolved_session_id = self.resolve_session_id(session_id)
         if not self.user_db_path.exists():
             return {}
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             rows = list_assertions_for_target(user_conn, f"session:{resolved_session_id}", kind=AssertionKind.METADATA)
@@ -5699,7 +5701,7 @@ class ArchiveStore:
             raise ValueError("metadata key cannot be empty")
         if not self.user_db_path.exists():
             return 0
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 assertion_id = assertion_id_for_session_metadata(resolved_session_id, normalized_key)
@@ -5713,7 +5715,7 @@ class ArchiveStore:
     def add_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
         """Add one user mark to archive user.db."""
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_mark(target_type, target_id, mark_type))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5727,7 +5729,7 @@ class ArchiveStore:
         """Remove one user mark from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 return mark_assertion_status(
@@ -5748,7 +5750,7 @@ class ArchiveStore:
         """List user marks from archive user.db."""
         if not self.user_db_path.exists():
             return []
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.MARK)
         finally:
@@ -5777,7 +5779,7 @@ class ArchiveStore:
     def save_annotation(self, annotation_id: str, target_type: str, target_id: str, note_text: str) -> bool:
         """Create or update one annotation in archive user.db."""
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_annotation(annotation_id))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5802,7 +5804,7 @@ class ArchiveStore:
         """Persist an immutable annotation schema definition in ``user.db``."""
 
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -5823,7 +5825,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return None
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return read_durable_annotation_schema(user_conn, schema_id, version)
@@ -5835,7 +5837,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return ()
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return list_durable_annotation_schemas(user_conn)
@@ -5846,7 +5848,7 @@ class ArchiveStore:
         """Persist one immutable annotation-batch provenance container."""
 
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -5859,7 +5861,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return None
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return read_annotation_batch(user_conn, batch_id)
@@ -5878,7 +5880,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return ()
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return _list_annotation_batches(
@@ -5915,7 +5917,7 @@ class ArchiveStore:
         """
         if not self.user_db_path.exists():
             return []
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.ANNOTATION)
         finally:
@@ -5955,7 +5957,7 @@ class ArchiveStore:
         """Delete one annotation from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
@@ -5971,7 +5973,7 @@ class ArchiveStore:
         if not isinstance(query, dict):
             raise ValueError("query_json must encode an object")
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             assertion_id = assertion_id_for_saved_view(view_id)
             assertion = read_assertion_envelope(user_conn, assertion_id)
@@ -6001,7 +6003,7 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.SAVED_QUERY)
         finally:
@@ -6024,7 +6026,7 @@ class ArchiveStore:
         """Delete one saved view from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
@@ -6045,7 +6047,7 @@ class ArchiveStore:
         payload = dict(payload)
         payload["session_ids_json"] = session_ids_json
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_recall_pack(pack_id))
             exists = assertion is not None and assertion.status != "deleted"
@@ -6067,7 +6069,7 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.RECALL_PACK)
         finally:
@@ -6093,7 +6095,7 @@ class ArchiveStore:
         """Delete one recall pack from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
@@ -6118,7 +6120,7 @@ class ArchiveStore:
             "active_target_json": active_target_json,
         }
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             assertion_id = assertion_id_for_workspace(workspace_id)
             assertion = read_assertion_envelope(user_conn, assertion_id)
@@ -6144,7 +6146,7 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.WORKSPACE_NOTE)
         finally:
@@ -6172,7 +6174,7 @@ class ArchiveStore:
         """Delete one workspace from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
@@ -6194,7 +6196,7 @@ class ArchiveStore:
         correction_kind = parse_correction_kind(kind)
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         stored_payload: dict[str, object] = {"payload": dict(payload), "note": note}
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 upsert_correction(
@@ -6219,7 +6221,7 @@ class ArchiveStore:
             return []
         resolved_session_id = self.resolve_session_id(session_id) if session_id else None
         correction_kind = parse_correction_kind(kind).value if kind is not None else None
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.CORRECTION)
         finally:
@@ -6247,7 +6249,7 @@ class ArchiveStore:
         correction_kind = parse_correction_kind(kind)
         if not self.user_db_path.exists():
             return False
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 correction_id = correction_id_for("insight", resolved_session_id, correction_kind.value)
@@ -6260,7 +6262,7 @@ class ArchiveStore:
         resolved_session_id = self.resolve_session_id(session_id)
         if not self.user_db_path.exists():
             return 0
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             with user_conn:
                 deleted_count = 0
@@ -6291,7 +6293,7 @@ class ArchiveStore:
     ) -> ArchiveBlackboardNoteEnvelope:
         """Insert-or-update one blackboard note in archive user.db."""
         initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn = open_connection(self.user_db_path)
         try:
             envelope = upsert_blackboard_note(
                 user_conn,
@@ -6319,7 +6321,7 @@ class ArchiveStore:
         """
         if not self.user_db_path.exists():
             return []
-        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn = open_readonly_connection(self.user_db_path)
         try:
             return list_archive_blackboard_note_envelopes(user_conn, limit=limit)
         finally:
