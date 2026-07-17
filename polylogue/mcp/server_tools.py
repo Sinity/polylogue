@@ -301,7 +301,11 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """Return terminal rows for explicit unit-source query expressions."""
 
         async def run() -> str:
-            from polylogue.archive.query.execution_control import QueryExecutionContext, execute_archive_read
+            from polylogue.archive.query.execution_control import (
+                QueryExecutionContext,
+                classify_unit_expression_workload,
+                execute_archive_read,
+            )
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
 
             config = hooks.get_config()
@@ -320,7 +324,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             # cancellation machinery (polylogue-z9gh.1).
             ctx = QueryExecutionContext.create(
                 query_text=expression,
-                workload_class="interactive",
+                workload_class=classify_unit_expression_workload(expression),
                 owner_ref="mcp.query_units",
             )
             try:

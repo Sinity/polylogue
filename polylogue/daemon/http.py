@@ -3507,6 +3507,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.execution_control import (
             QueryExecutionContext,
             QueryTimeoutError,
+            classify_unit_expression_workload,
             execute_archive_read_sync,
         )
 
@@ -3515,7 +3516,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # admission controller with the async surfaces (polylogue-z9gh.1).
         ctx = QueryExecutionContext.create(
             query_text=expression,
-            workload_class="interactive",
+            workload_class=classify_unit_expression_workload(expression),
             owner_ref="http.query_units",
         )
         try:

@@ -61,6 +61,11 @@ PROGRESS_GUARD_OPCODES = 2000
 #: Total concurrent admission weight per process.
 DEFAULT_CAPACITY = 4
 
+#: How long a disconnect waits for the worker thread to drain before leaving
+#: it to finish in the background. The thread's own cleanup still runs when
+#: the (uninterruptible Python-side) work eventually returns.
+DISCONNECT_DRAIN_TIMEOUT_S = 10.0
+
 #: Capacity units the scan class may never consume, so an interactive read
 #: always has headroom while scans are running.
 DEFAULT_RESERVED_INTERACTIVE = 1
@@ -241,7 +246,10 @@ class QueryAdmissionController:
             try:
                 while not self._may_admit_locked(ctx, weight):
                     if ctx.should_abort():
-                        raise QueryCancelledError(f"cancelled while queued (call {ctx.call_id})")
+                        # A deadline that expires while queued is a timeout,
+                        # not a cancellation — surfaces map the two to
+                        # different responses (503 vs disconnect).
+                        raise _abort_error(ctx)
                     self._cond.wait(timeout=0.05)
             except BaseException:
                 self._remove_queued_locked(ctx)
@@ -337,6 +345,12 @@ class InterruptibleSQLiteRead:
                     ctx.receipt.interrupted = True
                     raise _abort_error(ctx) from exc
                 raise
+            # The progress guard only observes SQLite execution. A cancel or
+            # deadline that lands during Python-side post-processing (row
+            # grouping, envelope assembly) must still abort here rather than
+            # returning a "completed" result nobody is waiting for.
+            if ctx.should_abort():
+                raise _abort_error(ctx)
             ctx.receipt.state = "completed"
             return result
         finally:
@@ -358,6 +372,27 @@ def _abort_error(ctx: QueryExecutionContext) -> QueryCancelledError | QueryTimeo
         return QueryCancelledError(f"archive read cancelled (call {ctx.call_id})")
     ctx.receipt.state = "timed_out"
     return QueryTimeoutError(f"archive read exceeded deadline (call {ctx.call_id})")
+
+
+def classify_unit_expression_workload(expression: str) -> WorkloadClass:
+    """Classify a terminal unit expression for admission control.
+
+    Aggregation, grouping, and pipeline stages can trigger archive-wide
+    materialization (the z9gh incident shape), so they admit as ``scan`` and
+    never consume the reserved interactive headroom. Anything unparsable is
+    classified interactive — the route's own validation owns rejection.
+    """
+    from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+
+    try:
+        source = parse_unit_source_expression(expression)
+    except ExpressionCompileError:
+        return "interactive"
+    if source is None:
+        return "interactive"
+    if source.aggregate is not None or source.group_by is not None or source.pipeline_stages:
+        return "scan"
+    return "interactive"
 
 
 _default_controller: QueryAdmissionController | None = None
@@ -408,9 +443,19 @@ async def execute_archive_read(
         ctx.cancel()
         reader.interrupt()
         try:
-            await worker
+            # Bounded drain: SQLite work aborts at progress-guard cadence,
+            # but Python-side post-processing is uninterruptible — do not
+            # wait on it forever. An undrained worker keeps running in the
+            # background and still performs its own cleanup on exit.
+            await asyncio.wait_for(worker, timeout=DISCONNECT_DRAIN_TIMEOUT_S)
         except (QueryCancelledError, QueryTimeoutError, asyncio.CancelledError):
             pass
+        except TimeoutError:
+            logger.warning(
+                "archive read worker did not drain within %.0fs after disconnect (call %s); leaving it to finish in the background",
+                DISCONNECT_DRAIN_TIMEOUT_S,
+                ctx.call_id,
+            )
         except Exception:
             logger.warning("archive read worker failed during disconnect drain (call %s)", ctx.call_id)
         # Stamp after the drain: the worker's own abort path records
@@ -467,6 +512,7 @@ __all__ = [
     "QueryExecutionReceipt",
     "QueryTimeoutError",
     "WorkloadClass",
+    "classify_unit_expression_workload",
     "default_admission_controller",
     "execute_archive_read",
     "execute_archive_read_sync",

@@ -2904,7 +2904,11 @@ class PolylogueArchiveMixin:
         message_type: str | None = None,
     ) -> QueryUnitResultEnvelope:
         """Execute a terminal unit-source query."""
-        from polylogue.archive.query.execution_control import QueryExecutionContext, execute_archive_read
+        from polylogue.archive.query.execution_control import (
+            QueryExecutionContext,
+            classify_unit_expression_workload,
+            execute_archive_read,
+        )
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
         request = query_unit_request(
@@ -2943,7 +2947,9 @@ class PolylogueArchiveMixin:
             message_type=message_type,
         )
         ctx = QueryExecutionContext.create(
-            query_text=expression, workload_class="interactive", owner_ref="api.query_units"
+            query_text=expression,
+            workload_class=classify_unit_expression_workload(expression),
+            owner_ref="api.query_units",
         )
         return await execute_archive_read(
             _active_archive_root(self.config),

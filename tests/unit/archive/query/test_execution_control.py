@@ -400,3 +400,122 @@ async def test_api_query_units_routes_through_execution_control(
 
     assert isinstance(envelope, QueryUnitEnvelope)
     assert seen == ["api.query_units"]
+
+
+def test_queued_deadline_expiry_reports_timeout_not_cancellation() -> None:
+    """A deadline that expires while waiting for capacity is a timeout —
+    surfaces map QueryTimeoutError to 503, not a generic failure."""
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    holder = QueryExecutionContext.create(query_text="hold", timeout_s=None)
+    release = threading.Event()
+    admitted = threading.Event()
+
+    def _hold() -> None:
+        with controller.admit_blocking(holder):
+            admitted.set()
+            release.wait(timeout=10)
+
+    hold_thread = threading.Thread(target=_hold)
+    hold_thread.start()
+    assert admitted.wait(timeout=5)
+
+    queued = QueryExecutionContext.create(query_text="queued", timeout_s=0.2)
+    with pytest.raises(QueryTimeoutError):
+        with controller.admit_blocking(queued):
+            pass
+    assert queued.receipt.state == "timed_out"
+
+    release.set()
+    hold_thread.join(timeout=10)
+    assert controller.in_flight_weight == 0
+
+
+def test_abort_during_python_post_processing_discards_result(tmp_path: Path) -> None:
+    """The progress guard only sees SQLite; a deadline that lands during
+    Python-side post-processing must still abort instead of completing."""
+    root = _bootstrap_archive(tmp_path)
+    ctx = QueryExecutionContext.create(query_text="python-phase", timeout_s=0.2)
+    controller = QueryAdmissionController()
+
+    def _python_heavy(store: ArchiveStore) -> str:
+        store._conn.execute("SELECT 1").fetchone()
+        time.sleep(0.5)  # deadline expires during non-SQL work
+        return "stale result"
+
+    with pytest.raises(QueryTimeoutError):
+        execute_archive_read_sync(root, _python_heavy, ctx=ctx, controller=controller)
+    assert ctx.receipt.state == "timed_out"
+    assert controller.in_flight_weight == 0
+
+
+async def test_disconnect_drain_is_bounded_for_uninterruptible_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker stuck in Python-side work cannot hold the disconnect path
+    hostage: the drain wait is bounded and the worker cleans up on its own."""
+    import polylogue.archive.query.execution_control as ec
+
+    monkeypatch.setattr(ec, "DISCONNECT_DRAIN_TIMEOUT_S", 0.3)
+    root = _bootstrap_archive(tmp_path)
+    ctx = QueryExecutionContext.create(query_text="stuck", timeout_s=None)
+    controller = QueryAdmissionController()
+    worker_done = threading.Event()
+
+    def _stuck(store: ArchiveStore) -> None:
+        try:
+            time.sleep(1.2)  # ignores cancellation: pure Python phase
+        finally:
+            worker_done.set()
+
+    task = asyncio.create_task(execute_archive_read(root, _stuck, ctx=ctx, controller=controller))
+    await asyncio.sleep(0.15)
+    started = time.monotonic()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    disconnect_latency = time.monotonic() - started
+
+    assert disconnect_latency < 1.0  # bounded: did not wait out the full sleep
+    assert ctx.receipt.state == "disconnected"
+    # The orphaned worker still finishes and releases its admission slot.
+    assert worker_done.wait(timeout=5)
+    deadline = time.monotonic() + 5
+    while controller.in_flight_weight != 0 and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert controller.in_flight_weight == 0
+
+
+def test_workload_classification_routes_aggregates_to_scan() -> None:
+    from polylogue.archive.query.execution_control import classify_unit_expression_workload
+
+    assert classify_unit_expression_workload("messages where text:hello") == "interactive"
+    assert classify_unit_expression_workload("actions where tool:bash | count") == "scan"
+    assert classify_unit_expression_workload("messages where text:x | group by origin") == "scan"
+    # Invalid/non-terminal expressions classify interactive; route-level
+    # validation owns rejection.
+    assert classify_unit_expression_workload("sessions where repo:x | group by origin | count") == "interactive"
+    assert classify_unit_expression_workload("not a valid expression (") == "interactive"
+
+
+async def test_api_query_units_classifies_aggregate_as_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production route derives workload class from the expression —
+    hard-coding interactive again fails here."""
+    from polylogue import Polylogue
+
+    _bootstrap_archive(tmp_path)
+    seen: list[str] = []
+    original_run = InterruptibleSQLiteRead.run
+
+    def _recording_run(self: InterruptibleSQLiteRead, *args: object, **kwargs: object) -> object:
+        seen.append(self._ctx.workload_class)
+        return original_run(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(InterruptibleSQLiteRead, "run", _recording_run)
+
+    archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    try:
+        await archive.query_units("messages where text:missing | count")
+    finally:
+        await archive.close()
+
+    assert seen == ["scan"]
