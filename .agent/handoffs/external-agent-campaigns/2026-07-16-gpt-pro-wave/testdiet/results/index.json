@@ -108,6 +108,63 @@
    "state": "integrated_merged",
    "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
    "integration": "admitted after current-master reconciliation as PR #3012 / 876358610ebd8c7532d3d6865df6bc5fc01712b1; bounded aggregate execution is proven, while shared resumable query transaction scope remains open"
+  },
+  {
+   "job": "testdiet-02",
+   "workload": "testdiet",
+   "revision": "r02",
+   "artifact": "testdiet-02/r02/raw/polylogue-convergence-liveness-handoff.zip",
+   "sha256": "079eedeefb6fcf830c023b1700692ed5b080fe3186dcf466067cb2684f1724e7",
+   "bytes": 8059,
+   "checked_at": "2026-07-17T15:16:00+00:00",
+   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+   "status": "rejected_validation_failed",
+   "state": "rejected_validation_failed",
+   "problems": [
+    "release status declares INCOMPLETE/FAIL",
+    "base commit is unknown and changed_files is empty",
+    "bundle contains no PATCH.diff or production payload",
+    "finalizer failed to locate the required repository baseline"
+   ],
+   "integration": "Retained as honest failed-delivery evidence only. It authorizes neither code admission nor Bead closure; the independently verified r01 admission remains PR #3014."
+  },
+  {
+   "job": "testdiet-05",
+   "workload": "testdiet",
+   "revision": "r02",
+   "artifact": "testdiet-05/r02/raw/query-bounds-deliverables.tar.gz",
+   "sha256": "e0954c7f5002ad41d9af4eeb644437f8229f61b680070cff7d01e01f5962456a",
+   "bytes": 1863,
+   "checked_at": "2026-07-17T15:16:00+00:00",
+   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+   "status": "rejected_validation_failed",
+   "state": "rejected_validation_failed",
+   "problems": [
+    "STATUS is PARTIAL",
+    "no reconstructed Git worktree was found",
+    "no patch or changed-file payload exists",
+    "no executable test transcript exists"
+   ],
+   "integration": "Retained as honest failed-delivery evidence only. It authorizes neither code admission nor Bead closure; the independently verified r01 admission remains PR #3012."
+  },
+  {
+   "job": "testdiet-06",
+   "workload": "testdiet",
+   "revision": "r01",
+   "artifact": "testdiet-06/r01/raw/PATCH.diff",
+   "sha256": "2b48fb36707e0310fe734618794ef0faadeb41ac02d627b7d4a33f8a622fbe62",
+   "bytes": 153265,
+   "checked_at": "2026-07-17T15:16:00+00:00",
+   "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
+   "status": "candidate_requires_kernel_rebase",
+   "state": "candidate_requires_kernel_rebase",
+   "patch_paths": 18,
+   "problems": [
+    "the provider did not produce the mandated cohesive result ZIP",
+    "the patch does not apply to current master only because generated topology files drift",
+    "its local FactFamilySpec must be rebased onto the existing o21.1 DeclarationSpec contract rather than introducing a second declaration kernel"
+   ],
+   "integration": "Positive implementation/design input admitted to polylogue-cuxz.2: preserve the three production canaries and composition laws, but rebase the core onto the shared declaration kernel before source admission."
   }
  ]
 }

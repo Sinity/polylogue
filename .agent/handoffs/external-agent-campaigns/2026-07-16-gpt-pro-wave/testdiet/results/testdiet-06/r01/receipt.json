@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-06",
+  "package_revision": "r01",
+  "state": "candidate_requires_kernel_rebase",
+  "provider": "chatgpt-pro",
+  "prompt_sha256": "5a863e2954c70000d9afc2b2c491bbc4578bcf8cb23fdf31633e10c3a979d804",
+  "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
+  "artifact": {
+    "filename": "PATCH(1).diff",
+    "sha256": "2b48fb36707e0310fe734618794ef0faadeb41ac02d627b7d4a33f8a622fbe62",
+    "size_bytes": 153265,
+    "custody_path": "testdiet/results/testdiet-06/r01/raw/PATCH.diff"
+  },
+  "validation": [
+    "the patch targets an ancestor of current master",
+    "the patch contains 18 paths and three real owner-route canaries",
+    "current-master application stops only at generated topology artifacts",
+    "the source candidate introduces a local FactFamilySpec and must instead consume the o21.1 DeclarationSpec kernel"
+  ],
+  "admission": "Positive source/design material is retained for polylogue-cuxz.2. Its exact-token/unknown-price, stale-last-good-status, and excluded-source-byte-lag canaries are accepted as the first kernel-rebased slice; no source code is admitted before that rebase."
+}
