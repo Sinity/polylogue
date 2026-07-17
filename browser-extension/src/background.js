@@ -47,6 +47,7 @@ const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
 const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
 const BACKFILL_TRANSPORT_CLEANUP_PREFIX = "polylogueBackfillTransportCleanup";
 const PROVIDER_TRANSPORT_SESSION_PREFIX = "polylogueProviderTransportTab";
+const PROVIDER_TRANSPORT_OPERATOR_TAKEN_SESSION_PREFIX = "polylogueProviderTransportOperatorTaken";
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
 let backfillCoordinatorPromise = null;
@@ -1397,30 +1398,57 @@ function providerTransportSessionKey(provider) {
   return `${PROVIDER_TRANSPORT_SESSION_PREFIX}:${provider}`;
 }
 
+function providerTransportOperatorTakenSessionKey(provider) {
+  return `${PROVIDER_TRANSPORT_OPERATOR_TAKEN_SESSION_PREFIX}:${provider}`;
+}
+
 async function forgetProviderTransport(provider, tabId = null) {
   const key = providerTransportSessionKey(provider);
-  const stored = await chrome.storage.session.get({ [key]: null });
-  if (tabId === null || stored[key] === tabId) await chrome.storage.session.remove(key);
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
+  if (tabId === null || stored[key] === tabId) {
+    await chrome.storage.session.remove([key, operatorTakenKey]);
+  }
+}
+
+async function markProviderTransportOperatorTaken(provider, tabId) {
+  const key = providerTransportSessionKey(provider);
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  await chrome.storage.session.set({ [key]: tabId, [operatorTakenKey]: tabId });
+}
+
+function operatorTakenProviderTransportError() {
+  const error = new Error("provider_transport_operator_taken");
+  error.code = "provider_transport_operator_taken";
+  return error;
 }
 
 async function acquireProviderTab(provider) {
   const key = providerTransportSessionKey(provider);
-  const stored = await chrome.storage.session.get({ [key]: null });
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
   const storedTabId = stored[key];
   if (Number.isInteger(storedTabId)) {
     const existing = await chrome.tabs.get(storedTabId).catch(() => null);
-    if (
-      existing
-      && existing.active !== true
-      && providerForUrl(existing.url || existing.pendingUrl) === provider
-    ) {
-      return {
-        tab: existing,
-        owned: true,
-        cleanupAlarm: `${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${storedTabId}`,
-      };
+    if (!existing) {
+      await forgetProviderTransport(provider, storedTabId);
+    } else {
+      if (stored[operatorTakenKey] === storedTabId) throw operatorTakenProviderTransportError();
+      if (existing.active === true) {
+        // A previously background-owned tab has become an operator surface. It
+        // must never be repurposed, closed, or replaced behind their back.
+        await markProviderTransportOperatorTaken(provider, storedTabId);
+        throw operatorTakenProviderTransportError();
+      }
+      if (providerForUrl(existing.url || existing.pendingUrl) === provider) {
+        return {
+          tab: existing,
+          owned: true,
+          cleanupAlarm: `${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${storedTabId}`,
+        };
+      }
+      await forgetProviderTransport(provider, storedTabId);
     }
-    await forgetProviderTransport(provider, storedTabId);
   }
   const url = provider === "chatgpt" ? "https://chatgpt.com/" : "https://claude.ai/";
   const created = await chrome.tabs.create({ url, active: false });
@@ -1561,8 +1589,19 @@ async function cleanupBackfillTransportTab(alarmName) {
   const provider = parts[1];
   const tabId = Number.parseInt(parts[2] || "", 10);
   if (!provider || !Number.isInteger(tabId)) return;
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [operatorTakenKey]: null });
+  if (stored[operatorTakenKey] === tabId) {
+    await chrome.alarms.clear(alarmName);
+    return;
+  }
   try {
     const tab = await chrome.tabs.get(tabId);
+    if (tab?.active === true) {
+      await markProviderTransportOperatorTaken(provider, tabId);
+      await chrome.alarms.clear(alarmName);
+      return;
+    }
     if (providerForUrl(tab?.url || tab?.pendingUrl) === provider) await chrome.tabs.remove(tabId);
   } catch {
     // The operator or browser already closed the inactive transport tab.
@@ -2627,6 +2666,13 @@ chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
       await captureTab(resolvedTab, "tab_updated");
     }
   })();
+});
+
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+  void Promise.all([
+    forgetProviderTransport("chatgpt", tabId),
+    forgetProviderTransport("claude-ai", tabId),
+  ]);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
