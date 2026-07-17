@@ -24,7 +24,7 @@
    "integration": "current-master adjudication retained status/query/raw-chain/synchronization evidence but rejected stale ownership proposals, especially superseding t46.9; no source patch admitted",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "acquired"
+   "state": "adjudicated_mixed_snapshot"
   },
   {
    "job": "analysis-02",
@@ -37,7 +37,7 @@
    "integration": "admitted to polylogue-yyvg.6: distinct funnel identities, immutable event receipts, mission shape, custody, and generic product-boundary requirements; no campaign ontology enters product code",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "acquired"
+   "state": "integrated_campaign_contract"
   },
   {
    "job": "analysis-03",
@@ -50,7 +50,7 @@
    "integration": "useful as historical branch/closure forensics only; its proposed baseline and stale-branch actions are superseded by current master and current Bead authority",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "acquired"
+   "state": "adjudicated_forensic_snapshot"
   },
   {
    "job": "analysis-04",
@@ -63,7 +63,7 @@
    "integration": "current-compatible surface semantics map to existing owners: z9gh.9.1 query transaction, 2qx origin boundary, cuxz.2 absence/provenance, t46.9/kwsb.2/71ey mutation execution, t46.8.2 MCP retirement, and s1kr operation parity; no parallel surface model admitted",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "acquired"
+   "state": "adjudicated_current_owner_map"
   },
   {
    "job": "analysis-05",
@@ -76,7 +76,7 @@
    "integration": "admitted execution-grade proof refinements to 71ey, fd2s, mhx.7, and s1kr; query recipe and MCP-declaration findings map to z9gh.3/t46.8 without a second registry",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "acquired"
+   "state": "integrated_bead_evidence"
   }
  ]
 }
