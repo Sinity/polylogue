@@ -1,0 +1,543 @@
+{
+  "content_version": "2026-07-17.6tool-r01",
+  "default_read_tools": [
+    "query",
+    "read",
+    "get",
+    "explain",
+    "context",
+    "status"
+  ],
+  "privileged_tools": [
+    "write",
+    "judge",
+    "run",
+    "operate"
+  ],
+  "schema_version": 1,
+  "transactions": [
+    {
+      "arguments": [
+        {
+          "description": "Parser-owned DSL expression; omit when resuming with continuation.",
+          "kind": "string",
+          "name": "expression",
+          "required_initial": true
+        },
+        {
+          "description": "Requested page size, subject to server and transport bounds.",
+          "kind": "integer",
+          "name": "limit",
+          "required_initial": false
+        },
+        {
+          "description": "Declared result projection such as session-summary or cost-rollup.",
+          "kind": "string",
+          "name": "projection",
+          "required_initial": false
+        },
+        {
+          "description": "Opaque token from the preceding response; send alone.",
+          "kind": "string",
+          "name": "continuation",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": true,
+      "examples": [
+        {
+          "arguments": {
+            "expression": "actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
+            "limit": 20,
+            "projection": "action-evidence"
+          },
+          "id": "query-file-actions",
+          "result_note": "An exhaustive page of action rows with object/evidence refs, one result_ref, and a continuation when more rows exist.",
+          "title": "Find recent edits under the query subsystem"
+        },
+        {
+          "arguments": {
+            "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
+            "limit": 50,
+            "projection": "cost-rollup"
+          },
+          "id": "query-cost-cohort",
+          "result_note": "A session result set suitable for a declared cost-rollup projection; coverage still governs completeness.",
+          "title": "Select a recent provider cohort for a cost audit"
+        }
+      ],
+      "minimum_role": "read",
+      "name": "query",
+      "purpose": "Execute the real expression DSL or a declared typed plan and return a bounded, semantics-labelled result set.",
+      "result_semantics": [
+        "exhaustive_page",
+        "top_k",
+        "sample",
+        "aggregate"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "query"
+      ],
+      "supports_continuation": true
+    },
+    {
+      "arguments": [
+        {
+          "description": "Stable object, evidence, result-set, or URI reference.",
+          "kind": "string",
+          "name": "ref",
+          "required_initial": true
+        },
+        {
+          "description": "Declared projection/view for the referenced object.",
+          "kind": "string",
+          "name": "view",
+          "required_initial": false
+        },
+        {
+          "description": "Page size for collection-like or recursive reads.",
+          "kind": "integer",
+          "name": "limit",
+          "required_initial": false
+        },
+        {
+          "description": "Opaque token from the preceding read response; send alone.",
+          "kind": "string",
+          "name": "continuation",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": true,
+      "examples": [
+        {
+          "arguments": {
+            "limit": 20,
+            "ref": "polylogue://session/codex-session:demo-lineage-fork",
+            "view": "chronicle"
+          },
+          "id": "read-session-chronicle",
+          "result_note": "A bounded chronicle page retaining message/block evidence refs and the same result_ref across continuation pages.",
+          "title": "Read a session chronicle"
+        }
+      ],
+      "minimum_role": "read",
+      "name": "read",
+      "purpose": "Read a stable URI/object/evidence ref through a declared view, including topology that the in-flight declarations still call graph.",
+      "result_semantics": [
+        "single_object",
+        "exhaustive_page",
+        "bounded_context",
+        "recursive_graph"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "read",
+        "graph"
+      ],
+      "supports_continuation": true
+    },
+    {
+      "arguments": [
+        {
+          "description": "One exact object/evidence/URI reference.",
+          "kind": "string",
+          "name": "ref",
+          "required_initial": true
+        },
+        {
+          "description": "Optional declared projection of that exact object.",
+          "kind": "string",
+          "name": "projection",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "projection": "evidence",
+            "ref": "block:codex-session:demo-receipts:receipts-a-claim:0"
+          },
+          "id": "get-evidence-block",
+          "result_note": "One object with its canonical ref and provenance; absence is explicit rather than an empty ranked result.",
+          "title": "Resolve the exact evidence block behind a claim"
+        }
+      ],
+      "minimum_role": "read",
+      "name": "get",
+      "purpose": "Resolve one exact stable identity without search or ranking ambiguity.",
+      "result_semantics": [
+        "single_object"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "get"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Declared explanation subject: query, field, value, ref, capability, result, or recovery.",
+          "kind": "string",
+          "name": "subject",
+          "required_initial": true
+        },
+        {
+          "description": "Query expression to parse and lower when subject=query.",
+          "kind": "string",
+          "name": "expression",
+          "required_initial": false
+        },
+        {
+          "description": "Object/ref whose authority or addressing needs explanation.",
+          "kind": "string",
+          "name": "ref",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+            "subject": "query"
+          },
+          "id": "explain-query",
+          "result_note": "Parser-owned AST/lowering metadata, selected unit, result semantics, and correction guidance without executing the query.",
+          "title": "Inspect parser and lowering behavior"
+        }
+      ],
+      "minimum_role": "read",
+      "name": "explain",
+      "purpose": "Explain query grammar, fields, values, lowering, result semantics, refs, capabilities, or recovery before guessing.",
+      "result_semantics": [
+        "single_object"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "explain"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Context intent such as resume, postmortem, prior-art, or coordination.",
+          "kind": "string",
+          "name": "intent",
+          "required_initial": true
+        },
+        {
+          "description": "Parser-owned cohort expression that constrains source material.",
+          "kind": "string",
+          "name": "query",
+          "required_initial": false
+        },
+        {
+          "description": "Upper bound for compiled context, not a claim-completeness limit.",
+          "kind": "integer",
+          "name": "budget_tokens",
+          "required_initial": false
+        },
+        {
+          "description": "Existing result set to compile without rerunning discovery.",
+          "kind": "string",
+          "name": "result_ref",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": true,
+      "examples": [
+        {
+          "arguments": {
+            "budget_tokens": 4000,
+            "intent": "resume",
+            "query": "sessions where repo:polylogue AND NOT tag:complete"
+          },
+          "id": "context-resume",
+          "result_note": "A bounded context snapshot plus receipt describing selected refs, omissions, policy, and budget use.",
+          "title": "Compile a resume packet"
+        }
+      ],
+      "minimum_role": "read",
+      "name": "context",
+      "purpose": "Compile a bounded, policy-gated context image with receipts and evidence refs for resumption or investigation.",
+      "result_semantics": [
+        "bounded_context"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "context"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Status domain such as archive, sources, embeddings, coordination, or operation.",
+          "kind": "string",
+          "name": "scope",
+          "required_initial": true
+        },
+        {
+          "description": "Named status facets requested from that scope.",
+          "kind": "array",
+          "name": "include",
+          "required_initial": false
+        },
+        {
+          "description": "Specific operation/receipt/object ref for status lookup.",
+          "kind": "string",
+          "name": "ref",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "include": [
+              "identity",
+              "coverage",
+              "freshness",
+              "readiness"
+            ],
+            "scope": "archive"
+          },
+          "id": "status-archive",
+          "result_note": "Archive identity, selected source coverage, freshness/readiness state, and explicit degraded reasons.",
+          "title": "Establish archive authority before making a broad claim"
+        }
+      ],
+      "minimum_role": "read",
+      "name": "status",
+      "purpose": "Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.",
+      "result_semantics": [
+        "single_object",
+        "aggregate"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "status"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Declared reversible write operation.",
+          "kind": "string",
+          "name": "operation",
+          "required_initial": true
+        },
+        {
+          "description": "Exact mutation target.",
+          "kind": "string",
+          "name": "target_ref",
+          "required_initial": true
+        },
+        {
+          "description": "Typed operation payload.",
+          "kind": "object",
+          "name": "value",
+          "required_initial": true
+        },
+        {
+          "description": "Optimistic conflict guard where the operation declares one.",
+          "kind": "string",
+          "name": "expected_generation",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "operation": "tag.add",
+            "target_ref": "session:codex-session:demo-lineage-fork",
+            "value": {
+              "tag": "review"
+            }
+          },
+          "id": "write-tag",
+          "result_note": "A mutation receipt with actor, target, effect identity, and resulting generation; no destructive confirmation is invented.",
+          "title": "Add a review tag through the governed write chokepoint"
+        }
+      ],
+      "minimum_role": "write",
+      "name": "write",
+      "purpose": "Apply one declaration-owned reversible mutation with actor, target, conflict policy, and receipt.",
+      "result_semantics": [
+        "mutation"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "write"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Exact assertion-candidate identity.",
+          "kind": "string",
+          "name": "candidate_ref",
+          "required_initial": true
+        },
+        {
+          "description": "Declared judgment decision.",
+          "kind": "string",
+          "name": "decision",
+          "required_initial": true
+        },
+        {
+          "description": "Evidence-grounded judgment rationale.",
+          "kind": "string",
+          "name": "reason",
+          "required_initial": true
+        },
+        {
+          "description": "Conflict guard for concurrent review.",
+          "kind": "string",
+          "name": "expected_generation",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "candidate_ref": "assertion-candidate:demo-review-001",
+            "decision": "defer",
+            "reason": "The cited result set does not cover the claimed source cohort."
+          },
+          "id": "judge-defer",
+          "result_note": "A judgment receipt that leaves candidate history intact and reports conflicts explicitly.",
+          "title": "Defer a candidate pending stronger evidence"
+        }
+      ],
+      "minimum_role": "review",
+      "name": "judge",
+      "purpose": "Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance.",
+      "result_semantics": [
+        "mutation"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "judge"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Saved-query or recipe ref.",
+          "kind": "string",
+          "name": "ref",
+          "required_initial": true
+        },
+        {
+          "description": "Typed recipe parameters.",
+          "kind": "object",
+          "name": "arguments",
+          "required_initial": false
+        },
+        {
+          "description": "Opaque token from the preceding run response; send alone.",
+          "kind": "string",
+          "name": "continuation",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": true,
+      "examples": [
+        {
+          "arguments": {
+            "arguments": {
+              "repo": "polylogue",
+              "since": "2026-07-01"
+            },
+            "ref": "recipe:cost-audit"
+          },
+          "id": "run-cost-recipe",
+          "result_note": "A result_ref and receipt for the declared recipe; mutation authority is never gained from the recipe wrapper.",
+          "title": "Run a saved read-only cost audit"
+        }
+      ],
+      "minimum_role": "write",
+      "name": "run",
+      "purpose": "Execute a saved query or governed recipe ref; any nested mutation inherits its own role and confirmation policy.",
+      "result_semantics": [
+        "exhaustive_page",
+        "mutation"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "run"
+      ],
+      "supports_continuation": true
+    },
+    {
+      "arguments": [
+        {
+          "description": "Declared maintenance operation.",
+          "kind": "string",
+          "name": "operation",
+          "required_initial": true
+        },
+        {
+          "description": "preview, execute, status, or reconcile.",
+          "kind": "string",
+          "name": "phase",
+          "required_initial": true
+        },
+        {
+          "description": "Bound target selector used during preview.",
+          "kind": "object",
+          "name": "target",
+          "required_initial": false
+        },
+        {
+          "description": "Preview receipt supplied unchanged for execution.",
+          "kind": "string",
+          "name": "preview_ref",
+          "required_initial": false
+        },
+        {
+          "description": "Short-lived token bound to actor, archive, operation version, expiry, target set, and preview digest.",
+          "kind": "string",
+          "name": "confirmation_token",
+          "required_initial": false
+        }
+      ],
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "operation": "index.rebuild",
+            "phase": "preview",
+            "target": {
+              "scope": "derived-index"
+            }
+          },
+          "id": "operate-preview",
+          "result_note": "A non-mutating preview receipt with target digest and the data required to obtain a bound confirmation token.",
+          "title": "Preview an index rebuild before authorization"
+        }
+      ],
+      "minimum_role": "admin",
+      "name": "operate",
+      "purpose": "Preview, authorize, execute, inspect, and reconcile administrative maintenance through preview-bound confirmation.",
+      "result_semantics": [
+        "maintenance"
+      ],
+      "schema_status": "cutover-parameterized",
+      "source_declarations": [
+        "maintenance"
+      ],
+      "supports_continuation": false
+    }
+  ]
+}

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from devtools import (
+    render_agent_manual,
     render_cli_output_schemas,
     render_cli_reference,
     render_demo_corpus_datasheet,
@@ -38,6 +39,20 @@ class GeneratedSurface:
 
 
 GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
+    GeneratedSurface(
+        name="agent-manual",
+        label="Agent manual",
+        description="Render the declaration-generated six-tool manual and packaged native-integration assets.",
+        command=control_plane_argv("render agent-manual"),
+        main=render_agent_manual.main,
+        inputs=(
+            "polylogue/agent_integration/spec.py",
+            "polylogue/archive/query/transaction.py",
+            "polylogue/core/enums.py",
+            "polylogue/mcp/declarations/",
+            "devtools/render_agent_manual.py",
+        ),
+    ),
     GeneratedSurface(
         name="cli-reference",
         label="CLI docs",

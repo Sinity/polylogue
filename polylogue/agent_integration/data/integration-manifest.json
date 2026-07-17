@@ -1,0 +1,90 @@
+{
+  "capability_families": [
+    "authority",
+    "discovery",
+    "evidence",
+    "teaching",
+    "continuity",
+    "mutation"
+  ],
+  "clients": [
+    "claude-code",
+    "codex",
+    "gemini",
+    "hermes"
+  ],
+  "content_version": "2026-07-17.6tool-r01",
+  "default_read_tools": [
+    "query",
+    "read",
+    "get",
+    "explain",
+    "context",
+    "status"
+  ],
+  "default_role": "read",
+  "description": "Static six-tool target manifest. `polylogue agent manifest --role ROLE` also reports current declaration reconciliation.",
+  "manual_resources": [
+    "polylogue://agent/manual",
+    "polylogue://agent/reference",
+    "polylogue://agent/manifest/{role}"
+  ],
+  "privileged_tools": [
+    "write",
+    "judge",
+    "run",
+    "operate"
+  ],
+  "prompts": [
+    "resume_context",
+    "postmortem_last",
+    "decisions_about",
+    "unacknowledged_failures",
+    "sessions_touching_file",
+    "cost_of",
+    "agent_coordination_brief"
+  ],
+  "recipe_ids": [
+    "resume-session",
+    "forensic-lookup",
+    "prior-art-search",
+    "cost-audit"
+  ],
+  "resources": [
+    "polylogue://session/{id}",
+    "polylogue://message/{id}",
+    "polylogue://block/{id}",
+    "polylogue://action/{id}",
+    "polylogue://file/{id}",
+    "polylogue://query/{id}",
+    "polylogue://result-set/{id}",
+    "polylogue://recall-pack/{id}",
+    "polylogue://capabilities/query"
+  ],
+  "role_order": {
+    "admin": 3,
+    "read": 0,
+    "review": 2,
+    "write": 1
+  },
+  "roles": [
+    "read",
+    "write",
+    "review",
+    "admin"
+  ],
+  "schema_status": "cutover-parameterized",
+  "schema_version": 2,
+  "target_tools": [
+    "query",
+    "read",
+    "get",
+    "explain",
+    "context",
+    "status",
+    "write",
+    "judge",
+    "run",
+    "operate"
+  ]
+}

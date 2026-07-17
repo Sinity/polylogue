@@ -74,6 +74,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry("Hooks", "hooks.md", "Hook-event capture, configuration, and event catalog.", "guide"),
     _entry("Cloud Agents", "cloud-agents.md", "Privacy and setup boundaries for cloud-agent work.", "guide"),
+    _entry(
+        "Standing Agent Manual",
+        "agent-manual.md",
+        "Generated six-tool invocation, continuity, query-language, and role guidance for MCP agents.",
+        "guide",
+    ),
     _entry("Generate", "generate.md", "Synthetic archive generation, seed mode, and demo workflows.", "guide"),
     _entry(
         "Maintenance",
@@ -95,6 +101,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("MCP Reference", "mcp-reference.md", "Generated MCP tool and contract reference.", "reference"),
     _entry("Library API", "library-api.md", "Async archive API, filters, and query patterns.", "reference"),
     _entry("MCP Integration", "mcp-integration.md", "Model Context Protocol server setup and usage.", "reference"),
+    _entry(
+        "Agent Integration Reference",
+        "agent-integration-reference.md",
+        "Generated typed contract, recipes, client delivery, and cutover reconciliation reference.",
+        "reference",
+    ),
     _entry(
         "Configuration", "configuration.md", "XDG paths, environment variables, and runtime configuration.", "reference"
     ),

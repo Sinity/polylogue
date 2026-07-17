@@ -367,5 +367,6 @@
       nixosModules.polylogue = import ./nix/module.nix;
       homeManagerModules.default = import ./nix/hm-module.nix;
       homeManagerModules.polylogue = import ./nix/hm-module.nix;
+      homeManagerModules.agentIntegration = import ./nix/agent-integration-module.nix;
     };
 }

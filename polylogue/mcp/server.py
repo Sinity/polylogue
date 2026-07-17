@@ -28,18 +28,32 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
 
+def _instructions_for_role(role: MCPRole) -> str:
+    """Return compatibility guidance now and the standing manual after cutover."""
+    from polylogue.agent_integration.manifest import target_surface_is_registered
+
+    base = (
+        "Polylogue is the local evidence system for prior AI work. "
+        f"This server is running with the {role!r} MCP role; that role is a hard capability boundary."
+    )
+    if not target_surface_is_registered(role):
+        return (
+            f"{base} The six-tool manual package is staged but is not active because target tool-name "
+            "registration and generated-schema verification have not both completed. Use live discovery "
+            "and polylogue://capabilities/query."
+        )
+    from polylogue.agent_integration.assets import read_agent_asset
+
+    return f"{base}\n\n{read_agent_asset('standing-manual.md')}"
+
+
 def build_server(*, role: MCPRole = "read") -> FastMCP:
     """Construct the FastMCP server with all tools, resources, and prompts."""
     from mcp.server.fastmcp import FastMCP
 
     mcp = FastMCP(
         "polylogue",
-        instructions=(
-            "Polylogue is an AI session archive. Use the tools to search, "
-            "list, and retrieve sessions from ChatGPT, Claude, Codex, and "
-            "other providers. Sessions include full message history. "
-            f"This server is running with the {role!r} MCP role."
-        ),
+        instructions=_instructions_for_role(role),
     )
     hooks = ServerCallbacks(
         json_payload=_json_payload,
@@ -93,4 +107,4 @@ def serve_stdio(services: RuntimeServices | None = None, *, role: MCPRole = "rea
     _get_server(services, role=role).run(transport="stdio")
 
 
-__all__ = ["build_server", "serve_stdio"]
+__all__ = ["_instructions_for_role", "build_server", "serve_stdio"]

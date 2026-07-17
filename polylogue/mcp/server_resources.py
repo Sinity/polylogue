@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import asdict
 from typing import TYPE_CHECKING
@@ -30,6 +31,30 @@ if TYPE_CHECKING:
 
 def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     """Register MCP resources on the given server."""
+
+    @mcp.resource("polylogue://agent/manual")
+    def agent_manual_resource() -> str:
+        """Return the declaration-generated standing manual."""
+        from polylogue.agent_integration.assets import read_agent_asset
+
+        return read_agent_asset("standing-manual.md")
+
+    @mcp.resource("polylogue://agent/reference")
+    def agent_reference_resource() -> str:
+        """Return the declaration-generated deep integration reference."""
+        from polylogue.agent_integration.assets import read_agent_asset
+
+        return read_agent_asset("deep-reference.md")
+
+    @mcp.resource("polylogue://agent/manifest/{role}")
+    def agent_manifest_resource(role: str) -> str:
+        """Return target/runtime reconciliation for one hard MCP role."""
+        from polylogue.agent_integration.manifest import build_live_manifest
+        from polylogue.agent_integration.spec import ROLES
+
+        if role not in ROLES:
+            return hooks.error_json(f"Unknown MCP role: {role}", code="invalid_request")
+        return json.dumps(build_live_manifest(role), ensure_ascii=False, sort_keys=True)
 
     @mcp.resource("polylogue://stats")
     async def stats_resource() -> str:

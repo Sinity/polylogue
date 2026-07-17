@@ -189,6 +189,7 @@ Commands:
     maintenance stays under `ops`.
 
   Other commands:
+    agent        Install executable agent guidance.
     annotations  Import typed annotation batches.
     judge        Interactively triage candidate assertions.
 ```

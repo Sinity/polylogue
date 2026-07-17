@@ -1,0 +1,314 @@
+{
+  "capability_families": [
+    {
+      "first_tool": "status",
+      "id": "authority",
+      "minimum_role": "read",
+      "title": "Archive identity, source coverage, freshness, and readiness"
+    },
+    {
+      "first_tool": "query",
+      "id": "discovery",
+      "minimum_role": "read",
+      "title": "Cross-session, row-level, semantic, aggregate, and prior-art search"
+    },
+    {
+      "first_tool": "read",
+      "id": "evidence",
+      "minimum_role": "read",
+      "title": "Exact objects, transcripts, topology, raw evidence, and citations"
+    },
+    {
+      "first_tool": "explain",
+      "id": "teaching",
+      "minimum_role": "read",
+      "title": "Grammar, fields, values, plans, refs, result semantics, and recovery"
+    },
+    {
+      "first_tool": "context",
+      "id": "continuity",
+      "minimum_role": "read",
+      "title": "Resume, postmortem, forensic, coordination, and bounded context"
+    },
+    {
+      "first_tool": "write",
+      "id": "mutation",
+      "minimum_role": "write",
+      "title": "Reversible overlays, judgments, saved runs, and administration"
+    }
+  ],
+  "client_delivery": [
+    {
+      "client": "claude-code",
+      "mcp_config": "Merge only the named polylogue entry in the native Claude MCP configuration.",
+      "reference_delivery": "Install the generated deep reference as an owned local file.",
+      "six_tool_delta": "Only the generated content, target manifest, six-tool vocabulary, continuation recipe, and cache digest change.",
+      "standing_delivery": "Install a SessionStart hook whose additionalContext is the complete generated standing manual.",
+      "unchanged": "Hook ownership, idempotent merge, role/env selection, drift detection, and lossless uninstall are unchanged."
+    },
+    {
+      "client": "codex",
+      "mcp_config": "Merge only [mcp_servers.polylogue] in the native Codex TOML configuration.",
+      "reference_delivery": "Install the generated deep reference beside the managed guidance.",
+      "six_tool_delta": "The managed block is regenerated from the six-tool declarations; no 103-tool name list remains.",
+      "standing_delivery": "Install a marked managed block in the effective global AGENTS.override.md or AGENTS.md without overwriting operator text.",
+      "unchanged": "Override precedence detection, marker ownership, idempotency, and lossless uninstall are unchanged."
+    },
+    {
+      "client": "gemini",
+      "mcp_config": "Merge only mcpServers.polylogue in Gemini settings JSON.",
+      "reference_delivery": "Install the generated deep reference as an owned local file.",
+      "six_tool_delta": "The persistent instruction and target manifest switch to the six-tool contract.",
+      "standing_delivery": "Install a marked managed block in GEMINI.md as persistent instruction.",
+      "unchanged": "JSON merge ownership, marker ownership, idempotency, and lossless uninstall are unchanged."
+    },
+    {
+      "client": "hermes",
+      "mcp_config": "Merge only mcp_servers.polylogue in Hermes YAML.",
+      "reference_delivery": "Include the generated deep reference in the owned skill directory.",
+      "six_tool_delta": "The skill body, recipes, role ladder, and cache digest are regenerated for the six-tool surface.",
+      "standing_delivery": "Install the complete generated manual inside the owned productivity/polylogue SKILL.md.",
+      "unchanged": "YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged."
+    }
+  ],
+  "clients": [
+    "claude-code",
+    "codex",
+    "gemini",
+    "hermes"
+  ],
+  "content_version": "2026-07-17.6tool-r01",
+  "default_read_tools": [
+    "query",
+    "read",
+    "get",
+    "explain",
+    "context",
+    "status"
+  ],
+  "guidance_modes": [
+    "full",
+    "mcp-only",
+    "off"
+  ],
+  "manual_resources": [
+    "polylogue://agent/manual",
+    "polylogue://agent/reference",
+    "polylogue://agent/manifest/{role}"
+  ],
+  "origins": [
+    {
+      "meaning": "Claude Code local runtime sessions.",
+      "token": "claude-code-session"
+    },
+    {
+      "meaning": "Codex CLI local runtime sessions.",
+      "token": "codex-session"
+    },
+    {
+      "meaning": "Gemini CLI local runtime sessions.",
+      "token": "gemini-cli-session"
+    },
+    {
+      "meaning": "Hermes agent runtime sessions.",
+      "token": "hermes-session"
+    },
+    {
+      "meaning": "Antigravity local brain/session artifacts.",
+      "token": "antigravity-session"
+    },
+    {
+      "meaning": "Repository Beads issue and history records ingested as archive evidence.",
+      "token": "beads-issue"
+    },
+    {
+      "meaning": "Grok conversation exports.",
+      "token": "grok-export"
+    },
+    {
+      "meaning": "ChatGPT web/data exports.",
+      "token": "chatgpt-export"
+    },
+    {
+      "meaning": "Claude web/data exports.",
+      "token": "claude-ai-export"
+    },
+    {
+      "meaning": "Google AI Studio or Drive/Takeout conversation exports.",
+      "token": "aistudio-drive"
+    },
+    {
+      "meaning": "Imported material whose provider/source could not be classified reliably.",
+      "token": "unknown-export"
+    }
+  ],
+  "post_cutover_regeneration": [
+    "Replace or verify every parameterized argument against the final FastMCP schemas.",
+    "Run the live signature lane, then set TARGET_SCHEMA_STATUS to live-verified only after exact parity.",
+    "Run devtools render agent-manual and devtools render all --check.",
+    "Run devtools verify agent-integration --require-live after the target tools and schema marker agree."
+  ],
+  "privileged_tools": [
+    "write",
+    "judge",
+    "run",
+    "operate"
+  ],
+  "roles": [
+    "read",
+    "write",
+    "review",
+    "admin"
+  ],
+  "schema_status": "cutover-parameterized",
+  "schema_version": 2,
+  "state_schema_version": 1,
+  "target_prompts": [
+    {
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "mutation_authority": "none",
+      "name": "resume_context",
+      "workflow": "resume"
+    },
+    {
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "mutation_authority": "none",
+      "name": "postmortem_last",
+      "workflow": "postmortem"
+    },
+    {
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "mutation_authority": "none",
+      "name": "decisions_about",
+      "workflow": "decision-recovery"
+    },
+    {
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "mutation_authority": "none",
+      "name": "unacknowledged_failures",
+      "workflow": "failure-recovery"
+    },
+    {
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "mutation_authority": "none",
+      "name": "sessions_touching_file",
+      "workflow": "file-touch"
+    },
+    {
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "mutation_authority": "none",
+      "name": "cost_of",
+      "workflow": "cost-analysis"
+    },
+    {
+      "migration_owner": "polylogue-t46.8.3",
+      "minimum_role": "read",
+      "mutation_authority": "none",
+      "name": "agent_coordination_brief",
+      "workflow": "coordination"
+    }
+  ],
+  "target_resources": [
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "object_kinds": [
+        "session"
+      ],
+      "uri_template": "polylogue://session/{id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "object_kinds": [
+        "message"
+      ],
+      "uri_template": "polylogue://message/{id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "object_kinds": [
+        "block"
+      ],
+      "uri_template": "polylogue://block/{id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "object_kinds": [
+        "action"
+      ],
+      "uri_template": "polylogue://action/{id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "object_kinds": [
+        "file"
+      ],
+      "uri_template": "polylogue://file/{id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "object_kinds": [
+        "query"
+      ],
+      "uri_template": "polylogue://query/{id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.2",
+      "minimum_role": "read",
+      "object_kinds": [
+        "result-set"
+      ],
+      "uri_template": "polylogue://result-set/{id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "migration_owner": "polylogue-t46.8.3",
+      "minimum_role": "read",
+      "object_kinds": [
+        "recall-pack"
+      ],
+      "uri_template": "polylogue://recall-pack/{id}"
+    },
+    {
+      "authority": "executable query vocabulary and recovery guidance; no mutation authority",
+      "migration_owner": "polylogue-z9gh.3",
+      "minimum_role": "read",
+      "object_kinds": [
+        "capability",
+        "query",
+        "result-set"
+      ],
+      "uri_template": "polylogue://capabilities/query"
+    }
+  ],
+  "target_tools": [
+    "query",
+    "read",
+    "get",
+    "explain",
+    "context",
+    "status",
+    "write",
+    "judge",
+    "run",
+    "operate"
+  ]
+}

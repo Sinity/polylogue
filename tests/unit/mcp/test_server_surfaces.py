@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.agent_integration.assets import read_agent_asset
 from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session, SessionSummary
@@ -271,6 +272,19 @@ class TestServerSurfaceRegistration:
             extra = actual - expected
             assert not extra, f"Unexpected {surface_attr}: {sorted(extra)}"
 
+    def test_six_tool_manual_is_injected_only_after_exact_target_cutover(self: object) -> None:
+        """Mutation: unconditional injection would teach nonexistent tools on the compatibility runtime."""
+        from polylogue.mcp.server import _instructions_for_role
+
+        current = _instructions_for_role("read")
+        assert "target tool-name registration and generated-schema verification" in current
+        assert read_agent_asset("standing-manual.md") not in current
+
+        with patch("polylogue.agent_integration.manifest.target_surface_is_registered", return_value=True):
+            cutover = _instructions_for_role("read")
+
+        assert read_agent_asset("standing-manual.md") in cutover
+
     def test_read_role_omits_mutation_and_maintenance_tools(self: object) -> None:
         from polylogue.mcp.server import build_server
 
@@ -298,6 +312,34 @@ class TestServerSurfaceRegistration:
 
 
 class TestResourceSurfaces:
+    def test_agent_manual_resources_match_packaged_assets(self: object, mcp_server: MCPServerUnderTest) -> None:
+        """Mutation: serving hand-maintained prose instead of packaged assets makes this fail."""
+        manual = invoke_surface(mcp_server._resource_manager._resources["polylogue://agent/manual"].fn)
+        reference = invoke_surface(mcp_server._resource_manager._resources["polylogue://agent/reference"].fn)
+
+        assert manual == read_agent_asset("standing-manual.md")
+        assert reference == read_agent_asset("deep-reference.md")
+
+    def test_agent_manifest_resource_reports_target_runtime_divergence(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        """Mutation: claiming the 104-tool compatibility server is cut over makes this fail."""
+        result = invoke_surface(
+            mcp_server._resource_manager._templates["polylogue://agent/manifest/{role}"].fn,
+            role="read",
+        )
+        manifest = json.loads(result)
+
+        assert manifest["role"] == "read"
+        assert manifest["cutover_ready"] is False
+        assert manifest["schema_status"] == "cutover-parameterized"
+        assert manifest["tool_names_registered"] is False
+        assert manifest["contract_schemas_verified"] is False
+        assert manifest["target_tools"] == ["query", "read", "get", "explain", "context", "status"]
+        assert "search" in manifest["tools"]
+        assert "add_tag" not in manifest["tools"]
+        assert manifest["counts"]["runtime_tools"] == len(manifest["tools"])
+
     def test_stats_returns_archive_statistics(self: object, mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         with ArchiveStore(archive_root) as archive:
