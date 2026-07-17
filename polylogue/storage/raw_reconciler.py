@@ -930,14 +930,18 @@ def _state_counts(items: tuple[RawAuthorityFrontierItem, ...]) -> JSONDocument:
 
 
 def _residual(state_counts: JSONDocument) -> JSONDocument:
+    residual_state_counts = {
+        state: count for state, count in state_counts.items() if state != RawAuthorityFrontierState.PROVEN_CURRENT.value
+    }
     return json_document(
         {
             "schema": "polylogue.raw-authority-frontier-residual.v1",
-            "state_counts": {
-                state: count
-                for state, count in state_counts.items()
-                if state != RawAuthorityFrontierState.PROVEN_CURRENT.value
-            },
+            # Retain the residual-only map for plan/retry semantics, but bind
+            # the complete postflight frontier too.  A readiness surface must
+            # be able to report healthy proven-current heads rather than
+            # presenting the residual as a full state inventory.
+            "state_counts": residual_state_counts,
+            "frontier_state_counts": state_counts,
         }
     )
 

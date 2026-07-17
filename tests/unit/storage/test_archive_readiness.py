@@ -48,6 +48,29 @@ def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -
         source_preconditions={},
         index_preconditions={},
     )
+    preview = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids=set(),
+        executable_plan_ids={plan.plan_id},
+        mode="dry_run",
+        quiescent=True,
+        scope={
+            "schema": "polylogue.raw-authority-frontier-scope.v1",
+            "state_counts": {"missing_source_bytes": 1},
+        },
+        residual={
+            "schema": "polylogue.raw-authority-frontier-residual.v1",
+            "state_counts": {"missing_source_bytes": 1},
+            "frontier_state_counts": {"missing_source_bytes": 1, "proven_current": 2},
+        },
+    )
+    dry_run_snapshot = raw_materialization_readiness_snapshot(tmp_path)
+    dry_run_frontier = cast(Mapping[str, object], dry_run_snapshot["raw_authority_frontier"])
+    assert dry_run_frontier["census_id"] == preview.census_id
+    assert dry_run_frontier["state_counts"] == {"missing_source_bytes": 1, "proven_current": 2}
+    assert dry_run_frontier["blocking_count"] == 1
+
     receipt = record_raw_authority_census(
         tmp_path,
         (plan,),
@@ -62,6 +85,7 @@ def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -
         residual={
             "schema": "polylogue.raw-authority-frontier-residual.v1",
             "state_counts": {"missing_source_bytes": 1},
+            "frontier_state_counts": {"missing_source_bytes": 1, "proven_current": 2},
         },
     )
     record_raw_replay_outcome(
@@ -79,11 +103,17 @@ def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -
         tmp_path,
         receipt.census_id,
         post_plans=(),
-        post_residual={"schema": "polylogue.raw-authority-frontier-residual.v1", "state_counts": {}},
+        post_residual={
+            "schema": "polylogue.raw-authority-frontier-residual.v1",
+            "state_counts": {},
+            "frontier_state_counts": {"proven_current": 3},
+        },
     )
 
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
+    frontier = cast(Mapping[str, object], snapshot["raw_authority_frontier"])
 
+    assert frontier["state_counts"] == {"proven_current": 3}
     assert snapshot["raw_authority_frontier_blocking_count"] == 0
     assert raw_materialization_ready(snapshot) is True
 

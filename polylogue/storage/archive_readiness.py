@@ -309,17 +309,26 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                     # terminal state rather than keep an already repaired plan
                     # blocking until some later inspection happens to run.
                     frontier_post_residual = json.loads(str(frontier_row["post_residual_json"] or "{}"))
-                    postflight_state_counts = frontier_post_residual.get("state_counts")
+                    postflight_state_counts = frontier_post_residual.get("frontier_state_counts")
+                    postflight_residual_state_counts = frontier_post_residual.get("state_counts")
                     scope_state_counts = frontier_scope.get("state_counts")
-                    state_counts_source = (
+                    frontier_state_counts_source = (
                         postflight_state_counts if isinstance(postflight_state_counts, Mapping) else scope_state_counts
                     )
                     frontier_state_counts = {
-                        str(key): int(value) for key, value in dict(state_counts_source or {}).items()
+                        str(key): int(value) for key, value in dict(frontier_state_counts_source or {}).items()
+                    }
+                    blocking_state_counts = {
+                        str(key): int(value)
+                        for key, value in dict(
+                            postflight_residual_state_counts
+                            if isinstance(postflight_residual_state_counts, Mapping)
+                            else frontier_state_counts
+                        ).items()
                     }
                     nonblocking_states = {"proven_current", "superseded"}
                     authority_frontier_blocking_count = sum(
-                        count for state, count in frontier_state_counts.items() if state not in nonblocking_states
+                        count for state, count in blocking_state_counts.items() if state not in nonblocking_states
                     )
                     authority_frontier = {
                         "census_id": str(frontier_row["census_id"]),
