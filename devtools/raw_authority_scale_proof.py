@@ -257,6 +257,14 @@ def _write_payload(path: Path, *, native_id: str, revision: int, target_size: in
             remaining -= amount
 
 
+def _independent_payload(*, native_id: str, target_size: int) -> bytes:
+    """Build one bounded standalone JSONL raw without a disk staging file."""
+    header = f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n'.encode()
+    if target_size < len(header):
+        raise ValueError("scenario payload allocation cannot preserve valid JSONL evidence")
+    return header + (b" " * (target_size - len(header)))
+
+
 def _component_counts(total: int, *, components: int) -> list[int]:
     counts = [0] * components
     for index in range(total):
@@ -623,16 +631,21 @@ def run_raw_authority_scale_proof(
                         if not _uses_independent_component_members(scenario)
                         else f"{session_native_id}-member-{member:05d}"
                     )
-                    payload_path = temporary_root / f"{source_label}.jsonl"
-                    _write_payload(
-                        payload_path,
-                        native_id=row_native_id,
-                        revision=member,
-                        target_size=row_size,
-                        previous=previous if not _uses_independent_component_members(scenario) else None,
-                    )
-                    blob_hash, blob_size = publisher.write_from_path(payload_path)
-                    payload_path.unlink()
+                    if _uses_independent_component_members(scenario):
+                        blob_hash, blob_size = publisher.write_from_bytes(
+                            _independent_payload(native_id=row_native_id, target_size=row_size)
+                        )
+                    else:
+                        payload_path = temporary_root / f"{source_label}.jsonl"
+                        _write_payload(
+                            payload_path,
+                            native_id=row_native_id,
+                            revision=member,
+                            target_size=row_size,
+                            previous=previous,
+                        )
+                        blob_hash, blob_size = publisher.write_from_path(payload_path)
+                        payload_path.unlink()
                     previous = publisher.blob_path(blob_hash)
                     source_path = component_source_path
                     pending_rows.append((row_native_id, source_path, blob_hash, blob_size, terminalized, component))

@@ -14,6 +14,7 @@ from devtools.raw_authority_scale_proof import (
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.storage import repair
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -340,3 +341,31 @@ def test_raw_authority_scale_proof_preserves_private_free_joint_byte_cohorts(tmp
         largest_blob = conn.execute("SELECT MAX(blob_size) FROM raw_sessions").fetchone()
     assert largest_blob is not None
     assert int(largest_blob[0]) < 4_096
+
+
+def test_explicit_cohorts_publish_bounded_payloads_without_disk_staging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scenario = RawAuthorityScaleScenario(
+        components=1,
+        direct_candidates=2,
+        expanded_candidates=2,
+        total_payload_bytes=2_048,
+        component_cohorts=((2, 2, 1),),
+        component_byte_cohorts=((2, 2, 2048, 1),),
+    )
+
+    def reject_staged_publication(*_args: object, **_kwargs: object) -> tuple[str, int]:
+        raise AssertionError("explicit cohorts must publish bytes without a staged payload path")
+
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", reject_staged_publication)
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        prepare_only=True,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    achieved = cast(dict[str, object], payload["achieved_shape"])
+    assert achieved["expanded_total_blob_bytes"] == 2_048
