@@ -20,3 +20,8 @@ def test_codex_agent_aliases_share_canonical_names() -> None:
     assert classify_tool("update_plan", {}) is ToolCategory.AGENT
     assert canonical_tool_name("spawn_agent") == "task"
     assert canonical_tool_name("update_plan") == "todo"
+
+
+def test_codex_code_mode_child_aliases_have_queryable_categories() -> None:
+    assert classify_tool("apply_patch", {"path": "src/example.py"}) is ToolCategory.FILE_EDIT
+    assert classify_tool("wait", {"cell_id": "cell-7"}) is ToolCategory.AGENT

@@ -40,7 +40,7 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
     if name_lower in ("write", "create"):
         return ToolCategory.FILE_WRITE
     if (
-        name_lower in ("edit", "patch", "sed", "notebookedit", "multiedit")
+        name_lower in ("edit", "patch", "apply_patch", "sed", "notebookedit", "multiedit")
         or "__edit_file" in name_lower
         or "__create_or_update_file" in name_lower
     ):
@@ -111,6 +111,7 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
             "update_plan",
             "write_stdin",
             "send_input",
+            "wait",
             "wait_agent",
             "close_agent",
             "initial_instructions",

@@ -2997,9 +2997,10 @@ class TestBooleanQueryExpression:
         with ArchiveStore.open_existing(archive_root) as archive:
             rows = archive.query_actions(source.predicate, limit=100)
 
-        assert [(row.session_id, row.semantic_type, row.tool_command) for row in rows] == [
-            (session_id, "shell", script)
-        ]
+        assert {(row.session_id, row.tool_name, row.semantic_type, row.tool_command) for row in rows} == {
+            (session_id, "exec", "shell", script),
+            (session_id, "exec_command", "shell", "polylogue find repo:polylogue"),
+        }
 
     def test_legacy_codex_execution_payloads_are_queryable_without_rewrite(
         self,

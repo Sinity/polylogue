@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import shlex
+from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from pydantic import ValidationError
@@ -43,6 +47,124 @@ _EXECUTION_TOOL_NAMES = frozenset(
         "terminal",
     }
 )
+_CODE_MODE_EXEC_TOOL_NAMES = frozenset({"exec", "functions.exec"})
+_CODE_MODE_CHILD_PROVENANCE_KEY = "_polylogue"
+_CODE_MODE_CHILD_ID_MARKER = "::polylogue-child::"
+_CODE_MODE_CHILD_COLLECTION_KEYS = (
+    "calls",
+    "tool_calls",
+    "children",
+    "operations",
+    "actions",
+    "invocations",
+)
+_CODE_MODE_RESULT_COLLECTION_KEYS = (
+    "results",
+    "tool_results",
+    "children",
+    "outputs",
+    "responses",
+)
+_STRUCTURAL_PATH_KEYS = frozenset({"path", "file_path", "paths", "file_paths", "image_path"})
+_STRUCTURAL_BYTE_KEYS = frozenset({"bytes", "byte_count", "bytes_written", "size_bytes", "written_bytes"})
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexExecChildType:
+    kind: str
+    aliases: frozenset[str]
+
+
+_CODE_MODE_CHILD_REGISTRY = (
+    _CodexExecChildType(
+        kind="exec_command",
+        aliases=frozenset(
+            {
+                "bash",
+                "exec_command",
+                "local_shell_call",
+                "shell",
+                "shell_command",
+                "terminal",
+                "unified_exec",
+            }
+        ),
+    ),
+    _CodexExecChildType(kind="apply_patch", aliases=frozenset({"apply_patch", "patch"})),
+    _CodexExecChildType(kind="write_stdin", aliases=frozenset({"send_input", "write_stdin"})),
+    _CodexExecChildType(kind="update_plan", aliases=frozenset({"plan", "update_plan"})),
+    _CodexExecChildType(kind="wait", aliases=frozenset({"wait", "wait_for_cell", "wait_for_process"})),
+    _CodexExecChildType(
+        kind="web",
+        aliases=frozenset(
+            {
+                "open_url",
+                "search",
+                "tool_search",
+                "web",
+                "web_open",
+                "web_search",
+            }
+        ),
+    ),
+    _CodexExecChildType(
+        kind="image",
+        aliases=frozenset(
+            {
+                "generated_image",
+                "image",
+                "image_generation",
+                "image_query",
+                "view_image",
+            }
+        ),
+    ),
+    _CodexExecChildType(
+        kind="mcp",
+        aliases=frozenset(
+            {
+                "list_mcp_resource_templates",
+                "list_mcp_resources",
+                "read_mcp_resource",
+            }
+        ),
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexExecChildCall:
+    tool_path: tuple[str, ...]
+    tool_name: str
+    registry_type: str
+    argument: object
+    raw_argument: str | None
+    parse_state: str
+    source_start: int | None = None
+    source_end: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexExecChildResult:
+    raw: object
+    text: str | None
+    is_error: bool | None
+    exit_code: int | None
+    paths: tuple[str, ...]
+    byte_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexExecEnvelope:
+    transport_tool_name: str
+    transport_tool_id: str | None
+    transport_provider_message_id: str
+    children: tuple[_CodexExecChildCall, ...]
+    results: tuple[_CodexExecChildResult, ...] = ()
+
+
+class _JsLiteralError(ValueError):
+    pass
 
 
 def _iso_or_none(value: str | int | float | None) -> str | None:
@@ -341,6 +463,933 @@ def _extract_cwd(payload: dict[str, object] | None) -> str | None:
     return None
 
 
+def _is_js_identifier_start(char: str) -> bool:
+    return char == "_" or char == "$" or char.isalpha()
+
+
+def _is_js_identifier_part(char: str) -> bool:
+    return _is_js_identifier_start(char) or char.isdigit()
+
+
+class _JsLiteralParser:
+    """Conservative parser for the JSON-like argument literals used by Code Mode.
+
+    This deliberately accepts only literals. Expressions, interpolation, spreads,
+    and references stay as raw evidence instead of being evaluated or guessed.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.position = 0
+
+    def parse(self) -> object:
+        self._skip_space_and_comments()
+        value = self._parse_value()
+        self._skip_space_and_comments()
+        if self.position != len(self.text):
+            raise _JsLiteralError("trailing JavaScript expression")
+        return value
+
+    def _peek(self) -> str | None:
+        if self.position >= len(self.text):
+            return None
+        return self.text[self.position]
+
+    def _skip_space_and_comments(self) -> None:
+        while self.position < len(self.text):
+            char = self.text[self.position]
+            if char.isspace():
+                self.position += 1
+                continue
+            if self.text.startswith("//", self.position):
+                newline = self.text.find("\n", self.position + 2)
+                self.position = len(self.text) if newline == -1 else newline + 1
+                continue
+            if self.text.startswith("/*", self.position):
+                end = self.text.find("*/", self.position + 2)
+                if end == -1:
+                    raise _JsLiteralError("unterminated JavaScript comment")
+                self.position = end + 2
+                continue
+            return
+
+    def _parse_value(self) -> object:
+        char = self._peek()
+        if char is None:
+            raise _JsLiteralError("missing JavaScript literal")
+        if char == "{":
+            return self._parse_object()
+        if char == "[":
+            return self._parse_array()
+        if char in {'"', "'", "`"}:
+            return self._parse_string()
+        if char == "-" or char.isdigit():
+            return self._parse_number()
+        if _is_js_identifier_start(char):
+            identifier = self._parse_identifier()
+            if identifier == "true":
+                return True
+            if identifier == "false":
+                return False
+            if identifier in {"null", "undefined"}:
+                return None
+            raise _JsLiteralError(f"non-literal JavaScript identifier: {identifier}")
+        raise _JsLiteralError(f"unsupported JavaScript literal token: {char}")
+
+    def _parse_object(self) -> dict[str, object]:
+        self.position += 1
+        result: dict[str, object] = {}
+        self._skip_space_and_comments()
+        if self._peek() == "}":
+            self.position += 1
+            return result
+        while True:
+            self._skip_space_and_comments()
+            key_char = self._peek()
+            if key_char in {'"', "'", "`"}:
+                key_value = self._parse_string()
+                if not isinstance(key_value, str):
+                    raise _JsLiteralError("object key is not text")
+                key = key_value
+            elif key_char is not None and _is_js_identifier_start(key_char):
+                key = self._parse_identifier()
+            else:
+                raise _JsLiteralError("unsupported JavaScript object key")
+            self._skip_space_and_comments()
+            if self._peek() != ":":
+                raise _JsLiteralError("JavaScript object shorthand is not a literal")
+            self.position += 1
+            self._skip_space_and_comments()
+            result[key] = self._parse_value()
+            self._skip_space_and_comments()
+            delimiter = self._peek()
+            if delimiter == "}":
+                self.position += 1
+                return result
+            if delimiter != ",":
+                raise _JsLiteralError("missing JavaScript object delimiter")
+            self.position += 1
+            self._skip_space_and_comments()
+            if self._peek() == "}":
+                self.position += 1
+                return result
+
+    def _parse_array(self) -> list[object]:
+        self.position += 1
+        result: list[object] = []
+        self._skip_space_and_comments()
+        if self._peek() == "]":
+            self.position += 1
+            return result
+        while True:
+            self._skip_space_and_comments()
+            result.append(self._parse_value())
+            self._skip_space_and_comments()
+            delimiter = self._peek()
+            if delimiter == "]":
+                self.position += 1
+                return result
+            if delimiter != ",":
+                raise _JsLiteralError("missing JavaScript array delimiter")
+            self.position += 1
+            self._skip_space_and_comments()
+            if self._peek() == "]":
+                self.position += 1
+                return result
+
+    def _parse_identifier(self) -> str:
+        start = self.position
+        if self.position >= len(self.text) or not _is_js_identifier_start(self.text[self.position]):
+            raise _JsLiteralError("missing JavaScript identifier")
+        self.position += 1
+        while self.position < len(self.text) and _is_js_identifier_part(self.text[self.position]):
+            self.position += 1
+        return self.text[start : self.position]
+
+    def _parse_string(self) -> str:
+        quote = self.text[self.position]
+        self.position += 1
+        parts: list[str] = []
+        while self.position < len(self.text):
+            char = self.text[self.position]
+            self.position += 1
+            if char == quote:
+                return "".join(parts)
+            if quote == "`" and char == "$" and self._peek() == "{":
+                raise _JsLiteralError("template interpolation is not a literal")
+            if char != "\\":
+                parts.append(char)
+                continue
+            if self.position >= len(self.text):
+                raise _JsLiteralError("unterminated JavaScript string escape")
+            escaped = self.text[self.position]
+            self.position += 1
+            escapes = {
+                "b": "\b",
+                "f": "\f",
+                "n": "\n",
+                "r": "\r",
+                "t": "\t",
+                "v": "\v",
+                "0": "\0",
+                "\\": "\\",
+                "'": "'",
+                '"': '"',
+                "`": "`",
+            }
+            if escaped in escapes:
+                parts.append(escapes[escaped])
+                continue
+            if escaped in {"\n", "\r"}:
+                if escaped == "\r" and self._peek() == "\n":
+                    self.position += 1
+                continue
+            if escaped == "x":
+                parts.append(self._parse_hex_escape(2))
+                continue
+            if escaped == "u":
+                if self._peek() == "{":
+                    self.position += 1
+                    end = self.text.find("}", self.position)
+                    if end == -1:
+                        raise _JsLiteralError("unterminated JavaScript Unicode escape")
+                    token = self.text[self.position : end]
+                    self.position = end + 1
+                    try:
+                        parts.append(chr(int(token, 16)))
+                    except (ValueError, OverflowError) as exc:
+                        raise _JsLiteralError("invalid JavaScript Unicode escape") from exc
+                else:
+                    parts.append(self._parse_hex_escape(4))
+                continue
+            # JavaScript treats an otherwise-unknown escaped character as the
+            # character itself. Preserving it is safer than rejecting evidence.
+            parts.append(escaped)
+        raise _JsLiteralError("unterminated JavaScript string")
+
+    def _parse_hex_escape(self, width: int) -> str:
+        token = self.text[self.position : self.position + width]
+        if len(token) != width or any(char not in "0123456789abcdefABCDEF" for char in token):
+            raise _JsLiteralError("invalid JavaScript hexadecimal escape")
+        self.position += width
+        return chr(int(token, 16))
+
+    def _parse_number(self) -> int | float:
+        match = re.match(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?", self.text[self.position :])
+        if match is None:
+            raise _JsLiteralError("invalid JavaScript number")
+        token = match.group(0)
+        self.position += len(token)
+        return float(token) if any(char in token for char in ".eE") else int(token)
+
+
+def _parse_js_literal(text: str) -> tuple[object, bool]:
+    candidate = text.strip()
+    if not candidate:
+        return None, True
+    try:
+        return json.loads(candidate), True
+    except (json.JSONDecodeError, TypeError):
+        pass
+    try:
+        return _JsLiteralParser(candidate).parse(), True
+    except _JsLiteralError:
+        return candidate, False
+
+
+def _skip_js_string_or_comment(source: str, position: int) -> int | None:
+    if source.startswith("//", position):
+        newline = source.find("\n", position + 2)
+        return len(source) if newline == -1 else newline + 1
+    if source.startswith("/*", position):
+        end = source.find("*/", position + 2)
+        return len(source) if end == -1 else end + 2
+    if position >= len(source) or source[position] not in {'"', "'", "`"}:
+        return None
+    quote = source[position]
+    position += 1
+    while position < len(source):
+        char = source[position]
+        position += 1
+        if char == "\\":
+            position += 1
+            continue
+        if char == quote:
+            return position
+    return len(source)
+
+
+def _skip_js_space_and_comments(source: str, position: int) -> int:
+    while position < len(source):
+        if source[position].isspace():
+            position += 1
+            continue
+        skipped = _skip_js_string_or_comment(source, position)
+        if skipped is not None and source.startswith(("//", "/*"), position):
+            position = skipped
+            continue
+        return position
+    return position
+
+
+def _parse_js_member_chain(source: str, position: int) -> tuple[tuple[str, ...], int] | None:
+    if position >= len(source) or not _is_js_identifier_start(source[position]):
+        return None
+    start = position
+    position += 1
+    while position < len(source) and _is_js_identifier_part(source[position]):
+        position += 1
+    parts = [source[start:position]]
+    while True:
+        position = _skip_js_space_and_comments(source, position)
+        if position < len(source) and source[position] == ".":
+            position = _skip_js_space_and_comments(source, position + 1)
+            if position >= len(source) or not _is_js_identifier_start(source[position]):
+                return tuple(parts), position
+            start = position
+            position += 1
+            while position < len(source) and _is_js_identifier_part(source[position]):
+                position += 1
+            parts.append(source[start:position])
+            continue
+        if position < len(source) and source[position] == "[":
+            member_start = _skip_js_space_and_comments(source, position + 1)
+            if member_start >= len(source) or source[member_start] not in {'"', "'", "`"}:
+                return tuple(parts), position
+            parser = _JsLiteralParser(source[member_start:])
+            try:
+                member = parser._parse_string()
+            except _JsLiteralError:
+                return tuple(parts), position
+            member_end = member_start + parser.position
+            member_end = _skip_js_space_and_comments(source, member_end)
+            if member_end >= len(source) or source[member_end] != "]":
+                return tuple(parts), position
+            parts.append(member)
+            position = member_end + 1
+            continue
+        return tuple(parts), position
+
+
+def _balanced_js_call_argument(source: str, open_position: int) -> tuple[str, int, bool]:
+    depth = 1
+    position = open_position + 1
+    argument_start = position
+    while position < len(source):
+        skipped = _skip_js_string_or_comment(source, position)
+        if skipped is not None:
+            position = skipped
+            continue
+        char = source[position]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return source[argument_start:position], position + 1, True
+        position += 1
+    return source[argument_start:], len(source), False
+
+
+def _first_js_argument(arguments: str) -> str:
+    depths = {"(": 0, "[": 0, "{": 0}
+    closers = {")": "(", "]": "[", "}": "{"}
+    position = 0
+    while position < len(arguments):
+        skipped = _skip_js_string_or_comment(arguments, position)
+        if skipped is not None:
+            position = skipped
+            continue
+        char = arguments[position]
+        if char in depths:
+            depths[char] += 1
+        elif char in closers:
+            opener = closers[char]
+            depths[opener] = max(depths[opener] - 1, 0)
+        elif char == "," and all(depth == 0 for depth in depths.values()):
+            return arguments[:position]
+        position += 1
+    return arguments
+
+
+def _classify_code_mode_child(tool_path: tuple[str, ...]) -> str:
+    normalized = tuple(part.strip().lower().replace("-", "_") for part in tool_path if part.strip())
+    child_parts = normalized[1:] if normalized and normalized[0] in {"tools", "functions"} else normalized
+    if not child_parts:
+        return "unknown"
+
+    # Namespaced tools are MCP delegations unless the namespace itself is a
+    # first-class Codex family. This check intentionally precedes leaf aliases:
+    # tools.mcp.repo.search is MCP, not a generic web search.
+    if child_parts[0] == "web":
+        return "web"
+    if child_parts[0] == "image":
+        return "image"
+    if any("mcp" in part for part in child_parts) or len(child_parts) > 1:
+        return "mcp"
+
+    leaf = child_parts[-1]
+    for spec in _CODE_MODE_CHILD_REGISTRY:
+        if leaf in spec.aliases:
+            return spec.kind
+    return "unknown"
+
+
+def _code_mode_tool_name(tool_path: tuple[str, ...], registry_type: str) -> str:
+    child_parts = tool_path[1:] if tool_path and tool_path[0].lower() in {"tools", "functions"} else tool_path
+    raw_name = ".".join(child_parts) if child_parts else "unknown"
+    # First-class registry entries use stable names so downstream semantic
+    # normalization does not depend on provider spelling. MCP and unknown
+    # calls keep their exact names; their registry type remains in provenance.
+    return registry_type if registry_type not in {"mcp", "unknown"} else raw_name
+
+
+def _scan_code_mode_child_calls(source: str) -> tuple[_CodexExecChildCall, ...]:
+    calls: list[_CodexExecChildCall] = []
+    position = 0
+    while position < len(source):
+        skipped = _skip_js_string_or_comment(source, position)
+        if skipped is not None:
+            position = skipped
+            continue
+        if not _is_js_identifier_start(source[position]):
+            position += 1
+            continue
+        parsed_chain = _parse_js_member_chain(source, position)
+        if parsed_chain is None:
+            position += 1
+            continue
+        tool_path, after_chain = parsed_chain
+        after_chain = _skip_js_space_and_comments(source, after_chain)
+        if not tool_path or tool_path[0].lower() not in {"tools", "functions"}:
+            position = max(after_chain, position + 1)
+            continue
+        if len(tool_path) < 2 or after_chain >= len(source) or source[after_chain] != "(":
+            position = max(after_chain, position + 1)
+            continue
+        raw_arguments, call_end, balanced = _balanced_js_call_argument(source, after_chain)
+        first_argument = _first_js_argument(raw_arguments)
+        argument, parsed = _parse_js_literal(first_argument)
+        registry_type = _classify_code_mode_child(tool_path)
+        calls.append(
+            _CodexExecChildCall(
+                tool_path=tool_path,
+                tool_name=_code_mode_tool_name(tool_path, registry_type),
+                registry_type=registry_type,
+                argument=argument,
+                raw_argument=first_argument.strip() or None,
+                parse_state="parsed" if parsed and balanced else "malformed",
+                source_start=position,
+                source_end=call_end,
+            )
+        )
+        position = max(call_end, position + 1)
+    return tuple(calls)
+
+
+def _mapping_string(record: dict[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _structured_code_mode_child_calls(value: object) -> tuple[_CodexExecChildCall, ...]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return ()
+    if not isinstance(value, dict):
+        return ()
+    child_items: list[object] | None = None
+    for key in _CODE_MODE_CHILD_COLLECTION_KEYS:
+        candidate = value.get(key)
+        if isinstance(candidate, list):
+            child_items = candidate
+            break
+    if child_items is None:
+        return ()
+    calls: list[_CodexExecChildCall] = []
+    for item in child_items:
+        if not isinstance(item, dict):
+            calls.append(
+                _CodexExecChildCall(
+                    tool_path=("tools", "unknown"),
+                    tool_name="unknown",
+                    registry_type="unknown",
+                    argument=item,
+                    raw_argument=_codex_tool_output_text(item),
+                    parse_state="malformed",
+                )
+            )
+            continue
+        raw_name = _mapping_string(item, "name", "tool_name", "tool", "operation", "kind", "type")
+        if raw_name:
+            name_parts = tuple(part for part in raw_name.replace("::", ".").split(".") if part)
+            tool_path = (
+                name_parts if name_parts and name_parts[0].lower() in {"tools", "functions"} else ("tools", *name_parts)
+            )
+        else:
+            tool_path = ("tools", "unknown")
+        argument: object = {}
+        for key in ("arguments", "input", "action", "params", "parameters"):
+            if key in item:
+                argument = item[key]
+                break
+        if isinstance(argument, str):
+            parsed_argument, parsed = _parse_js_literal(argument)
+        else:
+            parsed_argument, parsed = argument, True
+        registry_type = _classify_code_mode_child(tool_path)
+        calls.append(
+            _CodexExecChildCall(
+                tool_path=tool_path,
+                tool_name=_code_mode_tool_name(tool_path, registry_type),
+                registry_type=registry_type,
+                argument=parsed_argument,
+                raw_argument=argument if isinstance(argument, str) else _codex_tool_output_text(argument),
+                parse_state="parsed" if raw_name and parsed else "malformed",
+            )
+        )
+    return tuple(calls)
+
+
+def _code_mode_source(value: object) -> str | None:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        if isinstance(parsed, dict):
+            value = parsed
+        else:
+            return value
+    if not isinstance(value, dict):
+        return None
+    for key in ("source", "code", "script", "javascript", "js", "command", "arguments", "input"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return None
+
+
+def _code_mode_children(value: object) -> tuple[_CodexExecChildCall, ...]:
+    structured = _structured_code_mode_child_calls(value)
+    if structured:
+        return structured
+    source = _code_mode_source(value)
+    return _scan_code_mode_child_calls(source) if source else ()
+
+
+def _dedupe_strings(values: Iterable[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen or normalized == "/dev/null":
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return tuple(result)
+
+
+def _patch_touched_paths(patch: str) -> tuple[str, ...]:
+    paths: list[str] = []
+    marker_prefixes = (
+        "*** Add File:",
+        "*** Update File:",
+        "*** Delete File:",
+        "*** Move to:",
+        "*** Move File:",
+    )
+    for line in patch.splitlines():
+        stripped = line.strip()
+        for prefix in marker_prefixes:
+            if stripped.startswith(prefix):
+                paths.append(stripped.removeprefix(prefix).strip())
+                break
+        else:
+            if stripped.startswith(("+++ ", "--- ")):
+                candidate = stripped[4:].split("\t", 1)[0].strip()
+                if candidate.startswith(("a/", "b/")):
+                    candidate = candidate[2:]
+                paths.append(candidate)
+            elif stripped.startswith("diff --git "):
+                pieces = stripped.removeprefix("diff --git ").split()
+                if len(pieces) >= 2:
+                    candidate = pieces[-1]
+                    paths.append(candidate[2:] if candidate.startswith("b/") else candidate)
+    return _dedupe_strings(paths)
+
+
+def _structural_paths(value: object) -> tuple[str, ...]:
+    paths: list[str] = []
+
+    def visit(item: object, *, depth: int) -> None:
+        if depth > 8:
+            return
+        if isinstance(item, dict):
+            for raw_key, child in item.items():
+                key = str(raw_key).lower()
+                if key in _STRUCTURAL_PATH_KEYS:
+                    if isinstance(child, str):
+                        paths.append(child)
+                    elif isinstance(child, list):
+                        paths.extend(value for value in child if isinstance(value, str))
+                if isinstance(child, dict | list):
+                    visit(child, depth=depth + 1)
+        elif isinstance(item, list):
+            for child in item:
+                if isinstance(child, dict | list):
+                    visit(child, depth=depth + 1)
+
+    visit(value, depth=0)
+    return _dedupe_strings(paths)
+
+
+def _structural_byte_count(value: object) -> int | None:
+    if isinstance(value, dict):
+        for raw_key, child in value.items():
+            if str(raw_key).lower() in _STRUCTURAL_BYTE_KEYS and isinstance(child, int) and not isinstance(child, bool):
+                return child if child >= 0 else None
+        for child in value.values():
+            if isinstance(child, dict | list):
+                nested = _structural_byte_count(child)
+                if nested is not None:
+                    return nested
+    elif isinstance(value, list):
+        for child in value:
+            if isinstance(child, dict | list):
+                nested = _structural_byte_count(child)
+                if nested is not None:
+                    return nested
+    return None
+
+
+def _structural_outcome(value: object) -> tuple[bool | None, int | None]:
+    wrappers: list[dict[str, object]] = []
+    if isinstance(value, dict):
+        wrappers.append(value)
+        for key in ("metadata", "result", "output"):
+            nested = value.get(key)
+            if isinstance(nested, dict):
+                wrappers.append(nested)
+    exit_code: int | None = None
+    is_error: bool | None = None
+    for wrapper in wrappers:
+        raw_exit = wrapper.get("exit_code")
+        if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+            exit_code = raw_exit
+            break
+    for wrapper in wrappers:
+        raw_error = wrapper.get("is_error")
+        if isinstance(raw_error, bool):
+            is_error = raw_error
+            break
+    if exit_code is not None:
+        derived = exit_code != 0
+        if is_error is None:
+            is_error = derived
+    return is_error, exit_code
+
+
+def _decoded_json_value(value: object) -> object | None:
+    if not isinstance(value, str):
+        return value
+    try:
+        decoded: object = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return decoded
+
+
+def _decoded_structural_text_item(item: object) -> tuple[object, ...]:
+    if not isinstance(item, dict):
+        return ()
+    item_type = item.get("type")
+    if item_type not in {"input_text", "output_text"}:
+        return ()
+    text = item.get("text")
+    if not isinstance(text, str):
+        return ()
+    decoded = _decoded_json_value(text)
+    if isinstance(decoded, dict):
+        for key in _CODE_MODE_RESULT_COLLECTION_KEYS:
+            candidate = decoded.get(key)
+            if isinstance(candidate, list) and all(isinstance(value, dict | list) for value in candidate):
+                return tuple(candidate)
+        return (decoded,)
+    if isinstance(decoded, list) and all(isinstance(value, dict | list) for value in decoded):
+        # A JSON array emitted as one content item represents ordered child
+        # results only when every element is itself a structured value.
+        return tuple(decoded)
+    return ()
+
+
+def _code_mode_result_items(output: object, *, child_count: int) -> tuple[object, ...]:
+    if child_count <= 0:
+        return ()
+    parsed = _decoded_json_value(output)
+    if isinstance(parsed, dict):
+        for key in _CODE_MODE_RESULT_COLLECTION_KEYS:
+            candidate = parsed.get(key)
+            if isinstance(candidate, list):
+                return tuple(candidate[:child_count])
+        if parsed.get("type") in {"input_text", "output_text", "input_image", "image"}:
+            return _decoded_structural_text_item(parsed)[:child_count]
+        # A non-content-item mapping is one exact child result when the
+        # envelope has one child. It may carry no promoted outcome fields; in
+        # that case the paired result is retained with outcome=unknown.
+        return (parsed,) if child_count == 1 else ()
+    if isinstance(parsed, list):
+        if all(
+            isinstance(item, dict) and item.get("type") in {"input_text", "output_text", "input_image", "image"}
+            for item in parsed
+        ):
+            emitted: list[object] = []
+            for item in parsed:
+                emitted.extend(_decoded_structural_text_item(item))
+                if len(emitted) >= child_count:
+                    break
+            return tuple(emitted[:child_count])
+        return tuple(parsed[:child_count])
+    return ()
+
+
+def _code_mode_child_results(output: object, *, child_count: int) -> tuple[_CodexExecChildResult, ...]:
+    results: list[_CodexExecChildResult] = []
+    for item in _code_mode_result_items(output, child_count=child_count):
+        is_error, exit_code = _structural_outcome(item)
+        results.append(
+            _CodexExecChildResult(
+                raw=item,
+                text=_codex_tool_output_text(item),
+                is_error=is_error,
+                exit_code=exit_code,
+                paths=_structural_paths(item),
+                byte_count=_structural_byte_count(item),
+            )
+        )
+    return tuple(results)
+
+
+def _response_inner_record(item: object) -> dict[str, object] | None:
+    record = _dict_record(item)
+    if record is None or _record_type(record) not in {"response_item", "event_msg"}:
+        return None
+    inner = _payload_record(record)
+    return inner if inner is not None and not _is_message(inner) else None
+
+
+def _code_mode_exec_envelopes(records: Sequence[object]) -> dict[int, _CodexExecEnvelope]:
+    call_occurrences: dict[str, list[tuple[int, _CodexExecEnvelope]]] = defaultdict(list)
+    output_occurrences: dict[str, list[tuple[int, dict[str, object]]]] = defaultdict(list)
+    envelopes_by_record: dict[int, _CodexExecEnvelope] = {}
+    for index, item in enumerate(records, start=1):
+        inner = _response_inner_record(item)
+        if inner is None:
+            continue
+        payload = _record_payload(inner)
+        record_type = _record_type(inner)
+        if record_type in {
+            "function_call",
+            "custom_tool_call",
+            "tool_search_call",
+            "web_search_call",
+            "local_shell_call",
+        }:
+            tool_name = payload.get("name")
+            if not isinstance(tool_name, str) or not tool_name:
+                tool_name = payload.get("execution")
+            if not isinstance(tool_name, str) or tool_name.lower() not in _CODE_MODE_EXEC_TOOL_NAMES:
+                continue
+            raw_arguments = payload.get("arguments")
+            if raw_arguments is None:
+                raw_arguments = payload.get("input")
+            if raw_arguments is None:
+                raw_arguments = payload.get("action")
+            children = _code_mode_children(raw_arguments)
+            if not children:
+                continue
+            raw_tool_id = payload.get("call_id") or payload.get("id")
+            tool_id = str(raw_tool_id) if raw_tool_id else None
+            provider_message_id = str(payload.get("id") or raw_tool_id or f"function-call-{index}")
+            envelope = _CodexExecEnvelope(
+                transport_tool_name=tool_name,
+                transport_tool_id=tool_id,
+                transport_provider_message_id=provider_message_id,
+                children=children,
+            )
+            envelopes_by_record[index] = envelope
+            if tool_id:
+                call_occurrences[tool_id].append((index, envelope))
+        elif record_type in {
+            "function_call_output",
+            "custom_tool_call_output",
+            "tool_search_output",
+            "web_search_output",
+        }:
+            raw_tool_id = payload.get("call_id") or payload.get("id")
+            if raw_tool_id:
+                output_occurrences[str(raw_tool_id)].append((index, inner))
+
+    for tool_id, calls in call_occurrences.items():
+        outputs = output_occurrences.get(tool_id, [])
+        for occurrence, (call_index, envelope) in enumerate(calls):
+            if occurrence >= len(outputs):
+                continue
+            output_index, output_record = outputs[occurrence]
+            output = output_record.get("output")
+            if output is None:
+                output = output_record.get("tools")
+            if output is None:
+                output = output_record.get("result")
+            enriched = replace(
+                envelope,
+                results=_code_mode_child_results(output, child_count=len(envelope.children)),
+            )
+            envelopes_by_record[call_index] = enriched
+            envelopes_by_record[output_index] = enriched
+    return envelopes_by_record
+
+
+def _normalized_command(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        return shlex.join(value)
+    return None
+
+
+def _child_tool_input(
+    child: _CodexExecChildCall,
+    *,
+    child_index: int,
+    envelope: _CodexExecEnvelope,
+    result: _CodexExecChildResult | None,
+) -> dict[str, object]:
+    if isinstance(child.argument, dict):
+        tool_input: dict[str, object] = {str(key): value for key, value in child.argument.items()}
+    elif child.argument is None:
+        tool_input = {}
+    else:
+        tool_input = {"input": child.argument}
+
+    command: str | None = None
+    if child.parse_state == "parsed" and child.registry_type == "exec_command":
+        command = _normalized_command(tool_input.get("command")) or _normalized_command(tool_input.get("cmd"))
+        if command is None:
+            command = _normalized_command(child.argument)
+    elif child.parse_state == "parsed" and child.registry_type == "apply_patch":
+        patch = (
+            _normalized_command(tool_input.get("patch"))
+            or _normalized_command(tool_input.get("input"))
+            or _normalized_command(tool_input.get("command"))
+            or _normalized_command(child.argument)
+        )
+        if patch is not None:
+            tool_input.setdefault("patch", patch)
+            command = patch
+            patch_paths = _patch_touched_paths(patch)
+            if patch_paths:
+                tool_input["paths"] = list(patch_paths)
+                tool_input["path"] = patch_paths[0]
+    if command is not None:
+        tool_input["command"] = command
+
+    paths = list(_structural_paths(tool_input))
+    byte_count = _structural_byte_count(tool_input)
+    if result is not None:
+        paths.extend(result.paths)
+        if byte_count is None:
+            byte_count = result.byte_count
+    normalized_paths = _dedupe_strings(paths)
+    if normalized_paths:
+        tool_input["paths"] = list(normalized_paths)
+        tool_input.setdefault("path", normalized_paths[0])
+    if byte_count is not None:
+        tool_input["byte_count"] = byte_count
+    if (child.parse_state != "parsed" or child.registry_type == "unknown") and child.raw_argument is not None:
+        tool_input["raw_arguments"] = child.raw_argument
+
+    provenance: dict[str, object] = {
+        "kind": "codex.functions_exec_child",
+        "registry_type": child.registry_type,
+        "parse_state": child.parse_state,
+        "raw_tool_path": ".".join(child.tool_path),
+        "transport_child_index": child_index,
+        "transport": {
+            "provider_message_id": envelope.transport_provider_message_id,
+            "tool_id": envelope.transport_tool_id,
+            "tool_name": envelope.transport_tool_name,
+            "block_position": 0,
+        },
+    }
+    if child.source_start is not None and child.source_end is not None:
+        provenance["source_span"] = [child.source_start, child.source_end]
+    if result is not None and (result.paths or result.byte_count is not None):
+        result_fields: dict[str, object] = {}
+        if result.paths:
+            result_fields["paths"] = list(result.paths)
+        if result.byte_count is not None:
+            result_fields["byte_count"] = result.byte_count
+        provenance["structural_result_fields"] = result_fields
+    tool_input[_CODE_MODE_CHILD_PROVENANCE_KEY] = provenance
+    return tool_input
+
+
+def _child_tool_id(envelope: _CodexExecEnvelope, child_index: int) -> str | None:
+    if not envelope.transport_tool_id:
+        return None
+    return f"{envelope.transport_tool_id}{_CODE_MODE_CHILD_ID_MARKER}{child_index}"
+
+
+def _code_mode_child_use_blocks(envelope: _CodexExecEnvelope) -> list[ParsedContentBlock]:
+    blocks: list[ParsedContentBlock] = []
+    for child_index, child in enumerate(envelope.children):
+        result = envelope.results[child_index] if child_index < len(envelope.results) else None
+        blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_name=child.tool_name,
+                tool_id=_child_tool_id(envelope, child_index),
+                tool_input=_child_tool_input(
+                    child,
+                    child_index=child_index,
+                    envelope=envelope,
+                    result=result,
+                ),
+            )
+        )
+    return blocks
+
+
+def _code_mode_child_result_blocks(envelope: _CodexExecEnvelope) -> list[ParsedContentBlock]:
+    blocks: list[ParsedContentBlock] = []
+    for child_index, result in enumerate(envelope.results):
+        metadata: dict[str, object] = {
+            "codex_functions_exec_child_index": child_index,
+            "codex_functions_exec_registry_type": envelope.children[child_index].registry_type,
+        }
+        if result.paths:
+            metadata["paths"] = list(result.paths)
+        if result.byte_count is not None:
+            metadata["byte_count"] = result.byte_count
+        blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id=_child_tool_id(envelope, child_index),
+                text=result.text,
+                metadata=metadata,
+                is_error=result.is_error,
+                exit_code=result.exit_code,
+            )
+        )
+    return blocks
+
+
 def _tool_input_from_arguments(value: object, *, tool_name: str) -> dict[str, object]:
     if isinstance(value, dict):
         tool_input = dict(value)
@@ -381,6 +1430,7 @@ def _codex_tool_message(
     index: int,
     position: int,
     timestamp_fallback: str | int | float | None = None,
+    exec_envelope: _CodexExecEnvelope | None = None,
 ) -> ParsedMessage | None:
     payload = _record_payload(record)
     record_type = _record_type(record)
@@ -405,6 +1455,8 @@ def _codex_tool_message(
                 tool_input=_tool_input_from_arguments(raw_arguments, tool_name=tool_name),
             )
         ]
+        if exec_envelope is not None:
+            blocks.extend(_code_mode_child_use_blocks(exec_envelope))
         return ParsedMessage(
             provider_message_id=str(payload.get("id") or tool_id or f"function-call-{index}"),
             role=Role.ASSISTANT,
@@ -425,24 +1477,10 @@ def _codex_tool_message(
         output_text = _codex_tool_output_text(output)
         if not tool_id and not output_text:
             return None
-        # Keystone: Codex shell/function results wrap the payload as
-        # {"output": "...", "metadata": {"exit_code": N, ...}}. Capture the
-        # structured exit code so outcomes are readable instead of inferred.
-        exit_code: int | None = None
-        is_error: bool | None = None
-        parsed_output: object = output
-        if isinstance(output, str):
-            try:
-                parsed_output = json.loads(output)
-            except (ValueError, TypeError):
-                parsed_output = None
-        if isinstance(parsed_output, dict):
-            metadata = parsed_output.get("metadata")
-            if isinstance(metadata, dict):
-                raw_exit = metadata.get("exit_code")
-                if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
-                    exit_code = raw_exit
-                    is_error = raw_exit != 0
+        # Only exact structured fields affect the outcome. Text containing
+        # exit-code-like prose remains evidence text with an unknown outcome.
+        parsed_output = _decoded_json_value(output)
+        is_error, exit_code = _structural_outcome(parsed_output)
         blocks = [
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -452,6 +1490,8 @@ def _codex_tool_message(
                 exit_code=exit_code,
             )
         ]
+        if exec_envelope is not None:
+            blocks.extend(_code_mode_child_result_blocks(exec_envelope))
         return ParsedMessage(
             provider_message_id=str(payload.get("id") or tool_id or f"function-call-output-{index}"),
             role=Role.TOOL,
@@ -624,6 +1664,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     - format_type: Detected format generation
     """
     record_list = list(records)
+    code_mode_envelopes = _code_mode_exec_envelopes(record_list)
     response_signatures = _response_message_signatures(record_list)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
@@ -765,6 +1806,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     index=idx,
                     position=message_position,
                     timestamp_fallback=timestamp_fallback,
+                    exec_envelope=code_mode_envelopes.get(idx),
                 )
                 if tool_message is not None:
                     messages.append(tool_message)
