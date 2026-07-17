@@ -326,6 +326,7 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                     payload = daemon_status_payload(
                         include_raw_replay_backlog=False,
                         include_exact_raw_materialization_readiness=False,
+                        include_archive_debt=False,
                     )
                 else:
                     payload = _minimal_status_payload()
