@@ -702,12 +702,15 @@ def _parse_message_row(
     role = Role.normalize(_optional_text(row["role"]) or "unknown")
     tool_call_id = _optional_text(_row_value(row, "tool_call_id"))
     if role is Role.TOOL and text:
+        is_error, exit_code = _tool_result_outcome(row["content"])
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
                 tool_id=tool_call_id,
                 tool_name=_optional_text(_row_value(row, "tool_name")),
                 text=text,
+                is_error=is_error,
+                exit_code=exit_code,
             )
         )
     token_count = _non_negative_int(_row_value(row, "token_count")) or 0
@@ -859,6 +862,30 @@ def _decode_content(value: object) -> object:
         except json.JSONDecodeError:
             return value
     return value
+
+
+def _tool_result_outcome(raw_content: object) -> tuple[bool | None, int | None]:
+    """Extract the structured outcome Hermes already embeds in its tool content.
+
+    Hermes stores tool results as a JSON envelope (``{"output": ...}``) with
+    one of ``exit_code`` (shell/command-style tools), ``success``
+    (boolean-style tools, paired with an ``error`` message when false), or a
+    bare ``error`` message (status-only tools) layered on top -- never all
+    three. Absence of every signal means the source tool genuinely reported
+    no outcome, which stays unknown rather than guessed from prose.
+    """
+    payload = _json_mapping(raw_content)
+    if not payload:
+        return None, None
+    raw_exit_code = payload.get("exit_code")
+    exit_code = raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
+    if payload.get("error") is not None:
+        return True, exit_code
+    if "success" in payload:
+        return not bool(payload["success"]), exit_code
+    if exit_code is not None:
+        return exit_code != 0, exit_code
+    return None, None
 
 
 def _json_mapping(value: object) -> dict[str, object]:

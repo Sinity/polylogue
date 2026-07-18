@@ -27,6 +27,7 @@ classification rule changes.
 
 from __future__ import annotations
 
+import re
 from typing import Literal, TypedDict
 
 FollowupClass = Literal["acknowledged", "silent_proceed", "wordless_continuation", "ambiguous"]
@@ -88,6 +89,14 @@ ACKNOWLEDGMENT_MARKERS: tuple[str, ...] = (
     "failing",
 )
 
+# Some runtimes retain an internal-reasoning envelope as a text block.  It is
+# not a reader-visible follow-up, so its absence of an acknowledgement marker
+# cannot support a claim that the assistant silently proceeded.
+_PROTOCOL_ONLY_FOLLOWUP = re.compile(
+    r"^\s*<(?:thinking|analysis|reasoning)(?:\s[^>]*)?>.*?</(?:thinking|analysis|reasoning)>\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def classify_failed_followup_evidence(text: str | None) -> FollowupEvidence:
     """Classify the next assistant turn after a structured action failure.
@@ -99,6 +108,8 @@ def classify_failed_followup_evidence(text: str | None) -> FollowupEvidence:
 
     if text is None:
         return {"classification": "ambiguous", "reason": "missing_next_assistant_message", "matched_marker": None}
+    if _PROTOCOL_ONLY_FOLLOWUP.fullmatch(text):
+        return {"classification": "ambiguous", "reason": "protocol_only_next_assistant_message", "matched_marker": None}
     normalized = " ".join(text.lower().split())
     if len(normalized) < 20:
         return {"classification": "ambiguous", "reason": "short_next_assistant_message", "matched_marker": None}

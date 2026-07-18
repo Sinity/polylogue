@@ -881,6 +881,9 @@ action_rows AS (
             WHEN NOT (COALESCE(aft.is_error, 0) = 1 OR COALESCE(aft.exit_code, 0) != 0) THEN NULL
             WHEN aft.followup_message_id IS NULL THEN 'ambiguous'
             WHEN {_ACTION_FOLLOWUP_ACK_CONDITION} THEN 'acknowledged'
+            WHEN TRIM(aft.followup_text_lower) GLOB '<thinking>*</thinking>'
+              OR TRIM(aft.followup_text_lower) GLOB '<analysis>*</analysis>'
+              OR TRIM(aft.followup_text_lower) GLOB '<reasoning>*</reasoning>' THEN 'ambiguous'
             WHEN aft.followup_has_tool_use = 1
              AND aft.followup_pre_tool_text_chars <= 40 THEN 'wordless_continuation'
             WHEN LENGTH(TRIM(aft.followup_text)) < 20 THEN 'ambiguous'

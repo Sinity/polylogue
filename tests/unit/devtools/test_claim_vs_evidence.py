@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from devtools.claim_vs_evidence import build_report
+from devtools.claim_vs_evidence import _economy_rows, build_report
+from polylogue.archive.actions.followup import classify_failed_followup_evidence
 from polylogue.demo import seed_demo_archive
 
 
@@ -100,6 +101,22 @@ def _seed_archive(root: Path) -> None:
            AND r.session_id = u.session_id
            AND r.block_type = 'tool_result'
         WHERE u.block_type = 'tool_use';
+        CREATE TABLE session_model_usage (
+            session_id TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cache_read_tokens INTEGER NOT NULL,
+            cache_write_tokens INTEGER NOT NULL,
+            cost_usd REAL,
+            cost_provenance TEXT NOT NULL
+        );
+        CREATE TABLE session_provider_usage_events (
+            session_id TEXT NOT NULL,
+            model_name TEXT,
+            provider_event_type TEXT NOT NULL,
+            last_reasoning_output_tokens INTEGER
+        );
         """
     )
     conn.executemany(
@@ -107,6 +124,7 @@ def _seed_archive(root: Path) -> None:
         [
             ("s1", "claude-code-session", "fixture one", 1, 4),
             ("s2", "codex-session", "fixture two", 1, 1),
+            ("s3", "claude-code-session", "unrelated fixture", 1, 1),
         ],
     )
     conn.executemany(
@@ -190,8 +208,64 @@ def _seed_archive(root: Path) -> None:
             ("next-wordless", "s2", 0, "tool_use", None, "Read", "t5", '{"path":"z"}', None, None),
         ],
     )
+    conn.executemany(
+        """
+        INSERT INTO session_model_usage(
+            session_id, model_name, input_tokens, output_tokens, cache_read_tokens,
+            cache_write_tokens, cost_usd, cost_provenance
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("s1", "claude-sonnet", 11, 12, 13, 14, 1.25, "priced"),
+            ("s2", "codex", 21, 22, 23, 24, 3.5, "origin_reported"),
+            ("s3", "unrelated-model", 999, 999, 999, 999, 99.0, "priced"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_provider_usage_events(
+            session_id, model_name, provider_event_type, last_reasoning_output_tokens
+        ) VALUES (?, ?, ?, ?)
+        """,
+        [
+            ("s1", "claude-sonnet", "message_usage", 5),
+            ("s2", "codex", "token_count", 89),
+        ],
+    )
     conn.commit()
     conn.close()
+
+
+def test_economy_rows_empty_session_ids_short_circuits(tmp_path: Path) -> None:
+    conn = sqlite3.connect(tmp_path / "empty.db")
+    conn.executescript(
+        """
+        CREATE TABLE session_model_usage (
+            session_id TEXT NOT NULL, model_name TEXT NOT NULL,
+            input_tokens INTEGER, output_tokens INTEGER,
+            cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+            cost_usd REAL, cost_provenance TEXT
+        );
+        """
+    )
+    economy = _economy_rows(conn, session_ids=(), silent_by_origin={})
+    assert economy == {"by_model": [], "by_origin": []}
+
+
+def test_economy_rows_missing_usage_table_returns_empty(tmp_path: Path) -> None:
+    conn = sqlite3.connect(tmp_path / "no-usage-table.db")
+    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT)")
+    economy = _economy_rows(conn, session_ids=("s1",), silent_by_origin={})
+    assert economy == {"by_model": [], "by_origin": []}
+
+
+def test_protocol_only_followup_is_ambiguous_not_silent_proceed() -> None:
+    """Hidden reasoning contains no reader-visible acknowledgement evidence."""
+    assert classify_failed_followup_evidence("<thinking>inspect state privately</thinking>") == {
+        "classification": "ambiguous",
+        "reason": "protocol_only_next_assistant_message",
+        "matched_marker": None,
+    }
 
 
 def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
@@ -287,6 +361,16 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert report["rates"]["silent_rate_lower_bound"] == 1 / 4
     assert report["rates"]["ack_later_within_3"] == 1
     assert report["rates"]["window3_silent_rate_lower_bound"] == 0
+    assert report["economy"]["scope"] == "sessions represented in the paired structured-failure harness"
+    assert report["economy"]["sampled_session_count"] == 2
+    economy_by_model = {str(row["model_name"]): row for row in report["economy"]["by_model"]}
+    assert set(economy_by_model) == {"claude-sonnet", "codex"}
+    assert economy_by_model["claude-sonnet"]["reasoning_tokens"] == 5
+    assert economy_by_model["claude-sonnet"]["catalog_cost_usd"] == 1.25
+    assert economy_by_model["codex"]["reasoning_tokens"] is None
+    assert economy_by_model["codex"]["provider_reported_cost_usd"] == 3.5
+    assert economy_by_model["claude-sonnet"]["input_tokens"] == 11
+    assert "unrelated-model" not in economy_by_model
     assert report["calibration"]["sample_size"] == 3
     assert report["calibration"]["sample_seed"] == 7
     assert report["calibration"]["metrics"]["labeled_rows"] == 2
