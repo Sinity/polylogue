@@ -24,10 +24,10 @@ and current-owner acceptance criteria decide admission.
   `mcp-04`, `lin-02`, and `mandate-03`. Use their discovery, continuation,
   continuity-oracle, and terminal-gate matrices; do not replay their stale
   patches alongside the canonical current transaction.
-- Lane E: `webui-02`, `webui-03/r01`, `webui-03/r02`, `webui-04`, `webui-07`,
-  and `webui-08`. The replacement `webui-03/r02` is the preferred external
-  search reference because it understands the scaffold, generated client, and
-  design system. Lane E remains sole owner of `daemon/http.py`.
+- Lane E: `webui-01`, `webui-02`, `webui-03/r01`, `webui-03/r02`, `webui-04`,
+  `webui-07`, and `webui-08`. The replacement `webui-03/r02` is the preferred
+  external search reference because it understands the scaffold, generated
+  client, and design system. Lane E remains sole owner of `daemon/http.py`.
 
 ## Deferred, still valuable packets
 
