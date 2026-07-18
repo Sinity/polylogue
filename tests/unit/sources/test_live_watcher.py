@@ -2674,3 +2674,31 @@ def test_end_to_end_deletion_does_not_ingest(tmp_path: Path) -> None:
         assert parse_sources.await_count == baseline  # deletion did not trigger ingest
 
     asyncio.run(_drive())
+
+
+def test_interleave_drains_browser_capture_spool_before_round_robin(tmp_path: Path) -> None:
+    """Spool files gate the raw-materialization conveyor's writer yield, so
+    catch-up must cursor them first instead of spreading them across the
+    whole plan; remaining families keep the #1616 round-robin."""
+    from polylogue.sources.live.watcher import CandidateSourceFile, _interleave_by_source
+
+    def candidate(name: str, source: str) -> CandidateSourceFile:
+        path = tmp_path / source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"{}")
+        return CandidateSourceFile(path=path, source_name=source, suffix=path.suffix, stat=path.stat())
+
+    candidates = [
+        candidate("a.jsonl", "codex"),
+        candidate("b.json", "browser-capture"),
+        candidate("c.jsonl", "claude-code"),
+        candidate("d.json", "browser-capture"),
+        candidate("e.jsonl", "codex"),
+    ]
+
+    ordered = _interleave_by_source(candidates)
+
+    assert [item.source_name for item in ordered[:2]] == ["browser-capture", "browser-capture"]
+    rest = [item.source_name for item in ordered[2:]]
+    assert sorted(rest) == ["claude-code", "codex", "codex"]
+    assert rest[0] != rest[1] or rest[1] != rest[2]
