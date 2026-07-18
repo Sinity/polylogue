@@ -31,6 +31,10 @@
         "started_at"
       ],
       "optional_capabilities": {
+        "compression_recovery": [
+          "compression_failure_cooldown_until",
+          "compression_failure_error"
+        ],
         "cost_provenance": [
           "billing_provider",
           "billing_base_url",
@@ -41,6 +45,14 @@
           "cost_source",
           "pricing_version"
         ],
+        "gateway_identity": [
+          "session_key",
+          "chat_id",
+          "chat_type",
+          "thread_id",
+          "display_name",
+          "origin_json"
+        ],
         "handoff": [
           "handoff_state",
           "handoff_platform",
@@ -50,7 +62,8 @@
           "ended_at",
           "end_reason",
           "rewind_count",
-          "archived"
+          "archived",
+          "expiry_finalized"
         ],
         "lineage": [
           "parent_session_id",

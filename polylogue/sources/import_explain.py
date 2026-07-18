@@ -31,7 +31,7 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.parsers import hermes_spans, hermes_state
+from polylogue.sources.parsers import hermes_spans, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.surfaces.payloads import (
@@ -406,6 +406,18 @@ def _loads_warning_tuple(value: str | None) -> tuple[str, ...]:
 
 
 def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
+    # SQLite structural detection takes priority over the raw-path taxonomy
+    # classification below: that classification's METADATA_DOCUMENT/
+    # parse_as_session=False verdict for these paths exists to protect
+    # pre-JSON-decode consumers (e.g. schema sampling) from raw SQLite bytes,
+    # not to gate the SQLite-specific parse routes, which have their own
+    # structural admission check (looks_like_*_path).
+    if hermes_state.looks_like_state_db_path(path):
+        return _explain_hermes_state_db(path, provider_hint=provider_hint)
+
+    if hermes_verification.looks_like_verification_evidence_db_path(path):
+        return _explain_hermes_verification_evidence_db(path, provider_hint=provider_hint)
+
     path_classification = classify_artifact_path(path, provider=provider_hint)
     if path_classification is not None and not path_classification.parse_as_session:
         return _skipped_entry(
@@ -418,9 +430,6 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
 
     if path.suffix.lower() == ".zip":
         return _explain_zip(path, provider_hint=provider_hint, path_classification=path_classification)
-
-    if hermes_state.looks_like_state_db_path(path):
-        return _explain_hermes_state_db(path, provider_hint=provider_hint)
 
     try:
         raw_bytes = path.read_bytes()
@@ -466,6 +475,49 @@ def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportEx
         ),
         parser="hermes_state_db",
         parser_version=None if fidelity.schema_version is None else f"state-db-v{fidelity.schema_version}",
+        parser_mode="sqlite_backup",
+        produced=_produced_rows(sessions),
+        caveats=(
+            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
+            *fidelity.caveats,
+        ),
+        raw_evidence_refs=(),
+        fidelity=_fidelity_payload(fidelity),
+    )
+
+
+def _explain_hermes_verification_evidence_db(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
+    """Inspect the real Hermes verification-ledger SQLite parser path without writing a raw blob."""
+
+    try:
+        sessions = hermes_verification.parse_verification_evidence_db(path, fallback_id=path.stem)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return _skipped_entry(
+            path,
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"Hermes verification_evidence.db parser failure: {type(exc).__name__}: {exc}",
+            detected_provider=Provider.HERMES,
+        )
+    fidelity = hermes_verification.import_fidelity_declaration(sessions)
+    return ImportExplainEntryPayload(
+        source_path=str(path),
+        artifact_kind="sqlite_verification_evidence_database",
+        provider_hint=provider_hint.value,
+        detected_origin=_origin_value(Provider.HERMES),
+        detected_provider=Provider.HERMES.value,
+        detector="hermes_verification_evidence_db",
+        detector_evidence=(
+            _evidence(
+                "hermes_verification_evidence_db.signature",
+                matched=True,
+                reason="required verification_events/verification_state tables and columns",
+            ),
+        ),
+        parser="hermes_verification_evidence_db",
+        parser_version=None
+        if fidelity.schema_version is None
+        else f"verification-evidence-db-v{fidelity.schema_version}",
         parser_mode="sqlite_backup",
         produced=_produced_rows(sessions),
         caveats=(

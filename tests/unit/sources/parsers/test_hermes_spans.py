@@ -76,13 +76,23 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
 
     session = parse_payload(Provider.HERMES, payload, "fallback-id")[0]
     assert session.provider_session_id == "observer:real-nemo-relay-session-redacted"
+    assert len(payload["steps"]) == 6
     llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
-    assert len(llm_events) == len(payload["steps"]) == 5
+    assert len(llm_events) == 5
     assert all(event.payload["message_char_len"] == len("<redacted>") for event in llm_events)
+
+    # Step 6 (real evidence: 4 parallel tool_calls plus observation.results,
+    # drawn from a separate live trajectory -- see fixtures/hermes/atif/README.md)
+    # proves the tool_calls step shape without copying arguments/observation content.
+    tool_events = [event for event in session.session_events if event.event_type == "hermes_tool_execution_span"]
+    assert len(tool_events) == 4
+    assert {event.payload["function_name"] for event in tool_events} == {"process", "terminal", "search_files"}
+    assert all(event.payload["has_arguments"] is True for event in tool_events)
+    assert all(event.payload["has_observation"] is True for event in tool_events)
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.capabilities["llm_request_spans"].status == "exact"
-    assert fidelity.capabilities["tool_execution_spans"].status == "absent"
+    assert fidelity.capabilities["tool_execution_spans"].status == "exact"
 
 
 def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_content() -> None:
@@ -112,7 +122,12 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     assert sum(event.event_type == "hermes_decision_span" for event in events) == 2
     assert sum(event.event_type == "hermes_subagent_span" for event in events) == 1
     assert sum(event.event_type == "hermes_error_span" for event in events) == 1
-    assert sum(event.event_type == "hermes_observer_span" for event in events) == 3
+    # The outer session-scope start/end pair (kind=scope,category=agent) and
+    # the hermes.session.end mark are real, well-defined lifecycle evidence
+    # (confirmed against ~/.hermes/observability/nemo-relay/atof/events.jsonl)
+    # -- admitted as typed context_span, not left in the unrecognized bucket.
+    assert sum(event.event_type == "hermes_context_span" for event in events) == 3
+    assert sum(event.event_type == "hermes_observer_span" for event in events) == 0
     assert "<redacted>" not in repr([event.payload for event in events])
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
@@ -122,6 +137,8 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     assert fidelity.capabilities["decision_points"].status == "exact"
     assert fidelity.capabilities["error_taxonomy"].status == "exact"
     assert fidelity.capabilities["subagent_delegation"].status == "exact"
+    assert fidelity.capabilities["context_events"].status == "exact"
+    assert "unrecognized_atof_events" not in fidelity.capabilities
 
 
 def test_atof_stream_is_idempotent_across_append_replay_and_keeps_scope_edges() -> None:
@@ -165,6 +182,52 @@ def test_atof_unmatched_response_and_turn_context_are_normalized_not_dropped() -
         "hermes_error_span",
     ]
     assert session.session_events[-1].payload["outcome"] == "unmatched_response"
+
+
+def test_atof_agent_scope_and_session_end_mark_become_typed_context_spans() -> None:
+    """The outer session-scope start/end pair (kind=scope,category=agent) and a
+    hermes.session.end mark are real lifecycle evidence -- confirmed against
+    ~/.hermes/observability/nemo-relay/atof/events.jsonl -- and must not fall
+    into the generic unrecognized-event bucket."""
+
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "agent",
+            "scope_category": "start",
+            "uuid": "scope-parent",
+            "timestamp": "2026-07-18T09:00:00Z",
+            "name": "hermes-session-example",
+            "metadata": {"session_id": "session-1"},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "uuid": "session-end-1",
+            "timestamp": "2026-07-18T09:00:01Z",
+            "name": "hermes.session.end",
+            "metadata": {"session_id": "session-1"},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "agent",
+            "scope_category": "end",
+            "uuid": "scope-parent",
+            "timestamp": "2026-07-18T09:00:02Z",
+            "name": "hermes-session-example",
+            "metadata": {"session_id": "session-1"},
+        },
+    ]
+    session = hermes_spans.parse_atof_stream(records, "fallback-id")[0]
+    context_events = [event for event in session.session_events if event.event_type == "hermes_context_span"]
+    assert [event.payload["context_event"] for event in context_events] == [
+        "hermes.session.start",
+        "hermes.session.end",
+        "hermes.session.end",
+    ]
+    assert not any(event.event_type == "hermes_observer_span" for event in session.session_events)
 
 
 def test_import_explain_uses_atof_stream_fidelity_for_a_real_fixture() -> None:
@@ -310,8 +373,14 @@ def test_decision_points_and_error_taxonomy_are_honestly_absent_not_fabricated()
     assert fidelity.capabilities["decision_points"].status == "absent"
     assert fidelity.capabilities["error_taxonomy"].status == "absent"
     assert "raw ATOF event stream" in fidelity.capabilities["decision_points"].detail
+    # llm_request_spans and tool_execution_spans are the two capabilities whose
+    # field mapping has been independently confirmed against real ATIF bytes
+    # (see fixtures/hermes/atif/README.md) -- "exact" here means the mapping
+    # itself is proven, not that this particular (synthetic) session is real.
     assert fidelity.capabilities["llm_request_spans"].status == "exact"
-    assert all(cap.status != "exact" for name, cap in fidelity.capabilities.items() if name != "llm_request_spans")
+    assert fidelity.capabilities["tool_execution_spans"].status == "exact"
+    exempt = {"llm_request_spans", "tool_execution_spans"}
+    assert all(cap.status != "exact" for name, cap in fidelity.capabilities.items() if name not in exempt)
 
 
 def test_observer_session_id_correlates_with_qualified_state_db_session_id() -> None:

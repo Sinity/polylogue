@@ -11,7 +11,7 @@
   "final_metrics": {
     "total_completion_tokens": 7,
     "total_prompt_tokens": 8983,
-    "total_steps": 5
+    "total_steps": 6
   },
   "schema_version": "ATIF-v1.7",
   "session_id": "real-nemo-relay-session-redacted",
@@ -335,6 +335,98 @@
       "source": "<redacted>",
       "step_id": 5,
       "timestamp": "<redacted>"
+    },
+    {
+      "extra": {
+        "invocation": {
+          "framework": "<redacted>",
+          "status": "<redacted>"
+        }
+      },
+      "llm_call_count": 1,
+      "message": "",
+      "model_name": "<redacted>",
+      "observation": {
+        "results": [
+          {
+            "content": "<redacted>",
+            "extra": {
+              "event_name": "process",
+              "status": "<redacted>"
+            },
+            "source_call_id": "<redacted>"
+          },
+          {
+            "content": "<redacted>",
+            "extra": {
+              "event_name": "terminal",
+              "status": "<redacted>"
+            },
+            "source_call_id": "<redacted>"
+          },
+          {
+            "content": "<redacted>",
+            "extra": {
+              "event_name": "search_files",
+              "status": "<redacted>"
+            },
+            "source_call_id": "<redacted>"
+          },
+          {
+            "content": "<redacted>",
+            "extra": {
+              "event_name": "search_files",
+              "status": "<redacted>"
+            },
+            "source_call_id": "<redacted>"
+          }
+        ]
+      },
+      "source": "agent",
+      "step_id": 6,
+      "timestamp": "<redacted>",
+      "tool_calls": [
+        {
+          "arguments": "<redacted>",
+          "extra": {
+            "provider_data": {
+              "call_id": "<redacted>"
+            }
+          },
+          "function_name": "process",
+          "tool_call_id": "<redacted>"
+        },
+        {
+          "arguments": "<redacted>",
+          "extra": {
+            "provider_data": {
+              "call_id": "<redacted>"
+            }
+          },
+          "function_name": "terminal",
+          "tool_call_id": "<redacted>"
+        },
+        {
+          "arguments": "<redacted>",
+          "extra": {
+            "provider_data": {
+              "call_id": "<redacted>"
+            }
+          },
+          "function_name": "search_files",
+          "tool_call_id": "<redacted>"
+        },
+        {
+          "arguments": "<redacted>",
+          "extra": {
+            "provider_data": {
+              "call_id": "<redacted>"
+            }
+          },
+          "function_name": "search_files",
+          "tool_call_id": "<redacted>"
+        }
+      ]
     }
   ],
   "trajectory_id": "real-nemo-relay-trajectory-redacted"

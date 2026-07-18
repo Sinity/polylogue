@@ -21,7 +21,7 @@ from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .emitter import _SessionEmitter
-from .parsers import antigravity, hermes_state
+from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
@@ -155,6 +155,35 @@ def parse_one_source_path(
             fallback_id=path.stem,
             profile_root=(original_source_path or path).parent,
         ):
+            yield (raw_data, session)
+        return
+
+    if (
+        provider_hint is Provider.HERMES or original_source_path is not None
+    ) and hermes_verification.looks_like_verification_evidence_db_path(path):
+        if blob_root is None:
+            from polylogue.paths import blob_store_root
+
+            blob_root = blob_store_root()
+        resolved_store = blob_store or BlobStore(blob_root)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        from polylogue.storage.blob_publication import flush_blob_publications
+
+        flush_blob_publications(resolved_store)
+        retained_path = resolved_store.blob_path(snapshot.blob_hash)
+        raw_data = None
+        if capture_raw:
+            raw_data = RawSessionData(
+                raw_bytes=b"",
+                source_path=str(original_source_path or path),
+                source_index=None,
+                file_mtime=file_mtime,
+                provider_hint=provider_hint,
+                blob_hash=snapshot.blob_hash,
+                blob_size=snapshot.blob_size,
+                blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
+            )
+        for session in hermes_verification.parse_verification_evidence_db(retained_path, fallback_id=path.stem):
             yield (raw_data, session)
         return
 
