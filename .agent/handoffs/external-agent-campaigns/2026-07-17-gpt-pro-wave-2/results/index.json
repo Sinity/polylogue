@@ -7,6 +7,7 @@
     {"job":"webui-01","revision":"r01","state":"snapshot_mismatch"},
     {"job":"webui-02","revision":"r01","state":"snapshot_mismatch"},
     {"job":"webui-03","revision":"r01","state":"snapshot_mismatch"},
+    {"job":"webui-03","revision":"r02","state":"snapshot_mismatch"},
     {"job":"webui-04","revision":"r01","state":"snapshot_mismatch"},
     {"job":"webui-05","revision":"r01","state":"incomplete_delivery"},
     {"job":"webui-07","revision":"r01","state":"snapshot_mismatch"},
@@ -33,7 +34,7 @@
     {"job":"misc-03","revision":"r01","state":"snapshot_mismatch"},
     {"job":"mandate-02","revision":"r01","state":"needs_rebase_review"},
     {"job":"support-b","revision":"r01","state":"needs_rebase_review"},
-    {"job":"support-d","revision":"r01","state":"ready_for_review"},
+    {"job":"support-d","revision":"r01","state":"superseded"},
     {"job":"support-a","revision":"r01","state":"snapshot_mismatch"},
     {"job":"mandate-03","revision":"r01","state":"snapshot_mismatch"},
     {"job":"support-c","revision":"r01","state":"needs_rebase_review"}
