@@ -7,7 +7,6 @@ import inspect
 import os
 import sqlite3
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1151,7 +1150,7 @@ def test_spool_pending_check_ignores_terminal_cursor_states(
     assert daemon_cli._browser_capture_spool_has_pending_files() is False
 
     # Age the file past the grace window: now it is a stalled backlog.
-    stale = time.time() - daemon_cli._SPOOL_PENDING_GRACE_SECONDS - 60
+    stale = capture.stat().st_mtime - daemon_cli._SPOOL_PENDING_GRACE_SECONDS - 60
     os.utime(capture, (stale, stale))
     stat = capture.stat()
 
