@@ -6,6 +6,14 @@
   "postmortem": {"refs": ["run:failed-1", "action:failed-1"], "source": "fixture-run-and-action-evidence"},
   "cost": {"refs": ["usage:run-1"], "source": "fixture-reported-usage"},
   "self-inspection": {"refs": ["capability:query"], "source": "declaration-fixture"},
+  "mcp-query-transaction": {
+    "refs": [
+      "session:codex-session:continuity-01",
+      "session:codex-session:continuity-02",
+      "session:codex-session:continuity-03",
+      "session:codex-session:continuity-04"
+    ]
+  },
   "parallel-claude-incident": {
     "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
     "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
