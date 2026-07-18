@@ -1,4 +1,11 @@
-"""Unit tests for the compose_context_preamble MCP tool."""
+"""Unit tests for the ``context`` tool's ``intent="resume"`` mode.
+
+This mode builds the SessionStart preamble (session lineage, ranked resume
+candidates, project git state, provenance-gated assertion guidance) that the
+retired ``compose_context_preamble`` tool used to serve directly, before the
+six-tool cutover (query/read/get/explain/context/status) collapsed it into
+``context``.
+"""
 
 from __future__ import annotations
 
@@ -39,13 +46,13 @@ def _mock_subprocess_failure(**kwargs: object) -> MagicMock:
 
 
 class TestComposeContextPreambleRegistration:
-    """Verify the compose_context_preamble tool is registered and callable."""
+    """Verify the ``context`` tool (intent="resume") is registered and callable."""
 
     def test_tool_is_registered_on_server(self, mcp_server: MCPServerUnderTest) -> None:
         """The tool is present in the server tool manager."""
         tools = mcp_server._tool_manager._tools
-        assert "compose_context_preamble" in tools
-        assert callable(tools["compose_context_preamble"].fn)
+        assert "context" in tools
+        assert callable(tools["context"].fn)
 
 
 class TestComposeContextPreambleHappyPath:
@@ -64,7 +71,8 @@ class TestComposeContextPreambleHappyPath:
             mock_get_poly.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
             )
 
@@ -98,7 +106,8 @@ class TestComposeContextPreambleHappyPath:
             mock_get_poly.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
             )
 
@@ -136,7 +145,8 @@ class TestComposeContextPreambleHappyPath:
             mock_get_poly.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
             )
 
@@ -171,7 +181,8 @@ class TestComposeContextPreambleHappyPath:
             mock_get_poly.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
             )
 
@@ -207,7 +218,8 @@ class TestComposeContextPreambleHappyPath:
             mock_run.side_effect = _git_side_effect
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
             )
 
@@ -230,7 +242,8 @@ class TestComposeContextPreambleHappyPath:
             mock_get_poly.return_value = mock_poly
 
             await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path="/realm/project/sinex",
                 cwd="/realm/project/sinex",
             )
@@ -254,7 +267,8 @@ class TestComposeContextPreambleHappyPath:
             mock_get_poly.return_value = mock_poly
 
             await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
                 recent_files=("src/main.py", "tests/test_main.py"),
             )
@@ -400,7 +414,8 @@ class TestComposeContextPreambleEmptyArchive:
             mock_get_poly.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path="/nonexistent",
             )
 
@@ -423,7 +438,8 @@ class TestComposeContextPreambleEmptyArchive:
             mock_get_poly.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
             )
 
@@ -482,7 +498,8 @@ class TestComposeContextPreambleEmptyArchive:
             mock_get_poly.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
             )
 
@@ -502,7 +519,8 @@ class TestComposeContextPreambleEmptyArchive:
             mock_get_poly.return_value = mock_poly
 
             await invoke_surface_async(
-                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                mcp_server._tool_manager._tools["context"].fn,
+                intent="resume",
                 repo_path=".",
                 limit=100,
             )

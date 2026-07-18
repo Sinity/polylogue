@@ -48,7 +48,7 @@ def test_get_server_caches_instance_and_updates_runtime_services() -> None:
             assert server_module._get_server() == "server"
 
         mock_set_services.assert_called_once_with(services)
-        mock_build.assert_called_once_with(role="read")
+        mock_build.assert_called_once_with(role="read", services=services)
     finally:
         server_module._server_instance = original
 

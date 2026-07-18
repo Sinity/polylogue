@@ -61,9 +61,9 @@ A session result set suitable for a declared cost-rollup projection; coverage st
 ### `read`
 
 - role: `read`
-- source declarations: `read`, `graph`
+- source declarations: `read`
 - schema status: `cutover-parameterized`
-- result semantics: `single_object`, `exhaustive_page`, `bounded_context`, `recursive_graph`
+- result semantics: `single_object`, `exhaustive_page`, `bounded_context`
 - continuation: `same-tool continuation-only request`
 - emits result ref: `yes`
 - purpose: Read a stable URI/object/evidence ref through a declared view, including topology that the in-flight declarations still call graph.
@@ -375,7 +375,7 @@ The continuation request is the same tool plus exactly one `continuation` argume
 ```json
 {
   "arguments": {
-    "continuation": "q2.eyJyZXF1ZXN0Ijp7ImFyY2hpdmVfZXBvY2giOiJhcmNoaXZlOnYxOmluZGV4OnYyNDoxOnVzZXI6djk6MSIsImFyZ3VtZW50cyI6eyJleHByZXNzaW9uIjoiYWN0aW9ucyB3aGVyZSBhY3Rpb246ZmlsZV9lZGl0IEFORCBwYXRoOnBvbHlsb2d1ZS9hcmNoaXZlL3F1ZXJ5IHwgc29ydCBieSB0aW1lIGRlc2MgfCBsaW1pdCAyMCIsInByb2plY3Rpb24iOiJhY3Rpb24tZXZpZGVuY2UifSwib2Zmc2V0IjoyMCwib3BlcmF0aW9uIjoicXVlcnkiLCJwYWdlX3NpemUiOjIwLCJwcm9qZWN0aW9uIjoiYWN0aW9uLWV2aWRlbmNlIiwic3RhYmxlX29yZGVyIjoidGltZS1kZXNjIn0sInJlc3VsdF9yZWYiOiJyZXN1bHQ6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3IiwidiI6Mn0"
+    "continuation": "q2.eyJjaGVja3N1bSI6ImIzYTA1Y2JiOTlkMTJhZTI2NmUwYjE0YmRlZWZiMWJiNTE4NjQzYzM5M2RkMmEyYzNlODc4NTU3MTRlNzI4MmQiLCJleHBpcmVzX2F0IjoxODkzNDU5NjAwLCJpc3N1ZWRfYXQiOjE4OTM0NTYwMDAsInJlcXVlc3QiOnsiYXJjaGl2ZV9lcG9jaCI6ImFyY2hpdmU6djE6aW5kZXg6djI0OjE6dXNlcjp2OToxIiwiYXJndW1lbnRzIjp7ImV4cHJlc3Npb24iOiJhY3Rpb25zIHdoZXJlIGFjdGlvbjpmaWxlX2VkaXQgQU5EIHBhdGg6cG9seWxvZ3VlL2FyY2hpdmUvcXVlcnkgfCBzb3J0IGJ5IHRpbWUgZGVzYyB8IGxpbWl0IDIwIiwicHJvamVjdGlvbiI6ImFjdGlvbi1ldmlkZW5jZSJ9LCJvZmZzZXQiOjIwLCJvcGVyYXRpb24iOiJxdWVyeSIsInBhZ2Vfc2l6ZSI6MjAsInByb2plY3Rpb24iOiJhY3Rpb24tZXZpZGVuY2UiLCJzdGFibGVfb3JkZXIiOiJ0aW1lLWRlc2MifSwicmVzdWx0X3JlZiI6InJlc3VsdDowMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1NjciLCJ2IjoyfQ"
   },
   "name": "query"
 }

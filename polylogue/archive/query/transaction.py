@@ -10,12 +10,14 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import time
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 from polylogue.archive.query.execution_control import (
@@ -66,6 +68,7 @@ class QueryResultSemanticsContract:
 # V1 remains decode-only for continuations issued before frame validation.
 _TOKEN_VERSION = 2
 _LEGACY_TOKEN_VERSION = 1
+_CONTINUATION_TTL_SECONDS = 60 * 60
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -124,6 +127,18 @@ class QueryContinuationStaleError(ValueError):
         )
 
 
+class QueryContinuationInvalidError(ValueError):
+    """A continuation is malformed or belongs to another transaction."""
+
+    code = "invalid_continuation"
+
+
+class QueryContinuationExpiredError(QueryContinuationInvalidError):
+    """A continuation's original validity window has elapsed."""
+
+    code = "query_continuation_expired"
+
+
 @dataclass(frozen=True, slots=True)
 class QueryTransactionRequest:
     """Canonical request identity shared by page producers and adapters."""
@@ -135,6 +150,8 @@ class QueryTransactionRequest:
     projection: str = "default"
     stable_order: str = "canonical"
     archive_epoch: str = ""
+    issued_at: int | None = field(default=None, compare=False)
+    expires_at: int | None = field(default=None, compare=False)
     continuation_version: int | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
@@ -181,6 +198,8 @@ class QueryTransactionRequest:
             projection=self.projection,
             stable_order=self.stable_order,
             archive_epoch=self.archive_epoch,
+            issued_at=self.issued_at,
+            expires_at=self.expires_at,
             continuation_version=self.continuation_version,
         )
 
@@ -194,6 +213,8 @@ class QueryTransactionRequest:
             projection=self.projection,
             stable_order=self.stable_order,
             archive_epoch=archive_epoch,
+            issued_at=self.issued_at,
+            expires_at=self.expires_at,
             continuation_version=self.continuation_version,
         )
 
@@ -247,9 +268,13 @@ class QueryContinuation:
         request = self.request
         if not request.archive_epoch:
             raise ValueError("new query continuations require an archive_epoch")
-        body = {
+        issued_at = request.issued_at if request.issued_at is not None else int(time())
+        expires_at = request.expires_at if request.expires_at is not None else issued_at + _CONTINUATION_TTL_SECONDS
+        body: dict[str, object] = {
             "v": _TOKEN_VERSION,
             "result_ref": self.result_ref,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
             "request": {
                 "operation": request.operation,
                 "arguments": dict(request.arguments),
@@ -260,24 +285,39 @@ class QueryContinuation:
                 "archive_epoch": request.archive_epoch,
             },
         }
+        body["checksum"] = hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
         encoded = base64.urlsafe_b64encode(_canonical_json(body).encode("utf-8")).decode("ascii").rstrip("=")
         return "q2." + encoded
 
     @classmethod
     def decode(cls, token: str) -> QueryContinuation:
-        if not token.startswith(("q1.", "q2.")):
-            raise ValueError("invalid query continuation version")
+        if not token.startswith("q2."):
+            raise QueryContinuationInvalidError("unsupported query continuation version")
         try:
             padded = token[3:] + "=" * (-len(token[3:]) % 4)
             body = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+            if not isinstance(body, dict):
+                raise ValueError("query continuation body must be an object")
+            checksum = body.pop("checksum", None)
+            if not isinstance(checksum, str):
+                raise ValueError("query continuation is missing checksum")
+            expected_checksum = hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(checksum, expected_checksum):
+                raise ValueError("query continuation checksum does not match")
             request_body = body["request"]
             version = int(body["v"])
             expected_prefix = f"q{version}."
-            if version not in {_LEGACY_TOKEN_VERSION, _TOKEN_VERSION} or not token.startswith(expected_prefix):
+            if version != _TOKEN_VERSION or not token.startswith(expected_prefix):
                 raise ValueError("unsupported query continuation version")
             archive_epoch = str(request_body.get("archive_epoch") or "")
-            if version == _TOKEN_VERSION and not archive_epoch:
+            if not archive_epoch:
                 raise ValueError("query continuation is missing required archive_epoch")
+            issued_at = int(body["issued_at"])
+            expires_at = int(body["expires_at"])
+            if issued_at < 0 or expires_at <= issued_at:
+                raise ValueError("query continuation has an invalid validity window")
+            if expires_at <= int(time()):
+                raise QueryContinuationExpiredError("query continuation has expired; restart the query")
             request = QueryTransactionRequest(
                 operation=str(request_body["operation"]),
                 arguments=dict(request_body["arguments"]),
@@ -286,14 +326,39 @@ class QueryContinuation:
                 projection=str(request_body["projection"]),
                 stable_order=str(request_body["stable_order"]),
                 archive_epoch=archive_epoch,
+                issued_at=issued_at,
+                expires_at=expires_at,
                 continuation_version=version,
             )
             result_ref = str(body["result_ref"])
+        except QueryContinuationExpiredError:
+            raise
         except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("invalid query continuation") from exc
+            raise QueryContinuationInvalidError("invalid query continuation") from exc
         if not result_ref.startswith("result:"):
-            raise ValueError("invalid query result reference")
+            raise QueryContinuationInvalidError("invalid query result reference")
         return cls(request=request, result_ref=result_ref)
+
+
+def decode_query_units_continuation(token: str) -> QueryContinuation:
+    """Decode the sole opaque resume input for a terminal-unit transaction."""
+    continuation = QueryContinuation.decode(token)
+    request = continuation.request
+    arguments = request.arguments
+    expression = arguments.get("expression")
+    filters = arguments.get("session_filters")
+    if (
+        request.operation != "query_units"
+        or request.projection != "terminal-unit-envelope"
+        or request.stable_order != "canonical"
+        or set(arguments) != {"expression", "session_filters"}
+        or not isinstance(expression, str)
+        or not expression.strip()
+        or not isinstance(filters, Mapping)
+        or continuation.result_ref != request.result_ref
+    ):
+        raise QueryContinuationInvalidError("continuation does not identify a terminal-unit result")
+    return continuation
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,6 +543,8 @@ def archive_read_context(
 __all__ = [
     "QueryContinuation",
     "QueryArchiveEpochUnreadableError",
+    "QueryContinuationExpiredError",
+    "QueryContinuationInvalidError",
     "QueryContinuationStaleError",
     "QueryContinuationSemantics",
     "QueryCoverageClass",
@@ -488,6 +555,7 @@ __all__ = [
     "QueryTransactionRequest",
     "archive_snapshot_epoch",
     "archive_read_context",
+    "decode_query_units_continuation",
     "query_units_transaction_request",
     "run_archive_read",
     "run_archive_read_sync",

@@ -29,10 +29,12 @@ explicit tool-level error/no-result/privacy assertions.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -43,8 +45,6 @@ from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
     invoke_surface_async,
-    make_mock_filter,
-    make_polylogue_mock,
 )
 
 pytestmark = pytest.mark.contract
@@ -137,237 +137,25 @@ class TestToolSchemaInventory:
 class TestToolErrorEnvelopes:
     """Tool calls that hit explicit error paths emit MCPErrorPayload."""
 
-    def test_neighbor_candidates_without_id_or_query_returns_error_envelope(
+    def test_explain_query_without_expression_returns_invalid_argument_envelope(
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
-        result = invoke_surface(mcp_server._tool_manager._tools["neighbor_candidates"].fn)
+        result = invoke_surface(mcp_server._tool_manager._tools["explain"].fn, subject="query")
         body = _structured_error(result)
-        assert "requires id or query" in body["message"], f"unexpected error message: {body}"
+        assert body.get("code") == "invalid_argument", f"expected code='invalid_argument', got {body!r}"
+        assert "requires expression" in body["message"], f"unexpected error message: {body}"
 
-    def test_get_session_summary_missing_returns_not_found_envelope(
+    def test_get_missing_ref_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
+        tmp_path: Path,
     ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session_summary = AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(mcp_server._tool_manager._tools["get_session_summary"].fn, id="missing")
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
-    def test_get_messages_missing_session_returns_not_found_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        from polylogue.api.archive import SessionNotFoundError
-
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_messages_paginated = AsyncMock(side_effect=SessionNotFoundError("missing"))
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["get_messages"].fn,
-                session_id="missing",
-            )
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
-    def test_raw_artifacts_missing_session_returns_not_found_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_raw_artifacts_for_session = AsyncMock(return_value=([], 0))
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["raw_artifacts"].fn,
-                session_id="missing",
-            )
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
-    def test_session_profile_missing_returns_not_found_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session_profile_insight = AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["session_profile"].fn,
-                session_id="missing",
-            )
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
-    def test_get_resume_brief_missing_returns_not_found_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.resume_brief = AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["get_resume_brief"].fn,
-                session_id="missing-session",
-            )
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
-    def test_get_resume_brief_returns_typed_brief_payload(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        from polylogue.insights.resume import (
-            RESUME_BRIEF_MATERIALIZER_VERSION,
-            ResumeBrief,
-            ResumeFacts,
-            ResumeInferences,
-            ResumeOverlapBasis,
-            ResumePathOverlap,
-            ResumeProvenance,
-        )
-
-        brief = ResumeBrief(
-            session_id="conv-123",
-            facts=ResumeFacts(session_id="conv-123", origin="claude-code", message_count=2),
-            inferences=ResumeInferences(),
-            overlap_basis=ResumeOverlapBasis(
-                dir=(
-                    ResumePathOverlap(
-                        candidate_path="polylogue/pipeline/runner.py",
-                        recent_file="polylogue/pipeline/service.py",
-                    ),
-                ),
-                dead_excluded=("polylogue/lib/models.py",),
-            ),
-            provenance=ResumeProvenance(
-                materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
-                computed_at="2026-05-17T00:00:00+00:00",
-                cited_session_ids=("conv-123",),
-                cited_message_ids=("m1", "m2"),
-            ),
-        )
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.resume_brief = AsyncMock(return_value=brief)
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["get_resume_brief"].fn,
-                session_id="conv-123",
-                repo_path="/workspace/polylogue",
-                recent_files=("polylogue/pipeline/service.py",),
-            )
-
-        payload = json.loads(result)
-        assert payload["session_id"] == "conv-123"
-        assert payload["provenance"]["materializer_version"] == RESUME_BRIEF_MATERIALIZER_VERSION
-        assert "conv-123" in payload["provenance"]["cited_session_ids"]
-        assert payload["overlap_basis"]["dir"] == [
-            {
-                "candidate_path": "polylogue/pipeline/runner.py",
-                "recent_file": "polylogue/pipeline/service.py",
-            }
-        ]
-        assert payload["overlap_basis"]["dead_excluded"] == ["polylogue/lib/models.py"]
-        mock_poly.resume_brief.assert_awaited_once_with(
-            "conv-123",
-            related_limit=6,
-            repo_path="/workspace/polylogue",
-            recent_files=("polylogue/pipeline/service.py",),
-        )
-
-    def test_get_resume_brief_rejects_context_without_repo(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        result = invoke_surface(
-            mcp_server._tool_manager._tools["get_resume_brief"].fn,
-            session_id="conv-123",
-            recent_files=("polylogue/pipeline/service.py",),
-        )
-
-        body = _structured_error(result)
-        assert body["code"] == "invalid_argument"
-        assert "repo_path is required" in body["message"]
-
-    def test_find_resume_candidates_returns_ranked_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        from polylogue.insights.resume import ResumeCandidate, ResumeOverlapBasis, ResumePathOverlap
-
-        candidate = ResumeCandidate(
-            logical_session_id="root",
-            canonical_session_date="2026-05-25",
-            last_message_at="2026-05-25T10:00:00+00:00",
-            title="Continue daemon work",
-            terminal_state="question_left",
-            workflow_shape="agentic_loop",
-            file_overlap=("polylogue/daemon/convergence.py",),
-            overlap_basis=ResumeOverlapBasis(
-                exact=(
-                    ResumePathOverlap(
-                        candidate_path="polylogue/daemon/convergence.py",
-                        recent_file="polylogue/daemon/convergence.py",
-                    ),
-                ),
-                dead_excluded=("polylogue/daemon/legacy.py",),
-            ),
-            score=0.91,
-            score_breakdown={"recency": 1.0, "file_overlap": 0.4},
-            brief_url="polylogue://resume/root",
-        )
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.find_resume_candidates = AsyncMock(return_value=(candidate,))
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["find_resume_candidates"].fn,
-                repo_path="/realm/project/polylogue",
-                cwd="/realm/project/polylogue/polylogue/daemon",
-                recent_files=("polylogue/daemon/convergence.py",),
-                limit=5,
-            )
-
-        payload = json.loads(result)
-        assert payload["total"] == 1
-        assert payload["candidates"][0]["logical_session_id"] == "root"
-        assert payload["candidates"][0]["score_breakdown"]["recency"] == 1.0
-        assert payload["candidates"][0]["overlap_basis"]["exact"][0]["candidate_path"] == (
-            "polylogue/daemon/convergence.py"
-        )
-        assert payload["candidates"][0]["overlap_basis"]["dead_excluded"] == ["polylogue/daemon/legacy.py"]
-        mock_poly.find_resume_candidates.assert_awaited_once()
-
-    def test_bulk_tag_validation_returns_structured_error(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        result = invoke_surface(
-            mcp_server._tool_manager._tools["bulk_tag_sessions"].fn,
-            session_ids=[],
-            tags=["x"],
-        )
-        body = _structured_error(result)
-        assert "at least one session_id" in body["message"], body
+        with _seeded_runtime_services(tmp_path / "archive"):
+            result = invoke_surface(mcp_server._tool_manager._tools["get"].fn, ref="session:missing")
+        body = json.loads(result)
+        assert body.get("resolved") is False, f"expected an unresolved ref-resolution payload, got {body!r}"
+        assert "session not found" in body.get("caveats", []), body
 
     def test_safe_call_sanitises_exception_into_typed_payload(
         self,
@@ -396,15 +184,6 @@ class TestToolErrorEnvelopes:
 # ---------------------------------------------------------------------------
 
 
-def _patch_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch the runtime query/archive seam to return zero results."""
-    mock_poly = make_polylogue_mock()
-    monkeypatch.setattr(
-        "polylogue.mcp.server._get_polylogue",
-        lambda: mock_poly,
-    )
-
-
 def _patch_empty_archive(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> None:
     """Point MCP query tools at a canonical initialized empty archive root."""
     initialize_active_archive_root(archive_root)
@@ -414,80 +193,52 @@ def _patch_empty_archive(monkeypatch: pytest.MonkeyPatch, archive_root: Path) ->
     )
 
 
+@contextmanager
+def _seeded_runtime_services(archive_root: Path) -> Iterator[None]:
+    """Install real RuntimeServices for a canonical empty archive root.
+
+    ``query``/``get``/``read``/``explain``/``context`` route through the
+    cached ``_get_polylogue()`` facade, which resolves its own config from
+    the installed runtime services rather than from ``_get_config()`` in
+    isolation -- patching only ``_get_config`` (as ``_patch_empty_archive``
+    does for the old per-tool tests) does not reach it.
+    """
+    from polylogue.config import Config
+    from polylogue.mcp import server_support
+    from polylogue.services import RuntimeServices
+
+    initialize_active_archive_root(archive_root)
+    services = RuntimeServices(
+        config=Config(
+            archive_root=archive_root,
+            render_root=archive_root.parent / "render",
+            sources=[],
+        ),
+    )
+    original = server_support._get_runtime_services()
+    server_support._set_runtime_services(services)
+    try:
+        yield
+    finally:
+        server_support._set_runtime_services(original)
+
+
 class TestNoResultEnvelopes:
-    """Search/list tools return their classified envelope on empty results."""
+    """The six cutover tools return their classified envelope on empty results."""
 
-    def test_search_no_results_returns_hits_envelope(
+    def test_query_no_results_returns_items_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        _patch_empty_query(monkeypatch)
-        _patch_empty_archive(monkeypatch, tmp_path / "archive")
-        with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
-            mock_filter_cls.return_value = make_mock_filter(results=[])
+        with _seeded_runtime_services(tmp_path / "archive"):
             result = invoke_surface(
-                mcp_server._tool_manager._tools["search"].fn,
-                query="no-such-thing-xyzzy",
+                mcp_server._tool_manager._tools["query"].fn,
+                expression="messages where text:no-such-thing-xyzzy",
                 limit=10,
             )
         body = _parse_object(result)
-        assert "hits" in body and isinstance(body["hits"], list) and body["hits"] == []
-        assert body.get("total") == 0
-
-    def test_list_sessions_no_results_returns_items_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        _patch_empty_query(monkeypatch)
-        _patch_empty_archive(monkeypatch, tmp_path / "archive")
-        with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
-            mock_filter_cls.return_value = make_mock_filter(results=[])
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["list_sessions"].fn,
-                limit=10,
-            )
-        body = _parse_object(result)
-        assert "items" in body and body["items"] == []
-        assert body.get("total") == 0
-
-    def test_neighbor_candidates_no_results_returns_items_envelope_with_limit(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.neighbor_candidates = AsyncMock(return_value=[])
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["neighbor_candidates"].fn,
-                query="probe",
-                limit=7,
-            )
-        body = _parse_object(result)
-        assert body.get("items") == []
-        assert body.get("total") == 0
-        assert body.get("limit") == 7
-
-    def test_session_tree_empty_returns_items_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session_tree = AsyncMock(return_value=[])
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["get_session_tree"].fn,
-                session_id="x:y",
-            )
-        body = _parse_object(result)
-        assert body.get("items") == []
+        assert "items" in body and isinstance(body["items"], list) and body["items"] == []
         assert body.get("total") == 0
 
 
@@ -581,16 +332,25 @@ class TestRegistrationDriftEvidence:
     @pytest.mark.parametrize(
         ("role", "must_contain", "must_omit"),
         [
-            ("read", frozenset({"search", "list_sessions"}), frozenset({"add_tag", "rebuild_index"})),
+            # Privileged write/judge/run/maintenance transaction tools are
+            # declared (PRIVILEGED_ALGEBRA in mcp/declarations/registry.py)
+            # but not yet registered by any role -- that is polylogue-t46.8.3,
+            # unstarted. Until then every role sees exactly the six read
+            # transactions and never the retired individual tool names.
+            (
+                "read",
+                frozenset({"query", "read", "get", "explain", "context", "status"}),
+                frozenset({"search", "add_tag", "rebuild_index", "write", "judge", "run", "maintenance"}),
+            ),
             (
                 "write",
-                frozenset({"search", "add_tag", "set_metadata"}),
-                frozenset({"rebuild_index", "rebuild_session_insights"}),
+                frozenset({"query", "read", "get", "explain", "context", "status"}),
+                frozenset({"search", "add_tag", "rebuild_index", "rebuild_session_insights"}),
             ),
             (
                 "admin",
+                frozenset({"query", "read", "get", "explain", "context", "status"}),
                 frozenset({"search", "add_tag", "rebuild_index", "rebuild_session_insights"}),
-                frozenset(),
             ),
         ],
     )
@@ -620,25 +380,16 @@ class TestRegistrationDriftEvidence:
 
 class TestAsyncEnvelopeCoverage:
     @pytest.mark.asyncio
-    async def test_async_search_no_results_envelope_emits_evidence(
+    async def test_async_query_no_results_envelope_emits_evidence(
         self,
         mcp_server: MCPServerUnderTest,
-        monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        _patch_empty_archive(monkeypatch, tmp_path / "archive")
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls,
-        ):
-            mock_poly = make_polylogue_mock()
-            mock_get_polylogue.return_value = mock_poly
-            mock_filter_cls.return_value = make_mock_filter(results=[])
-
+        with _seeded_runtime_services(tmp_path / "archive"):
             result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["search"].fn,
-                query="",
+                mcp_server._tool_manager._tools["query"].fn,
+                expression="messages where text:no-such-thing-xyzzy",
                 limit=5,
             )
         body = _parse_object(result)
-        assert "hits" in body and body["hits"] == []
+        assert "items" in body and body["items"] == []

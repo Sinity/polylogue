@@ -9,6 +9,7 @@ import pytest
 
 from polylogue.archive.query.transaction import (
     QueryContinuation,
+    QueryContinuationInvalidError,
     QueryContinuationStaleError,
     QueryTransactionRequest,
     archive_snapshot_epoch,
@@ -190,8 +191,8 @@ def test_validate_continuation_epoch_rejects_drifted_snapshot_frame(tmp_path: Pa
     assert raised.value.current_epoch == current
 
 
-def test_only_explicit_q1_tokens_can_bypass_empty_epoch(tmp_path: Path) -> None:
-    """Deleting ``archive_epoch`` from a current token cannot restore legacy behavior."""
+def test_q2_rejects_tampering_and_legacy_versions(tmp_path: Path) -> None:
+    """A q2 checksum and archive frame cannot be erased into a legacy replay."""
     request = QueryTransactionRequest(operation="query_units", arguments={}, page_size=1, archive_epoch="frame")
     token = QueryContinuation(request=request, result_ref=request.result_ref).encode()
     raw = json.loads(base64.urlsafe_b64decode(token[3:] + "=" * (-len(token[3:]) % 4)))
@@ -200,19 +201,11 @@ def test_only_explicit_q1_tokens_can_bypass_empty_epoch(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="invalid query continuation"):
         QueryContinuation.decode(tampered)
 
-    legacy = dict(raw)
-    legacy["v"] = 1
-    legacy_token = "q1." + base64.urlsafe_b64encode(json.dumps(legacy).encode()).decode().rstrip("=")
-    decoded = QueryContinuation.decode(legacy_token)
-    with ArchiveStore(tmp_path) as archive:
-        archive.begin_read_snapshot()
-        try:
-            validate_continuation_epoch(decoded.request, archive=archive)
-        finally:
-            archive.end_read_snapshot()
+    with pytest.raises(QueryContinuationInvalidError, match="unsupported query continuation version"):
+        QueryContinuation.decode("q1." + token[3:])
 
 
 @pytest.mark.parametrize("token", ["q1._", "q1.////", "q1.8J+SqQ"])
 def test_query_continuation_rejects_malformed_payloads_as_value_errors(token: str) -> None:
-    with pytest.raises(ValueError, match="invalid query continuation"):
+    with pytest.raises(ValueError, match="unsupported query continuation version"):
         QueryContinuation.decode(token)

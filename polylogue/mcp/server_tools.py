@@ -49,11 +49,6 @@ from polylogue.mcp.query_contracts import (
     build_session_query_request,
     session_query_request_signature,
 )
-from polylogue.mcp.server_context_tools import register_context_tools
-from polylogue.mcp.server_insight_tools import register_insight_tools
-from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
-from polylogue.mcp.server_mutation_tools import register_assertion_review_tools, register_mutation_tools
-from polylogue.mcp.server_support import role_allows
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
@@ -257,9 +252,9 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def query_units(
-        expression: str,
-        limit: MCPToolLimit = 10,
-        offset: MCPToolOffset = 0,
+        expression: str | None = None,
+        limit: MCPToolLimit | None = None,
+        offset: MCPToolOffset | None = None,
         origin: str | None = None,
         exclude_origin: str | None = None,
         tag: str | None = None,
@@ -298,9 +293,10 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
             from polylogue.archive.query.transaction import (
                 QueryArchiveEpochUnreadableError,
-                QueryContinuation,
+                QueryContinuationInvalidError,
                 QueryContinuationStaleError,
                 QueryTransaction,
+                decode_query_units_continuation,
                 query_units_transaction_request,
             )
             from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
@@ -308,21 +304,52 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             config = hooks.get_config()
             archive_root = mcp_archive_root(config)
             effective_expression = requested_expression
-            effective_limit = limit
-            effective_offset = offset
+            effective_limit = 10 if limit is None else limit
+            effective_offset = 0 if offset is None else offset
             continuation_request = None
             if continuation is not None:
                 try:
-                    continuation_request = QueryContinuation.decode(continuation).request
-                except ValueError as exc:
-                    return hooks.error_json(str(exc), code="invalid_continuation", tool="query_units")
-                if continuation_request.operation != "query_units":
-                    return hooks.error_json(
-                        "continuation belongs to a different query operation",
-                        code="invalid_continuation",
-                        tool="query_units",
-                    )
-                effective_expression = str(continuation_request.arguments.get("expression", requested_expression))
+                    if any(
+                        (
+                            requested_expression is not None,
+                            limit is not None,
+                            offset is not None,
+                            origin is not None,
+                            exclude_origin is not None,
+                            tag is not None,
+                            exclude_tag is not None,
+                            repo is not None,
+                            project is not None,
+                            has_type is not None,
+                            referenced_path is not None,
+                            cwd_prefix is not None,
+                            action is not None,
+                            exclude_action is not None,
+                            action_sequence is not None,
+                            action_text is not None,
+                            tool is not None,
+                            exclude_tool is not None,
+                            title is not None,
+                            since is not None,
+                            until is not None,
+                            has_tool_use,
+                            has_thinking,
+                            has_paste_evidence,
+                            typed_only,
+                            min_messages is not None,
+                            max_messages is not None,
+                            min_words is not None,
+                            max_words is not None,
+                            message_type is not None,
+                        )
+                    ):
+                        raise QueryContinuationInvalidError(
+                            "continuation requests must not override the original query parameters"
+                        )
+                    continuation_request = decode_query_units_continuation(continuation).request
+                except QueryContinuationInvalidError as exc:
+                    return hooks.error_json(str(exc), code=exc.code, tool="query_units")
+                effective_expression = str(continuation_request.arguments["expression"])
                 effective_offset = continuation_request.offset
                 effective_limit = continuation_request.page_size
                 session_filters = continuation_request.arguments.get("session_filters")
@@ -332,6 +359,8 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     )
             else:
                 session_filters = None
+                if effective_expression is None or not effective_expression.strip():
+                    return hooks.error_json("initial query requires a non-empty expression", code="invalid_query")
             try:
                 if parse_unit_source_expression(effective_expression) is None:
                     return hooks.error_json(
@@ -400,7 +429,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                                     archive,
                                     unit_request,
                                     execution_context=transaction.context,
-                                    transaction_request=transaction.request,
+                                    transaction_request=continuation_request or transaction.request,
                                 ),
                             )
                         )
@@ -1199,16 +1228,10 @@ def register_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
 
 
 def register_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
-    register_query_tools(mcp, hooks)
-    register_read_tools(mcp, hooks)
-    register_context_tools(mcp, hooks)
-    register_insight_tools(mcp, hooks)
-    if role_allows(hooks.role, "write"):
-        register_mutation_tools(mcp, hooks)
-    if role_allows(hooks.role, "review"):
-        register_assertion_review_tools(mcp, hooks)
-    if role_allows(hooks.role, "admin"):
-        register_maintenance_tools(mcp, hooks)
+    from polylogue.mcp.server_cutover import register_cutover_privileged_tools, register_cutover_read_tools
+
+    register_cutover_read_tools(mcp, hooks)
+    register_cutover_privileged_tools(mcp, hooks)
 
 
 __all__ = ["register_query_tools", "register_read_tools", "register_tools"]

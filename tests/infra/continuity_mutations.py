@@ -7,11 +7,28 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from devtools.continuity_replay import ArgumentMutator, DiscoveryMutator, ResponseMutator
+from polylogue.archive.query.transaction import QueryContinuation
 from polylogue.core.json import JSONDocument, require_json_document
 
 _INCIDENT_EXPRESSION = 'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
 _PRIOR_ART_MARKER = "prior-art-zebra-417"
 _CURRICULUM_MARKER = "incident-curriculum:wf_synthetic_841"
+
+
+def _query_expression(arguments: dict[str, object]) -> str | None:
+    """Read the test target from either an initial q2 call or its opaque resume."""
+    expression = arguments.get("expression")
+    if isinstance(expression, str):
+        return expression
+    continuation = arguments.get("continuation")
+    if not isinstance(continuation, str):
+        return None
+    try:
+        decoded = QueryContinuation.decode(continuation)
+    except ValueError:
+        return None
+    expression = decoded.request.arguments.get("expression")
+    return expression if isinstance(expression, str) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,9 +75,9 @@ def continuity_mutation_names() -> tuple[str, ...]:
 def _lost_request_state_continuation() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int) -> dict[str, object]:
         del invocation
-        expression = arguments.get("expression")
-        if tool == "query_units" and expression == _INCIDENT_EXPRESSION and "continuation" in arguments:
-            return {"expression": expression, "offset": 0, "limit": 17}
+        expression = _query_expression(arguments)
+        if tool == "query" and expression == _INCIDENT_EXPRESSION and "continuation" in arguments:
+            return {"expression": expression, "limit": 17}
         return arguments
 
     return ContinuityMutation(
@@ -78,7 +95,7 @@ def _capped_pseudo_total() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
         nonlocal mutated
         del invocation
-        if mutated or tool != "query_units" or arguments.get("expression") != _INCIDENT_EXPRESSION:
+        if mutated or tool != "query" or _query_expression(arguments) != _INCIDENT_EXPRESSION:
             return response_text
         payload = require_json_document(json.loads(response_text), context="capped pseudo-total response")
         payload["continuation"] = None
@@ -102,7 +119,7 @@ def _identical_call_topology_replay() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
         nonlocal first_response, target_calls
         del invocation
-        if tool != "query_units" or arguments.get("expression") != _INCIDENT_EXPRESSION:
+        if tool != "query" or _query_expression(arguments) != _INCIDENT_EXPRESSION:
             return response_text
         target_calls += 1
         if target_calls == 1:
@@ -131,10 +148,10 @@ def _hidden_grammar_discovery() -> ContinuityMutation:
         tools = changed.get("tools")
         if not isinstance(tools, dict):
             return changed
-        query_units = tools.get("query_units")
-        if not isinstance(query_units, dict):
+        query = tools.get("query")
+        if not isinstance(query, dict):
             return changed
-        schema = query_units.get("input_schema")
+        schema = query.get("input_schema")
         if not isinstance(schema, dict):
             return changed
         properties = schema.get("properties")
@@ -154,8 +171,8 @@ def _hidden_grammar_discovery() -> ContinuityMutation:
 def _missing_source_coverage() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
         del invocation
-        expression = arguments.get("expression")
-        if tool != "query_units" or not isinstance(expression, str) or _PRIOR_ART_MARKER not in expression:
+        expression = _query_expression(arguments)
+        if tool != "query" or not isinstance(expression, str) or _PRIOR_ART_MARKER not in expression:
             return response_text
         payload = require_json_document(json.loads(response_text), context="missing source coverage response")
         if expression.endswith(" | count"):
@@ -181,8 +198,8 @@ def _missing_source_coverage() -> ContinuityMutation:
 def _unreasonable_query_classification() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
         del invocation
-        expression = arguments.get("expression")
-        if tool != "query_units" or not isinstance(expression, str) or _CURRICULUM_MARKER not in expression:
+        expression = _query_expression(arguments)
+        if tool != "query" or not isinstance(expression, str) or _CURRICULUM_MARKER not in expression:
             return response_text
         return response_text.replace(
             "case:sessions-only-query query_shape:sessions-only-query physical_size:bounded "

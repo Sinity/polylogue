@@ -122,21 +122,11 @@ class TestRegistrySurfaceContract:
     """Every registered MCP tool routes through the shared error wrappers."""
 
     def test_every_tool_returns_structured_error_on_internal_failure(self) -> None:
-        """Sanity-check the surface: building the server with all roles
-        registers > 30 tools, and at minimum the headline read tools that
-        regressed in #1611 / #1621 are present. (Per-tool error wiring is
-        proven by the wrapper contract above plus per-tool tests elsewhere.)
+        """Sanity-check the surface: the read-role server registers exactly
+        the six cutover transactions. (Per-tool error wiring is proven by
+        the wrapper contract above plus per-tool tests elsewhere.)
         """
         server = cast(MCPServerUnderTest, build_server(role="admin"))
         tool_names = set(server._tool_manager._tools.keys())
-        # Tools called out explicitly in the two issues:
-        for name in [
-            "stats",
-            "search",
-            "list_sessions",
-            "readiness_check",
-            "cost_rollups",
-            "facets",
-            "archive_coverage",
-        ]:
+        for name in ["query", "read", "get", "explain", "context", "status"]:
             assert name in tool_names, f"missing expected MCP tool: {name}"

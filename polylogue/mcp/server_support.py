@@ -272,6 +272,10 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
         if hasattr(payload, "next_offset"):
             offset = getattr(payload, "offset", 0)
             updates["next_offset"] = offset + count
+        if hasattr(payload, "continuation"):
+            # A storage continuation can point after rows the byte envelope
+            # omitted. The envelope owns the only valid advancing cursor.
+            updates["continuation"] = None
         if item_field == "hits":
             # The original cursor may point after hits removed by the budget
             # trim. The budget envelope supplies an offset continuation for
@@ -293,32 +297,26 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
     context = _response_context_var.get()
     page = _bounded_item_page(payload, exclude_none=exclude_none)
     continuation = _narrow_continuation(context, consumed=page[1] if page is not None else None)
-    if context is not None and context.tool == "query_units":
-        # The typed unit envelope has the authoritative q1 token.  Rebase it
-        # to the prefix actually retained by the MCP budget wrapper; the
-        # original token may point past rows omitted from the response.
-        raw_continuation = body.get("continuation")
-        if isinstance(raw_continuation, str) and page is not None:
-            try:
-                from polylogue.archive.query.transaction import QueryContinuation
+    if context is not None and context.tool in {"query", "query_units"} and page is not None:
+        # The executor attaches the framed request outside its serialized
+        # payload. Rebase from it rather than a storage continuation: even a
+        # final storage page may overflow the smaller MCP byte budget.
+        try:
+            from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
 
-                decoded = QueryContinuation.decode(raw_continuation)
-                raw_original_items: object = getattr(payload, "items", None)
-                if isinstance(raw_original_items, (tuple, list)):
-                    original_items: tuple[object, ...] | list[object] = raw_original_items
-                else:
-                    raw_original_items = getattr(payload, "messages", ())
-                    original_items = raw_original_items if isinstance(raw_original_items, (tuple, list)) else ()
-                narrowed = decoded.request.next(offset=decoded.request.offset - len(original_items) + page[1])
-                continuation = {
-                    "tool": "query_units",
-                    "arguments": {
-                        "continuation": QueryContinuation(request=narrowed, result_ref=decoded.result_ref).encode()
-                    },
-                    "reason": "The original query page exceeded the MCP response budget; continue from the returned prefix.",
-                }
-            except ValueError:
-                continuation = None
+            request = getattr(payload, "_transaction_request", None)
+            if not isinstance(request, QueryTransactionRequest):
+                raise ValueError("query payload did not retain its transaction request")
+            narrowed = request.next(offset=request.offset + page[1])
+            continuation = {
+                "tool": context.tool,
+                "arguments": {
+                    "continuation": QueryContinuation(request=narrowed, result_ref=request.result_ref).encode()
+                },
+                "reason": "The original query page exceeded the MCP response budget; continue from the returned prefix.",
+            }
+        except ValueError:
+            continuation = None
     envelope = {
         "ok": True,
         "status": "response_budget_exceeded",

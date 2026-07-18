@@ -28,7 +28,7 @@ def test_oversized_item_envelope_returns_useful_advancing_page() -> None:
         next_offset=20,
     )
 
-    with _response_context("query_units", {"limit": 20, "offset": 0, "expression": "actions"}):
+    with _response_context("read", {"limit": 20, "offset": 0, "ref": "session:demo"}):
         result = _json_payload(payload)
 
     body = json.loads(result)

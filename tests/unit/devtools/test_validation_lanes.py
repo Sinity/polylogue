@@ -296,7 +296,6 @@ class TestCommandConstruction:
         assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_insights.py" in cmd
         assert "tests/unit/core/test_facade_api.py" in cmd
-        assert "tests/unit/mcp/test_tool_contracts.py" in cmd
         assert "tests/integration/test_health.py" in cmd
 
     def test_semantic_insight_normalization_lane_uses_normalization_toolchain_suite(self) -> None:
@@ -352,7 +351,7 @@ class TestCommandConstruction:
     def test_inference_tier_contracts_lane_uses_inference_suite(self) -> None:
         cmd = build_lane_command(LANES["inference-tier-contracts"])
         assert cmd[0] == "pytest"
-        assert "tests/unit/mcp/test_tool_contracts.py" in cmd
+        assert "tests/unit/cli/test_insights.py" in cmd
         assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
 
     def test_mixed_consumer_contracts_lane_uses_consumer_suite(self) -> None:
@@ -402,7 +401,7 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["probabilistic-enrichment-contracts"])
         assert cmd[0] == "pytest"
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
-        assert "tests/unit/mcp/test_tool_contracts.py" in cmd
+        assert "tests/unit/cli/test_insights.py" in cmd
 
     def test_cleanup_contracts_lane_uses_health_and_check_suite(self) -> None:
         cmd = build_lane_command(LANES["cleanup-contracts"])
