@@ -1,11 +1,31 @@
 {
+  "_styles-BlEq7VFu.js": {
+    "file": "styles-BlEq7VFu.js",
+    "name": "styles",
+    "css": [
+      "styles-Xclms7p_.css"
+    ]
+  },
+  "_styles-Xclms7p_.css": {
+    "file": "styles-Xclms7p_.css",
+    "src": "_styles-Xclms7p_.css"
+  },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-CxKzwy2z.js",
+    "file": "archive-overview-LIQlnI8E.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
-    "css": [
-      "archive-overview-Ce5VissO.css"
+    "imports": [
+      "_styles-BlEq7VFu.js"
+    ]
+  },
+  "src/entrypoints/observability.tsx": {
+    "file": "observability-CV8jsxO2.js",
+    "name": "observability",
+    "src": "src/entrypoints/observability.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-BlEq7VFu.js"
     ]
   }
 }

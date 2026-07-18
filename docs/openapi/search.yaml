@@ -3090,6 +3090,13 @@ x-polylogue-route-contracts:
   response_contract: semantic archive overview HTML
   notes: SSR-first WebUI v2 strangler mount; Preact enhances only bounded continuation controls.
 - method: GET
+  pattern: /app/observability
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: semantic observability HTML
+  notes: SSR-first registry and status projection; credentials protect embedded insight evidence when configured.
+- method: GET
   pattern: /app/assets/:asset
   kind: browser_shell
   stability: shell_supported
@@ -3195,6 +3202,20 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: credential_if_configured
   response_contract: Daemon status JSON
+- method: GET
+  pattern: /api/webui/observability
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: WebUI observability projection
+  notes: Registry descriptor fields, bounded rows, and the status-component snapshot adapter.
+- method: GET
+  pattern: /api/webui/freshness
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: NamedSourceFreshness projection
+  notes: Requires one explicit source path and rejects archive-wide scans.
 - method: GET
   pattern: /api/overview
   kind: read_query
@@ -3390,6 +3411,13 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: credential_if_configured
   response_contract: session insights envelope
+- method: GET
+  pattern: /api/webui/insights/:name
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: Single WebUI insight descriptor projection
+  notes: The daemon owns query construction and descriptor accessors; clients receive a bounded panel only.
 - method: GET
   pattern: /api/raw_artifacts/:id
   kind: read_detail

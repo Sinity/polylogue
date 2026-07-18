@@ -302,6 +302,8 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/health/check", "_handle_health_check"),
         _static_get_route("/api/health", "_handle_health"),
         _static_get_route("/api/status", "_handle_status", passes_params=True),
+        _static_get_route("/api/webui/observability", "_handle_webui_observability"),
+        _static_get_route("/api/webui/freshness", "_handle_webui_source_freshness", passes_params=True),
         _static_get_route("/api/overview", "_handle_overview"),
         _static_get_route("/api/dev-loop", "_handle_dev_loop"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
@@ -345,6 +347,7 @@ def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
         _parameterized_get_route("/api/sessions/:id/similar", "_handle_get_session_similar", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/attachments", "_handle_get_session_attachments"),
         _parameterized_get_route("/api/insights/sessions/:id", "_handle_get_session_insights", passes_params=True),
+        _parameterized_get_route("/api/webui/insights/:name", "_handle_webui_insight", passes_params=True),
         _parameterized_get_route("/api/raw_artifacts/:id", "_handle_get_raw_artifact"),
         _parameterized_get_route("/api/maintenance/status/:id", "_handle_maintenance_status"),
     )
@@ -423,6 +426,7 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
     routes: list[tuple[RouteMethod, str]] = [
         ("GET", "/"),
         ("GET", "/app"),
+        ("GET", "/app/observability"),
         ("GET", "/app/assets/:asset"),
         ("GET", "/s/:session_id"),
         ("GET", "/w/:mode"),
@@ -1578,6 +1582,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return
             self._serve_webui_archive_overview()
             return
+        if path == ["app", "observability"]:
+            if not self._check_auth():
+                return
+            self._serve_webui_observability()
+            return
         if len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2]):
             if not self._check_shell_bootstrap_access():
                 return
@@ -1981,6 +1990,50 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_webui_html(HTTPStatus.OK, render_archive_overview_page(bundle, page))
 
+    def _serve_webui_observability(self) -> None:
+        """Serve the registry-driven observability SSR page."""
+        from polylogue.daemon.webui import (
+            WebUIAssetBundle,
+            WebUIAssetError,
+            build_observability_payload,
+            render_observability_page,
+            render_webui_asset_error,
+        )
+
+        bundle: WebUIAssetBundle | None = None
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+            payload = self._sync_run(lambda poly: build_observability_payload(poly, get_status_snapshot_payload()))
+            if not isinstance(payload, Mapping):
+                raise RuntimeError("observability projection returned an invalid payload")
+        except WebUIAssetError as exc:
+            logger.error("webui asset discovery failed: %s", exc)
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+        except Exception:
+            logger.exception("webui observability render failed")
+            if bundle is None:
+                self._send_webui_html(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    render_webui_asset_error("Observability assets are temporarily unavailable."),
+                )
+                return
+            self._send_webui_html(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                render_observability_page(
+                    bundle,
+                    {
+                        "contract_version": 1,
+                        "status": {"adapter": "unavailable", "components": []},
+                        "insights": [],
+                    },
+                    notice="Observability data is temporarily unavailable.",
+                ),
+            )
+            return
+        assert bundle is not None
+        self._send_webui_html(HTTPStatus.OK, render_observability_page(bundle, payload))
+
     def _serve_webui_asset(self, name: str) -> None:
         from polylogue.daemon.webui import WebUIAssetBundle, WebUIAssetError
 
@@ -2338,6 +2391,58 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self._send_json(HTTPStatus.OK, status, extra_headers={"ETag": etag})
+
+    @daemon_safe_handler
+    def _handle_webui_observability(self) -> None:
+        """Return daemon-projected status and descriptor-backed insight panels."""
+        from polylogue.daemon.webui import build_observability_payload
+
+        payload = self._sync_run(lambda poly: build_observability_payload(poly, get_status_snapshot_payload()))
+        self._send_json(HTTPStatus.OK, payload)
+
+    @daemon_safe_handler
+    def _handle_webui_insight(self, name: str, params: dict[str, list[str]]) -> None:
+        """Return one bounded descriptor panel without a browser query model."""
+        from polylogue.daemon.webui import build_observability_payload
+        from polylogue.insights.registry import INSIGHT_REGISTRY
+
+        descriptor = INSIGHT_REGISTRY.get(name)
+        if descriptor is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        payload = self._sync_run(
+            lambda poly: build_observability_payload(
+                poly,
+                get_status_snapshot_payload(),
+                registry={name: descriptor},
+            )
+        )
+        self._send_json(HTTPStatus.OK, payload)
+
+    @daemon_safe_handler
+    def _handle_webui_source_freshness(self, params: dict[str, list[str]]) -> None:
+        """Project one operator-named source with the bounded freshness reader."""
+        source = self._get_param(params, "source")
+        archive_root = _web_reader_archive_root()
+        if not source:
+            self._send_error(HTTPStatus.BAD_REQUEST, "missing_source", "source is required")
+            return
+        if archive_root is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+            return
+        from polylogue.archive.query.source_freshness import project_named_source_freshness
+        from polylogue.archive.query.source_freshness_surfaces import source_freshness_status_payload
+
+        freshness = project_named_source_freshness(archive_root, Path(source))
+        payload: dict[str, object] = dict(source_freshness_status_payload(freshness))
+        payload.update(
+            {
+                "observed_at": freshness.observed_at,
+                "cursor_age_ms": freshness.cursor.age_ms,
+                "fts_checked_at": freshness.fts.checked_at,
+            }
+        )
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_overview(self) -> None:

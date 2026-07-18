@@ -95,13 +95,15 @@ classified with explicit auth and response posture.
 
 | Route class | Auth policy | Examples |
 |-------------|-------------|----------|
-| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /s/:id`, `GET /p`, `GET /a` |
+| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /s/:id`, `GET /p`, `GET /a` |
+| WebUI observability page | bearer or scoped web credential when configured | `GET /app/observability` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
 | Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
 | User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
 | Browser-accessible user-state mutations | bearer or scoped web credential plus exact-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id` |
 | Archive control mutations | machine bearer when configured plus exact-origin browser request | `POST /api/reset`, `POST /api/ingest`, `POST /api/maintenance/run` |
 | Observability ingest | explicit config flag plus loopback-or-bearer policy | `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` |
+| WebUI observability reads | bearer or scoped web credential when configured | `GET /api/webui/observability`, `GET /api/webui/insights/:name`, `GET /api/webui/freshness?source=...` |
 
 User overlay mutation routes return the shared mutation result envelope
 (`status`, `operation`, `affected_count`, and resource/target identity fields).
@@ -120,6 +122,37 @@ Health check with database statistics.
 
 Full daemon status including component state, source lag, ingestion throughput,
 FTS readiness, and insight freshness.
+
+### GET /app/observability
+
+Server-rendered WebUI v2 observability page. It displays descriptor-driven
+insight panels and daemon component status without requiring JavaScript;
+local Preact assets add refresh and exact-source lookup controls. Because the
+HTML embeds bounded insight evidence, it requires a bearer or scoped
+first-party credential when the daemon is configured with credentials.
+
+### GET /api/webui/observability
+
+Authenticated WebUI projection containing bounded insight rows generated from
+`INSIGHT_REGISTRY` and a status-component adapter. The adapter consumes a
+future `StatusComponentSnapshot` directly when available; otherwise it maps
+today's `component_readiness` payload. A component is independently rendered
+as fresh, stale, refreshing, timed out, unavailable, or degraded, so one
+unavailable component never conceals healthy siblings.
+
+### GET /api/webui/insights/:name
+
+Authenticated bounded projection for one registered insight descriptor. The
+daemon owns the descriptor accessor and typed query construction; callers do
+not submit client-side aggregate or filter logic.
+
+### GET /api/webui/freshness
+
+Authenticated exact-source freshness receipt. It requires `source` and uses
+the bounded named-source projection to report source/cursor, raw, parse,
+index, FTS, and insight stages. Excluded, cursor-ahead, and broken-head states
+remain explicit operational attention states rather than empty or failed
+counts.
 
 ### GET /api/sessions
 
