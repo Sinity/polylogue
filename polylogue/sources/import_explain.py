@@ -23,7 +23,14 @@ from polylogue.sources.decoder_zip import (
     open_bounded_zip_entry,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.sources.dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
+from polylogue.sources.dispatch import (
+    GROUP_PROVIDERS,
+    detect_provider,
+    is_jsonl_source_path,
+    is_stream_record_provider,
+    parse_payload,
+    parse_stream_payload,
+)
 from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_walk import _resolve_source_paths
@@ -600,12 +607,21 @@ def _explain_bytes(
         )
 
     try:
-        sessions = parse_payload(
-            detected_provider,
-            payload,
-            Path(stream_name).stem,
-            source_path=source_path,
-        )
+        if is_stream_record_provider(source_path, detected_provider):
+            stream_payloads = payload if isinstance(payload, list) else [payload]
+            sessions = parse_stream_payload(
+                detected_provider,
+                stream_payloads,
+                Path(stream_name).stem,
+                source_path=source_path,
+            )
+        else:
+            sessions = parse_payload(
+                detected_provider,
+                payload,
+                Path(stream_name).stem,
+                source_path=source_path,
+            )
     except Exception as exc:
         return _skipped_entry(
             Path(source_path),
@@ -618,13 +634,17 @@ def _explain_bytes(
 
     fidelity = None
     if detected_provider is Provider.HERMES:
-        atif_session = next(
-            (session for session in sessions if "hermes:atif-trajectory" in session.ingest_flags),
+        observer_session = next(
+            (
+                session
+                for session in sessions
+                if {"hermes:atif-trajectory", "hermes:atof-observer"}.intersection(session.ingest_flags)
+            ),
             None,
         )
         fidelity = _fidelity_payload(
-            hermes_spans.import_fidelity_declaration(atif_session)
-            if atif_session is not None
+            hermes_spans.import_fidelity_declaration(observer_session)
+            if observer_session is not None
             else hermes_state.import_fidelity_declaration(sessions, acquisition_method="json_fallback")
         )
     return ImportExplainEntryPayload(

@@ -404,10 +404,16 @@ def _hermes_spec() -> OriginSpec:
         Origin.HERMES_SESSION,
         provider=Provider.HERMES,
         tightness=20,
-        discovery="Hermes state database and span document admission.",
-        acquisition_modes=("state-db", "atif-spans"),
+        discovery="Hermes state database plus NeMo Relay ATIF/ATOF observer admission.",
+        acquisition_modes=("state-db", "atif-spans", "atof-jsonl"),
         parser_paths=("polylogue/sources/parsers/hermes_state.py", "polylogue/sources/parsers/hermes_spans.py"),
-        fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
+        fixture_paths=(
+            "tests/unit/sources/test_parsers_local_agent.py",
+            "tests/unit/sources/parsers/test_hermes_spans.py",
+            "tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json",
+            "tests/fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.jsonl",
+        ),
+        stream_parser_path="polylogue/sources/parsers/hermes_spans.py:parse_atof_stream",
     )
 
 

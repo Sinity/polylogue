@@ -13,11 +13,12 @@ from pathlib import Path
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.sources.dispatch import detect_provider, parse_payload
+from polylogue.sources.dispatch import detect_provider, parse_payload, parse_stream_payload
 from polylogue.sources.import_explain import explain_import_path
 from polylogue.sources.parsers import hermes_spans
 
 REAL_ATIF_FIXTURE = Path(__file__).parents[3] / "fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json"
+REAL_ATOF_FIXTURE = Path(__file__).parents[3] / "fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.jsonl"
 
 
 def _steps() -> list[JSONDocument]:
@@ -82,6 +83,97 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.capabilities["llm_request_spans"].status == "exact"
     assert fidelity.capabilities["tool_execution_spans"].status == "absent"
+
+
+def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_content() -> None:
+    """Production dependencies: JSONL detection, stream dispatch, session grouping.
+
+    Mutation: remove Hermes from the stream providers, classify this envelope as
+    a generic hook sidecar, or copy ATOF data blobs into events. This test's
+    detector, produced-session, semantic-count, and payload-hygiene assertions
+    fail through the real import route.
+    """
+    records = [json.loads(line) for line in REAL_ATOF_FIXTURE.read_text().splitlines()]
+    assert detect_provider(records) is Provider.HERMES
+    assert hermes_spans.looks_like_atof_payload(records[0])
+
+    sessions = parse_stream_payload(
+        Provider.HERMES,
+        iter(records),
+        "fallback-id",
+        source_path=str(REAL_ATOF_FIXTURE),
+    )
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert session.provider_session_id == "observer:real-nemo-relay-session-redacted"
+    events = session.session_events
+    assert sum(event.event_type == "hermes_llm_request_span" for event in events) == 3
+    assert sum(event.event_type == "hermes_tool_execution_span" for event in events) == 2
+    assert sum(event.event_type == "hermes_decision_span" for event in events) == 2
+    assert sum(event.event_type == "hermes_subagent_span" for event in events) == 1
+    assert sum(event.event_type == "hermes_error_span" for event in events) == 1
+    assert sum(event.event_type == "hermes_observer_span" for event in events) == 3
+    assert "<redacted>" not in repr([event.payload for event in events])
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.acquisition_method == "jsonl_stream"
+    assert fidelity.capabilities["llm_request_spans"].status == "exact"
+    assert fidelity.capabilities["tool_execution_spans"].status == "exact"
+    assert fidelity.capabilities["decision_points"].status == "exact"
+    assert fidelity.capabilities["error_taxonomy"].status == "exact"
+    assert fidelity.capabilities["subagent_delegation"].status == "exact"
+
+
+def test_atof_stream_is_idempotent_across_append_replay_and_keeps_scope_edges() -> None:
+    records = [json.loads(line) for line in REAL_ATOF_FIXTURE.read_text().splitlines()]
+    once = parse_stream_payload(Provider.HERMES, iter(records), "fallback-id")
+    replayed = parse_stream_payload(Provider.HERMES, iter([*records, *records]), "fallback-id")
+    assert [session.model_dump(mode="json") for session in replayed] == [
+        session.model_dump(mode="json") for session in once
+    ]
+
+    tool_phases = [
+        event.payload["scope_category"]
+        for event in once[0].session_events
+        if event.event_type == "hermes_tool_execution_span"
+    ]
+    assert tool_phases == ["start", "end"]
+
+
+def test_atof_unmatched_response_and_turn_context_are_normalized_not_dropped() -> None:
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "uuid": "turn-1",
+            "timestamp": "2026-07-18T09:00:00Z",
+            "name": "hermes.turn.start",
+            "metadata": {"session_id": "session-1"},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "uuid": "unmatched-1",
+            "timestamp": "2026-07-18T09:00:01Z",
+            "name": "hermes.api.response.unmatched",
+            "metadata": {"session_id": "session-1"},
+        },
+    ]
+    session = hermes_spans.parse_atof_stream(records, "fallback-id")[0]
+    assert [event.event_type for event in session.session_events[1:]] == [
+        "hermes_context_span",
+        "hermes_error_span",
+    ]
+    assert session.session_events[-1].payload["outcome"] == "unmatched_response"
+
+
+def test_import_explain_uses_atof_stream_fidelity_for_a_real_fixture() -> None:
+    entry = explain_import_path(REAL_ATOF_FIXTURE, source_name="hermes").entries[0]
+    assert entry.detected_provider == "hermes"
+    assert entry.parser == "hermes"
+    assert entry.produced.sessions == 1
+    assert entry.fidelity is not None
+    assert entry.fidelity.acquisition_method == "jsonl_stream"
 
 
 def test_import_explain_uses_atif_fidelity_for_a_real_fixture() -> None:
