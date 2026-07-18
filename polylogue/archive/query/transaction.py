@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 from polylogue.archive.query.execution_control import (
     InterruptibleSQLiteRead,
@@ -27,6 +27,37 @@ from polylogue.archive.query.execution_control import (
 )
 
 T = TypeVar("T")
+
+# Shared protocol vocabulary for describing what a bounded query result does and
+# does not cover. Discovery surfaces import these aliases so coverage and total
+# claims use the same words as transaction/page contracts.
+QueryCoverageClass = Literal[
+    "exhaustive",
+    "top-k",
+    "sample",
+    "aggregate",
+    "bounded-context",
+    "recursive-page",
+]
+QueryTotalSemantics = Literal["exact", "qualified", "aggregate", "not-applicable"]
+QueryContinuationSemantics = Literal[
+    "none",
+    "cursor-or-offset",
+    "ranked-frontier",
+    "recursive-cursor",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class QueryResultSemanticsContract:
+    """Truthful coverage, total, and continuation claims for one result class."""
+
+    coverage: QueryCoverageClass
+    total: QueryTotalSemantics
+    continuation: QueryContinuationSemantics
+    phrase: str
+
+
 _TOKEN_VERSION = 1
 
 if TYPE_CHECKING:

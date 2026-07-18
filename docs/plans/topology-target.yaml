@@ -312,8 +312,13 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/completions.py
-    loc: 632
+    loc: 695
     target: polylogue/archive/query/completions.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/discovery.py
+    loc: 1569
+    target: polylogue/archive/query/discovery.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/evaluator.py
@@ -447,12 +452,12 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/transaction.py
-    loc: 318
+    loc: 349
     target: polylogue/archive/query/transaction.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 564
+    loc: 565
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -771,7 +776,7 @@ files:
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 571
+    loc: 586
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -1748,7 +1753,7 @@ files:
     target: polylogue/demo/workspace.py
     owner: stable
   - path: polylogue/hooks/__init__.py
-    loc: 880
+    loc: 882
     target: polylogue/hooks/__init__.py
     owner: stable
   - path: polylogue/insights/__init__.py
@@ -2158,11 +2163,11 @@ files:
     target: polylogue/mcp/server_personal_state_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
-    loc: 556
+    loc: 563
     target: polylogue/mcp/server_prompts.py
     owner: stable
   - path: polylogue/mcp/server_resources.py
-    loc: 357
+    loc: 395
     target: polylogue/mcp/server_resources.py
     owner: stable
   - path: polylogue/mcp/server_support.py

@@ -112,6 +112,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
 | `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries. |
+| `devtools render query-discovery` | Render parser-gated query discovery examples and result semantics into docs/search.md. |
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 | `devtools render visual-tapes` | Write VHS tape files and optionally capture GIFs for the default visual evidence specs. |

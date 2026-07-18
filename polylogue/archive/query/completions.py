@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
@@ -32,11 +32,16 @@ from polylogue.archive.query.metadata import (
 from polylogue.operations.action_contracts import ACTION_CONTRACTS, CliActionContract
 from polylogue.surfaces.action_affordances import InputUnit
 
+if TYPE_CHECKING:
+    from polylogue.archive.query.discovery import QueryDiscoveryRoute
+
 CompletionKind = str
 CandidateProvider = Callable[[], list["QueryCompletionCandidate"]]
 QueryFieldCompletionSyntax = Literal["compact", "session-boolean"]
 
 QUERY_COMPLETION_KINDS: tuple[str, ...] = (
+    "example",
+    "error",
     "field",
     "structural-unit",
     "structural-field",
@@ -75,6 +80,7 @@ class QueryCompletionCandidate:
     payload_model: str | None = None
     unsupported_reason: str | None = None
     preview_command: str | None = None
+    route: QueryDiscoveryRoute | None = None
 
     def to_payload(self) -> dict[str, object]:
         """Return the structured candidate payload for machine consumers."""
@@ -95,6 +101,7 @@ class QueryCompletionCandidate:
             "payload_model": self.payload_model,
             "unsupported_reason": self.unsupported_reason,
             "preview_command": self.preview_command,
+            "route": self.route,
         }
 
 
@@ -510,6 +517,62 @@ def _action_description(contract: CliActionContract) -> str:
     return "; ".join(pieces)
 
 
+def query_example_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return parser-gated discovery examples for non-shell clients."""
+
+    from polylogue.archive.query.discovery import query_discovery_examples, result_semantics_teaching
+
+    current = incomplete.strip().lower()
+    rows = query_discovery_examples() if current else query_discovery_examples(featured=True)
+    candidates: list[QueryCompletionCandidate] = []
+    for row in rows:
+        haystack = " ".join((row.key, row.expression, row.answers, row.unit_source)).lower()
+        if current and current not in haystack:
+            continue
+        semantics = result_semantics_teaching(row.result_semantics)
+        projection = ", ".join(row.projection_columns)
+        candidates.append(
+            QueryCompletionCandidate(
+                value=row.expression,
+                insert=row.expression,
+                display=row.expression,
+                kind="query-example",
+                group=f"{row.result_semantics} query examples",
+                description=(f"{row.answers} {semantics.phrase} Projection: {projection}. Cost: {row.cost_class}."),
+                source="QUERY_DISCOVERY_EXAMPLES",
+                payload_model=row.unit_source,
+                route=row.route,
+            )
+        )
+    return candidates[:50]
+
+
+def query_error_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return common rejected forms with production diagnostics and corrections."""
+
+    from polylogue.archive.query.discovery import QUERY_DISCOVERY_NEGATIVE_EXAMPLES
+
+    current = incomplete.strip().lower()
+    candidates: list[QueryCompletionCandidate] = []
+    for row in QUERY_DISCOVERY_NEGATIVE_EXAMPLES:
+        haystack = " ".join((row.key, row.expression, row.diagnostic, row.corrected_form)).lower()
+        if current and current not in haystack:
+            continue
+        candidates.append(
+            QueryCompletionCandidate(
+                value=row.expression,
+                insert=row.corrected_form,
+                display=f"{row.expression} → {row.corrected_form}",
+                kind="query-error-example",
+                group="rejected query examples",
+                description=f"Rejected: {row.diagnostic} Corrected form: {row.corrected_form}.",
+                source="QUERY_DISCOVERY_NEGATIVE_EXAMPLES",
+                unsupported_reason=row.diagnostic,
+            )
+        )
+    return candidates[:50]
+
+
 def query_action_candidates(
     incomplete: str,
     *,
@@ -551,6 +614,10 @@ def query_completion_candidates(
 ) -> list[QueryCompletionCandidate]:
     """Return completion candidates for a shared query-completion request."""
 
+    if kind == "example":
+        return query_example_candidates(incomplete)
+    if kind == "error":
+        return query_error_candidates(incomplete)
     if kind == "field":
         return query_field_candidates(incomplete)
     if kind == "structural-unit":
@@ -620,6 +687,8 @@ __all__ = [
     "query_completion_payload",
     "query_count_operator_candidates",
     "query_date_operator_candidates",
+    "query_error_candidates",
+    "query_example_candidates",
     "query_field_candidates",
     "query_numeric_operator_candidates",
     "query_pipeline_stage_candidates",

@@ -44,13 +44,13 @@ Usage: polylogue [OPTIONS] [COMMAND] [ARGS]...
 
   Combined filters:
       polylogue --referenced-path README.md find 'repo:polylogue' then read
-      polylogue find 'actions where tool:bash AND text:pytest' then read --view messages
+      polylogue find 'actions where tool:shell AND command:pytest' then read --view messages
       polylogue --action-sequence file_read,file_edit,shell find 'repo:polylogue' then analyze
       polylogue --action-text "pytest -q" find 'repo:polylogue' then read
       polylogue find 'pytest -q tests/unit/core/test_semantic_facts.py' --retrieval-lane actions
       polylogue --origin claude-code-session --since 2026-01-01 find 'repo:polylogue' then analyze --by repo --format json
-      polylogue find 'actions where action:file_edit AND path:polylogue/cli' then read --view messages
-      polylogue find 'near:"sqlite locking bug in parser"' then read
+      polylogue find 'actions where session.repo:example-repo AND action:file_edit AND path:src/query' then read --view messages
+      polylogue find 'near:"semantic search"' then read
 
   Modifiers (write operations):
       polylogue find "urgent" then mark --tag-add review
