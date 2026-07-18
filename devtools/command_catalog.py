@@ -673,6 +673,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-authority-restart-proof",
+        "workspace",
+        "Prove raw-authority crash recovery and conserved fixed-point convergence.",
+        "devtools.raw_authority_restart_proof",
+        use_when=(
+            "Exercise fresh synthetic production-format archives across before-commit, "
+            "after-commit/pre-finalization, and resumed-batch crash boundaries; then audit "
+            "durable conservation and two matching quiescent dry-run censuses."
+        ),
+        examples=(
+            "devtools workspace raw-authority-restart-proof --json",
+            "devtools workspace raw-authority-restart-proof --workdir .cache/raw-restart-proof --keep --json",
+        ),
+    ),
+    CommandSpec(
         "workspace temporal-read-profile",
         "workspace",
         "Measure read --view temporal phase timings on the active archive.",
