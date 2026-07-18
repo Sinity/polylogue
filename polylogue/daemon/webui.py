@@ -458,8 +458,14 @@ def render_session_read_page(
     origin = str(session.get("origin") or "unknown-export")
     all_messages = session.get("messages")
     messages = all_messages if isinstance(all_messages, list) else []
-    total_messages = len(messages)
+    # The caller already bounds ``messages`` to SESSION_READ_MESSAGE_LIMIT at
+    # the storage layer (read_session_page, polylogue-07g6), so this is
+    # already the first page, not a slice of a larger in-memory list.
+    # ``message_count`` carries the TRUE composed total either way.
     first_page = messages[:SESSION_READ_MESSAGE_LIMIT]
+    total_messages = session.get("message_count")
+    if not isinstance(total_messages, int):
+        total_messages = len(messages)
     has_more = total_messages > len(first_page)
     lineage_banner = _render_lineage_banner(session)
     rendered_messages = (

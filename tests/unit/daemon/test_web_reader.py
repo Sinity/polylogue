@@ -2467,6 +2467,64 @@ class TestWebUIV2:
         assert 'data-outcome-state="failed"' in html_body
         assert "exit 2" in html_body
 
+    def test_session_read_page_bounds_first_paint_and_pages_the_remainder(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """First paint of a large session composes only the first page, but
+        reports the TRUE total, and the "load more" API reaches messages
+        beyond it (polylogue-07g6)."""
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        message_count = 45  # > SESSION_READ_MESSAGE_LIMIT (30)
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            session_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="large-read-session",
+                    title="Large read session",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id=f"m{i}",
+                            role=Role.USER if i % 2 == 0 else Role.ASSISTANT,
+                            text=f"message body {i}",
+                            position=i,
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"message body {i}")],
+                        )
+                        for i in range(message_count)
+                    ],
+                )
+            )
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(session_id, safe='')}")
+            assert status == HTTPStatus.OK
+            # First paint composed only the first page: the true total is
+            # reported, but a message beyond SESSION_READ_MESSAGE_LIMIT is
+            # not present in the SSR body.
+            assert "Showing 30 of 45 messages" in html_body
+            assert "message body 0" in html_body
+            assert "message body 29" in html_body
+            assert "message body 30" not in html_body
+            assert "message body 44" not in html_body
+
+            # The "load more" API reaches the remaining messages, and its
+            # own total also reflects the true count, not the page size.
+            r_status, remainder = _get_json_ex(
+                base_url,
+                f"/api/sessions/{quote(session_id, safe='')}/read?view=messages&limit=30&offset=30",
+            )
+        assert r_status == 200, remainder
+        remainder_payload = cast(dict[str, object], remainder["payload"])
+        remainder_messages = cast(list[dict[str, object]], remainder_payload["messages"])
+        assert remainder_payload["total"] == 45
+        assert len(remainder_messages) == 15
+        assert remainder_messages[0]["text"] == "message body 30"
+        assert remainder_messages[-1]["text"] == "message body 44"
+
     def test_cost_page_serves_lane_legend_and_honest_absence_with_no_priced_sessions(
         self,
         workspace_env: dict[str, Path],

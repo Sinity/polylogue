@@ -37,6 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionTag,
     ArchiveSessionWorkEvent,
     read_archive_session_envelope,
+    read_archive_session_page,
     read_insight_materialization,
     read_session_agent_policies,
     read_session_phases,
@@ -3671,3 +3672,174 @@ def test_ingest_flags_re_ingest_is_idempotent(tmp_path: Path) -> None:
     assert len(auto_tags) == 1, (
         f"Expected exactly one auto-tag after re-ingest, got {len(auto_tags)}: {list(auto_tags)}"
     )
+
+
+def _large_ordinary_session(message_count: int) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="large-session",
+        title="Large session",
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"m{i}",
+                role=Role.USER if i % 2 == 0 else Role.ASSISTANT,
+                text=f"message {i}",
+                position=i,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"message {i}")],
+            )
+            for i in range(message_count)
+        ],
+    )
+
+
+def test_read_archive_session_page_matches_full_composition_windows(tmp_path: Path) -> None:
+    """A bounded page's messages are exactly the corresponding slice of the full read."""
+    conn = _connect(tmp_path / "index.db")
+    session_id = write_parsed_session_to_archive(conn, _large_ordinary_session(200))
+    full = read_archive_session_envelope(conn, session_id)
+
+    for offset, limit in [(0, 30), (30, 30), (170, 30), (190, 30), (195, 30), (0, 200), (200, 30)]:
+        page = read_archive_session_page(conn, session_id, limit=limit, offset=offset)
+        expected = full.messages[offset : offset + limit]
+        assert [m.message_id for m in page.messages] == [m.message_id for m in expected]
+        assert ["".join(b.text or "" for b in m.blocks) for m in page.messages] == [
+            "".join(b.text or "" for b in m.blocks) for m in expected
+        ]
+        assert page.total_message_count == 200
+
+
+def test_read_archive_session_page_composes_bounded_sql_work_regardless_of_session_size(
+    tmp_path: Path,
+) -> None:
+    """A page's SQL statement count stays bounded as the session grows.
+
+    ``read_archive_session_envelope`` issues one blocks query per message (a
+    pre-existing N+1 pattern), so a full read's statement count scales with
+    the session size. ``read_archive_session_page`` must not: its statement
+    count for a fixed page size is independent of the total message count,
+    the concrete property this bead (polylogue-07g6) asks for. Counting
+    statements via ``set_trace_callback`` is deterministic, unlike a
+    wall-clock timing budget.
+    """
+    conn = _connect(tmp_path / "index.db")
+    small_id = write_parsed_session_to_archive(conn, _large_ordinary_session(20))
+    large_id = write_parsed_session_to_archive(conn, _large_ordinary_session(2000))
+
+    def _count_statements(session_id: str, *, limit: int, offset: int) -> int:
+        count = 0
+
+        def _trace(_statement: str) -> None:
+            nonlocal count
+            count += 1
+
+        conn.set_trace_callback(_trace)
+        try:
+            read_archive_session_page(conn, session_id, limit=limit, offset=offset)
+        finally:
+            conn.set_trace_callback(None)
+        return count
+
+    small_statements = _count_statements(small_id, limit=30, offset=0)
+    large_statements = _count_statements(large_id, limit=30, offset=0)
+
+    # Same page size, wildly different session sizes (20 vs 2000 messages):
+    # statement count must not grow with the session, only the page.
+    assert large_statements == small_statements
+
+    # Sanity bound: a handful of fixed queries (header, working dirs, count,
+    # message window, blocks batch, attachments batch, orphan attachments),
+    # not "one per message" -- the regression this test guards against would
+    # blow this bound open at 2000 messages.
+    assert large_statements < 15
+
+
+def test_read_archive_session_page_falls_back_to_full_composition_for_lineage_child(
+    tmp_path: Path,
+) -> None:
+    """A prefix-sharing child's page still composes the parent prefix correctly.
+
+    Bounding is deliberately NOT attempted for the lineage case here -- it
+    falls back to the same full-composition-then-slice contract
+    ``get_messages_paginated`` already documents for the DB-backed reader
+    (#2470), rather than risking a subtly wrong bounded lineage algorithm.
+    """
+    conn = _connect(tmp_path / "index.db")
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="page-parent",
+        title="parent",
+        messages=[
+            ParsedMessage(
+                provider_message_id="p0",
+                role=Role.USER,
+                text="hello",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+            ),
+            ParsedMessage(
+                provider_message_id="p1",
+                role=Role.ASSISTANT,
+                text="hi there",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi there")],
+            ),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="page-child",
+        title="child",
+        parent_session_provider_id="page-parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            ParsedMessage(
+                provider_message_id="c0",
+                role=Role.USER,
+                text="hello",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+            ),
+            ParsedMessage(
+                provider_message_id="c1",
+                role=Role.ASSISTANT,
+                text="hi there",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi there")],
+            ),
+            ParsedMessage(
+                provider_message_id="cx",
+                role=Role.USER,
+                text="child diverges here",
+                position=2,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child diverges here")],
+            ),
+            ParsedMessage(
+                provider_message_id="cy",
+                role=Role.ASSISTANT,
+                text="child reply",
+                position=3,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child reply")],
+            ),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    assert parent_id
+
+    full = read_archive_session_envelope(conn, child_id)
+    page = read_archive_session_page(conn, child_id, limit=2, offset=1)
+
+    assert page.total_message_count == 4
+    assert ["".join(b.text or "" for b in m.blocks) for m in page.messages] == ["hi there", "child diverges here"]
+    assert [m.message_id for m in page.messages] == [m.message_id for m in full.messages[1:3]]
+    assert page.lineage_inheritance == "prefix-sharing"
+
+
+def test_read_archive_session_page_offset_beyond_total_returns_empty_window(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session_id = write_parsed_session_to_archive(conn, _large_ordinary_session(10))
+
+    page = read_archive_session_page(conn, session_id, limit=30, offset=100)
+
+    assert page.messages == ()
+    assert page.total_message_count == 10
