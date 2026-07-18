@@ -1,0 +1,9 @@
+{
+  "version": "0.9.0",
+  "raw_version": "0.9.0",
+  "artifacts": {
+    "chrome": "polylogue-browser-capture-0.9.0-chrome.zip",
+    "firefox": "polylogue-browser-capture-0.9.0-firefox.xpi"
+  },
+  "firefox_gecko_id": "polylogue-browser-capture@sinity.dev"
+}

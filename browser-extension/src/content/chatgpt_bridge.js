@@ -295,7 +295,128 @@
     }
   }
 
+  // Chunked/streamed responses (common for CDN-served DOM assets, unlike the
+  // sandbox/file endpoints ChatGPT itself controls) may omit Content-Length
+  // entirely, so declaredContentLength alone cannot bound them. Read the body
+  // as a stream and cancel it the moment the budget is exceeded, rather than
+  // buffering an unbounded response and checking its size only afterward.
+  async function readBoundedBody(response, maxBytes) {
+    if (!response.body || typeof response.body.getReader !== "function") {
+      // No Streams API on the body (older polyfill/test double) -- fall back
+      // to buffering, still enforcing the same limit before returning bytes.
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > maxBytes) {
+        return { tooLarge: true, sizeBytes: buffer.byteLength };
+      }
+      return { tooLarge: false, buffer };
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { tooLarge: true, sizeBytes: total };
+      }
+      chunks.push(value);
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { tooLarge: false, buffer: merged.buffer };
+  }
+
+  // Shared tail for every asset kind once a concrete https URL is known:
+  // fetch it (dropping credentials cross-origin — provider-issued signed
+  // URLs and DOM-rendered CDN links must never receive page cookies/bearer),
+  // enforce the byte budget, and hash+base64 the result. `sandbox`/`file`
+  // resolve `signedUrl` via a metadata round trip first; `url` (a byte-bearing
+  // link already visible in the DOM, e.g. an `img.src`/`a.href`) skips
+  // straight to this tail with no metadata step at all.
+  async function fetchBytesFromResolvedUrl(signedUrl, request, fallbackName) {
+    const byteCredentials = signedUrl.origin === currentOrigin ? "include" : "omit";
+    const fileResponse = await fetchWithAbort(
+      signedUrl.href,
+      { credentials: byteCredentials, cache: "no-store" },
+      "asset_bytes_fetch"
+    );
+    if ([401, 403, 404, 410].includes(fileResponse.status)) {
+      return assetOutcome("signed_url_expired", {
+        phase: "signed_bytes",
+        httpStatus: fileResponse.status,
+        detail: `signed_url_http_${fileResponse.status}`
+      });
+    }
+    if (!fileResponse.ok) {
+      return assetOutcome("request_failed", {
+        phase: "signed_bytes",
+        httpStatus: fileResponse.status,
+        detail: `signed_url_http_${fileResponse.status}`
+      });
+    }
+    const maxBytes = boundedMaxBytes(request);
+    const contentLength = declaredContentLength(fileResponse);
+    if (contentLength !== null && contentLength > maxBytes) {
+      return assetOutcome("too_large", {
+        phase: "signed_bytes",
+        httpStatus: fileResponse.status,
+        detail: "content_length_over_limit",
+        sizeBytes: contentLength
+      });
+    }
+    const bodyResult = await readBoundedBody(fileResponse, maxBytes);
+    if (bodyResult.tooLarge) {
+      return assetOutcome("too_large", {
+        phase: "signed_bytes",
+        httpStatus: fileResponse.status,
+        detail: "downloaded_bytes_over_limit",
+        sizeBytes: bodyResult.sizeBytes
+      });
+    }
+    const buffer = bodyResult.buffer;
+    let contentSha256;
+    try {
+      contentSha256 = await sha256Hex(buffer);
+    } catch {
+      return assetOutcome("integrity_error", { phase: "sha256", detail: "sha256_unavailable" });
+    }
+    return assetOutcome("acquired", {
+      phase: "complete",
+      httpStatus: fileResponse.status,
+      asset: {
+        base64: arrayBufferToBase64(buffer),
+        size_bytes: buffer.byteLength,
+        sha256: contentSha256,
+        mime_type: fileResponse.headers.get("content-type") || null,
+        name: fallbackName
+      }
+    });
+  }
+
   async function fetchAssetBytes(request) {
+    if (request.kind === "url") {
+      // No metadata round trip: the caller (e.g. the chatgpt-dom-v1 fallback
+      // adapter, which has no backend-api mapping to resolve file/sandbox ids
+      // from) already has a concrete byte-bearing URL straight out of the DOM
+      // (an `img.src`/`a.href` the page itself rendered).
+      let directUrl;
+      try {
+        directUrl = new URL(String(request.url), currentOrigin);
+      } catch {
+        return assetOutcome("invalid_request", { phase: "request", detail: "url_invalid" });
+      }
+      if (directUrl.protocol !== "https:") {
+        return assetOutcome("invalid_request", { phase: "request", detail: "url_not_https" });
+      }
+      return fetchBytesFromResolvedUrl(directUrl, request, request.name || null);
+    }
+
     let metaUrl;
     if (request.kind === "sandbox") {
       metaUrl = new URL(
@@ -336,64 +457,9 @@
     }
     // Current ChatGPT interpreter downloads may point at the authenticated
     // same-origin estuary endpoint rather than at a self-authenticating object
-    // store URL. Keep page cookies for that exact origin, but never forward
-    // them (or the bearer) to provider-issued cross-origin signed URLs.
-    const byteCredentials = signedUrl.origin === currentOrigin ? "include" : "omit";
-    const fileResponse = await fetchWithAbort(
-      signedUrl.href,
-      { credentials: byteCredentials, cache: "no-store" },
-      "asset_bytes_fetch"
-    );
-    if ([401, 403, 404, 410].includes(fileResponse.status)) {
-      return assetOutcome("signed_url_expired", {
-        phase: "signed_bytes",
-        httpStatus: fileResponse.status,
-        detail: `signed_url_http_${fileResponse.status}`
-      });
-    }
-    if (!fileResponse.ok) {
-      return assetOutcome("request_failed", {
-        phase: "signed_bytes",
-        httpStatus: fileResponse.status,
-        detail: `signed_url_http_${fileResponse.status}`
-      });
-    }
-    const maxBytes = boundedMaxBytes(request);
-    const contentLength = declaredContentLength(fileResponse);
-    if (contentLength !== null && contentLength > maxBytes) {
-      return assetOutcome("too_large", {
-        phase: "signed_bytes",
-        httpStatus: fileResponse.status,
-        detail: "content_length_over_limit",
-        sizeBytes: contentLength
-      });
-    }
-    const buffer = await fileResponse.arrayBuffer();
-    if (buffer.byteLength > maxBytes) {
-      return assetOutcome("too_large", {
-        phase: "signed_bytes",
-        httpStatus: fileResponse.status,
-        detail: "downloaded_bytes_over_limit",
-        sizeBytes: buffer.byteLength
-      });
-    }
-    let contentSha256;
-    try {
-      contentSha256 = await sha256Hex(buffer);
-    } catch {
-      return assetOutcome("integrity_error", { phase: "sha256", detail: "sha256_unavailable" });
-    }
-    return assetOutcome("acquired", {
-      phase: "complete",
-      httpStatus: fileResponse.status,
-      asset: {
-        base64: arrayBufferToBase64(buffer),
-        size_bytes: buffer.byteLength,
-        sha256: contentSha256,
-        mime_type: fileResponse.headers.get("content-type") || null,
-        name: (meta && (meta.file_name || meta.fileName)) || null
-      }
-    });
+    // store URL. fetchBytesFromResolvedUrl keeps page cookies only for that
+    // exact origin, never forwarding them (or the bearer) cross-origin.
+    return fetchBytesFromResolvedUrl(signedUrl, request, (meta && (meta.file_name || meta.fileName)) || null);
   }
 
   function assetExceptionOutcome(error) {

@@ -382,6 +382,231 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
   });
 });
 
+describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 gap)", () => {
+  // chatgpt-dom-v1 has no backend-api mapping to resolve a file/sandbox id
+  // from -- the DOM chip's own href/src is the only evidence available. The
+  // "url" request kind skips the metadata round trip entirely and reuses the
+  // exact same fetch+budget+hash tail as sandbox/file, proving the DOM
+  // adapter's byte fetch is the SAME mechanism, not a second one.
+  it("fetches bytes directly from a DOM-rendered https URL with no metadata round trip", async () => {
+    const domUrl = "https://files.example.test/dom/photo.png";
+    const domBytes = new TextEncoder().encode("dom rendered photo bytes\n");
+    const domSha256 = createHash("sha256").update(domBytes).digest("hex");
+    const calls = [];
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      calls.push({ url });
+      if (url.href === domUrl) return byteResponse(domBytes);
+      throw new Error(`unexpected synthetic request: ${url.href}`);
+    });
+    const harness = installBridge({ calls, fetch });
+
+    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, name: "photo.png", maxBytes: 1024 });
+
+    expect(outcome).toMatchObject({
+      status: "acquired",
+      phase: "complete",
+      asset: {
+        size_bytes: domBytes.byteLength,
+        sha256: domSha256,
+        mime_type: "application/zip",
+        name: "photo.png",
+      },
+    });
+    expect(outcome.asset.base64).toBe(Buffer.from(domBytes).toString("base64"));
+    // No auth/metadata/backend-api round trip at all -- straight to the URL.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.href).toBe(domUrl);
+  });
+
+  it("never forwards page cookies to a cross-origin direct URL", async () => {
+    const domUrl = "https://files.example.test/dom/photo.png";
+    const domBytes = new TextEncoder().encode("cross-origin bytes\n");
+    let capturedOptions = null;
+    const fetch = vi.fn(async (input, options = {}) => {
+      capturedOptions = options;
+      return byteResponse(domBytes);
+    });
+    const harness = installBridge({ fetch });
+
+    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 });
+
+    expect(outcome.status).toBe("acquired");
+    expect(capturedOptions.credentials).toBe("omit");
+  });
+
+  it("keeps page cookies for a same-origin direct URL", async () => {
+    const sameOriginUrl = "https://chatgpt.com/dom-asset/photo.png";
+    const domBytes = new TextEncoder().encode("same-origin dom bytes\n");
+    let capturedOptions = null;
+    const fetch = vi.fn(async (input, options = {}) => {
+      capturedOptions = options;
+      return byteResponse(domBytes);
+    });
+    const harness = installBridge({ fetch });
+
+    const outcome = await harness.requestAsset({ kind: "url", url: sameOriginUrl, maxBytes: 1024 });
+
+    expect(outcome.status).toBe("acquired");
+    expect(capturedOptions.credentials).toBe("include");
+  });
+
+  it("rejects a non-https direct URL without attempting a fetch", async () => {
+    const fetch = vi.fn();
+    const harness = installBridge({ fetch });
+
+    await expect(
+      harness.requestAsset({ kind: "url", url: "http://insecure.example.test/x.png", maxBytes: 1024 }),
+    ).resolves.toMatchObject({ status: "invalid_request", phase: "request", detail: "url_not_https" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("enforces the byte cap on a direct URL the same way as sandbox/file kinds", async () => {
+    const domUrl = "https://files.example.test/dom/huge.png";
+    const fetch = vi.fn(async () => byteResponse(new Uint8Array(2048), 200, 2048));
+    const harness = installBridge({ fetch });
+
+    await expect(
+      harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 }),
+    ).resolves.toMatchObject({ status: "too_large", phase: "signed_bytes", detail: "content_length_over_limit" });
+  });
+
+  // Codex P2 finding: a response with NO Content-Length (chunked transfer,
+  // common for CDN-served DOM assets unlike ChatGPT's own sandbox/file
+  // endpoints) previously bypassed the declared-length check entirely and
+  // was buffered whole via arrayBuffer() before the post-hoc size check --
+  // an oversized body would be fully downloaded regardless of the budget.
+  // The bounded streaming reader must reject it mid-stream instead.
+  it("bounds a direct URL download mid-stream when Content-Length is not declared", async () => {
+    const domUrl = "https://files.example.test/dom/chunked-huge.png";
+    // byteResponse() with no declaredSize omits Content-Length entirely.
+    const oversizedBody = new Uint8Array(2048);
+    const fetch = vi.fn(async () => byteResponse(oversizedBody));
+    const harness = installBridge({ fetch });
+
+    await expect(
+      harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 }),
+    ).resolves.toMatchObject({
+      status: "too_large",
+      phase: "signed_bytes",
+      detail: "downloaded_bytes_over_limit",
+    });
+  });
+
+  it("acquires a direct URL body streamed without a declared Content-Length", async () => {
+    const domUrl = "https://files.example.test/dom/chunked-ok.png";
+    const bodyBytes = new TextEncoder().encode("streamed without content-length\n");
+    const expectedSha256 = createHash("sha256").update(bodyBytes).digest("hex");
+    const fetch = vi.fn(async () => byteResponse(bodyBytes));
+    const harness = installBridge({ fetch });
+
+    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 });
+
+    expect(outcome).toMatchObject({ status: "acquired", asset: { size_bytes: bodyBytes.byteLength, sha256: expectedSha256 } });
+    expect(outcome.asset.base64).toBe(Buffer.from(bodyBytes).toString("base64"));
+  });
+});
+
+describe("chatgpt-dom-v1 fallback capture attachment byte acquisition (polylogue-83u.3)", () => {
+  // Deterministic capture smoke: forces the native backend-api read to fail
+  // (both the page-bridge attempt and chatgpt.js's own content-script fetch
+  // hit the same failing endpoint), so `capture()` falls through to the
+  // chatgpt-dom-v1 DOM adapter. Before this change, a DOM-scraped attachment
+  // only ever recorded its chip name with byte_count=0 -- there was no fetch
+  // attempt at all. Proves a captured attachment now carries real bytes.
+  function domFallbackAdapter({ domUrl, domBytes }) {
+    const calls = [];
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      calls.push(url.href);
+      if (url.pathname === "/api/auth/session") return jsonResponse({});
+      if (url.pathname === "/backend-api/conversation/conversation-1") {
+        return jsonResponse({ detail: "not_found" }, 404);
+      }
+      if (url.href === domUrl) return byteResponse(domBytes);
+      throw new Error(`unexpected synthetic request in DOM-fallback fixture: ${url.href}`);
+    });
+    return { calls, fetch };
+  }
+
+  it("acquires a DOM-scraped attachment's bytes with a real blob-addressable SHA-256", async () => {
+    const domUrl = "https://files.example.test/dom/deliverable.png";
+    const domBytes = new TextEncoder().encode("chatgpt-dom-v1 fallback attachment bytes\n");
+    const expectedDomSha256 = createHash("sha256").update(domBytes).digest("hex");
+    const adapter = domFallbackAdapter({ domUrl, domBytes });
+    const harness = installFullCapture(adapter, {
+      beforeInstall(document) {
+        const turn = document.createElement("article");
+        turn.setAttribute("data-message-author-role", "assistant");
+        turn.textContent = "Here is the file you asked for.";
+        const image = document.createElement("img");
+        image.setAttribute("src", domUrl);
+        image.setAttribute("alt", "deliverable.png");
+        turn.appendChild(image);
+        document.body.appendChild(turn);
+      },
+    });
+
+    const result = await harness.sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "message_layer_save",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.envelope.provenance.adapter_name).toBe("chatgpt-dom-v1");
+    expect(result.envelope.provenance.capture_mode).toBe("snapshot");
+    const [turn] = result.envelope.session.turns;
+    const [attachment] = turn.attachments;
+    expect(attachment).toMatchObject({
+      name: "deliverable.png",
+      size_bytes: domBytes.byteLength,
+      inline_base64: Buffer.from(domBytes).toString("base64"),
+      provider_meta: { content_sha256: expectedDomSha256, asset_kind: "url" },
+    });
+    // The declared SHA-256 is the true hash of the delivered bytes -- the
+    // exact invariant the archive-side blob store re-derives and persists as
+    // acquisition_status='acquired' (polylogue/storage/sqlite/archive_tiers/write.py).
+    expect(createHash("sha256").update(Buffer.from(attachment.inline_base64, "base64")).digest("hex")).toBe(
+      expectedDomSha256,
+    );
+    expect(adapter.calls).toContain(domUrl);
+  });
+
+  it("leaves a DOM-scraped attachment honestly byte_count=0 when its chip has no fetchable URL", async () => {
+    // A sandbox-output chip: the DOM only ever exposes the file name (via
+    // aria-label), never a real href/src -- this is the genuinely-unfetchable
+    // shape (byte_count=0 stays honest) distinct from the DOM-rendered <img>
+    // case above, which the fetch above proves is now reachable.
+    const adapter = domFallbackAdapter({ domUrl: "https://unused.example.test/none.png", domBytes: new Uint8Array() });
+    const harness = installFullCapture(adapter, {
+      beforeInstall(document) {
+        const turn = document.createElement("article");
+        turn.setAttribute("data-message-author-role", "assistant");
+        turn.textContent = "Here is the file you asked for.";
+        const chip = document.createElement("div");
+        chip.setAttribute("role", "group");
+        chip.setAttribute("aria-label", "report.pdf");
+        turn.appendChild(chip);
+        document.body.appendChild(turn);
+      },
+    });
+
+    const result = await harness.sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "message_layer_save",
+    });
+
+    expect(result.ok).toBe(true);
+    const [turn] = result.envelope.session.turns;
+    const [attachment] = turn.attachments;
+    expect(attachment.name).toBe("report.pdf");
+    expect(attachment.url).toBeNull();
+    expect(attachment.inline_base64).toBeUndefined();
+    expect(attachment.size_bytes).toBeUndefined();
+    expect(adapter.calls).not.toContain("https://unused.example.test/none.png");
+  });
+});
+
 describe("ChatGPT authenticated asset capture envelope", () => {
   it("captures an exact conversation and its output bytes from a reusable transport page", async () => {
     const adapter = syntheticEndpointAdapter();
