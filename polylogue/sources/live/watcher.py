@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 _PARSER_FINGERPRINT = "live-batched-v2"
+# One bounded writer hold per hook-spool drain batch; the drain loops until
+# the backlog is gone, releasing the writer between batches.
+_HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
 _CATCH_UP_MAX_BATCH_FILES = 50
 _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
@@ -385,21 +388,32 @@ class LiveWatcher:
         await self._drain_hook_spool()
 
     async def _drain_hook_spool(self) -> None:
-        """Acknowledge hook envelopes only after their source-tier write commits."""
+        """Acknowledge hook envelopes only after their source-tier write commits.
 
-        result = await self._run_writer_sync(
-            "watcher.hook_spool.drain",
-            drain_hook_event_spool,
-            Path(self._polylogue.archive_root),
-            root=self._hook_spool_root(),
-        )
-        if result.failed:
-            logger.warning(
-                "live.watcher: hook spool drain left %d event(s) pending",
-                result.failed,
+        Drains in bounded batches, releasing the writer between them, so a
+        large spool backlog cannot monopolize the single writer against
+        live ingest and catch-up chunks.
+        """
+
+        total_acknowledged = 0
+        while True:
+            result = await self._run_writer_sync(
+                "watcher.hook_spool.drain",
+                drain_hook_event_spool,
+                Path(self._polylogue.archive_root),
+                root=self._hook_spool_root(),
+                limit=_HOOK_SPOOL_DRAIN_BATCH_LIMIT,
             )
-        elif result.acknowledged:
-            logger.info("live.watcher: acknowledged %d hook spool event(s)", result.acknowledged)
+            total_acknowledged += result.acknowledged
+            if result.failed:
+                logger.warning(
+                    "live.watcher: hook spool drain left %d event(s) pending",
+                    result.failed,
+                )
+            if result.acknowledged == 0 or result.remaining <= result.failed:
+                break
+        if total_acknowledged:
+            logger.info("live.watcher: acknowledged %d hook spool event(s)", total_acknowledged)
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}

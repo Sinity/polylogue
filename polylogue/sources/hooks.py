@@ -20,6 +20,7 @@ for the durability/finalization semantics this spool exists to capture.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -66,10 +67,15 @@ class HookSpoolRecordError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class HookSpoolDrainResult:
-    """Outcome of one durable hook-spool drain attempt."""
+    """Outcome of one durable hook-spool drain attempt.
+
+    ``remaining`` counts pending files left after the pass — failures plus
+    anything beyond ``limit`` — so a bounded caller knows to drain again.
+    """
 
     acknowledged: int
     failed: int
+    remaining: int = 0
 
 
 def pending_hook_spool_dir(root: Path | None = None) -> Path:
@@ -132,30 +138,55 @@ def drain_hook_event_spool(
     archive_root: Path,
     *,
     root: Path | None = None,
+    limit: int | None = None,
 ) -> HookSpoolDrainResult:
-    """Persist every pending event and acknowledge only committed records.
+    """Persist pending events and acknowledge only committed records.
 
     Pending files deliberately remain in place when archive writes or envelope
     validation fail.  The next daemon pass can retry a transient write failure;
     a malformed producer record remains inspectable rather than disappearing.
+
+    The archive is opened ONCE per drain, not per record: this runs on the
+    daemon's single writer, and a per-record open/initialize turned a few
+    thousand spooled events into a multi-minute writer monopoly that starved
+    every other ingest path (observed live 2026-07-18). ``limit`` bounds one
+    writer hold; the caller loops on ``remaining``.
     """
 
     pending = pending_hook_spool_dir(root)
     if not pending.exists():
         return HookSpoolDrainResult(acknowledged=0, failed=0)
+    paths = sorted(pending.glob("*.json"))
+    selected = paths if limit is None else paths[:limit]
+    if not selected:
+        return HookSpoolDrainResult(acknowledged=0, failed=0)
     acknowledged = 0
     failed = 0
-    for path in sorted(pending.glob("*.json")):
-        try:
-            record = _read_record(path)
-            _persist_record(archive_root, path, record)
-            _acknowledge(path, root=root)
-        except (HookSpoolRecordError, OSError, sqlite3.Error, ValueError):
-            failed += 1
-            logger.warning("hook spool event remains pending: %s", path, exc_info=True)
-        else:
-            acknowledged += 1
-    return HookSpoolDrainResult(acknowledged=acknowledged, failed=failed)
+    try:
+        initialize_active_archive_root(archive_root)
+        store = ArchiveStore.open_existing(archive_root, read_only=False)
+    except (OSError, sqlite3.Error, ValueError):
+        logger.warning("hook spool drain could not open the archive; all events remain pending", exc_info=True)
+        return HookSpoolDrainResult(acknowledged=0, failed=len(selected), remaining=len(paths))
+    with store as archive:
+        for path in selected:
+            try:
+                record = _read_record(path)
+                _persist_record(archive, path, record)
+                archive.commit()
+                _acknowledge(path, root=root)
+            except (HookSpoolRecordError, OSError, sqlite3.Error, ValueError):
+                with contextlib.suppress(Exception):
+                    archive.rollback()
+                failed += 1
+                logger.warning("hook spool event remains pending: %s", path, exc_info=True)
+            else:
+                acknowledged += 1
+    return HookSpoolDrainResult(
+        acknowledged=acknowledged,
+        failed=failed,
+        remaining=len(paths) - acknowledged,
+    )
 
 
 def _read_record(path: Path) -> dict[str, object]:
@@ -216,8 +247,7 @@ def _timestamp_ms(value: str) -> int:
         raise HookSpoolRecordError(f"invalid hook timestamp: {value!r}") from exc
 
 
-def _persist_record(archive_root: Path, path: Path, record: dict[str, object]) -> None:
-    initialize_active_archive_root(archive_root)
+def _persist_record(archive: ArchiveStore, path: Path, record: dict[str, object]) -> None:
     provider_token = str(record["provider"])
     provider = Provider.from_string(provider_token)
     try:
@@ -238,32 +268,31 @@ def _persist_record(archive_root: Path, path: Path, record: dict[str, object]) -
         raise HookSpoolRecordError("hook spool envelope has an invalid observed timestamp")
     observed_at_ms = observed_at_ms_value
     source_path = str(path)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=provider,
-            payload=payload,
-            source_path=source_path,
-            acquired_at_ms=observed_at_ms,
-        )
-        write_source_raw_session(
-            archive._ensure_source_conn(),
+    raw_id = archive.write_raw_payload(
+        provider=provider,
+        payload=payload,
+        source_path=source_path,
+        acquired_at_ms=observed_at_ms,
+    )
+    write_source_raw_session(
+        archive._ensure_source_conn(),
+        origin=origin,
+        source_path=source_path,
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=observed_at_ms,
+        raw_id=raw_id,
+        hook_event=ArchiveHookEvent(
+            hook_event_id=f"hook:{record['event_id']}",
             origin=origin,
             source_path=source_path,
-            source_index=0,
-            payload=payload,
-            acquired_at_ms=observed_at_ms,
-            raw_id=raw_id,
-            hook_event=ArchiveHookEvent(
-                hook_event_id=f"hook:{record['event_id']}",
-                origin=origin,
-                source_path=source_path,
-                event_type=str(record["event_type"]),
-                payload=record,
-                observed_at_ms=observed_at_ms,
-                native_id=f"{record['session_id']}:{record['event_type']}:{record['event_id']}",
-                session_native_id=str(record["session_id"]),
-            ),
-        )
+            event_type=str(record["event_type"]),
+            payload=record,
+            observed_at_ms=observed_at_ms,
+            native_id=f"{record['session_id']}:{record['event_type']}:{record['event_id']}",
+            session_native_id=str(record["session_id"]),
+        ),
+    )
 
 
 def _acknowledge(path: Path, *, root: Path | None) -> None:
