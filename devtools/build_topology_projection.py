@@ -40,6 +40,7 @@ KERNEL_ROOT_FILES = frozenset(
     {
         "__init__.py",
         "__main__.py",
+        "_sqlite_compat.py",
         "version.py",
         "errors.py",
         "types.py",

@@ -77,8 +77,6 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "resolve_ref": "single_object",
     "explain_import": "typed_envelope",
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
-    "archive_list_sessions": ("envelope", frozenset({"items", "total", "limit", "offset"})),
-    "archive_search_sessions": ("envelope", frozenset({"items", "total", "limit", "query"})),
     "find_abandoned_sessions": ("envelope", frozenset({"items", "total"})),
     "find_stuck_sessions": ("envelope", frozenset({"items", "total"})),
     "find_resume_candidates": ("envelope", frozenset({"candidates", "total"})),
@@ -222,8 +220,6 @@ class TestRegistryWideClassification:
 
 def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
     from polylogue.mcp.payloads import (
-        MCPArchiveSearchPayload,
-        MCPArchiveSessionListPayload,
         MCPAssertionClaimListPayload,
         MCPMessagesListPayload,
         MCPNeighborCandidatesPayload,
@@ -253,8 +249,6 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         "get_messages": MCPMessagesListPayload,
         "list_assertion_claims": MCPAssertionClaimListPayload,
         "raw_artifacts": MCPRawArtifactsListPayload,
-        "archive_list_sessions": MCPArchiveSessionListPayload,
-        "archive_search_sessions": MCPArchiveSearchPayload,
     }
 
 

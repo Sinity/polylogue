@@ -15,11 +15,15 @@ export default defineConfig({
   timeout: 45_000,
   expect: { timeout: 10_000 },
   reporter: [['line']],
+  snapshotPathTemplate: '{testDir}/snapshots/{testFilePath}/{arg}{ext}',
   use: {
     headless: true,
+    viewport: { width: 1280, height: 800 },
+    locale: 'en-US',
+    timezoneId: 'UTC',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',
-    launchOptions: executablePath ? { executablePath } : undefined,
+    ...(executablePath ? { launchOptions: { executablePath } } : {}),
   },
 });

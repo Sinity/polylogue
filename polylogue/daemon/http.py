@@ -101,6 +101,7 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.daemon.webui import WebUIAsset
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
         ArchiveSessionSummary,
@@ -184,7 +185,7 @@ def _socket_peer_disconnected(connection: object | None) -> bool:
     if flags is None:
         return False
     try:
-        readable, _, _ = select.select([connection], [], [], 0)
+        readable, _, _ = select.select([cast(socket.socket, connection)], [], [], 0)
     except (OSError, TypeError, ValueError):
         return False
     if not readable:
@@ -416,6 +417,8 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
 
     routes: list[tuple[RouteMethod, str]] = [
         ("GET", "/"),
+        ("GET", "/app"),
+        ("GET", "/app/assets/:asset"),
         ("GET", "/s/:session_id"),
         ("GET", "/w/:mode"),
         ("GET", "/p"),
@@ -1337,6 +1340,49 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_webui_html(self, status: HTTPStatus, body: str) -> None:
+        """Send the no-inline-code WebUI document with a restrictive CSP."""
+
+        raw = body.encode("utf-8")
+        self.send_response(status.value)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+            "img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        )
+        self._send_request_id_header()
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _send_webui_asset(self, asset: WebUIAsset) -> None:
+        """Send one content-hashed Vite asset with immutable caching."""
+
+        if self.headers.get("If-None-Match", "") == asset.etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED.value)
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.send_header("ETag", asset.etag)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self._send_request_id_header()
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("Content-Type", asset.content_type)
+        self.send_header("Content-Length", str(len(asset.body)))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.send_header("ETag", asset.etag)
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self._send_request_id_header()
+        self.end_headers()
+        self.wfile.write(asset.body)
+
     def _send_json_with_cookie(
         self,
         status: HTTPStatus,
@@ -1518,7 +1564,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if self._reject_credential_query():
             return
 
-        # Web shell is the only unauthenticated endpoint (localhost only).
+        # WebUI v2 is a strangler mount: semantic SSR at /app plus only
+        # manifest-governed local assets. It shares the legacy shell's
+        # loopback/bootstrap auth posture while the archive JSON remains under
+        # the normal scoped credential checks.
+        if path == ["app"]:
+            if not self._check_shell_bootstrap_access():
+                return
+            self._serve_webui_archive_overview()
+            return
+        if len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2]):
+            if not self._check_shell_bootstrap_access():
+                return
+            self._serve_webui_asset(path[2])
+            return
+
+        # Legacy web shell bootstrap (localhost only).
         if (
             path == [""]
             or (len(path) == 2 and path[0] == "s" and bool(path[1]))
@@ -1855,6 +1916,79 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.web_shell import WEB_SHELL_HTML
 
         self._send_html(HTTPStatus.OK, WEB_SHELL_HTML)
+
+    def _serve_webui_archive_overview(self) -> None:
+        from polylogue.archive.query.execution_control import (
+            QueryCancelledError,
+            QueryTimeoutError,
+            QueryWorkBudgetExceededError,
+        )
+        from polylogue.daemon.webui import (
+            WebUIAssetBundle,
+            WebUIAssetError,
+            load_archive_overview_page,
+            render_archive_overview_page,
+            render_webui_asset_error,
+        )
+
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+        except WebUIAssetError as exc:
+            logger.error("webui asset discovery failed: %s", exc)
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            body = render_archive_overview_page(
+                bundle,
+                None,
+                notice="The archive is unavailable or requires a schema rebuild.",
+            )
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
+            return
+        try:
+            page = load_archive_overview_page(archive_root)
+        except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError):
+            body = render_archive_overview_page(
+                bundle,
+                None,
+                notice="The bounded archive query could not complete within its execution budget.",
+            )
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
+            return
+        except sqlite3.OperationalError as exc:
+            logger.exception("webui archive overview read failed")
+            status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            notice = (
+                "The archive is temporarily busy; retry the overview shortly."
+                if status is HTTPStatus.SERVICE_UNAVAILABLE
+                else "The archive overview could not be rendered."
+            )
+            self._send_webui_html(status, render_archive_overview_page(bundle, None, notice=notice))
+            return
+        except Exception:
+            logger.exception("webui archive overview render failed")
+            self._send_webui_html(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                render_archive_overview_page(bundle, None, notice="The archive overview could not be rendered."),
+            )
+            return
+        self._send_webui_html(HTTPStatus.OK, render_archive_overview_page(bundle, page))
+
+    def _serve_webui_asset(self, name: str) -> None:
+        from polylogue.daemon.webui import WebUIAssetBundle, WebUIAssetError
+
+        try:
+            asset = WebUIAssetBundle.discover(self.server.webui_dist_root).read_asset(name)
+        except FileNotFoundError:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        except WebUIAssetError as exc:
+            logger.error("webui asset read failed: %s", exc)
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "webui_assets_unavailable", str(exc))
+            return
+        self._send_webui_asset(asset)
 
     def _serve_paste_browser_page(self) -> None:
         self._send_html(HTTPStatus.OK, render_paste_browser_page())
@@ -2294,7 +2428,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            self._send_json(HTTPStatus.OK, self._do_archive_list_sessions(archive_root, params, limit, offset, route))
+            self._send_json(HTTPStatus.OK, self._do_archive_session_list(archive_root, params, limit, offset, route))
             return
 
         async def _list(poly: Polylogue) -> object:
@@ -2420,7 +2554,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(mode="json")
         return envelope.model_dump(mode="json")
 
-    def _do_archive_list_sessions(
+    def _do_archive_session_list(
         self,
         archive_root: Path,
         params: dict[str, list[str]],
@@ -3512,48 +3646,99 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_query_units(self, params: dict[str, list[str]]) -> None:
-        """``GET /api/query-units`` returns terminal query-unit rows."""
+        """``GET /api/query-units`` returns one bounded terminal-unit page.
+
+        An initial request carries expression/filter fields. Follow-up requests
+        carry only the opaque ``continuation`` emitted by the previous page;
+        the daemon replays the canonical request rather than trusting a browser
+        to reconstruct its filters or offset.
+        """
 
         from polylogue.archive.query.expression import ExpressionCompileError
         from polylogue.archive.query.spec import clamp_query_limit
+        from polylogue.archive.query.transaction import QueryContinuation
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
-        expression = self._get_param(params, "expression") or ""
-        limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
-        offset = max(0, self._get_int(params, "offset", 0))
+        continuation_token = self._get_param(params, "continuation")
+        session_filters: Mapping[str, object] | None = None
+        if continuation_token is not None:
+            if set(params) != {"continuation"}:
+                self._send_error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_continuation",
+                    "continuation requests must not override the original query parameters",
+                )
+                return
+            try:
+                continuation = QueryContinuation.decode(continuation_token)
+                continuation_request = continuation.request
+                arguments = continuation_request.arguments
+                expression_value = arguments.get("expression")
+                filters_value = arguments.get("session_filters", {})
+                expected_result_ref = "result:" + continuation_request.query_ref.removeprefix("query:")
+                if (
+                    continuation_request.operation != "query_units"
+                    or continuation_request.projection != "terminal-unit-envelope"
+                    or continuation_request.stable_order != "canonical"
+                    or set(arguments) != {"expression", "session_filters"}
+                    or not isinstance(expression_value, str)
+                    or not expression_value.strip()
+                    or not isinstance(filters_value, Mapping)
+                    or continuation.result_ref != expected_result_ref
+                ):
+                    raise ValueError("continuation does not identify a query-unit result")
+                expression = expression_value
+                session_filters = {str(key): value for key, value in filters_value.items()}
+                limit = clamp_query_limit(continuation_request.page_size, default=50)
+                offset = continuation_request.offset
+            except (TypeError, ValueError) as exc:
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_continuation", str(exc))
+                return
+        else:
+            expression = self._get_param(params, "expression") or ""
+            limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
+            offset = max(0, self._get_int(params, "offset", 0))
         try:
-            request = query_unit_request(
-                expression=expression,
-                limit=limit,
-                offset=offset,
-                origin=self._get_param(params, "origin"),
-                origins=_csv_values(params, "origins"),
-                exclude_origin=self._get_param(params, "exclude_origin"),
-                tag=self._get_param(params, "tag"),
-                exclude_tag=self._get_param(params, "exclude_tag"),
-                repo=self._get_param(params, "repo"),
-                has_type=self._get_param(params, "has_type"),
-                referenced_path=self._get_param(params, "referenced_path"),
-                cwd_prefix=self._get_param(params, "cwd_prefix"),
-                action=self._get_param(params, "action"),
-                exclude_action=self._get_param(params, "exclude_action"),
-                action_sequence=self._get_param(params, "action_sequence"),
-                action_text=self._get_param(params, "action_text"),
-                tool=self._get_param(params, "tool"),
-                exclude_tool=self._get_param(params, "exclude_tool"),
-                title=self._get_param(params, "title"),
-                since=self._get_param(params, "since"),
-                until=self._get_param(params, "until"),
-                has_tool_use=self._get_bool(params, "has_tool_use"),
-                has_thinking=self._get_bool(params, "has_thinking"),
-                has_paste=self._get_bool(params, "has_paste_evidence"),
-                typed_only=self._get_bool(params, "typed_only"),
-                min_messages=self._get_param(params, "min_messages"),
-                max_messages=self._get_param(params, "max_messages"),
-                min_words=self._get_param(params, "min_words"),
-                max_words=self._get_param(params, "max_words"),
-                message_type=self._get_param(params, "message_type"),
-            )
+            if session_filters is not None:
+                request = query_unit_request(
+                    expression=expression,
+                    limit=limit,
+                    offset=offset,
+                    session_filters=session_filters,
+                )
+            else:
+                request = query_unit_request(
+                    expression=expression,
+                    limit=limit,
+                    offset=offset,
+                    origin=self._get_param(params, "origin"),
+                    origins=_csv_values(params, "origins"),
+                    exclude_origin=self._get_param(params, "exclude_origin"),
+                    tag=self._get_param(params, "tag"),
+                    exclude_tag=self._get_param(params, "exclude_tag"),
+                    repo=self._get_param(params, "repo"),
+                    has_type=self._get_param(params, "has_type"),
+                    referenced_path=self._get_param(params, "referenced_path"),
+                    cwd_prefix=self._get_param(params, "cwd_prefix"),
+                    action=self._get_param(params, "action"),
+                    exclude_action=self._get_param(params, "exclude_action"),
+                    action_sequence=self._get_param(params, "action_sequence"),
+                    action_text=self._get_param(params, "action_text"),
+                    tool=self._get_param(params, "tool"),
+                    exclude_tool=self._get_param(params, "exclude_tool"),
+                    title=self._get_param(params, "title"),
+                    since=self._get_param(params, "since"),
+                    until=self._get_param(params, "until"),
+                    has_tool_use=self._get_bool(params, "has_tool_use"),
+                    has_thinking=self._get_bool(params, "has_thinking"),
+                    has_paste=self._get_bool(params, "has_paste_evidence"),
+                    typed_only=self._get_bool(params, "typed_only"),
+                    min_messages=self._get_param(params, "min_messages"),
+                    max_messages=self._get_param(params, "max_messages"),
+                    min_words=self._get_param(params, "min_words"),
+                    max_words=self._get_param(params, "max_words"),
+                    message_type=self._get_param(params, "message_type"),
+                )
         except ExpressionCompileError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_query", str(exc))
             return
@@ -4655,10 +4840,12 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         api_host: str = "127.0.0.1",
         write_bridge: DaemonWriteThreadBridge | None = None,
         web_credentials: WebCredentialRegistry | None = None,
+        webui_dist_root: Path | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
+        self.webui_dist_root = webui_dist_root
         self.started_at = datetime.now(UTC).isoformat()
         self.web_credentials = web_credentials or WebCredentialRegistry()
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None

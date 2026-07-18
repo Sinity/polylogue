@@ -103,8 +103,6 @@ MCP_TOOL_NAME_BASELINE = frozenset(
         "archive_coverage",
         "action_affordances",
         "archive_get_session",
-        "archive_list_sessions",
-        "archive_search_sessions",
         "clear_corrections",
         "compose_context_preamble",
         "delete_recall_pack",

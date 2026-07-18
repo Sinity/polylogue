@@ -64,15 +64,13 @@ def test_debt_list_json_uses_shared_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    index_db = tmp_path / "index.db"
-    index_db.touch()
     captured: dict[str, object] = {}
 
     def fake_archive_debt_list(**kwargs: object) -> ArchiveDebtListPayload:
         captured.update(kwargs)
         return _payload(tmp_path)
 
-    monkeypatch.setattr("polylogue.cli.commands.debt.active_index_db_path", lambda: index_db)
+    monkeypatch.setattr("polylogue.cli.commands.debt.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.cli.commands.debt.archive_debt_list", fake_archive_debt_list)
 
     result = cli_runner.invoke(cli, ["--plain", "ops", "debt", "list", "--kind", "embedding", "--format", "json"])
@@ -91,15 +89,13 @@ def test_debt_list_json_passes_status_filter(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    index_db = tmp_path / "index.db"
-    index_db.touch()
     captured: dict[str, object] = {}
 
     def fake_archive_debt_list(**kwargs: object) -> ArchiveDebtListPayload:
         captured.update(kwargs)
         return _payload(tmp_path)
 
-    monkeypatch.setattr("polylogue.cli.commands.debt.active_index_db_path", lambda: index_db)
+    monkeypatch.setattr("polylogue.cli.commands.debt.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.cli.commands.debt.archive_debt_list", fake_archive_debt_list)
 
     result = cli_runner.invoke(
@@ -116,9 +112,7 @@ def test_debt_list_text_renders_actionable_summary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    index_db = tmp_path / "index.db"
-    index_db.touch()
-    monkeypatch.setattr("polylogue.cli.commands.debt.active_index_db_path", lambda: index_db)
+    monkeypatch.setattr("polylogue.cli.commands.debt.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.cli.commands.debt.archive_debt_list", lambda **_kwargs: _payload(tmp_path))
 
     result = cli_runner.invoke(cli, ["--plain", "ops", "debt", "list"])

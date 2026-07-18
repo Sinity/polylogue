@@ -116,6 +116,8 @@ These are the commands worth remembering during normal repo work:
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 | `devtools render visual-tapes` | Write VHS tape files and optionally capture GIFs for the default visual evidence specs. |
+| `devtools render webui-client` | Render the committed WebUI TypeScript client from docs/openapi/search.yaml. |
+| `devtools render webui-design-system` | Render WebUI v2 CSS tokens, public badge contracts, and contrast evidence. |
 
 ### Release
 

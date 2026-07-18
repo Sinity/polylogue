@@ -123,7 +123,7 @@ def test_archive_query_filters_forward_max_words() -> None:
     assert archive_query_filters(spec)["max_words"] == 12
 
 
-def test_archive_list_sessions_routes_near_session_to_query_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_list_sessions_routes_near_session_to_query_executor(monkeypatch: pytest.MonkeyPatch) -> None:
     observed: dict[str, object] = {}
 
     def fake_archive_search_hits(
@@ -146,7 +146,7 @@ def test_archive_list_sessions_routes_near_session_to_query_executor(monkeypatch
     assert payload.total is None
 
 
-def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:
+def test_list_sessions_stops_after_requested_distinct_page() -> None:
     summaries = {
         "codex-session:first": ArchiveSessionSummary(
             session_id="codex-session:first",

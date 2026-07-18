@@ -1,0 +1,11 @@
+{
+  "src/entrypoints/archive-overview.tsx": {
+    "file": "archive-overview-CxKzwy2z.js",
+    "name": "archive-overview",
+    "src": "src/entrypoints/archive-overview.tsx",
+    "isEntry": true,
+    "css": [
+      "archive-overview-Ce5VissO.css"
+    ]
+  }
+}

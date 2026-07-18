@@ -78,6 +78,11 @@ def test_generated_surface_cache_inputs_include_contract_owners() -> None:
     }.issubset(_surface_inputs("openapi"))
 
     assert {
+        "docs/openapi/search.yaml",
+        "devtools/render_webui_client.py",
+    }.issubset(_surface_inputs("webui-client"))
+
+    assert {
         "polylogue/cli/click_command_registration.py",
         "polylogue/operations/action_contracts.py",
         "polylogue/archive/query/metadata.py",

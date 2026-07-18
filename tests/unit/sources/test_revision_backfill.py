@@ -9,6 +9,7 @@ import pytest
 
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
+from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
@@ -550,3 +551,43 @@ def test_membership_census_retains_only_one_logical_cohort_at_scale(tmp_path: Pa
     assert max(count for count, _payload_bytes in retained) == 2
     assert max(payload_bytes for _count, payload_bytes in retained) == sum(map(len, shared_payloads))
     assert sum(count for count, _payload_bytes in retained) == raw_count
+
+
+def test_historical_backfill_reparses_multi_gib_shaped_raw_instead_of_spilling_archive_wide(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A cache miss reparses durable bytes rather than retaining a giant cohort tree."""
+    initialize_active_archive_root(tmp_path)
+    payload = b'{"type":"session_meta","payload":{"id":"multi-gib-shaped"}}\n'
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="multi-gib-shaped.jsonl",
+            acquired_at_ms=1,
+        )
+    declared_multi_gib = 3 * 1024 * 1024 * 1024
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (declared_multi_gib, raw_id))
+        conn.commit()
+
+    original = revision_backfill._parse_retained_raw
+    parses = 0
+
+    def counted(*args: object, **kwargs: object) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        nonlocal parses
+        parses += 1
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+    retained: list[tuple[int, int]] = []
+    result = backfill_historical_revision_evidence(
+        tmp_path,
+        retention_observer=lambda count, payload_bytes: retained.append((count, payload_bytes)),
+    )
+
+    assert result.replayed_logical_sources == 1
+    assert retained == [(1, declared_multi_gib)]
+    # The former archive-wide spill served the second lookup from a retained
+    # pickle. A bounded cache deliberately reparses the durable source row.
+    assert parses >= 2

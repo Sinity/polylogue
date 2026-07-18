@@ -9,10 +9,10 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import Provider, TitleSource
+from polylogue.core.enums import MaterialOrigin, Provider, TitleSource
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
-from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
+from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_history, _parse_codex_session_index
 from polylogue.sources.assembly_gemini import GeminiAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude.index import (
@@ -22,11 +22,29 @@ from polylogue.sources.parsers.claude.index import (
 )
 
 
-def _parsed_message(provider_message_id: str, role: str, text: str) -> ParsedMessage:
-    return ParsedMessage(
+def _parsed_message(
+    provider_message_id: str,
+    role: str,
+    text: str,
+    *,
+    material_origin: MaterialOrigin | None = None,
+) -> ParsedMessage:
+    message = ParsedMessage(
         provider_message_id=provider_message_id,
         role=Role.normalize(role),
         text=text,
+    )
+    if material_origin is not None:
+        message.material_origin = material_origin
+    return message
+
+
+def _authored_message(provider_message_id: str, text: str) -> ParsedMessage:
+    return _parsed_message(
+        provider_message_id,
+        "user",
+        text,
+        material_origin=MaterialOrigin.HUMAN_AUTHORED,
     )
 
 
@@ -57,8 +75,14 @@ def _parsed_session(
     )
 
 
-def _thread_sidecars(thread_names: dict[str, str] | None = None) -> SidecarData:
-    return {"thread_names": {} if thread_names is None else thread_names}
+def _thread_sidecars(
+    thread_names: dict[str, str] | None = None,
+    history_titles: dict[str, str] | None = None,
+) -> SidecarData:
+    return {
+        "thread_names": {} if thread_names is None else thread_names,
+        "history_titles": {} if history_titles is None else history_titles,
+    }
 
 
 def _session_sidecars(
@@ -367,7 +391,7 @@ class TestCodexAssemblySpec:
             "thread-1",
             "thread-1",
             [
-                _parsed_message("m1", "user", "Implement the payment gateway"),
+                _authored_message("m1", "Implement the payment gateway"),
                 _parsed_message("m2", "assistant", "Sure, here is the code"),
             ],
         )
@@ -382,7 +406,7 @@ class TestCodexAssemblySpec:
         """Truncates first user message to 80 chars + ellipsis."""
         spec = CodexAssemblySpec()
         long_text = "A" * 100
-        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "user", long_text)])
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [_authored_message("m1", long_text)])
         sidecar_data = _thread_sidecars()
 
         enriched = spec.enrich_session(conv, sidecar_data)
@@ -408,9 +432,9 @@ class TestCodexAssemblySpec:
             "thread-1",
             "thread-1",
             [
-                _parsed_message("m1", "user", ""),
-                _parsed_message("m2", "user", "   "),
-                _parsed_message("m3", "user", "Real message here"),
+                _authored_message("m1", ""),
+                _authored_message("m2", "   "),
+                _authored_message("m3", "Real message here"),
             ],
         )
         sidecar_data = _thread_sidecars()
@@ -601,3 +625,160 @@ class TestLooksLikeGitBranch:
 
         assert enriched.title == "Hello world"
         assert enriched.title_source == "heuristic"
+
+
+# ---------------------------------------------------------------------------
+# Codex history.jsonl titles + material-origin title discipline (polylogue-ih67)
+# ---------------------------------------------------------------------------
+
+
+def _codex_root_with(
+    tmp_path: Path,
+    *,
+    history_lines: list[str] | None = None,
+    index_lines: list[str] | None = None,
+) -> Path:
+    codex_dir = tmp_path / ".codex"
+    sessions_dir = codex_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    if history_lines is not None:
+        (codex_dir / "history.jsonl").write_text("\n".join(history_lines) + "\n", encoding="utf-8")
+    if index_lines is not None:
+        (codex_dir / "session_index.jsonl").write_text("\n".join(index_lines) + "\n", encoding="utf-8")
+    session_file = sessions_dir / "thread-1" / "session.jsonl"
+    session_file.parent.mkdir()
+    session_file.touch()
+    return session_file
+
+
+class TestCodexHistoryTitles:
+    def test_discover_sidecars_includes_history_titles(self, tmp_path: Path) -> None:
+        """history.jsonl yields earliest authored text per session; junk skipped."""
+        session_file = _codex_root_with(
+            tmp_path,
+            history_lines=[
+                '{"session_id": "thread-1", "ts": 200, "text": "later prompt"}',
+                '{"session_id": "thread-1", "ts": 100, "text": "Fix the ingest bug"}',
+                "not json at all",
+                '{"session_id": "", "ts": 1, "text": "no session"}',
+                '{"session_id": "thread-2", "ts": 50, "text": "   "}',
+                '{"session_id": "thread-2", "ts": 60, "text": "Second thread opening"}',
+            ],
+        )
+
+        sidecar_data = CodexAssemblySpec().discover_sidecars([session_file])
+
+        assert sidecar_data["history_titles"] == {
+            "thread-1": "Fix the ingest bug",
+            "thread-2": "Second thread opening",
+        }
+
+    def test_thread_name_beats_history(self, tmp_path: Path) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        sidecar_data = _thread_sidecars(
+            {"thread-1": "Named thread"},
+            {"thread-1": "history prompt"},
+        )
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Named thread"
+        assert enriched.title_source == TitleSource.ORIGIN
+
+    def test_history_beats_message_fallback(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "message body that would otherwise win")],
+        )
+        sidecar_data = _thread_sidecars(None, {"thread-1": "History opening prompt"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "History opening prompt"
+        assert enriched.title_source == TitleSource.ORIGIN
+
+    def test_history_title_uses_first_line_bounded(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        long_first_line = "B" * 100
+        sidecar_data = _thread_sidecars(None, {"thread-1": f"\n\n{long_first_line}\nsecond line"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "B" * 80 + "..."
+
+    def test_history_never_replaces_real_title(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "A real existing title", [])
+        sidecar_data = _thread_sidecars(None, {"thread-1": "history prompt"})
+
+        result = spec.enrich_session(conv, sidecar_data)
+
+        assert result is conv
+
+    def test_runtime_context_user_row_never_becomes_title(self) -> None:
+        """An injected-context role=user row must not win over the authored request."""
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [
+                _parsed_message(
+                    "m1",
+                    "user",
+                    "<AGENTS.md> repository instructions injected as context",
+                    material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+                ),
+                _authored_message("m2", "Please fix the payment bug"),
+            ],
+        )
+
+        enriched = spec.enrich_session(conv, _thread_sidecars())
+
+        assert enriched.title == "Please fix the payment bug"
+        assert enriched.title_source == TitleSource.HEURISTIC
+
+    def test_unknown_authorship_is_not_title_material(self) -> None:
+        """role=user alone (material_origin UNKNOWN) is not proof a human typed it."""
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_parsed_message("m1", "user", "ambiguous channel content")],
+        )
+
+        result = spec.enrich_session(conv, _thread_sidecars())
+
+        assert result is conv
+        assert result.title == "thread-1"
+
+    def test_history_cache_invalidates_on_file_change(self, tmp_path: Path) -> None:
+        import os
+
+        session_file = _codex_root_with(
+            tmp_path,
+            history_lines=['{"session_id": "thread-1", "ts": 1, "text": "first version"}'],
+        )
+        history_path = tmp_path / ".codex" / "history.jsonl"
+        spec = CodexAssemblySpec()
+
+        first = spec.discover_sidecars([session_file])["history_titles"]
+        assert first == {"thread-1": "first version"}
+
+        history_path.write_text('{"session_id": "thread-1", "ts": 1, "text": "rewritten"}\n', encoding="utf-8")
+        stat = history_path.stat()
+        os.utime(history_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        second = spec.discover_sidecars([session_file])["history_titles"]
+        assert second == {"thread-1": "rewritten"}
+
+    def test_parse_codex_history_missing_file(self, tmp_path: Path) -> None:
+        sessions_root = tmp_path / ".codex" / "sessions"
+        sessions_root.mkdir(parents=True)
+        assert _parse_codex_history(sessions_root) == {}

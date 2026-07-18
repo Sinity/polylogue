@@ -18,6 +18,7 @@ import resource
 import shutil
 import sqlite3
 import tempfile
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -99,8 +100,8 @@ class RawAuthorityScaleScenario:
             raise ValueError("scenario direct candidates must cover every component")
         if self.expanded_candidates < self.direct_candidates:
             raise ValueError("scenario expanded candidates cannot be smaller than direct candidates")
-        if self.total_payload_bytes < self.expanded_candidates * 256:
-            raise ValueError("scenario payload budget is too small for valid JSONL evidence")
+        if self.total_payload_bytes < 1:
+            raise ValueError("scenario payload budget must be positive")
         if self.terminal_sibling_outcome not in {"terminal", "deferred"}:
             raise ValueError("scenario terminal sibling outcome must be terminal or deferred")
         if self.component_cohorts is not None:
@@ -242,27 +243,27 @@ class RawAuthorityScaleScenario:
         )
 
 
-def _write_payload(path: Path, *, native_id: str, revision: int, target_size: int, previous: Path | None) -> None:
-    """Stream a prefix-related Codex JSONL raw without retaining its body in memory."""
+def _write_payload(path: Path, *, native_id: str, revision: int, target_size: int, previous: Path | None) -> int:
+    """Stream a valid JSONL raw and return its truthful serialized byte size."""
     header = (
         f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n'
         if previous is None
         else f'{{"type":"response_item","payload":{{"type":"message","id":"{native_id}-{revision}","role":"user","content":[{{"type":"input_text","text":"revision-{revision}"}}]}}}}\n'
     ).encode()
     previous_size = previous.stat().st_size if previous is not None else 0
-    if target_size < previous_size + len(header):
-        raise ValueError("scenario payload allocation cannot preserve valid JSONL evidence")
+    serialized_size = max(target_size, previous_size + len(header))
     with path.open("wb") as destination:
         if previous is not None:
             with previous.open("rb") as source:
                 shutil.copyfileobj(source, destination, length=1024 * 1024)
         destination.write(header)
-        remaining = target_size - previous_size - len(header)
+        remaining = serialized_size - previous_size - len(header)
         chunk = b" " * min(1024 * 1024, remaining)
         while remaining:
             amount = min(len(chunk), remaining)
             destination.write(chunk[:amount])
             remaining -= amount
+    return serialized_size
 
 
 def _explicit_component_cohorts(
@@ -328,11 +329,18 @@ def _row_sizes(
     *,
     component_byte_upper_bounds: list[int] | None,
 ) -> list[list[int]]:
-    """Give each component a valid evidence budget while preserving byte buckets."""
+    """Allocate captured bytes; serialization expands only invalid tiny rows.
+
+    Captured byte buckets are observations, and valid tiny blobs can be below
+    one JSONL record.  The synthetic corpus records those buckets verbatim but
+    expands its on-disk rows to the smallest valid evidence document.  It must
+    never pretend that a 64-byte captured bucket was replayed as a 64-byte
+    JSONL blob.
+    """
     minimum_rows = [
         [256 * (revision + 1) for revision in range(count)]
         if not _uses_independent_component_members(scenario)
-        else [256] * count
+        else [1] * count
         for count in component_counts
     ]
     minimum_component_bytes = [sum(rows) for rows in minimum_rows]
@@ -352,12 +360,15 @@ def _row_sizes(
         for minimum, upper_bound in zip(minimum_component_bytes, component_byte_upper_bounds, strict=True):
             lower_bound = (upper_bound // 2) + 1
             target = max(minimum, lower_bound)
-            if target > upper_bound:
-                raise ValueError("scenario byte bucket cannot fit the requested component topology")
             target_component_bytes.append(target)
-            capacities.append(upper_bound - target)
+            capacities.append(max(0, upper_bound - target))
         remaining = scenario.total_payload_bytes - sum(target_component_bytes)
-        if remaining < 0 or remaining > sum(capacities):
+        if remaining < 0:
+            # The captured aggregate is smaller than valid per-member
+            # allocation.  Preserve it as capture metadata; generation below
+            # will record the larger valid serialized total separately.
+            remaining = 0
+        if remaining > sum(capacities):
             raise ValueError("scenario payload budget cannot preserve the requested byte-bucket distribution")
         for component, capacity in enumerate(capacities):
             addition = min(remaining, capacity)
@@ -365,7 +376,7 @@ def _row_sizes(
             remaining -= addition
         if remaining:
             raise RuntimeError("component byte allocation did not consume its exact payload budget")
-    if sum(target_component_bytes) != scenario.total_payload_bytes:
+    if component_byte_upper_bounds is None and sum(target_component_bytes) != scenario.total_payload_bytes:
         raise ValueError("scenario payload budget cannot preserve the requested revision topology")
     sizes: list[list[int]] = []
     for minimums, target in zip(minimum_rows, target_component_bytes, strict=True):
@@ -381,9 +392,34 @@ def _row_sizes(
     return sizes
 
 
-def _rss_bytes() -> int:
-    # Linux ru_maxrss is KiB; this repository's supported development host is Linux.
-    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+class _PassProcessSampler:
+    """Continuously sample one pass, without lifetime high-water counters."""
+
+    def __init__(self, interval_seconds: float = 0.02) -> None:
+        self._interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self.samples: list[ProcessSample] = []
+        self._thread = threading.Thread(target=self._run, name="raw-authority-pass-meter", daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            self.samples.append(_process_sample())
+
+    def __enter__(self) -> _PassProcessSampler:
+        self.samples.append(_process_sample())
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        del exc_type, exc, traceback
+        self._stop.set()
+        self._thread.join()
+        self.samples.append(_process_sample())
+
+    def peak(self, field: str) -> int | None:
+        values = [getattr(sample, field) for sample in self.samples]
+        known = [value for value in values if value is not None]
+        return max(known) if known else None
 
 
 def _proc_kb(path: Path, keys: set[str]) -> dict[str, int]:
@@ -472,12 +508,17 @@ class _GeneratedArchiveId:
         return f"raw-authority-scale:{self._digest.hexdigest()}"
 
 
-def _require_requested_scale(scenario: RawAuthorityScaleScenario, achieved_shape: dict[str, object]) -> None:
+def _require_requested_scale(
+    scenario: RawAuthorityScaleScenario,
+    achieved_shape: dict[str, object],
+    *,
+    generated_payload_bytes: int,
+) -> None:
     """Reject a receipt candidate unless the generated corpus matches its claim."""
     exact = {
         "expanded_candidate_count": scenario.expanded_candidates,
         "authority_component_count": scenario.components,
-        "expanded_total_blob_bytes": scenario.total_payload_bytes,
+        "expanded_total_blob_bytes": generated_payload_bytes,
     }
     candidate_count = achieved_shape.get("candidate_count")
     if (
@@ -575,16 +616,16 @@ def _record_repair_pass(
 ) -> tuple[RawAuthorityScalePass, str]:
     """Run one real repair/census pass and reject incomplete evidence."""
     check_admission()
-    before = _process_sample()
     started = time.perf_counter()
-    result = repair.repair_raw_materialization(
-        config,
-        raw_artifact_limit=pass_limit,
-        max_payload_bytes=max_payload_bytes,
-        dry_run=mode == "dry_run",
-    )
+    with _PassProcessSampler() as sampler:
+        result = repair.repair_raw_materialization(
+            config,
+            raw_artifact_limit=pass_limit,
+            max_payload_bytes=max_payload_bytes,
+            dry_run=mode == "dry_run",
+        )
     wall_ms = int((time.perf_counter() - started) * 1000)
-    after = _process_sample()
+    before, after = sampler.samples[0], sampler.samples[-1]
     check_admission()
     metrics = result.metrics
     if not result.success:
@@ -628,13 +669,9 @@ def _record_repair_pass(
                 for status in RawReplayPlanStatus
             },
             wall_ms=wall_ms,
-            peak_rss_bytes=max(_rss_bytes(), before.rss_bytes, after.rss_bytes),
-            peak_pss_bytes=max(value for value in (before.pss_bytes, after.pss_bytes) if value is not None)
-            if before.pss_bytes is not None or after.pss_bytes is not None
-            else None,
-            peak_swap_bytes=max(value for value in (before.swap_bytes, after.swap_bytes) if value is not None)
-            if before.swap_bytes is not None or after.swap_bytes is not None
-            else None,
+            peak_rss_bytes=int(sampler.peak("rss_bytes") or 0),
+            peak_pss_bytes=sampler.peak("pss_bytes"),
+            peak_swap_bytes=sampler.peak("swap_bytes"),
             cpu_ms=_delta(after.cpu_ms, before.cpu_ms),
             read_io_bytes=_delta(after.read_io_bytes, before.read_io_bytes),
             write_io_bytes=_delta(after.write_io_bytes, before.write_io_bytes),
@@ -727,6 +764,7 @@ def run_raw_authority_scale_proof(
         source_conn = archive._ensure_source_conn()
         generated_archive_id = _GeneratedArchiveId()
         pending_rows: list[tuple[str, str, str, int, bool, int]] = []
+        generated_payload_bytes = 0
         acquired_at_ms = 0
         staging = root / "payload-staging"
         staging.mkdir()
@@ -761,6 +799,7 @@ def run_raw_authority_scale_proof(
                     previous = publisher.blob_path(blob_hash)
                     source_path = component_source_path
                     pending_rows.append((row_native_id, source_path, blob_hash, blob_size, terminalized, component))
+                    generated_payload_bytes += blob_size
                     generated_archive_id.add(native_id=source_label, revision=member, blob_hash=blob_hash)
                     if len(pending_rows) < _PUBLISH_BATCH_SIZE:
                         continue
@@ -869,11 +908,12 @@ def run_raw_authority_scale_proof(
     check_replay_pressure()
     achieved_shape = repair.raw_materialization_scale_profile(config)
     check_replay_pressure()
-    _require_requested_scale(scenario, achieved_shape)
+    _require_requested_scale(scenario, achieved_shape, generated_payload_bytes=generated_payload_bytes)
     if prepare_only:
         prepared_report: dict[str, object] = {
             "archive_root": str(root),
             "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
+            "generated_payload_bytes": generated_payload_bytes,
             "achieved_shape": achieved_shape,
             "admission_sample": asdict(admission_sample),
             "generation_samples": [asdict(sample) for sample in generation_samples],
@@ -985,6 +1025,7 @@ def run_raw_authority_scale_proof(
     report: dict[str, object] = {
         "archive_root": str(root),
         "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
+        "generated_payload_bytes": generated_payload_bytes,
         "achieved_shape": achieved_shape,
         "admission_sample": asdict(admission_sample),
         "generation_samples": [asdict(sample) for sample in generation_samples],
