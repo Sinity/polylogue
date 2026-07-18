@@ -1056,7 +1056,7 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
             _config(generation_root, index_path=generation_path),
             raw_ids=list(raw_ids.all()),
             raw_batch_size=500,
-            ingest_workers=None,
+            ingest_workers=1,
             materialize=True,
             progress_callback=None,
             owned_inactive_generation=(generation.generation_id, generation.owner_id),
@@ -1071,6 +1071,7 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
         "authority_selection_expanded": True,
         "scheduled_raw_count": 4,
         "raw_batch_size": 500,
+        "ingest_workers": 1,
     }
     rebuilt_insights = repair_session_insights(
         _config(generation_root, index_path=generation_path),

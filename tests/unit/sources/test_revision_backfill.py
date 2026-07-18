@@ -658,3 +658,189 @@ def test_historical_backfill_reparses_multi_gib_shaped_raw_instead_of_spilling_a
     # The former archive-wide spill served the second lookup from a retained
     # pickle. A bounded cache deliberately reparses the durable source row.
     assert parses >= 2
+
+
+def _append_chain_archive(root: Path) -> tuple[str, str]:
+    """Two revisions of one logical session: an accepted-cohort replay fixture."""
+    initialize_active_archive_root(root)
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"chain","timestamp":"2026-07-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"old"}]}}\n'
+    )
+    newest = baseline + (
+        b'{"type":"response_item","payload":{"type":"message","role":"assistant","content":'
+        b'[{"type":"output_text","text":"new"}]}}\n'
+    )
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        newest_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=newest,
+            source_path="chain.jsonl",
+            acquired_at_ms=1,
+        )
+        baseline_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path="chain.jsonl",
+            acquired_at_ms=2,
+        )
+    return baseline_raw_id, newest_raw_id
+
+
+def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Baseline (pre-fix) shape: an unbounded (envelope=None) backfill with no
+    explicit spill-cache bound reparses every accepted revision during replay
+    even though census already parsed it once. This is exactly the CLI
+    rebuild-index path's behavior before max_cached_payload_bytes decoupled
+    caching from the resource envelope. Paired with the fixed-behavior test
+    below to pin both sides of the regression.
+    """
+    _append_chain_archive(tmp_path)
+    original = revision_backfill._parse_retained_raw
+    parse_calls: list[str] = []
+
+    def counted(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parse_calls.append(raw_id)
+        return original(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+
+    result = backfill_historical_revision_evidence(tmp_path, max_payload_bytes=None)
+
+    assert result.replayed_logical_sources == 1
+    # Census parses both raws once each (2 calls); replay then reparses the
+    # selected newest revision again from blob because nothing was cached
+    # (a 3rd call, duplicating one raw_id) instead of reusing census output.
+    assert len(parse_calls) == 3
+    assert len(set(parse_calls)) == 2
+
+
+def test_backfill_replay_reuses_spill_cache_when_bound_explicitly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """max_cached_payload_bytes caches census parse output independently of
+    max_payload_bytes (the resource-envelope block), so an unbounded backfill
+    still avoids reparsing accepted revisions during replay. Mutation:
+    reverting to the paired baseline test's call (omitting
+    max_cached_payload_bytes) reproduces the doubled parse count above --
+    this is the anti-vacuity pairing for the CLI rebuild-index fix.
+    """
+    _append_chain_archive(tmp_path)
+    original = revision_backfill._parse_retained_raw
+    parse_calls: list[str] = []
+
+    def counted(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parse_calls.append(raw_id)
+        return original(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+
+    result = backfill_historical_revision_evidence(
+        tmp_path,
+        max_payload_bytes=None,
+        max_cached_payload_bytes=64 * 1024 * 1024,
+    )
+
+    assert result.replayed_logical_sources == 1
+    # Both raws are parsed exactly once during census; replay hits the
+    # census-populated spill cache instead of reparsing the selected
+    # revision from blob a second time (contrast the 3-call baseline above).
+    assert len(parse_calls) == 2
+    assert len(set(parse_calls)) == 2
+
+
+def test_parallel_census_matches_sequential_archive_state(tmp_path: Path) -> None:
+    """Parsing spread across a process pool must produce byte-identical
+    archive state to the sequential path. Only read-only blob->ParsedSession
+    decode is parallelized; archive writes apply in fixed pending-rows order
+    regardless of worker completion order, so parallel and sequential runs
+    are authority-equivalent (not merely "close enough").
+    """
+    sequential_root = tmp_path / "sequential"
+    parallel_root = tmp_path / "parallel"
+    for root in (sequential_root, parallel_root):
+        initialize_active_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            for index in range(6):
+                payload = _bundle(_chatgpt_session(f"session-{index}", f"hello {index}", f"world {index}"))
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=payload,
+                    source_path=f"chat-{index}.json",
+                    acquired_at_ms=index,
+                )
+
+    seq_result = backfill_historical_revision_evidence(sequential_root, ingest_workers=1)
+    par_result = backfill_historical_revision_evidence(parallel_root, ingest_workers=4)
+
+    assert seq_result == par_result
+
+    def _sessions(root: Path) -> list[tuple[object, ...]]:
+        with sqlite3.connect(root / "index.db") as conn:
+            return conn.execute("SELECT native_id, message_count, raw_id FROM sessions ORDER BY native_id").fetchall()
+
+    assert _sessions(sequential_root) == _sessions(parallel_root)
+
+
+def _state_db_bytes_for_session(tmp_path: Path, *, session_id: str, message_text: str) -> bytes:
+    """Variant of _single_session_state_db_bytes with a distinct session id."""
+    db_path = tmp_path / f"state-source-{session_id}.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (19);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, source TEXT, model_config TEXT, parent_session_id TEXT,
+                started_at REAL, ended_at REAL, end_reason TEXT, title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+                timestamp REAL NOT NULL, tool_calls TEXT, observed INTEGER DEFAULT 0,
+                active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, model_config, started_at, ended_at, end_reason, title) "
+            "VALUES (?, 'cli', '{}', 1.0, 8.0, 'completed', ?)",
+            (session_id, session_id),
+        )
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, ?, 'user', ?, 2.0)",
+            (session_id, message_text),
+        )
+    return db_path.read_bytes()
+
+
+def test_parallel_census_threads_hermes_sqlite_payload_path(tmp_path: Path) -> None:
+    """Regression for the #3113/polylogue-1zex SQLite-detection branch under
+    parallel dispatch: _census_parse_worker must thread payload_path (the
+    real on-disk blob path) and archive_root through to _parse_one the same
+    way the sequential parse_retained_raw_sessions does, so a Hermes
+    state.db raw parsed by a pool worker still opens via sqlite3 against a
+    real file instead of only working by accident through the temp-file
+    fallback. Two independent single-session state.db raws force
+    ingest_workers>1 to actually dispatch through the process pool.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(2):
+            payload = _state_db_bytes_for_session(tmp_path, session_id=f"hermes-{index}", message_text=f"hi {index}")
+            archive.write_raw_payload(
+                provider=Provider.HERMES,
+                payload=payload,
+                source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
+                acquired_at_ms=index,
+            )
+
+    result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
+
+    assert result.scanned == 2
+    assert result.replayed_logical_sources == 2
+    assert result.quarantined == 0
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        rows = conn.execute("SELECT native_id, message_count FROM sessions ORDER BY native_id").fetchall()
+    assert [native_id.startswith("hermes-") for native_id, _count in rows] == [True, True]
+    assert [count for _native_id, count in rows] == [1, 1]

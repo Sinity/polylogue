@@ -15,6 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
+from polylogue.pipeline.services.process_pool import resolve_parse_worker_count
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
     iter_antigravity_language_server_sessions,
@@ -58,17 +59,10 @@ def _parse_worker_count() -> int:
 
     Parse is ~44% of re-ingest wall time and CPU-bound; the single SQLite
     writer is I/O-bound. Running file parsing across worker processes overlaps
-    parse CPU with write I/O. Default = min(8, cpus-1), clamped to >=1. A value
-    of 1 disables the pool entirely and preserves the exact sequential behavior
-    as an escape hatch.
+    parse CPU with write I/O. A value of 1 disables the pool entirely and
+    preserves the exact sequential behavior as an escape hatch.
     """
-    raw = os.environ.get("POLYLOGUE_INGEST_PARSE_WORKERS")
-    if raw is None:
-        return max(1, min(8, (os.cpu_count() or 2) - 1))
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return max(1, min(8, (os.cpu_count() or 2) - 1))
+    return resolve_parse_worker_count()
 
 
 def _parse_source_path_worker(

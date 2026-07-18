@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 
@@ -24,6 +25,25 @@ def process_pool_context() -> multiprocessing.context.BaseContext:
     if "forkserver" in start_methods:
         return multiprocessing.get_context("forkserver")
     return multiprocessing.get_context("spawn")
+
+
+def resolve_parse_worker_count(*, env_var: str = "POLYLOGUE_INGEST_PARSE_WORKERS") -> int:
+    """Resolve a CPU-bound parse worker count from ``env_var`` or CPU count.
+
+    Default is ``min(8, cpus-1)`` clamped to at least 1. A value of ``1``
+    (including an invalid override) disables pooling entirely and preserves
+    exact sequential parse behavior as an escape hatch. Shared by every
+    read-only blob->parsed-session decode stage (direct ingest, raw-authority
+    census) so one operator knob bounds all of them consistently.
+    """
+    default = max(1, min(8, (os.cpu_count() or 2) - 1))
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
 
 
 def process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
@@ -57,5 +77,6 @@ __all__ = [
     "_initialize_worker_logging",
     "process_pool_context",
     "process_pool_executor",
+    "resolve_parse_worker_count",
     "terminate_process_pool",
 ]

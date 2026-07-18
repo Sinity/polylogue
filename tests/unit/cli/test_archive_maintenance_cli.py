@@ -2029,6 +2029,7 @@ def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path)
         "authority_selection_expanded": True,
         "scheduled_raw_count": 2,
         "raw_batch_size": 7,
+        "ingest_workers": 1,
     }
 
 

@@ -227,6 +227,7 @@ def _census_historical_revision_evidence(
     *,
     selected_raw_ids: list[str] | None,
     max_payload_bytes: int | None,
+    ingest_workers: int = 1,
 ) -> _RevisionCensusState:
     """Persist a complete bounded parser census without mutating index.db."""
     state = _RevisionCensusState(0, 0, 0, set(), {}, {})
@@ -249,6 +250,13 @@ def _census_historical_revision_evidence(
                     raise RawRevisionReplayResourceBlockedError(
                         sorted(blocked_ids), max_payload_bytes, total_payload_bytes
                     )
+            # Parse is read-only blob->ParsedSession decode and authority-neutral;
+            # spread it across a process pool when there is more than one raw to
+            # parse. Archive writes below stay in fixed `pending_rows` order
+            # regardless of worker completion order, so parallel and sequential
+            # runs remain byte-identical.
+            parseable_raw_ids = [raw_id for raw_id, source_index in pending_rows if source_index >= 0]
+            parsed_outcomes = _parse_retained_raws(archive, parseable_raw_ids, ingest_workers=ingest_workers)
             for raw_id, source_index in pending_rows:
                 state.scanned += 1
                 state.censused.add(raw_id)
@@ -262,18 +270,18 @@ def _census_historical_revision_evidence(
                     )
                     state.quarantined += 1
                     continue
-                try:
-                    sessions, payload_bytes, revision_kind = _parse_retained_raw(archive, raw_id)
-                except Exception as exc:
+                outcome = parsed_outcomes[raw_id]
+                if isinstance(outcome, Exception):
                     archive.replace_raw_membership_census(
                         raw_id,
                         None,
                         parser_fingerprint="revision-membership-v1",
                         censused_at_ms=0,
-                        detail=str(exc),
+                        detail=str(outcome),
                     )
                     state.quarantined += 1
                     continue
+                sessions, payload_bytes, revision_kind = outcome
                 state.classified += int(len(sessions) == 1)
                 spill.add(raw_id, sessions, payload_bytes=payload_bytes)
                 if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
@@ -314,6 +322,7 @@ def census_historical_revision_evidence(
     *,
     selected_raw_ids: list[str] | None = None,
     max_payload_bytes: int | None = None,
+    ingest_workers: int = 1,
 ) -> RevisionCensusResult:
     """Complete the source-tier census stage without applying index changes."""
     with (
@@ -325,6 +334,7 @@ def census_historical_revision_evidence(
             spill,
             selected_raw_ids=selected_raw_ids,
             max_payload_bytes=max_payload_bytes,
+            ingest_workers=ingest_workers,
         )
         expanded, logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
     _record_raw_authority_parser_census(archive_root, tuple(expanded))
@@ -344,12 +354,23 @@ def backfill_historical_revision_evidence(
     owned_inactive_generation: tuple[str, str] | None = None,
     retention_observer: Callable[[int, int], None] | None = None,
     max_payload_bytes: int | None = None,
+    max_cached_payload_bytes: int | None = None,
+    ingest_workers: int = 1,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
     Parser output is spilled beside the target archive during the census and
     loaded one logical authority cohort at a time. Peak retained session trees
     therefore follow the largest raw/cohort, not the archive-wide raw count.
+
+    ``max_cached_payload_bytes`` bounds the spill cache independently of
+    ``max_payload_bytes``: the latter is a component resource-envelope block
+    (``None`` means unbounded, e.g. a one-shot full-archive rebuild) while the
+    former only avoids doubling I/O for census-then-replay reparse. It
+    defaults to ``max_payload_bytes`` so every existing bounded-envelope
+    caller keeps its current exactly-sized cache; pass it explicitly to cache
+    parse output for an unbounded (``max_payload_bytes=None``) census without
+    also activating envelope blocking.
     """
     adoption_deferred = 0
     quarantined = 0
@@ -363,15 +384,17 @@ def backfill_historical_revision_evidence(
         if owned_inactive_generation is not None
         else ArchiveStore.open_existing(archive_root, read_only=False)
     )
+    spill_cache_bytes = max_cached_payload_bytes if max_cached_payload_bytes is not None else max_payload_bytes
     with (
         archive_context as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=spill_cache_bytes) as spill,
     ):
         census = _census_historical_revision_evidence(
             archive,
             spill,
             selected_raw_ids=selected_raw_ids,
             max_payload_bytes=max_payload_bytes,
+            ingest_workers=ingest_workers,
         )
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         # The direct backfill entry point must publish the same current-parser
@@ -490,6 +513,110 @@ def backfill_historical_revision_evidence(
 def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
     provider, _blob_hash, source_path, kind, payload_size = archive.raw_revision_descriptor(raw_id)
     return parse_retained_raw_sessions(archive, raw_id), payload_size, kind
+
+
+def _census_parse_worker(
+    raw_id: str,
+    provider_token: str,
+    blob_hash: str,
+    source_path: str,
+    is_stream: bool,
+    blob_root_str: str,
+    source_db_path_str: str,
+) -> tuple[str, list[ParsedSession] | None, str | None]:
+    """ProcessPool worker: parse one retained raw's already-published blob bytes.
+
+    Pure read-only blob->ParsedSession decode; the caller already knows this
+    raw's payload size and revision kind from its own source-tier descriptor
+    lookup, so only sessions (or a typed error string) cross the process
+    boundary. Errors are returned rather than raised so the writer process can
+    apply the exact same per-raw quarantine handling as the sequential path.
+    """
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    provider = Provider(provider_token)
+    publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
+    try:
+        if is_stream:
+            with publisher.open(blob_hash) as payload:
+                sessions = _parse_stream(provider, payload, source_path)
+        else:
+            payload_path = None
+            if provider is Provider.HERMES:
+                candidate_path = publisher.blob_path(blob_hash)
+                payload_path = candidate_path if candidate_path.exists() else None
+            sessions = _parse_one(
+                provider,
+                publisher.read_all(blob_hash),
+                source_path,
+                payload_path=payload_path,
+                archive_root=Path(blob_root_str).parent,
+            )
+        return raw_id, sessions, None
+    except Exception as exc:
+        return raw_id, None, str(exc)
+
+
+def _parse_retained_raws(
+    archive: ArchiveStore,
+    raw_ids: list[str],
+    *,
+    ingest_workers: int,
+) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
+    """Parse a batch of retained raws, optionally across a process pool.
+
+    Returns each outcome keyed by raw_id: either the parsed
+    ``(sessions, payload_bytes, revision_kind)`` tuple or the caught
+    exception. Read-only blob->ParsedSession decode is authority-neutral and
+    embarrassingly parallel; callers apply archive writes afterwards in a
+    fixed deterministic order independent of completion order here, so
+    parallel and sequential execution produce byte-identical archive state.
+    """
+    if ingest_workers <= 1 or len(raw_ids) <= 1:
+        results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
+        for raw_id in raw_ids:
+            try:
+                results[raw_id] = _parse_retained_raw(archive, raw_id)
+            except Exception as exc:
+                results[raw_id] = exc
+        return results
+
+    from concurrent.futures import as_completed
+
+    from polylogue.pipeline.services.process_pool import process_pool_executor
+
+    descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+    blob_root_str = str(archive.archive_root / "blob")
+    source_db_path_str = str(archive.source_db_path)
+    results = {}
+    with process_pool_executor(max_workers=min(ingest_workers, len(raw_ids))) as pool:
+        future_to_raw_id = {}
+        for raw_id in raw_ids:
+            provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
+            future = pool.submit(
+                _census_parse_worker,
+                raw_id,
+                provider.value,
+                blob_hash,
+                source_path,
+                is_stream_record_provider(source_path, str(provider)),
+                blob_root_str,
+                source_db_path_str,
+            )
+            future_to_raw_id[future] = raw_id
+        for future in as_completed(future_to_raw_id):
+            raw_id = future_to_raw_id[future]
+            try:
+                _raw_id, sessions, error = future.result()
+            except Exception as exc:
+                results[raw_id] = exc
+                continue
+            if error is not None:
+                results[raw_id] = RuntimeError(error)
+                continue
+            _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
+            results[raw_id] = (sessions or [], payload_size, kind)
+    return results
 
 
 def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
