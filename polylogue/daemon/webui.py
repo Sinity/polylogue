@@ -86,11 +86,43 @@ class WebUIAssetBundle:
         if entry is None:
             raise WebUIAssetError(f"Vite manifest has no {name!r} entry")
         script = self._manifest_asset_name(entry.get("file"))
-        raw_css = entry.get("css", [])
-        if not isinstance(raw_css, list):
-            raise WebUIAssetError("Vite entry css field must be a list")
-        stylesheets = tuple(self._manifest_asset_name(value) for value in raw_css)
+        stylesheets = self._entrypoint_stylesheets(entry)
         return WebUIEntrypoint(script=script, stylesheets=stylesheets)
+
+    def _entrypoint_stylesheets(self, entry: dict[str, object]) -> tuple[str, ...]:
+        """Collect CSS emitted on an entry and its Vite import graph.
+
+        Vite is free to attach shared CSS to an imported chunk rather than the
+        entry itself.  The daemon must preserve that graph detail while still
+        exposing only manifest-governed, immutable assets to the WebUI.
+        """
+        stylesheets: list[str] = []
+        seen_chunks: set[str] = set()
+
+        def visit(chunk: dict[str, object], chunk_name: str) -> None:
+            if chunk_name in seen_chunks:
+                return
+            seen_chunks.add(chunk_name)
+            raw_imports = chunk.get("imports", [])
+            if not isinstance(raw_imports, list):
+                raise WebUIAssetError("Vite manifest imports field must be a list")
+            for imported_name in raw_imports:
+                if not isinstance(imported_name, str):
+                    raise WebUIAssetError("Vite manifest import name must be a string")
+                imported = self._manifest.get(imported_name)
+                if not isinstance(imported, dict):
+                    raise WebUIAssetError(f"Vite manifest import is missing: {imported_name}")
+                visit(imported, imported_name)
+            raw_css = chunk.get("css", [])
+            if not isinstance(raw_css, list):
+                raise WebUIAssetError("Vite manifest css field must be a list")
+            for value in raw_css:
+                stylesheet = self._manifest_asset_name(value)
+                if stylesheet not in stylesheets:
+                    stylesheets.append(stylesheet)
+
+        visit(entry, "<entry>")
+        return tuple(stylesheets)
 
     def read_asset(self, name: str) -> WebUIAsset:
         if name not in self._allowed_assets:

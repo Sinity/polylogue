@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/preact';
+import { render, screen, within } from '@testing-library/preact';
 import { describe, expect, it } from 'vitest';
 
 import type { InsightPanel, ObservabilityPayload } from '../contracts/observability';
@@ -15,11 +15,14 @@ describe('ObservabilityIsland', () => {
     const fakeDescriptorPanel: InsightPanel = {
       name: 'fake_descriptor', display_name: 'Fake descriptor', state: 'available', error: null,
       readiness: { state: 'fresh', reason: null },
-      items: [{ fields: [{ label: 'proof', value: 'registry generated' }], json: {}, provenance: null }],
+      items: [{ fields: [{ label: 'proof', value: 'registry generated' }], json: { registry: 'authoritative' }, provenance: null }],
     };
     render(<InsightBrowser panels={[...payload.insights, fakeDescriptorPanel]} />);
-    expect(screen.getByRole('heading', { name: 'Fake descriptor' })).toBeInTheDocument();
-    expect(screen.getByText('registry generated')).toBeInTheDocument();
+    const card = screen.getByRole('heading', { name: 'Fake descriptor' }).closest('article');
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText('registry generated')).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText('JSON evidence')).toBeInTheDocument();
+    expect(card).toHaveTextContent('"registry": "authoritative"');
   });
 
   it('keeps a timed-out component’s last-good evidence beside healthy panels', () => {
@@ -35,5 +38,6 @@ describe('ObservabilityIsland', () => {
     expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.getByText('4')).toBeInTheDocument();
     expect(screen.getByText('23 ms')).toBeInTheDocument();
+    expect(screen.getByTestId('source-freshness')).toHaveAttribute('data-operational-reason', 'cursor-ahead');
   });
 });

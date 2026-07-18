@@ -2088,6 +2088,47 @@ class TestReaderActionAffordances:
 
 
 class TestWebUIV2:
+    def test_observability_json_routes_project_daemon_owned_contracts(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Exercise the authenticated API contracts consumed by the observability island.
+
+        This proves the browser receives daemon-projected descriptor and
+        named-source state rather than needing a client-side aggregation path.
+        """
+        headers = {"Authorization": "Bearer webui-test-token"}
+        with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
+            overview = cast(dict[str, object], _get_json(base_url, "/api/webui/observability", headers=headers))
+            panel = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/webui/insights/session_profiles", headers=headers),
+            )
+            freshness = cast(
+                dict[str, object],
+                _get_json(
+                    base_url,
+                    f"/api/webui/freshness?source={quote('/tmp/polylogue-webui-missing-source.jsonl')}",
+                    headers=headers,
+                ),
+            )
+
+        assert overview["contract_version"] == 1
+        assert cast(dict[str, object], overview["status"])["adapter"] in {
+            "status-component-snapshot",
+            "legacy-component-readiness",
+        }
+        assert any(item["name"] == "session_profiles" for item in cast(list[dict[str, object]], overview["insights"]))
+        assert cast(list[dict[str, object]], panel["insights"])[0]["name"] == "session_profiles"
+        assert {
+            "stage",
+            "operational_state",
+            "operational_reason",
+            "cursor_age_ms",
+            "fts_checked_at",
+            "projection_sha256",
+        } <= freshness.keys()
+
     def test_observability_page_serves_semantic_registry_panels(
         self,
         workspace_env: dict[str, Path],
@@ -2131,7 +2172,7 @@ class TestWebUIV2:
             assert "http://" not in html_body
 
             script_match = re.search(r'src="(/app/assets/archive-overview-[^"]+\.js)"', html_body)
-            style_match = re.search(r'href="(/app/assets/archive-overview-[^"]+\.css)"', html_body)
+            style_match = re.search(r'href="(/app/assets/styles-[^"]+\.css)"', html_body)
             assert script_match is not None
             assert style_match is not None
 

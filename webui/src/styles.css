@@ -279,6 +279,16 @@ a:focus-visible {
 .freshness-ladder li[data-stage-state="current"] { border-color: Highlight; font-weight: 700; }
 .freshness-ladder li[data-stage-state="complete"] { opacity: 0.72; }
 
+[data-source-freshness][data-operational-state="degraded"] {
+  border-inline-start: 0.3rem solid DarkOrange;
+  padding-inline-start: 0.75rem;
+}
+
+[data-source-freshness][data-operational-reason="cursor-ahead"] {
+  border-color: DarkOrange;
+  border-style: solid;
+}
+
 @media (max-width: 42rem) {
   .site-header,
   .activity-panel__heading {
