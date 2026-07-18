@@ -342,6 +342,7 @@ A few keys not shown in the full example above, with their TOML path:
 | `daemon_client_mode` | `daemon.client_mode` | How the CLI/MCP client reaches the daemon: `auto` (default), or an explicit forced mode. |
 | `no_daemon` | `client.no_daemon` | Force direct in-process archive access, bypassing the daemon client even when one is reachable. |
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
+| `hermes_root` | `sources.hermes.root` | Runtime root watched for Hermes state, snapshots, NeMo Relay ATIF/ATOF artifacts, and verification evidence. Defaults to `~/.hermes`. |
 | `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. |
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
 | `antigravity_language_server` | `sources.antigravity_language_server` | Path to an Antigravity language-server binary, when parsing Antigravity sessions needs it. |
@@ -373,6 +374,7 @@ Common runtime overrides:
 | `POLYLOGUE_CONFIG` | config layer | Explicit user config path. |
 | `POLYLOGUE_SITE_CONFIG` | config layer | Explicit site config path; empty disables site config. |
 | `POLYLOGUE_ARCHIVE_ROOT` | `archive_root` | Override the archive root. |
+| `POLYLOGUE_HERMES_ROOT` | `hermes_root` | Override the Hermes runtime root watched by the daemon. |
 | `POLYLOGUE_DAEMON_URL` | `daemon_url` | CLI/MCP client daemon base URL. |
 | `POLYLOGUE_API_HOST` / `POLYLOGUE_API_PORT` | `api_host` / `api_port` | Daemon HTTP API bind. |
 | `POLYLOGUE_API_AUTH_TOKEN` | `api_auth_token` | API bearer token; redacted in config output. |

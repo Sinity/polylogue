@@ -1268,7 +1268,8 @@ def test_polylogued_run_uses_default_sources() -> None:
         result = CliRunner().invoke(main, ["run", "--no-browser-capture", "--no-api", "--debounce-s", "0.25"])
 
     assert result.exit_code == 0
-    default_sources.assert_called_once_with()
+    assert default_sources.call_count == 1
+    assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
     coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
     assert inspect.iscoroutine(coroutine)
     coroutine.close()
@@ -1341,7 +1342,8 @@ def test_polylogued_watch_uses_default_sources() -> None:
         result = runner.invoke(main, ["watch", "--debounce-s", "0.25"])
 
     assert result.exit_code == 0
-    default_sources.assert_called_once_with()
+    assert default_sources.call_count == 1
+    assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
     coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
     assert inspect.iscoroutine(coroutine)
     coroutine.close()

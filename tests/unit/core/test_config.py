@@ -440,6 +440,11 @@ class TestPolylogueConfigDefaults:
         cfg = load_polylogue_config()
         assert cfg.source_roots == ()
 
+    def test_hermes_root_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        assert load_polylogue_config().hermes_root == ""
+
     def test_watch_debounce_default(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
 
@@ -525,6 +530,12 @@ class TestPolylogueConfigEnvOverrides:
         cfg = load_polylogue_config()
         assert cfg.watch_debounce_s == 5.0
 
+    def test_env_overrides_hermes_root(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", "/srv/hermes")
+        assert load_polylogue_config().hermes_root == "/srv/hermes"
+
 
 class TestPolylogueConfigCLIOverrides:
     """CLI overrides take highest precedence."""
@@ -591,6 +602,14 @@ class TestPolylogueConfigTOML:
         )
         cfg = load_polylogue_config(config_path=toml_path)
         assert cfg.source_roots == ("/tmp/extra", "/tmp/more")
+
+    def test_toml_sets_hermes_root(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config, resolve_runtime_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text('[sources.hermes]\nroot = "/srv/hermes"\n', encoding="utf-8")
+        assert load_polylogue_config(config_path=toml_path).hermes_root == "/srv/hermes"
+        assert resolve_runtime_config(config_path=toml_path).source_paths.hermes == Path("/srv/hermes")
 
     def test_toml_env_cli_precedence(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]

@@ -63,5 +63,18 @@ def test_default_sources_watch_hermes_state_db(monkeypatch: Any, tmp_path: Path)
     hermes = sources["hermes"]
     assert hermes.root == tmp_path / ".hermes"
     assert hermes.accepts(tmp_path / ".hermes" / "state.db")
+    assert hermes.accepts(tmp_path / ".hermes" / "verification_evidence.db")
     assert hermes.accepts(tmp_path / ".hermes" / "sessions" / "snapshot.json")
+    assert hermes.accepts(tmp_path / ".hermes" / "observability" / "hermes-atof.jsonl")
     assert sources["inbox"].accepts(tmp_path / "archive" / "inbox" / "state.db")
+
+
+def test_default_sources_uses_resolved_hermes_root(tmp_path: Path) -> None:
+    configured_root = tmp_path / "hermes-profile"
+
+    hermes = next(
+        source for source in live_watcher.default_sources(hermes_root=configured_root) if source.name == "hermes"
+    )
+
+    assert hermes.root == configured_root
+    assert hermes.accepts(configured_root / "observability" / "hermes-atof.jsonl")

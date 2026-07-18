@@ -138,6 +138,7 @@ def _watch_sources_from_roots(
     roots: tuple[Path, ...],
     *,
     browser_capture_spool_path: Path | None = None,
+    hermes_root: Path | None = None,
 ) -> tuple[WatchSource, ...]:
     """Build watch sources for explicit daemon roots.
 
@@ -148,7 +149,7 @@ def _watch_sources_from_roots(
     default inbox source.
     """
     if not roots:
-        sources = list(default_sources())
+        sources = list(default_sources(hermes_root=hermes_root))
         if browser_capture_spool_path is not None:
             spool = browser_capture_spool_path.expanduser()
             sources = [source for source in sources if source.name != "browser-capture"]
@@ -1992,9 +1993,10 @@ def run_command(
     _enable_faulthandler_if_supported()
     configure_logging()
 
-    from polylogue.config import load_polylogue_config
+    from polylogue.config import resolve_runtime_config
 
-    cfg = load_polylogue_config()
+    runtime = resolve_runtime_config()
+    cfg = runtime.settings
 
     def parameter_is_default(name: str) -> bool:
         source = ctx.get_parameter_source(name)
@@ -2045,7 +2047,11 @@ def run_command(
 
     atexit.register(_cleanup_pidfile)
 
-    sources = _watch_sources_from_roots(roots, browser_capture_spool_path=spool_path)
+    sources = _watch_sources_from_roots(
+        roots,
+        browser_capture_spool_path=spool_path,
+        hermes_root=runtime.source_paths.hermes,
+    )
     components = []
     if enable_watch:
         components.append(f"watch={len(sources)} source(s)")
@@ -2099,7 +2105,9 @@ def run_command(
     help="Quiet-period (seconds) before parsing a modified file.",
 )
 def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
-    sources = _watch_sources_from_roots(roots)
+    from polylogue.config import resolve_runtime_config
+
+    sources = _watch_sources_from_roots(roots, hermes_root=resolve_runtime_config().source_paths.hermes)
 
     click.echo(
         f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",

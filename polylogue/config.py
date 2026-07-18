@@ -507,6 +507,11 @@ class PolylogueConfig:
         return ()
 
     @property
+    def hermes_root(self) -> str:
+        """Optional layered override for the Hermes runtime root."""
+        return str(self._data.get("hermes_root", ""))
+
+    @property
     def drive_credentials_path(self) -> str:
         return str(self._data.get("drive_credentials_path", ""))
 
@@ -754,6 +759,14 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="path-layout",
         reload_behavior="startup-bound",
         description="Additional source roots watched by the daemon.",
+    ),
+    ConfigInventoryEntry(
+        "hermes_root",
+        toml_path="sources.hermes.root",
+        env_var="POLYLOGUE_HERMES_ROOT",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Hermes runtime root containing state, snapshots, and observability artifacts.",
     ),
     ConfigInventoryEntry(
         "embedding_enabled",
@@ -1317,6 +1330,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_allow_remote": False,
         "browser_capture_allow_no_auth": False,
         "source_roots": (),
+        "hermes_root": "",
         "drive_credentials_path": str(captured.config_home / "polylogue-credentials.json"),
         "drive_token_path": str(captured.state_home / "token.json"),
         "hook_sidecar_dir": str(captured.data_home / "hooks"),
@@ -1668,7 +1682,11 @@ def resolve_runtime_config(
         claude_code=bootstrap.home / ".claude" / "projects",
         codex=bootstrap.home / ".codex" / "sessions",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
-        hermes=bootstrap.home / ".hermes",
+        hermes=_resolved_runtime_path(
+            settings.hermes_root,
+            bootstrap=bootstrap,
+            fallback=bootstrap.home / ".hermes",
+        ),
         antigravity=bootstrap.home / ".gemini" / "antigravity",
         browser_capture=browser_spool,
         inbox=paths.inbox_root,
