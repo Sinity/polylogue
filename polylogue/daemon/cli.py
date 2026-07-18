@@ -77,6 +77,11 @@ _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 16
 # Between backlog burst passes the loop yields the writer briefly so live
 # ingest and interactive writes never queue behind a long drain.
 _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
+# Census-mode passes (replay planning paused behind the persisted parser
+# census) run no replay transaction, so the batch bounds parse work, not a
+# writer-transaction length — amortize the per-pass census fixed costs
+# (candidate discovery, component ordering, receipt) over more components.
+_RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
 _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 
@@ -544,6 +549,7 @@ async def _periodic_raw_materialization_convergence() -> None:
     between passes — instead of waiting a full interval per pass, which
     would stretch a large drain into weeks.
     """
+    census_mode = False
     while True:
         if _browser_capture_spool_has_pending_files():
             logger.info("raw materialization: yielding to pending browser-capture spool files")
@@ -552,11 +558,28 @@ async def _periodic_raw_materialization_convergence() -> None:
         recover = True
         try:
             while True:
+                # While replay planning is paused behind the persisted parser
+                # census, a pass does census-only work: no replay transaction
+                # runs, so the small replay-sized batch limit (which bounds
+                # writer-transaction length) only throttles parse-bound census
+                # throughput and stretches a large census into days. Use a
+                # larger batch for census-mode passes; the first pass that
+                # repairs or plans anything drops back to the replay limit.
+                limit = (
+                    _RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT
+                    if census_mode
+                    else _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT
+                )
                 materialized = await daemon_write_coordinator().run_sync(
                     "maintenance.raw_materialization",
-                    functools.partial(_drain_raw_materialization_once, recover=recover),
+                    functools.partial(_drain_raw_materialization_once, limit=limit, recover=recover),
                 )
                 recover = False
+                census_mode = (
+                    materialized.censused_components > 0
+                    and materialized.repaired_sessions == 0
+                    and materialized.executed_plans == 0
+                )
                 if materialized.made_progress:
                     logger.info(
                         "raw materialization: repaired %d session(s), executed %d frontier plan(s), %d candidate(s) remaining",
