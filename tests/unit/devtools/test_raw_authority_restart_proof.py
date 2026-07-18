@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from io import StringIO
 from pathlib import Path
@@ -19,6 +20,7 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
 
     assert payload["schema"] == "polylogue.raw-authority-restart-proof.v1"
     assert cast(str, payload["proof_id"]).startswith("raw-authority-restart-proof:")
+    assert json.loads(Path(cast(str, payload["report_path"])).read_text()) == payload
     assert payload["production_limits"] == {
         "raw_artifact_limit": None,
         "max_payload_bytes": repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,

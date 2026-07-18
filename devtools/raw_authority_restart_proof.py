@@ -967,8 +967,8 @@ def run_raw_authority_restart_proof(
         "fault_matrix": cases,
     }
     report_path = root / "raw-authority-restart-proof.json"
-    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     report["report_path"] = str(report_path)
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if not keep:
         shutil.rmtree(cases_root)
     return report
