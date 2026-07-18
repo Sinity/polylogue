@@ -23,12 +23,14 @@ from urllib.parse import quote
 from polylogue.archive.query.execution_control import classify_unit_expression_workload
 from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+from polylogue.logging import get_logger
 from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitEnvelope
 
 ARCHIVE_OVERVIEW_EXPRESSION = "messages where words >= 0 | sort by time desc"
 ARCHIVE_OVERVIEW_LIMIT = 6
 _WEBUI_ENTRY_NAME = "archive-overview"
 _HASHED_ASSET_RE = re.compile(r"^[A-Za-z0-9._-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$")
+logger = get_logger(__name__)
 
 
 class WebUIAssetError(RuntimeError):
@@ -295,6 +297,7 @@ async def build_observability_payload(
             panel["state"] = "unavailable"
             panel["error"] = str(exc)
         except Exception as exc:
+            logger.warning("webui insight panel degraded: %s", name, exc_info=exc)
             panel["state"] = "degraded"
             panel["error"] = str(exc)
         else:
