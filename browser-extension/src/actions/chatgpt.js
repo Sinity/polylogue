@@ -75,6 +75,25 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
   };
   const checkedModelOptions = () => [...document.querySelectorAll('[role="menuitemradio"][aria-checked="true"]')]
     .map((node) => textOf(node));
+  // The composer-pill + submenu UI (below) is a paid-tier surface: a small
+  // effort chip near the composer opens a combined model/effort menu. Free
+  // accounts instead expose one flat top-level model switcher with no effort
+  // dimension at all -- there is no composer pill to find, ever. Distinguish
+  // the two by which control actually exists rather than by presentation
+  // fields, so a plan upgrade/downgrade is handled by whichever DOM shows up.
+  const hasComposerPill = () => [...document.querySelectorAll("button")]
+    .some((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort);
+  const flatSwitcherButton = () => document.querySelector('[data-testid="model-switcher-dropdown-button"]');
+  // Flat switcher menu items pair a model-name span with a muted description
+  // line as adjacent DOM nodes under the same menuitemradio; textOf() would
+  // concatenate both, so read only the leading label span.
+  const primaryLabel = (node) => {
+    const span = node?.querySelector("span");
+    return normalizedText(span ? textOf(span) : textOf(node));
+  };
+  const flatCheckedModel = () => primaryLabel(
+    document.querySelector('[role="menuitemradio"][aria-checked="true"]'),
+  );
   const conversationIdFromLocation = () => {
     const parts = location.pathname.split("/").filter(Boolean);
     const marker = parts.indexOf("c");
@@ -155,26 +174,41 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     }, 5_000, "chat_surface_selection");
     if (!mode.chat || mode.work) throw new Error(`chat selected mismatch:chat=${mode.chat}:work=${mode.work}`);
 
-    const pill = await waitFor(
-      () => [...document.querySelectorAll("button")]
-        .find((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort),
-      10_000,
-      "effort_pill",
-    );
-    pointerClick(pill);
-    const modelMenu = await waitFor(
-      () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
-        .find((node) => textOf(node) === expectedModel),
-      5_000,
-      "model_menu",
-    );
-    pointerClick(modelMenu);
-    await waitFor(() => checkedModelOptions().includes(expectedModel), 5_000, "model_submenu");
-    const checked = checkedModelOptions();
-    if (!checked.includes(expectedModel) || !checked.includes(expectedEffort)) {
-      throw new Error(`model mismatch:${checked.join("|")}`);
+    if (hasComposerPill()) {
+      const pill = await waitFor(
+        () => [...document.querySelectorAll("button")]
+          .find((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort),
+        10_000,
+        "effort_pill",
+      );
+      pointerClick(pill);
+      const modelMenu = await waitFor(
+        () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
+          .find((node) => textOf(node) === expectedModel),
+        5_000,
+        "model_menu",
+      );
+      pointerClick(modelMenu);
+      await waitFor(() => checkedModelOptions().includes(expectedModel), 5_000, "model_submenu");
+      const checked = checkedModelOptions();
+      if (!checked.includes(expectedModel) || !checked.includes(expectedEffort)) {
+        throw new Error(`model mismatch:${checked.join("|")}`);
+      }
+      pointerClick(pill);
+    } else if (flatSwitcherButton()) {
+      pointerClick(flatSwitcherButton());
+      const modelItem = await waitFor(
+        () => [...document.querySelectorAll('[role="menuitemradio"]')]
+          .find((node) => primaryLabel(node) === expectedModel),
+        5_000,
+        "flat_model_menu",
+      );
+      if (modelItem.getAttribute("aria-checked") !== "true") pointerClick(modelItem);
+      await waitFor(() => flatCheckedModel() === expectedModel, 5_000, "flat_model_selection");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    } else {
+      throw new Error("protocol_model_selector_missing");
     }
-    pointerClick(pill);
 
     const fileInput = document.querySelector('input[type="file"]:not([accept="image/*"])');
     if (attachments.length && !fileInput) throw new Error("protocol_file_input_missing");
@@ -210,26 +244,41 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     }
 
     const finalMode = selectedMode();
-    const finalPill = [...document.querySelectorAll("button")]
-      .find((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort);
-    if (finalPill) pointerClick(finalPill);
-    const finalModelMenu = finalPill
-      ? await waitFor(
-        () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
-          .find((node) => textOf(node) === expectedModel),
+    let finalSelectionVerified = false;
+    if (hasComposerPill()) {
+      const finalPill = [...document.querySelectorAll("button")]
+        .find((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort);
+      if (finalPill) pointerClick(finalPill);
+      const finalModelMenu = finalPill
+        ? await waitFor(
+          () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
+            .find((node) => textOf(node) === expectedModel),
+          5_000,
+          "final_model_menu",
+        )
+        : null;
+      if (finalModelMenu) pointerClick(finalModelMenu);
+      const finalChecked = finalModelMenu
+        ? await waitFor(() => {
+          const values = checkedModelOptions();
+          return values.includes(expectedModel) && values.includes(expectedEffort) ? values : null;
+        }, 5_000, "final_model_selection")
+        : [];
+      if (finalPill) pointerClick(finalPill);
+      finalSelectionVerified = Boolean(finalPill) && finalChecked.includes(expectedModel);
+    } else if (flatSwitcherButton()) {
+      pointerClick(flatSwitcherButton());
+      await waitFor(
+        () => [...document.querySelectorAll('[role="menuitemradio"]')]
+          .some((node) => primaryLabel(node) === expectedModel),
         5_000,
-        "final_model_menu",
-      )
-      : null;
-    if (finalModelMenu) pointerClick(finalModelMenu);
-    const finalChecked = finalModelMenu
-      ? await waitFor(() => {
-        const values = checkedModelOptions();
-        return values.includes(expectedModel) && values.includes(expectedEffort) ? values : null;
-      }, 5_000, "final_model_selection")
-      : [];
-    if (finalPill) pointerClick(finalPill);
-    if (!finalMode.chat || finalMode.work || !finalPill || !finalChecked.includes(expectedModel)) {
+        "final_flat_model_menu",
+      );
+      await waitFor(() => flatCheckedModel() === expectedModel, 5_000, "final_flat_model_selection");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      finalSelectionVerified = true;
+    }
+    if (!finalMode.chat || finalMode.work || !finalSelectionVerified) {
       throw new Error("model mismatch before submit");
     }
 

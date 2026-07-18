@@ -198,6 +198,29 @@ def test_capabilities_fail_closed_for_unsupported_presentation_and_target(tmp_pa
         )
 
 
+def test_free_tier_chatgpt_presentation_is_a_second_supported_capability(tmp_path: Path) -> None:
+    # Most accounts (including plain-tier ones) never see the paid Pro
+    # composer surface at all; the receiver must not require it as the sole
+    # supported presentation, or the conduit only works for a minority of
+    # real accounts.
+    action = enqueue_action(
+        _request().model_copy(
+            update={
+                "presentation": BrowserActionPresentation(
+                    surface="chat",
+                    model_slug="chatgpt-auto",
+                    model_label="ChatGPT",
+                    effort_label="Standard",
+                )
+            }
+        ),
+        receiver_id=_RECEIVER_ID,
+        spool_path=tmp_path,
+    )
+    assert action.presentation.model_label == "ChatGPT"
+    assert action.presentation.effort_label == "Standard"
+
+
 def test_reply_and_project_target_are_explicit(tmp_path: Path) -> None:
     action = enqueue_action(
         _request(
