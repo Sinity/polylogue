@@ -17,13 +17,13 @@ import os
 import sqlite3
 import stat as stat_module
 import time
-from collections.abc import Awaitable, Callable, Iterable
-from contextlib import closing, suppress
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
@@ -196,6 +196,7 @@ class LiveWatcher:
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._catch_up_complete = asyncio.Event()
+        self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         self._batch_processor = LiveBatchProcessor(
             polylogue,
             self._sources,
@@ -455,19 +456,20 @@ class LiveWatcher:
         rebases: list[CursorObservationRebase] = []
         skipped = 0
         needed_bytes = 0
-        for candidate in candidates:
-            if self._stop.is_set():
-                break
-            if self._needs_work_from_state(
-                candidate.path,
-                stat=candidate.stat,
-                cursor=cursor_records.get(candidate.path),
-                rebase_queue=rebases,
-            ):
-                needed.append(candidate.path)
-                needed_bytes += candidate.stat.st_size
-            else:
-                skipped += 1
+        with self._archived_cursor_reconciliation_scope():
+            for candidate in candidates:
+                if self._stop.is_set():
+                    break
+                if self._needs_work_from_state(
+                    candidate.path,
+                    stat=candidate.stat,
+                    cursor=cursor_records.get(candidate.path),
+                    rebase_queue=rebases,
+                ):
+                    needed.append(candidate.path)
+                    needed_bytes += candidate.stat.st_size
+                else:
+                    skipped += 1
         if rebases:
             self._cursor.rebase_authoritative_observations(rebases)
         return CatchUpPlan(
@@ -615,13 +617,14 @@ class LiveWatcher:
             # Filter to files that actually need work.
             cursor_records = self._cursor.get_records(paths)
             needed = []
-            for path in paths:
-                try:
-                    stat = path.stat()
-                except FileNotFoundError:
-                    continue
-                if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
-                    needed.append(path)
+            with self._archived_cursor_reconciliation_scope():
+                for path in paths:
+                    try:
+                        stat = path.stat()
+                    except FileNotFoundError:
+                        continue
+                    if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
+                        needed.append(path)
             if not needed:
                 self._defer_unaccounted_failed_retries(paths)
                 return
@@ -870,6 +873,75 @@ class LiveWatcher:
 
         return self._reconcile_archived_cursor_outcome(path, stat=stat) is _ArchivedCursorReconciliation.RECONCILED
 
+    @contextmanager
+    def _archived_cursor_reconciliation_scope(self) -> Iterator[None]:
+        """Share one read-only connection pair across a bulk planning pass.
+
+        Cursor reconciliation runs per cursor-less file; during a 20k-file
+        catch-up plan, opening source.db+index.db fresh for every file cost
+        ~10 minutes of silent startup CPU (observed live 2026-07-18). The
+        scope is deliberately bounded to ONE planning pass — a long-lived
+        cached connection would keep reading a replaced index.db inode
+        across a blue-green generation swap.
+        """
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        source_db = archive_root / "source.db"
+        index_db = archive_root / "index.db"
+        conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
+        if source_db.exists() and index_db.exists():
+            try:
+                source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)
+                try:
+                    index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)
+                except sqlite3.Error:
+                    source_conn.close()
+                    raise
+                conns = (source_conn, index_conn)
+            except sqlite3.Error:
+                conns = None
+        self._archived_cursor_conns = conns
+        try:
+            yield
+        finally:
+            self._archived_cursor_conns = None
+            if conns is not None:
+                for conn in conns:
+                    with suppress(sqlite3.Error):
+                        conn.close()
+
+    @staticmethod
+    def _archived_cursor_row(
+        path: Path,
+        *,
+        source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection,
+    ) -> tuple[object, ...] | None:
+        """Newest parsed raw row for ``path`` that the index actually contains."""
+        rows = source_conn.execute(
+            """
+            SELECT raw_id, origin, blob_hash, blob_size
+            FROM raw_sessions
+            WHERE source_path = ?
+              AND COALESCE(source_index, 0) >= 0
+              AND parsed_at_ms IS NOT NULL
+              AND parse_error IS NULL
+            ORDER BY acquired_at_ms DESC, raw_id DESC
+            """,
+            (str(path),),
+        ).fetchall()
+        return next(
+            (
+                candidate
+                for candidate in rows
+                if index_conn.execute(
+                    "SELECT 1 FROM sessions WHERE raw_id = ? LIMIT 1",
+                    (candidate[0],),
+                ).fetchone()
+                is not None
+            ),
+            None,
+        )
+
     def _reconcile_archived_cursor_outcome(
         self,
         path: Path,
@@ -886,44 +958,27 @@ class LiveWatcher:
         archived prefix so catch-up can take the append path instead of
         parsing the whole active JSONL again.
         """
+        shared = self._archived_cursor_conns
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        source_db = archive_root / "source.db"
-        index_db = archive_root / "index.db"
-        if not source_db.exists() or not index_db.exists():
-            return _ArchivedCursorReconciliation.UNAVAILABLE
         try:
-            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT raw_id, origin, blob_hash, blob_size
-                    FROM raw_sessions
-                    WHERE source_path = ?
-                      AND COALESCE(source_index, 0) >= 0
-                      AND parsed_at_ms IS NOT NULL
-                      AND parse_error IS NULL
-                    ORDER BY acquired_at_ms DESC, raw_id DESC
-                    """,
-                    (str(path),),
-                ).fetchall()
-            with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as conn:
-                row = next(
-                    (
-                        candidate
-                        for candidate in rows
-                        if conn.execute(
-                            "SELECT 1 FROM sessions WHERE raw_id = ? LIMIT 1",
-                            (candidate[0],),
-                        ).fetchone()
-                        is not None
-                    ),
-                    None,
-                )
+            if shared is not None:
+                row = self._archived_cursor_row(path, source_conn=shared[0], index_conn=shared[1])
+            else:
+                source_db = archive_root / "source.db"
+                index_db = archive_root / "index.db"
+                if not source_db.exists() or not index_db.exists():
+                    return _ArchivedCursorReconciliation.UNAVAILABLE
+                with (
+                    closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as source_conn,
+                    closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
+                ):
+                    row = self._archived_cursor_row(path, source_conn=source_conn, index_conn=index_conn)
         except sqlite3.Error:
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
             return _ArchivedCursorReconciliation.INCOMPATIBLE
         _raw_id, origin, blob_hash, blob_size = row
-        archived_size = int(blob_size or 0)
+        archived_size = int(cast("int | None", blob_size) or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
             return _ArchivedCursorReconciliation.INCOMPATIBLE
