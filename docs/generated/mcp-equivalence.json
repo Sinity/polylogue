@@ -14,12 +14,12 @@
     "governed_python_absence_count": 18,
     "minimum_role_counts": {
       "admin": 7,
-      "read": 66,
+      "read": 64,
       "review": 2,
       "write": 29
     },
-    "python_binding_count": 86,
-    "tool_count": 104,
+    "python_binding_count": 84,
+    "tool_count": 102,
     "tool_names": [
       "action_affordances",
       "add_mark",
@@ -29,8 +29,6 @@
       "archive_coverage",
       "archive_debt",
       "archive_get_session",
-      "archive_list_sessions",
-      "archive_search_sessions",
       "blackboard_list",
       "blackboard_post",
       "build_context_image",
@@ -136,8 +134,6 @@
       "archive_coverage",
       "archive_debt",
       "archive_get_session",
-      "archive_list_sessions",
-      "archive_search_sessions",
       "blackboard_list",
       "build_context_image",
       "compare_sessions",
@@ -246,8 +242,6 @@
       "archive_coverage",
       "archive_debt",
       "archive_get_session",
-      "archive_list_sessions",
-      "archive_search_sessions",
       "blackboard_list",
       "blackboard_post",
       "build_context_image",
@@ -1720,301 +1714,6 @@
       "verb": "read",
       "workflow_coverage": [
         "archive-evidence-read"
-      ]
-    },
-    {
-      "canonical_plan": "query-sessions",
-      "canonical_projection": "envelope:items,limit,offset,total",
-      "capability": "read:query",
-      "compatibility_route": "target:query(plan, projection, page)",
-      "continuation": {
-        "continuation_ref": "result-set:{query-hash}:{cursor}",
-        "exhaustive_route": "target:query(plan, projection, page)",
-        "mode": "cursor_or_offset",
-        "notes": "Physical pages are bounded; logical completeness requires following the returned cursor/offset or the target query route."
-      },
-      "deprecation_state": "compatibility",
-      "description": "List sessions from the split archive store.",
-      "field_discovery": [
-        "facets",
-        "query_completions"
-      ],
-      "grammar_discovery": [
-        "query_completions",
-        "explain_query_expression"
-      ],
-      "incident_coverage": [
-        "z9gh-workflow-incident"
-      ],
-      "input_contract": {
-        "required_arguments": [],
-        "schema_mode": "FastMCP derives inputSchema from the unchanged handler object/signature",
-        "schema_source": "polylogue.mcp.server_tools.archive_list_sessions:inspect.signature"
-      },
-      "kernel": {
-        "compatibility": {
-          "access_result_shape": "query:exhaustive_page:envelope",
-          "authority": "mcp-role:read",
-          "durability": "transport-adapter; domain-owner-controls-durability",
-          "identity": "mcp-tool:session,result-set",
-          "lifecycle": "registered-handler-retained"
-        },
-        "completeness_edges": [
-          {
-            "consumer": "tests.infra.mcp.EXPECTED_TOOL_NAMES",
-            "kind": "discovery-name-equivalence",
-            "owner_path": "tests/infra/mcp.py",
-            "producer": "mcp.tool.archive_list_sessions"
-          },
-          {
-            "consumer": "docs/generated/mcp-equivalence.json",
-            "kind": "generated-equivalence-row",
-            "owner_path": "devtools/render_mcp_equivalence.py",
-            "producer": "mcp.tool.archive_list_sessions"
-          }
-        ],
-        "declaration_id": "mcp.tool.archive_list_sessions",
-        "discovery_text": "List sessions from the split archive store.",
-        "examples": [
-          {
-            "arguments": [
-              [
-                "limit",
-                1
-              ]
-            ],
-            "name": "minimal-valid-call",
-            "summary": "Minimal compatibility invocation for archive_list_sessions."
-          }
-        ],
-        "family_id": "mcp.tool.archive_list_sessions",
-        "handlers": [
-          {
-            "binding_key": "polylogue.mcp.server_tools:archive_list_sessions",
-            "owner_path": "polylogue/mcp/server_tools.py",
-            "surface": "mcp",
-            "symbol": "archive_list_sessions"
-          }
-        ],
-        "outputs": [
-          {
-            "kind": "envelope",
-            "name": "runtime-contract",
-            "schema_ref": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT",
-            "target_path": "mcp://tool/archive_list_sessions"
-          },
-          {
-            "kind": "generated-json",
-            "name": "equivalence-map",
-            "schema_ref": "polylogue.mcp.declarations.models.MCPToolDeclaration",
-            "target_path": "docs/generated/mcp-equivalence.json"
-          }
-        ],
-        "owner_path": "polylogue/mcp/declarations/registry.py",
-        "producer": "query-sessions",
-        "public_name": "archive_list_sessions",
-        "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
-        "schema_ref": "polylogue.mcp.server_tools.archive_list_sessions:inspect.signature"
-      },
-      "minimal_arguments": {
-        "limit": 1
-      },
-      "minimum_role": "read",
-      "name": "archive_list_sessions",
-      "object_kinds": [
-        "session",
-        "result-set"
-      ],
-      "observed_use": "not_observed",
-      "operation_owner": "query-sessions",
-      "output_contract": {
-        "envelope_fields": [
-          "items",
-          "limit",
-          "offset",
-          "total"
-        ],
-        "kind": "envelope",
-        "schema_source": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT"
-      },
-      "prompt_alternatives": [],
-      "python_parity": {
-        "binding": "polylogue.api.Polylogue.archive_list_sessions",
-        "intentional_absence_authority": null,
-        "reason": null
-      },
-      "registration": {
-        "module": "polylogue.mcp.server_tools",
-        "registrar": "register_query_tools",
-        "symbol": "archive_list_sessions"
-      },
-      "resource_alternatives": [
-        "polylogue://session/{id}",
-        "polylogue://result-set/{id}"
-      ],
-      "result_semantics": "exhaustive_page",
-      "retirement_owner": "polylogue-t46.8.2",
-      "telemetry_key": "archive_list_sessions",
-      "value_discovery": [
-        "query_completions"
-      ],
-      "verb": "query",
-      "workflow_coverage": [
-        "phrase-search",
-        "structural-query",
-        "continuation-recovery"
-      ]
-    },
-    {
-      "canonical_plan": "query-sessions",
-      "canonical_projection": "envelope:items,limit,query,total",
-      "capability": "read:query",
-      "compatibility_route": "target:query(plan, projection, page)",
-      "continuation": {
-        "continuation_ref": null,
-        "exhaustive_route": "target:query(plan, projection, page)",
-        "mode": "ranked_frontier",
-        "notes": "Ranking is not an exhaustive relation; the declaration names the exhaustive query route when one exists."
-      },
-      "deprecation_state": "compatibility",
-      "description": "Search session block text.",
-      "field_discovery": [
-        "facets",
-        "query_completions"
-      ],
-      "grammar_discovery": [
-        "query_completions",
-        "explain_query_expression"
-      ],
-      "incident_coverage": [
-        "z9gh-workflow-incident"
-      ],
-      "input_contract": {
-        "required_arguments": [
-          "query"
-        ],
-        "schema_mode": "FastMCP derives inputSchema from the unchanged handler object/signature",
-        "schema_source": "polylogue.mcp.server_tools.archive_search_sessions:inspect.signature"
-      },
-      "kernel": {
-        "compatibility": {
-          "access_result_shape": "query:top_k:envelope",
-          "authority": "mcp-role:read",
-          "durability": "transport-adapter; domain-owner-controls-durability",
-          "identity": "mcp-tool:session,result-set",
-          "lifecycle": "registered-handler-retained"
-        },
-        "completeness_edges": [
-          {
-            "consumer": "tests.infra.mcp.EXPECTED_TOOL_NAMES",
-            "kind": "discovery-name-equivalence",
-            "owner_path": "tests/infra/mcp.py",
-            "producer": "mcp.tool.archive_search_sessions"
-          },
-          {
-            "consumer": "docs/generated/mcp-equivalence.json",
-            "kind": "generated-equivalence-row",
-            "owner_path": "devtools/render_mcp_equivalence.py",
-            "producer": "mcp.tool.archive_search_sessions"
-          }
-        ],
-        "declaration_id": "mcp.tool.archive_search_sessions",
-        "discovery_text": "Search session block text.",
-        "examples": [
-          {
-            "arguments": [
-              [
-                "limit",
-                1
-              ],
-              [
-                "query",
-                "hello"
-              ]
-            ],
-            "name": "minimal-valid-call",
-            "summary": "Minimal compatibility invocation for archive_search_sessions."
-          }
-        ],
-        "family_id": "mcp.tool.archive_search_sessions",
-        "handlers": [
-          {
-            "binding_key": "polylogue.mcp.server_tools:archive_search_sessions",
-            "owner_path": "polylogue/mcp/server_tools.py",
-            "surface": "mcp",
-            "symbol": "archive_search_sessions"
-          }
-        ],
-        "outputs": [
-          {
-            "kind": "envelope",
-            "name": "runtime-contract",
-            "schema_ref": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT",
-            "target_path": "mcp://tool/archive_search_sessions"
-          },
-          {
-            "kind": "generated-json",
-            "name": "equivalence-map",
-            "schema_ref": "polylogue.mcp.declarations.models.MCPToolDeclaration",
-            "target_path": "docs/generated/mcp-equivalence.json"
-          }
-        ],
-        "owner_path": "polylogue/mcp/declarations/registry.py",
-        "producer": "query-sessions",
-        "public_name": "archive_search_sessions",
-        "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
-        "schema_ref": "polylogue.mcp.server_tools.archive_search_sessions:inspect.signature"
-      },
-      "minimal_arguments": {
-        "limit": 1,
-        "query": "hello"
-      },
-      "minimum_role": "read",
-      "name": "archive_search_sessions",
-      "object_kinds": [
-        "session",
-        "result-set"
-      ],
-      "observed_use": "not_observed",
-      "operation_owner": "query-sessions",
-      "output_contract": {
-        "envelope_fields": [
-          "items",
-          "limit",
-          "query",
-          "total"
-        ],
-        "kind": "envelope",
-        "schema_source": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT"
-      },
-      "prompt_alternatives": [],
-      "python_parity": {
-        "binding": "polylogue.api.Polylogue.archive_search_sessions",
-        "intentional_absence_authority": null,
-        "reason": null
-      },
-      "registration": {
-        "module": "polylogue.mcp.server_tools",
-        "registrar": "register_query_tools",
-        "symbol": "archive_search_sessions"
-      },
-      "resource_alternatives": [
-        "polylogue://session/{id}",
-        "polylogue://result-set/{id}"
-      ],
-      "result_semantics": "top_k",
-      "retirement_owner": "polylogue-t46.8.2",
-      "telemetry_key": "archive_search_sessions",
-      "value_discovery": [
-        "query_completions"
-      ],
-      "verb": "query",
-      "workflow_coverage": [
-        "phrase-search",
-        "structural-query",
-        "continuation-recovery"
       ]
     },
     {

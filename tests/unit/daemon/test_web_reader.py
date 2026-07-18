@@ -642,7 +642,7 @@ def test_archive_session_list_route_uses_bounded_sql_helper() -> None:
 
     from polylogue.daemon.http import DaemonAPIHandler
 
-    source = inspect.getsource(DaemonAPIHandler._do_archive_list_sessions)
+    source = inspect.getsource(DaemonAPIHandler._do_archive_session_list)
 
     assert "self._run_archive_bounded_query(" in source
     assert "archive.search_summaries(" in source

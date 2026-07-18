@@ -59,8 +59,6 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "insight_rigor_audit": {},
     "list_sessions": {"limit": 1},
     "archive_get_session": {"session_id": _SYNTHETIC_CONV_ID},
-    "archive_list_sessions": {"limit": 1},
-    "archive_search_sessions": {"query": "hello", "limit": 1},
     "session_profiles": {"limit": 1},
     "session_work_events": {"limit": 1},
     "session_phases": {"limit": 1},
