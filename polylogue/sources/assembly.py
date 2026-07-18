@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 ClaudeCodeSessionIndex: TypeAlias = dict[str, "SessionIndexEntry"]
 ClaudeCodeHistoryPasteIndex: TypeAlias = dict[str, list["HistoryEntry"]]
 CodexThreadNames: TypeAlias = dict[str, str]
+CodexHistoryTitles: TypeAlias = dict[str, str]
 
 
 class _ClaudeCodeSidecarData(TypedDict, total=False):
@@ -36,6 +37,7 @@ class _ClaudeCodeSidecarData(TypedDict, total=False):
 
 class _CodexSidecarData(TypedDict, total=False):
     thread_names: CodexThreadNames
+    history_titles: CodexHistoryTitles
 
 
 class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, total=False):
@@ -89,6 +91,7 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
 __all__ = [
     "ClaudeCodeHistoryPasteIndex",
     "ClaudeCodeSessionIndex",
+    "CodexHistoryTitles",
     "CodexThreadNames",
     "ProviderAssemblySpec",
     "SidecarData",
