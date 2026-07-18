@@ -457,10 +457,10 @@ def test_drain_opens_archive_once_per_pass_and_honors_limit(
     open_calls = 0
     real_open = ArchiveStore.open_existing
 
-    def counting_open(root: Path, **kwargs: object) -> ArchiveStore:
+    def counting_open(root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
         nonlocal open_calls
         open_calls += 1
-        return real_open(root, **kwargs)
+        return real_open(root, read_only=read_only, read_timeout=read_timeout)
 
     monkeypatch.setattr(
         "polylogue.sources.hooks.ArchiveStore",
