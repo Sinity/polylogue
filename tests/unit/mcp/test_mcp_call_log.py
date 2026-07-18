@@ -411,73 +411,17 @@ def test_two_dispatchers_can_quarantine_the_same_conflict(
     assert (path.parent.parent / "quarantine" / path.name).is_file()
 
 
-def test_every_session_tool_forwards_telemetry_identity() -> None:
-    """Signature-driven inventory guard for singular and plural session tools."""
-    mcp_root = Path(__file__).parents[3] / "polylogue" / "mcp"
-    checked: set[str] = set()
-    aliases = {
-        "blackboard_post": ("scope_session", "session_id"),
-        "compose_context_preamble": ("successor_session_id", "session_id"),
-        "get_session_summary": ("id", "session_id"),
-        "neighbor_candidates": ("id", "session_id"),
-    }
-    for path in sorted(mcp_root.glob("server_*tools.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
-                continue
-            is_tool = any(
-                isinstance(decorator, ast.Call)
-                and isinstance(decorator.func, ast.Attribute)
-                and decorator.func.attr == "tool"
-                for decorator in node.decorator_list
-            )
-            argument_names = {argument.arg for argument in (*node.args.args, *node.args.kwonlyargs)}
-            source_argument: str | None = None
-            telemetry_keyword: str | None = None
-            if "session_id" in argument_names:
-                source_argument, telemetry_keyword = "session_id", "session_id"
-            elif "session_ids" in argument_names:
-                source_argument, telemetry_keyword = "session_ids", "session_ids"
-            elif node.name in aliases:
-                source_argument, telemetry_keyword = aliases[node.name]
-            if not is_tool or source_argument is None or telemetry_keyword is None:
-                continue
-            safe_calls = [
-                call
-                for call in ast.walk(node)
-                if isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr in {"safe_call", "async_safe_call"}
-            ]
-            assert len(safe_calls) == 1, (path, node.name)
-            assert any(keyword.arg == telemetry_keyword for keyword in safe_calls[0].keywords), (
-                path,
-                node.name,
-            )
-            checked.add(node.name)
-
-    assert {
-        "bulk_tag_sessions",
-        "compare_sessions",
-        "get_messages",
-        "maintenance_execute",
-        "neighbor_candidates",
-        "raw_artifacts",
-        "record_correction",
-        "update_index",
-    } <= checked
-
-
 def test_context_preamble_declares_successor_session_correlation() -> None:
-    path = Path(__file__).parents[3] / "polylogue" / "mcp" / "server_context_tools.py"
+    """``context(intent="resume", session_id=...)`` threads its own session_id
+    into async_safe_call, replacing the retired compose_context_preamble
+    tool's successor_session_id -> session_id forwarding (post-t46.8.3
+    registrar cleanup; the SessionStart-preamble logic itself lives in
+    server_cutover.py's context()/_resume_preamble, not a standalone tool).
+    """
+    path = Path(__file__).parents[3] / "polylogue" / "mcp" / "server_cutover.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    [function] = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "compose_context_preamble"
-    ]
-    assert "successor_session_id" in {argument.arg for argument in (*function.args.args, *function.args.kwonlyargs)}
+    [function] = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "context"]
+    assert "session_id" in {argument.arg for argument in (*function.args.args, *function.args.kwonlyargs)}
     [safe_call] = [
         call
         for call in ast.walk(function)
@@ -485,22 +429,28 @@ def test_context_preamble_declares_successor_session_correlation() -> None:
     ]
     session_keyword = next(keyword for keyword in safe_call.keywords if keyword.arg == "session_id")
     assert isinstance(session_keyword.value, ast.Name)
-    assert session_keyword.value.id == "successor_session_id"
+    assert session_keyword.value.id == "session_id"
 
 
 @pytest.mark.parametrize(
-    ("relative_path", "function_name", "argument_name"),
+    ("function_name", "argument_name"),
     [
-        ("server_tools.py", "get_session_summary", "id"),
-        ("server_mutation_tools.py", "blackboard_post", "scope_session"),
+        ("get", "session_id"),
+        ("write", "session_id"),
     ],
 )
 def test_session_alias_tools_forward_telemetry_identity(
-    relative_path: str,
     function_name: str,
     argument_name: str,
 ) -> None:
-    path = Path(__file__).parents[3] / "polylogue" / "mcp" / relative_path
+    """Six-tool equivalent of the retired get_session_summary/blackboard_post
+    per-tool session-id forwarding: get() derives session_id from its ref
+    parameter, write() forwards its own session_id parameter -- both thread
+    it into their single async_safe_call for the whole tool (post-t46.8.3
+    registrar cleanup collapsed ~20 per-operation tools, each with its own
+    async_safe_call, into one write() dispatch with one call site).
+    """
+    path = Path(__file__).parents[3] / "polylogue" / "mcp" / "server_cutover.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     [function] = [
         node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == function_name

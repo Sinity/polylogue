@@ -30,8 +30,8 @@ won't hurt."
 | 5 | Storage write tier | `storage/sqlite/archive_tiers/write.py` | 4,595 → **4,210** lines (this bead's slice 1 landed) | `write_parsed_session_to_archive` + session/message/block/tag/work-event/phase writers | `storage/` |
 | 6 | CLI query dispatch | `cli/archive_query.py`, fn `_execute_archive_query_stdout` | 2,488 lines file / 632-line function (174-805) | the `find`/`read`/`analyze` query-mode stdout path | `cli/` (surface) |
 | 7 | Daemon service loop | `daemon/cli.py`, fn `run_daemon_services` | 1,936 lines file / 475-line function (1007-1481) | `polylogued run` — daemon startup and the ~10 concurrent maintenance loops (see `polylogue-9e5.7`'s lock/starvation map) | `daemon/` |
-| 8a | MCP read tools | `mcp/server_tools.py`, fn `register_read_tools` | 1,286 lines file / 490-line function (781-1270) | every read-only MCP tool registration | `mcp/` (surface) |
-| 8b | MCP mutation tools | `mcp/server_mutation_tools.py`, fn `register_mutation_tools` | 497 lines file / 370-line function (42-411) | every write MCP tool registration | `mcp/` (surface) |
+| 8a | ~~MCP read tools~~ **resolved** | ~~`mcp/server_tools.py`, fn `register_read_tools`~~ | 1,286 lines file / 490-line function → **0** (function and its file's other per-tool registrars deleted; `server_tools.py` is now a 19-line passthrough into `mcp/server_cutover.py`, polylogue-t46.8) | was every read-only MCP tool registration; replaced by the six-tool `query`/`read`/`get`/`explain`/`context`/`status` algebra | `mcp/` (surface) |
+| 8b | ~~MCP mutation tools~~ **resolved** | ~~`mcp/server_mutation_tools.py`, fn `register_mutation_tools`~~ | 497 lines → **0** (file deleted; logic re-hosted as `_dispatch_write` in `mcp/server_cutover.py`, polylogue-t46.8.3) | was every write MCP tool registration; replaced by the single role-gated `write(operation=, ...)` transaction | `mcp/` (surface) |
 
 Note on #3: `storage/repair.py`'s placement is itself a case study for the
 polylogue-c9y placement doctrine — under the new rule-5 test ("integrity
