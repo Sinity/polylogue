@@ -1,0 +1,2555 @@
+diff --git a/docs/openapi/search.yaml b/docs/openapi/search.yaml
+index 691c8c2f626a52d6ba31a1adad9e6db6ad64e3ee..f2a6ea8a8574a27d52c30b6a3041ef29c0a20f7b 100644
+--- a/docs/openapi/search.yaml
++++ b/docs/openapi/search.yaml
+@@ -3029,7 +3029,9 @@ components:
+ 
+         Compatible with daemon HTTP''s ``{"ok": False, "error": ..., "detail": ...}``
+ 
+-        shape and MCP''s ``MCPErrorPayload``.'
++        shape and MCP''s ``MCPErrorPayload``. Transaction failures additionally
++
++        expose a safe receipt with opaque query/result identity and retry state.'
+       properties:
+         ok:
+           const: false
+@@ -3051,6 +3053,13 @@ components:
+           - type: 'null'
+           default: null
+           title: Field
++        receipt:
++          anyOf:
++          - additionalProperties: true
++            type: object
++          - type: 'null'
++          default: null
++          title: Receipt
+       required:
+       - error
+       title: QueryErrorPayload
+diff --git a/docs/schemas/cli-output/query-error.schema.json b/docs/schemas/cli-output/query-error.schema.json
+index 2f04831fef0926ffea309a1198ecc3990bb90f1d..7cf5e67d603a6aa66fd0df0018b32dd9268fd67c 100644
+--- a/docs/schemas/cli-output/query-error.schema.json
++++ b/docs/schemas/cli-output/query-error.schema.json
+@@ -37,6 +37,19 @@
+       "default": false,
+       "title": "Ok",
+       "type": "boolean"
++    },
++    "receipt": {
++      "anyOf": [
++        {
++          "additionalProperties": true,
++          "type": "object"
++        },
++        {
++          "type": "null"
++        }
++      ],
++      "default": null,
++      "title": "Receipt"
+     }
+   },
+   "required": [
+diff --git a/polylogue/api/archive.py b/polylogue/api/archive.py
+index 319a39d6942cd0a73870e011bddf40250c86ff77..407136258724651d181b821a5a3a6d02cff1fd55 100644
+--- a/polylogue/api/archive.py
++++ b/polylogue/api/archive.py
+@@ -2913,7 +2913,7 @@ class PolylogueArchiveMixin:
+ 
+     async def query_units(
+         self,
+-        expression: str,
++        expression: str = "",
+         *,
+         limit: int = 50,
+         offset: int = 0,
+@@ -2948,61 +2948,129 @@ class PolylogueArchiveMixin:
+         min_words: int | None = None,
+         max_words: int | None = None,
+         message_type: str | None = None,
++        continuation: str | None = None,
+     ) -> QueryUnitResultEnvelope:
+-        """Execute a terminal unit-source query."""
++        """Execute or resume a canonical terminal unit-source transaction."""
+         from polylogue.archive.query.execution_control import classify_unit_expression_workload
+-        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
++        from polylogue.archive.query.spec import clamp_query_limit
++        from polylogue.archive.query.transaction import (
++            QueryContinuation,
++            QueryContinuationError,
++            QueryTransaction,
++            QueryTransactionRequest,
++            decode_query_units_continuation,
++            query_units_transaction_request,
++        )
+         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+ 
+-        request = query_unit_request(
+-            expression=expression,
+-            limit=limit,
+-            offset=offset,
+-            origin=origin,
+-            origins=origins,
+-            tags=(tag,) if tag else tags,
+-            excluded_tags=excluded_tags,
+-            excluded_origins=excluded_origins,
+-            repo=repo,
+-            repo_names=repo_names,
+-            project=project,
+-            project_refs=project_refs,
+-            has_types=has_types,
+-            tool_terms=tool_terms,
+-            excluded_tool_terms=excluded_tool_terms,
+-            action_terms=action_terms,
+-            excluded_action_terms=excluded_action_terms,
+-            action_sequence=action_sequence,
+-            action_text_terms=action_text_terms,
+-            referenced_paths=referenced_paths,
+-            cwd_prefix=cwd_prefix,
+-            title=title,
+-            since=since,
+-            until=until,
+-            has_tool_use=has_tool_use,
+-            has_thinking=has_thinking,
+-            has_paste=has_paste,
+-            typed_only=typed_only,
+-            min_messages=min_messages,
+-            max_messages=max_messages,
+-            min_words=min_words,
+-            max_words=max_words,
+-            message_type=message_type,
+-        )
++        archive_root = _active_archive_root(self.config)
++        resume: QueryContinuation | None = None
++        transaction_request: QueryTransactionRequest
++        if continuation is not None:
++            has_overrides = any(
++                (
++                    bool(expression.strip()),
++                    limit != 50,
++                    offset != 0,
++                    origin is not None,
++                    bool(origins),
++                    bool(excluded_origins),
++                    tag is not None,
++                    bool(tags),
++                    bool(excluded_tags),
++                    repo is not None,
++                    bool(repo_names),
++                    project is not None,
++                    bool(project_refs),
++                    bool(has_types),
++                    bool(tool_terms),
++                    bool(excluded_tool_terms),
++                    bool(action_terms),
++                    bool(excluded_action_terms),
++                    bool(action_sequence),
++                    bool(action_text_terms),
++                    bool(referenced_paths),
++                    cwd_prefix is not None,
++                    title is not None,
++                    since is not None,
++                    until is not None,
++                    has_tool_use,
++                    has_thinking,
++                    has_paste,
++                    typed_only,
++                    min_messages is not None,
++                    max_messages is not None,
++                    min_words is not None,
++                    max_words is not None,
++                    message_type is not None,
++                )
++            )
++            if has_overrides:
++                raise QueryContinuationError("continuation requests must not override the original query parameters")
++            decoded = decode_query_units_continuation(continuation, archive_root=archive_root)
++            resume = decoded
++            transaction_request = decoded.request
++            effective_expression = transaction_request.arguments["expression"]
++            session_filters = transaction_request.arguments["session_filters"]
++            assert isinstance(effective_expression, str)
++            assert isinstance(session_filters, Mapping)
++            request = query_unit_request(
++                expression=effective_expression,
++                limit=transaction_request.page_size,
++                offset=transaction_request.offset,
++                session_filters=session_filters,
++            )
++        else:
++            effective_expression = expression
++            normalized_limit = clamp_query_limit(limit, default=50)
++            normalized_offset = max(0, offset)
++            request = query_unit_request(
++                expression=effective_expression,
++                limit=normalized_limit,
++                offset=normalized_offset,
++                origin=origin,
++                origins=origins,
++                tags=(tag,) if tag else tags,
++                excluded_tags=excluded_tags,
++                excluded_origins=excluded_origins,
++                repo=repo,
++                repo_names=repo_names,
++                project=project,
++                project_refs=project_refs,
++                has_types=has_types,
++                tool_terms=tool_terms,
++                excluded_tool_terms=excluded_tool_terms,
++                action_terms=action_terms,
++                excluded_action_terms=excluded_action_terms,
++                action_sequence=action_sequence,
++                action_text_terms=action_text_terms,
++                referenced_paths=referenced_paths,
++                cwd_prefix=cwd_prefix,
++                title=title,
++                since=since,
++                until=until,
++                has_tool_use=has_tool_use,
++                has_thinking=has_thinking,
++                has_paste=has_paste,
++                typed_only=typed_only,
++                min_messages=min_messages,
++                max_messages=max_messages,
++                min_words=min_words,
++                max_words=max_words,
++                message_type=message_type,
++            )
++            transaction_request = query_units_transaction_request(
++                archive_root=archive_root,
++                expression=effective_expression,
++                session_filters=request.session_filters or {},
++                page_size=normalized_limit,
++                offset=normalized_offset,
++            )
+         transaction = QueryTransaction(
+-            _active_archive_root(self.config),
+-            QueryTransactionRequest(
+-                operation="query_units",
+-                arguments={
+-                    "expression": expression,
+-                    "session_filters": dict(request.session_filters or {}),
+-                },
+-                page_size=max(1, limit),
+-                offset=offset,
+-                projection="terminal-unit-envelope",
+-                stable_order="canonical",
+-            ),
+-            workload_class=classify_unit_expression_workload(expression),
++            archive_root,
++            transaction_request,
++            workload_class=classify_unit_expression_workload(effective_expression),
++            resume=resume,
+         )
+         return await transaction.run(
+             lambda archive: query_unit_envelope(
+@@ -3010,6 +3078,7 @@ class PolylogueArchiveMixin:
+                 request,
+                 execution_context=transaction.context,
+                 transaction_request=transaction.request,
++                continuation_seed=transaction.continuation_seed,
+             )
+         )
+ 
+diff --git a/polylogue/archive/query/transaction.py b/polylogue/archive/query/transaction.py
+index b8dd1032613fa0e207b1729d3bebdd8581d8c2eb..e59ba600c792202f66a97edf7c384d7fa1c8d7ed 100644
+--- a/polylogue/archive/query/transaction.py
++++ b/polylogue/archive/query/transaction.py
+@@ -7,27 +7,41 @@ request, so clients never reconstruct filters from a prose overflow hint.
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import base64
+ import binascii
+ import hashlib
++import hmac
+ import json
++import sqlite3
++import time
+ from collections.abc import Callable, Iterator, Mapping
+-from contextlib import contextmanager
+-from dataclasses import dataclass
++from contextlib import closing, contextmanager
++from dataclasses import dataclass, field
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Generic, TypeVar
+ 
+ from polylogue.archive.query.execution_control import (
++    DEFAULT_READ_DEADLINE_S,
+     InterruptibleSQLiteRead,
+     QueryAdmissionController,
++    QueryCancelledError,
+     QueryExecutionContext,
++    QueryTimeoutError,
++    QueryWorkBudgetExceededError,
+     WorkloadClass,
+     execute_archive_read,
+     execute_archive_read_sync,
+ )
++from polylogue.archive.query.spec import clamp_query_limit
++from polylogue.logging import get_logger
++
++logger = get_logger(__name__)
+ 
+ T = TypeVar("T")
+-_TOKEN_VERSION = 1
++_TOKEN_VERSION = 2
++_TOKEN_PREFIX = "q2."
++DEFAULT_QUERY_CONTINUATION_TTL_S = 60 * 60
+ 
+ if TYPE_CHECKING:
+     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+@@ -37,6 +51,93 @@ def _canonical_json(value: Mapping[str, object]) -> str:
+     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+ 
+ 
++def _now_ms() -> int:
++    return int(time.time() * 1000)
++
++
++def archive_index_epoch(index_db: Path) -> str:
++    """Return the query-visible index generation without opening an archive writer.
++
++    The frame includes schema version plus session count, rowid, and update
++    watermark. Count/rowid catch newly admitted sessions before timestamp
++    backfill; the watermark catches in-place session materialization. The same
++    calculation is repeated on the owned read connection before page work so
++    the page is pinned to the declared frame rather than merely preflighted.
++    """
++
++    if not index_db.exists():
++        return "index:absent"
++    try:
++        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0)) as conn:
++            version_row = conn.execute("PRAGMA user_version").fetchone()
++            version = int(version_row[0]) if version_row is not None else 0
++            frame_row = conn.execute("SELECT COUNT(*), MAX(rowid), MAX(updated_at_ms) FROM sessions").fetchone()
++            count = int(frame_row[0]) if frame_row is not None and frame_row[0] is not None else 0
++            max_rowid = int(frame_row[1]) if frame_row is not None and frame_row[1] is not None else 0
++            watermark = int(frame_row[2]) if frame_row is not None and frame_row[2] is not None else 0
++            return f"index:v{version}:{count}:{max_rowid}:{watermark}"
++    except sqlite3.Error:
++        logger.warning("query transaction: could not read index epoch for %s", index_db, exc_info=True)
++        return "index:unknown"
++
++
++def archive_user_epoch(user_db: Path) -> str:
++    """Return the assertion-tier generation that can affect terminal queries."""
++
++    if not user_db.exists():
++        return "user:absent"
++    try:
++        with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0)) as conn:
++            version_row = conn.execute("PRAGMA user_version").fetchone()
++            version = int(version_row[0]) if version_row is not None else 0
++            frame_row = conn.execute("SELECT COUNT(*), MAX(rowid), MAX(updated_at_ms) FROM assertions").fetchone()
++            count = int(frame_row[0]) if frame_row is not None and frame_row[0] is not None else 0
++            max_rowid = int(frame_row[1]) if frame_row is not None and frame_row[1] is not None else 0
++            watermark = int(frame_row[2]) if frame_row is not None and frame_row[2] is not None else 0
++            return f"user:v{version}:{count}:{max_rowid}:{watermark}"
++    except sqlite3.Error:
++        logger.warning("query transaction: could not read user epoch for %s", user_db, exc_info=True)
++        return "user:unknown"
++
++
++def archive_query_epoch(archive_root: Path) -> str:
++    """Return the conservative generation of every terminal-query data tier."""
++
++    root = Path(archive_root)
++    return f"{archive_index_epoch(root / 'index.db')}|{archive_user_epoch(root / 'user.db')}"
++
++
++class QueryContinuationError(ValueError):
++    """A cursor cannot be resumed safely or does not match its declared result."""
++
++    code = "invalid_continuation"
++
++
++class QueryContinuationExpiredError(QueryContinuationError):
++    """A cursor exceeded its bounded validity interval."""
++
++    code = "query_continuation_expired"
++
++    def __init__(self, *, expired_at_ms: int, now_ms: int) -> None:
++        self.expired_at_ms = expired_at_ms
++        self.now_ms = now_ms
++        super().__init__("query continuation expired; restart the query instead of replaying page one")
++
++
++class QueryContinuationStaleError(QueryContinuationError):
++    """A cursor was issued against an archive frame that has since moved."""
++
++    code = "query_continuation_stale"
++
++    def __init__(self, *, issued_epoch: str, current_epoch: str) -> None:
++        self.issued_epoch = issued_epoch
++        self.current_epoch = current_epoch
++        super().__init__(
++            f"continuation was issued against archive epoch {issued_epoch!r}, but the archive is now at "
++            f"{current_epoch!r}; restart the query to avoid duplicate or skipped rows"
++        )
++
++
+ @dataclass(frozen=True, slots=True)
+ class QueryTransactionRequest:
+     """Canonical request identity shared by page producers and adapters."""
+@@ -47,6 +148,7 @@ class QueryTransactionRequest:
+     offset: int = 0
+     projection: str = "default"
+     stable_order: str = "canonical"
++    archive_epoch: str = ""
+ 
+     def __post_init__(self) -> None:
+         if not self.operation.strip():
+@@ -66,6 +168,18 @@ class QueryTransactionRequest:
+         }
+         return "query:" + hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()[:24]
+ 
++    @property
++    def result_ref(self) -> str:
++        """Logical result identity, independent of page size and offset."""
++
++        body = {
++            "query_ref": self.query_ref,
++            "projection": self.projection,
++            "stable_order": self.stable_order,
++            "archive_epoch": self.archive_epoch,
++        }
++        return "result:" + hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()[:24]
++
+     def next(self, *, offset: int) -> QueryTransactionRequest:
+         return QueryTransactionRequest(
+             operation=self.operation,
+@@ -74,20 +188,69 @@ class QueryTransactionRequest:
+             offset=offset,
+             projection=self.projection,
+             stable_order=self.stable_order,
++            archive_epoch=self.archive_epoch,
+         )
+ 
+ 
++def query_units_transaction_request(
++    *,
++    archive_root: Path,
++    expression: str,
++    session_filters: Mapping[str, object],
++    page_size: int,
++    offset: int = 0,
++) -> QueryTransactionRequest:
++    """Build the one canonical ``query_units`` request used by every adapter."""
++
++    return QueryTransactionRequest(
++        operation="query_units",
++        arguments={"expression": expression, "session_filters": dict(session_filters)},
++        page_size=clamp_query_limit(page_size, default=50),
++        offset=max(0, offset),
++        projection="terminal-unit-envelope",
++        stable_order="canonical",
++        archive_epoch=archive_query_epoch(archive_root),
++    )
++
++
++def validate_continuation_epoch(continuation_request: QueryTransactionRequest, *, archive_root: Path) -> None:
++    """Reject an unframed or drifted cursor before opening page work."""
++
++    if not continuation_request.archive_epoch:
++        raise QueryContinuationError("query continuation does not declare an archive epoch")
++    current = archive_query_epoch(archive_root)
++    if continuation_request.archive_epoch != current:
++        raise QueryContinuationStaleError(issued_epoch=continuation_request.archive_epoch, current_epoch=current)
++
++
+ @dataclass(frozen=True, slots=True)
+ class QueryContinuation:
+-    """Opaque, self-validating continuation for one advancing page."""
++    """Opaque, integrity-checked and expiring continuation for one page."""
+ 
+     request: QueryTransactionRequest
+     result_ref: str
++    issued_at_ms: int = field(default_factory=_now_ms)
++    expires_at_ms: int | None = None
+ 
+-    def encode(self) -> str:
++    def __post_init__(self) -> None:
++        if self.expires_at_ms is None:
++            object.__setattr__(
++                self,
++                "expires_at_ms",
++                self.issued_at_ms + DEFAULT_QUERY_CONTINUATION_TTL_S * 1000,
++            )
++        assert self.expires_at_ms is not None
++        if self.expires_at_ms <= self.issued_at_ms:
++            raise ValueError("query continuation expiry must follow issuance")
++        if self.result_ref != self.request.result_ref:
++            raise QueryContinuationError("query continuation result identity does not match its request")
++
++    def _unsigned_body(self) -> dict[str, object]:
+         request = self.request
+-        body = {
++        return {
+             "v": _TOKEN_VERSION,
++            "issued_at_ms": self.issued_at_ms,
++            "expires_at_ms": self.expires_at_ms,
+             "result_ref": self.result_ref,
+             "request": {
+                 "operation": request.operation,
+@@ -96,21 +259,46 @@ class QueryContinuation:
+                 "offset": request.offset,
+                 "projection": request.projection,
+                 "stable_order": request.stable_order,
++                "archive_epoch": request.archive_epoch,
+             },
+         }
++
++    def encode(self) -> str:
++        unsigned = self._unsigned_body()
++        body = dict(unsigned)
++        body["checksum"] = hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
+         encoded = base64.urlsafe_b64encode(_canonical_json(body).encode("utf-8")).decode("ascii").rstrip("=")
+-        return "q1." + encoded
++        return _TOKEN_PREFIX + encoded
++
++    def for_request(self, request: QueryTransactionRequest) -> QueryContinuation:
++        """Rebase delivery state while preserving the original validity window."""
++
++        return QueryContinuation(
++            request=request,
++            result_ref=self.result_ref,
++            issued_at_ms=self.issued_at_ms,
++            expires_at_ms=self.expires_at_ms,
++        )
+ 
+     @classmethod
+-    def decode(cls, token: str) -> QueryContinuation:
+-        if not token.startswith("q1."):
+-            raise ValueError("invalid query continuation version")
++    def decode(cls, token: str, *, now_ms: int | None = None) -> QueryContinuation:
++        if not token.startswith(_TOKEN_PREFIX):
++            raise QueryContinuationError("invalid query continuation version")
+         try:
+-            padded = token[3:] + "=" * (-len(token[3:]) % 4)
++            encoded = token[len(_TOKEN_PREFIX) :]
++            padded = encoded + "=" * (-len(encoded) % 4)
+             body = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+-            request_body = body["request"]
++            if not isinstance(body, dict):
++                raise TypeError("continuation body must be an object")
++            checksum = str(body.pop("checksum"))
++            expected_checksum = hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
++            if not hmac.compare_digest(checksum, expected_checksum):
++                raise ValueError("continuation checksum mismatch")
+             if body["v"] != _TOKEN_VERSION:
+                 raise ValueError("unsupported query continuation version")
++            request_body = body["request"]
++            if not isinstance(request_body, dict):
++                raise TypeError("continuation request must be an object")
+             request = QueryTransactionRequest(
+                 operation=str(request_body["operation"]),
+                 arguments=dict(request_body["arguments"]),
+@@ -118,13 +306,57 @@ class QueryContinuation:
+                 offset=int(request_body["offset"]),
+                 projection=str(request_body["projection"]),
+                 stable_order=str(request_body["stable_order"]),
++                archive_epoch=str(request_body["archive_epoch"]),
+             )
+             result_ref = str(body["result_ref"])
+-        except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+-            raise ValueError("invalid query continuation") from exc
+-        if not result_ref.startswith("result:"):
+-            raise ValueError("invalid query result reference")
+-        return cls(request=request, result_ref=result_ref)
++            issued_at_ms = int(body["issued_at_ms"])
++            expires_at_ms = int(body["expires_at_ms"])
++        except (
++            binascii.Error,
++            KeyError,
++            TypeError,
++            UnicodeDecodeError,
++            ValueError,
++            json.JSONDecodeError,
++        ) as exc:
++            raise QueryContinuationError("invalid query continuation") from exc
++        current_ms = _now_ms() if now_ms is None else now_ms
++        if current_ms >= expires_at_ms:
++            raise QueryContinuationExpiredError(expired_at_ms=expires_at_ms, now_ms=current_ms)
++        return cls(
++            request=request,
++            result_ref=result_ref,
++            issued_at_ms=issued_at_ms,
++            expires_at_ms=expires_at_ms,
++        )
++
++
++def decode_query_units_continuation(
++    token: str,
++    *,
++    archive_root: Path,
++    now_ms: int | None = None,
++) -> QueryContinuation:
++    """Decode and validate the complete ``query_units`` adapter contract."""
++
++    continuation = QueryContinuation.decode(token, now_ms=now_ms)
++    request = continuation.request
++    arguments = request.arguments
++    expression = arguments.get("expression")
++    session_filters = arguments.get("session_filters")
++    if (
++        request.operation != "query_units"
++        or request.projection != "terminal-unit-envelope"
++        or request.stable_order != "canonical"
++        or request.page_size != clamp_query_limit(request.page_size, default=50)
++        or set(arguments) != {"expression", "session_filters"}
++        or not isinstance(expression, str)
++        or not expression.strip()
++        or not isinstance(session_filters, Mapping)
++    ):
++        raise QueryContinuationError("continuation does not identify a canonical query-unit result")
++    validate_continuation_epoch(request, archive_root=archive_root)
++    return continuation
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -150,8 +382,68 @@ class QueryResultPage(Generic[T]):
+         ).encode()
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class QueryExecutionLimits:
++    """Host-protection policy applied to a transaction before work begins."""
++
++    timeout_s: float | None = DEFAULT_READ_DEADLINE_S
++    sqlite_vm_step_budget: int | None = None
++
++
++def query_execution_limits(_operation: str) -> QueryExecutionLimits:
++    """Return production limits; a narrow policy seam supports deterministic certification."""
++
++    return QueryExecutionLimits()
++
++
++@dataclass(frozen=True, slots=True)
++class QueryTransactionFailureReceipt:
++    """Safe identity and execution evidence for a resumable failed page."""
++
++    call_id: str
++    operation: str
++    query_ref: str
++    result_ref: str
++    offset: int
++    retry_continuation: str | None
++    execution: Mapping[str, object]
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "call_id": self.call_id,
++            "operation": self.operation,
++            "query_ref": self.query_ref,
++            "result_ref": self.result_ref,
++            "offset": self.offset,
++            "retry_continuation": self.retry_continuation,
++            "execution": dict(self.execution),
++        }
++
++
++class QueryTransactionExecutionError(RuntimeError):
++    """Base for deadline/cancellation/work-budget outcomes with a receipt."""
++
++    code = "query_execution_failed"
++
++    def __init__(self, message: str, *, receipt: QueryTransactionFailureReceipt) -> None:
++        self.receipt = receipt
++        super().__init__(message)
++
++
++class QueryTransactionCancelledError(QueryTransactionExecutionError):
++    code = "query_cancelled"
++
++
++class QueryTransactionDeadlineExceededError(QueryTransactionExecutionError):
++    code = "query_deadline_exceeded"
++
++
++class QueryTransactionBudgetExceededError(QueryTransactionExecutionError):
++    code = "query_work_budget_exceeded"
++
++
+ class QueryTransaction:
+-    """Own execution context and request identity for one archive read."""
++    """Own execution context, stable frame, and failure receipt for one read."""
+ 
+     def __init__(
+         self,
+@@ -162,8 +454,14 @@ class QueryTransaction:
+         admission_weight: int = 1,
+         controller: QueryAdmissionController | None = None,
+         read_timeout: float = 5.0,
++        limits: QueryExecutionLimits | None = None,
++        resume: QueryContinuation | None = None,
+     ) -> None:
++        if resume is not None and (resume.request != request or resume.result_ref != request.result_ref):
++            raise QueryContinuationError("resumed transaction does not match its continuation")
+         self.request = request
++        self.continuation_seed = resume
++        effective_limits = limits or query_execution_limits(request.operation)
+         self.context = QueryExecutionContext.create(
+             query_text=_canonical_json(
+                 {
+@@ -176,35 +474,88 @@ class QueryTransaction:
+             ),
+             workload_class=workload_class,
+             admission_weight=admission_weight,
++            timeout_s=effective_limits.timeout_s,
++            sqlite_vm_step_budget=effective_limits.sqlite_vm_step_budget,
+             owner_ref=request.operation,
+         )
+-        self.archive_root = archive_root
++        self.archive_root = Path(archive_root)
+         self.controller = controller
+         self.read_timeout = read_timeout
+-        self.result_ref = (
+-            "result:"
+-            + hashlib.sha256(f"{request.query_ref}:{request.projection}:{request.stable_order}".encode()).hexdigest()[
+-                :24
+-            ]
++        self.result_ref = request.result_ref
++
++    def continuation_for(self, request: QueryTransactionRequest) -> QueryContinuation:
++        """Mint delivery state inside this transaction's original validity window."""
++
++        if request.result_ref != self.result_ref:
++            raise QueryContinuationError("continuation request belongs to a different result")
++        if self.continuation_seed is not None:
++            return self.continuation_seed.for_request(request)
++        return QueryContinuation(request=request, result_ref=self.result_ref)
++
++    def failure_receipt(self) -> QueryTransactionFailureReceipt:
++        retry: str | None = None
++        if self.request.archive_epoch:
++            retry = self.continuation_for(self.request).encode()
++        return QueryTransactionFailureReceipt(
++            call_id=self.context.call_id,
++            operation=self.request.operation,
++            query_ref=self.request.query_ref,
++            result_ref=self.result_ref,
++            offset=self.request.offset,
++            retry_continuation=retry,
++            execution=self.context.receipt.to_dict(),
+         )
+ 
++    def _guarded_work(self, work: Callable[[ArchiveStore], T]) -> Callable[[ArchiveStore], T]:
++        if not self.request.archive_epoch:
++            return work
++
++        def guarded(archive: ArchiveStore) -> T:
++            reader = getattr(archive, "read_query_epoch", None)
++            current = reader() if callable(reader) else archive_query_epoch(self.archive_root)
++            if current != self.request.archive_epoch:
++                raise QueryContinuationStaleError(
++                    issued_epoch=self.request.archive_epoch,
++                    current_epoch=current,
++                )
++            return work(archive)
++
++        return guarded
++
++    def _execution_error(self, exc: Exception) -> QueryTransactionExecutionError:
++        receipt = self.failure_receipt()
++        if isinstance(exc, QueryWorkBudgetExceededError):
++            return QueryTransactionBudgetExceededError(str(exc), receipt=receipt)
++        if isinstance(exc, QueryTimeoutError):
++            return QueryTransactionDeadlineExceededError(str(exc), receipt=receipt)
++        return QueryTransactionCancelledError(str(exc), receipt=receipt)
++
+     async def run(self, work: Callable[[ArchiveStore], T]) -> T:
+-        return await execute_archive_read(
+-            self.archive_root,
+-            work,
+-            ctx=self.context,
+-            controller=self.controller,
+-            read_timeout=self.read_timeout,
+-        )
++        try:
++            return await execute_archive_read(
++                self.archive_root,
++                self._guarded_work(work),
++                ctx=self.context,
++                controller=self.controller,
++                read_timeout=self.read_timeout,
++            )
++        except asyncio.CancelledError as exc:
++            exc.__dict__["query_receipt"] = self.failure_receipt()
++            raise
++        except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError) as exc:
++            raise self._execution_error(exc) from exc
+ 
+     def run_sync(self, work: Callable[[ArchiveStore], T]) -> T:
+-        return execute_archive_read_sync(
+-            self.archive_root,
+-            work,
+-            ctx=self.context,
+-            controller=self.controller,
+-            read_timeout=self.read_timeout,
+-        )
++        try:
++            return execute_archive_read_sync(
++                self.archive_root,
++                self._guarded_work(work),
++                ctx=self.context,
++                controller=self.controller,
++                read_timeout=self.read_timeout,
++            )
++        except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError) as exc:
++            raise self._execution_error(exc) from exc
+ 
+ 
+ def _page_size(value: int | None) -> int:
+@@ -226,6 +577,7 @@ async def run_archive_read(
+     controller: QueryAdmissionController | None = None,
+ ) -> T:
+     """Run one named read through the shared transaction boundary."""
++
+     transaction = QueryTransaction(
+         archive_root,
+         QueryTransactionRequest(
+@@ -258,6 +610,7 @@ def run_archive_read_sync(
+     controller: QueryAdmissionController | None = None,
+ ) -> T:
+     """Run one named read through the shared transaction boundary synchronously."""
++
+     transaction = QueryTransaction(
+         archive_root,
+         QueryTransactionRequest(
+@@ -289,6 +642,7 @@ def archive_read_context(
+     admission_weight: int = 1,
+ ) -> Iterator[ArchiveStore]:
+     """Expose one controlled store to callers already running in a worker thread."""
++
+     transaction = QueryTransaction(
+         archive_root,
+         QueryTransactionRequest(
+@@ -308,11 +662,28 @@ def archive_read_context(
+ 
+ 
+ __all__ = [
++    "DEFAULT_QUERY_CONTINUATION_TTL_S",
+     "QueryContinuation",
++    "QueryContinuationError",
++    "QueryContinuationExpiredError",
++    "QueryContinuationStaleError",
++    "QueryExecutionLimits",
+     "QueryResultPage",
+     "QueryTransaction",
++    "QueryTransactionBudgetExceededError",
++    "QueryTransactionCancelledError",
++    "QueryTransactionDeadlineExceededError",
++    "QueryTransactionExecutionError",
++    "QueryTransactionFailureReceipt",
+     "QueryTransactionRequest",
++    "archive_index_epoch",
++    "archive_query_epoch",
++    "archive_user_epoch",
+     "archive_read_context",
++    "decode_query_units_continuation",
++    "query_execution_limits",
++    "query_units_transaction_request",
+     "run_archive_read",
+     "run_archive_read_sync",
++    "validate_continuation_epoch",
+ ]
+diff --git a/polylogue/archive/query/unit_results.py b/polylogue/archive/query/unit_results.py
+index 925e9131c9ad2f498b6ff2ea342599fd430a8289..cefe33a05d3fce825531c0f37ea7e62410f50bec 100644
+--- a/polylogue/archive/query/unit_results.py
++++ b/polylogue/archive/query/unit_results.py
+@@ -505,6 +505,7 @@ def query_unit_envelope(
+     *,
+     execution_context: QueryExecutionContext | None = None,
+     transaction_request: QueryTransactionRequest | None = None,
++    continuation_seed: QueryContinuation | None = None,
+ ) -> QueryUnitResultEnvelope:
+     """Execute a compiled terminal query-unit request.
+ 
+@@ -522,27 +523,37 @@ def query_unit_envelope(
+         session_filters=request.session_filters,
+         execution_context=execution_context,
+     )
+-    canonical_request = transaction_request or QueryTransactionRequest(
+-        operation="query_units",
+-        arguments={
+-            "expression": request.expression,
+-            "session_filters": dict(request.session_filters or {}),
+-        },
+-        page_size=request.limit,
+-        offset=request.offset,
+-    )
++    if transaction_request is None:
++        epoch_reader = getattr(archive, "read_query_epoch", None)
++        archive_epoch = epoch_reader() if callable(epoch_reader) else ""
++        canonical_request = QueryTransactionRequest(
++            operation="query_units",
++            arguments={
++                "expression": request.expression,
++                "session_filters": dict(request.session_filters or {}),
++            },
++            page_size=request.limit,
++            offset=request.offset,
++            projection="terminal-unit-envelope",
++            stable_order="canonical",
++            archive_epoch=archive_epoch,
++        )
++    else:
++        canonical_request = transaction_request
+     if canonical_request.operation != "query_units":
+         raise ValueError("query-unit envelope requires a query_units transaction")
+-    result_ref = "result:" + canonical_request.query_ref.removeprefix("query:")
++    result_ref = canonical_request.result_ref
+     next_offset = getattr(envelope, "next_offset", None)
+-    continuation = (
+-        QueryContinuation(
+-            request=canonical_request.next(offset=next_offset),
+-            result_ref=result_ref,
+-        ).encode()
+-        if next_offset is not None
+-        else None
+-    )
++    if next_offset is None:
++        continuation = None
++    else:
++        next_request = canonical_request.next(offset=next_offset)
++        continuation_state = (
++            continuation_seed.for_request(next_request)
++            if continuation_seed is not None
++            else QueryContinuation(request=next_request, result_ref=result_ref)
++        )
++        continuation = continuation_state.encode()
+     return envelope.model_copy(
+         update={
+             "query_ref": canonical_request.query_ref,
+diff --git a/polylogue/daemon/http.py b/polylogue/daemon/http.py
+index 727a54b199975f97fffd807122bc041d8903a716..43a0479b149a1a4912d0d55b85a51240129ca6d4 100644
+--- a/polylogue/daemon/http.py
++++ b/polylogue/daemon/http.py
+@@ -992,7 +992,7 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
+                     error=type(exc).__name__,
+                     detail=str(exc),
+                     field=field,
+-                ).model_dump(mode="json"),
++                ).model_dump(mode="json", exclude={"receipt"}),
+             )
+         except sqlite3.OperationalError as exc:
+             if _is_sqlite_busy_error(exc):
+@@ -1001,20 +1001,22 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
+                     QueryErrorPayload(
+                         error="archive_busy",
+                         detail="Archive read route is temporarily unavailable while the daemon is writing catch-up data.",
+-                    ).model_dump(mode="json"),
++                    ).model_dump(mode="json", exclude={"receipt"}),
+                     extra_headers={"Retry-After": "1"},
+                 )
+                 return
+             logger.exception("sqlite error in %s", fn.__name__)
+             self._send_json(
+                 HTTPStatus.INTERNAL_SERVER_ERROR,
+-                QueryErrorPayload(error="sqlite_error").model_dump(mode="json"),
++                QueryErrorPayload(error="sqlite_error").model_dump(mode="json", exclude={"receipt"}),
+             )
+         except TimeoutError as exc:
+             logger.warning("archive query timed out in %s: %s", fn.__name__, exc)
+             self._send_json(
+                 HTTPStatus.SERVICE_UNAVAILABLE,
+-                QueryErrorPayload(error="archive_query_timeout", detail=str(exc)).model_dump(mode="json"),
++                QueryErrorPayload(error="archive_query_timeout", detail=str(exc)).model_dump(
++                    mode="json", exclude={"receipt"}
++                ),
+                 extra_headers={"Retry-After": "2"},
+             )
+         except _CLIENT_DISCONNECT_ERRORS:
+@@ -1023,7 +1025,7 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
+             logger.exception("unhandled error in %s", fn.__name__)
+             self._send_json(
+                 HTTPStatus.INTERNAL_SERVER_ERROR,
+-                QueryErrorPayload(error="internal_error").model_dump(mode="json"),
++                QueryErrorPayload(error="internal_error").model_dump(mode="json", exclude={"receipt"}),
+             )
+ 
+     return wrapper
+@@ -1431,6 +1433,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+         code: str,
+         detail: str | None = None,
+         *,
++        receipt: Mapping[str, object] | None = None,
+         extra_headers: Mapping[str, str] | None = None,
+     ) -> None:
+         """Emit the canonical daemon error envelope.
+@@ -1439,14 +1442,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+         (#1818): ``{"ok": false, "error": <code>, "detail": <str|null>,
+         "field": <str|null>}``, produced by ``QueryErrorPayload`` so the
+         decorator path, the cursor-rejection path, and ad-hoc 4xx sites all
+-        serialize identically. Health/status payloads use a different,
+-        deliberately separate shape and do not route through here.
++        serialize identically. Controlled transaction failures additionally
++        carry ``receipt``; unrelated errors omit that optional field. Health
++        and status payloads use a deliberately separate shape.
+         """
+-        self._send_json(
+-            status,
+-            QueryErrorPayload(error=code, detail=detail).model_dump(mode="json"),
+-            extra_headers=extra_headers,
+-        )
++        payload = QueryErrorPayload(
++            error=code,
++            detail=detail,
++            receipt=dict(receipt) if receipt is not None else None,
++        ).model_dump(mode="json")
++        if receipt is None:
++            payload.pop("receipt", None)
++        self._send_json(status, payload, extra_headers=extra_headers)
+ 
+     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
+         parsed = urlparse(self.path)
+@@ -2551,7 +2558,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+                 offset=offset,
+             )
+         except InvalidSearchCursorError as exc:
+-            return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(mode="json")
++            return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(
++                mode="json", exclude={"receipt"}
++            )
+         return envelope.model_dump(mode="json")
+ 
+     def _do_archive_session_list(
+@@ -3646,21 +3655,31 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+ 
+     @daemon_safe_handler
+     def _handle_query_units(self, params: dict[str, list[str]]) -> None:
+-        """``GET /api/query-units`` returns one bounded terminal-unit page.
+-
+-        An initial request carries expression/filter fields. Follow-up requests
+-        carry only the opaque ``continuation`` emitted by the previous page;
+-        the daemon replays the canonical request rather than trusting a browser
+-        to reconstruct its filters or offset.
+-        """
++        """``GET /api/query-units`` executes or resumes one bounded transaction."""
+ 
++        from polylogue.archive.query.execution_control import classify_unit_expression_workload
+         from polylogue.archive.query.expression import ExpressionCompileError
+         from polylogue.archive.query.spec import clamp_query_limit
+-        from polylogue.archive.query.transaction import QueryContinuation
++        from polylogue.archive.query.transaction import (
++            QueryContinuation,
++            QueryContinuationError,
++            QueryContinuationStaleError,
++            QueryTransaction,
++            QueryTransactionExecutionError,
++            QueryTransactionRequest,
++            decode_query_units_continuation,
++            query_units_transaction_request,
++        )
+         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+ 
++        archive_root = _web_reader_archive_root()
++        if archive_root is None:
++            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
++            return
++
+         continuation_token = self._get_param(params, "continuation")
+-        session_filters: Mapping[str, object] | None = None
++        resume: QueryContinuation | None = None
++        transaction_request: QueryTransactionRequest
+         if continuation_token is not None:
+             if set(params) != {"continuation"}:
+                 self._send_error(
+@@ -3670,34 +3689,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+                 )
+                 return
+             try:
+-                continuation = QueryContinuation.decode(continuation_token)
+-                continuation_request = continuation.request
+-                arguments = continuation_request.arguments
+-                expression_value = arguments.get("expression")
+-                filters_value = arguments.get("session_filters", {})
+-                expected_result_ref = "result:" + continuation_request.query_ref.removeprefix("query:")
+-                if (
+-                    continuation_request.operation != "query_units"
+-                    or continuation_request.projection != "terminal-unit-envelope"
+-                    or continuation_request.stable_order != "canonical"
+-                    or set(arguments) != {"expression", "session_filters"}
+-                    or not isinstance(expression_value, str)
+-                    or not expression_value.strip()
+-                    or not isinstance(filters_value, Mapping)
+-                    or continuation.result_ref != expected_result_ref
+-                ):
+-                    raise ValueError("continuation does not identify a query-unit result")
+-                expression = expression_value
+-                session_filters = {str(key): value for key, value in filters_value.items()}
+-                limit = clamp_query_limit(continuation_request.page_size, default=50)
+-                offset = continuation_request.offset
+-            except (TypeError, ValueError) as exc:
+-                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_continuation", str(exc))
++                decoded = decode_query_units_continuation(continuation_token, archive_root=archive_root)
++            except QueryContinuationStaleError as exc:
++                self._send_error(HTTPStatus.CONFLICT, exc.code, str(exc))
+                 return
++            except QueryContinuationError as exc:
++                self._send_error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
++                return
++            resume = decoded
++            transaction_request = decoded.request
++            expression_value = transaction_request.arguments["expression"]
++            filters_value = transaction_request.arguments["session_filters"]
++            assert isinstance(expression_value, str)
++            assert isinstance(filters_value, Mapping)
++            expression = expression_value
++            limit = clamp_query_limit(transaction_request.page_size, default=50)
++            offset = transaction_request.offset
++            session_filters: Mapping[str, object] | None = {str(key): value for key, value in filters_value.items()}
+         else:
+             expression = self._get_param(params, "expression") or ""
+             limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
+             offset = max(0, self._get_int(params, "offset", 0))
++            session_filters = None
++
+         try:
+             if session_filters is not None:
+                 request = query_unit_request(
+@@ -3739,35 +3753,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+                     max_words=self._get_param(params, "max_words"),
+                     message_type=self._get_param(params, "message_type"),
+                 )
++            if continuation_token is None:
++                transaction_request = query_units_transaction_request(
++                    archive_root=archive_root,
++                    expression=expression,
++                    session_filters=request.session_filters or {},
++                    page_size=limit,
++                    offset=offset,
++                )
+         except ExpressionCompileError as exc:
+             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_query", str(exc))
+             return
+-        archive_root = _web_reader_archive_root()
+-        if archive_root is None:
+-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+-            return
+-
+-        from polylogue.archive.query.execution_control import QueryTimeoutError, classify_unit_expression_workload
+-        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+ 
+-        # The handler thread is dedicated, so the read runs in place; the
+-        # execution context supplies the deadline and shares the process-wide
+-        # admission controller with the async surfaces (polylogue-z9gh.1).
+         transaction = QueryTransaction(
+             archive_root,
+-            QueryTransactionRequest(
+-                operation="query_units",
+-                arguments={
+-                    "expression": expression,
+-                    "session_filters": dict(request.session_filters or {}),
+-                },
+-                page_size=limit,
+-                offset=offset,
+-                projection="terminal-unit-envelope",
+-                stable_order="canonical",
+-            ),
++            transaction_request,
+             workload_class=classify_unit_expression_workload(expression),
+             read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
++            resume=resume,
+         )
+         try:
+             payload = transaction.run_sync(
+@@ -3776,10 +3779,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
+                     request,
+                     execution_context=transaction.context,
+                     transaction_request=transaction.request,
++                    continuation_seed=transaction.continuation_seed,
+                 )
+             )
+-        except QueryTimeoutError:
+-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "query_deadline_exceeded")
++        except QueryContinuationError as exc:
++            self._send_error(HTTPStatus.CONFLICT, exc.code, str(exc))
++            return
++        except QueryTransactionExecutionError as exc:
++            self._send_error(
++                HTTPStatus.SERVICE_UNAVAILABLE,
++                exc.code,
++                type(exc).__name__,
++                receipt=exc.receipt.to_dict(),
++            )
+             return
+ 
+         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
+diff --git a/polylogue/daemon/webui.py b/polylogue/daemon/webui.py
+index 4b770363088229204cc0faf2ee77ffd03604573f..b7ecb0e4183cc1472cc2092f0f7293eb16bbc958 100644
+--- a/polylogue/daemon/webui.py
++++ b/polylogue/daemon/webui.py
+@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
+ from urllib.parse import quote
+ 
+ from polylogue.archive.query.execution_control import classify_unit_expression_workload
+-from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
++from polylogue.archive.query.transaction import QueryTransaction, query_units_transaction_request
+ from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+ from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitEnvelope
+ 
+@@ -149,12 +149,10 @@ def load_archive_overview_page(archive_root: Path) -> QueryUnitEnvelope:
+     )
+     transaction = QueryTransaction(
+         archive_root,
+-        QueryTransactionRequest(
+-            operation="query_units",
+-            arguments={
+-                "expression": unit_request.expression,
+-                "session_filters": dict(unit_request.session_filters or {}),
+-            },
++        query_units_transaction_request(
++            archive_root=archive_root,
++            expression=unit_request.expression,
++            session_filters=unit_request.session_filters or {},
+             page_size=unit_request.limit,
+             offset=unit_request.offset,
+         ),
+@@ -166,6 +164,7 @@ def load_archive_overview_page(archive_root: Path) -> QueryUnitEnvelope:
+             unit_request,
+             execution_context=transaction.context,
+             transaction_request=transaction.request,
++            continuation_seed=transaction.continuation_seed,
+         )
+     )
+     if not isinstance(payload, QueryUnitEnvelope) or payload.unit != "message":
+diff --git a/polylogue/mcp/declarations/registry.py b/polylogue/mcp/declarations/registry.py
+index 5a5cf845d2b29c5a6dc532010aadcc27498f59e8..ed267141431f78848c0edabdb1515aacccd23ed7 100644
+--- a/polylogue/mcp/declarations/registry.py
++++ b/polylogue/mcp/declarations/registry.py
+@@ -1324,7 +1324,7 @@ _TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
+         ("query", "unit-row", "result-set"),
+         MCPResultSemantics.EXHAUSTIVE_PAGE,
+         "polylogue.mcp.server_tools.query_units:inspect.signature",
+-        ("expression",),
++        (),
+         (("expression", "messages where text:hello"), ("limit", 1)),
+         "envelope",
+         ("items", "limit", "offset", "total", "unit"),
+diff --git a/polylogue/mcp/payloads.py b/polylogue/mcp/payloads.py
+index bf344829b256b5c3f8a1a7d6d4d3c78143bd0e82..8c596992f559f1f3ada824cd13a951c5a8dfcd8b 100644
+--- a/polylogue/mcp/payloads.py
++++ b/polylogue/mcp/payloads.py
+@@ -103,6 +103,7 @@ class MCPErrorPayload(SurfacePayloadModel):
+     # operator message ``polylogue ops embed status`` does.
+     readiness_status: str | None = None
+     valid_values: tuple[str, ...] = ()
++    receipt: dict[str, object] | None = None
+     is_error: Literal[True] = True
+ 
+ 
+diff --git a/polylogue/mcp/server_support.py b/polylogue/mcp/server_support.py
+index 03fbc9323ddadfd4d0034bb6ef6b284fb0dfc8dd..278bfc2fcab6e3c89ff7f5bcee17c0fc0d8f1e1e 100644
+--- a/polylogue/mcp/server_support.py
++++ b/polylogue/mcp/server_support.py
+@@ -40,6 +40,7 @@ from polylogue.surfaces.payloads import serialize_surface_payload
+ 
+ if TYPE_CHECKING:
+     from polylogue.api import Polylogue
++    from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
+     from polylogue.config import Config
+ 
+ logger = get_logger(__name__)
+@@ -66,6 +67,8 @@ class _ResponseContext:
+ 
+     tool: str
+     arguments: Mapping[str, object]
++    transaction_request: QueryTransactionRequest | None = None
++    continuation_seed: QueryContinuation | None = None
+ 
+ 
+ _response_context_var: ContextVar[_ResponseContext | None] = ContextVar("mcp_response_context", default=None)
+@@ -84,7 +87,14 @@ class FencedCodeExtractor(Protocol):
+ 
+ 
+ class ResponseContextHook(Protocol):
+-    def __call__(self, tool: str, arguments: Mapping[str, object]) -> AbstractContextManager[None]: ...
++    def __call__(
++        self,
++        tool: str,
++        arguments: Mapping[str, object],
++        *,
++        transaction_request: QueryTransactionRequest | None = None,
++        continuation_seed: QueryContinuation | None = None,
++    ) -> AbstractContextManager[None]: ...
+ 
+ 
+ class SafeCallHook(Protocol):
+@@ -146,9 +156,22 @@ def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlo
+ 
+ 
+ @contextmanager
+-def _response_context(tool: str, arguments: Mapping[str, object]) -> Iterator[None]:
++def _response_context(
++    tool: str,
++    arguments: Mapping[str, object],
++    *,
++    transaction_request: QueryTransactionRequest | None = None,
++    continuation_seed: QueryContinuation | None = None,
++) -> Iterator[None]:
+     """Associate one serialized response with its safe, narrower replay call."""
+-    token = _response_context_var.set(_ResponseContext(tool=tool, arguments=arguments))
++    token = _response_context_var.set(
++        _ResponseContext(
++            tool=tool,
++            arguments=arguments,
++            transaction_request=transaction_request,
++            continuation_seed=continuation_seed,
++        )
++    )
+     try:
+         yield
+     finally:
+@@ -293,31 +316,54 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
+     context = _response_context_var.get()
+     page = _bounded_item_page(payload, exclude_none=exclude_none)
+     continuation = _narrow_continuation(context, consumed=page[1] if page is not None else None)
++    page_payload = page[0] if page is not None else None
+     if context is not None and context.tool == "query_units":
+-        # The typed unit envelope has the authoritative q1 token.  Rebase it
+-        # to the prefix actually retained by the MCP budget wrapper; the
+-        # original token may point past rows omitted from the response.
++        # The transport must advance from the exact prefix it returned, even
++        # when the underlying storage page was terminal and therefore carried
++        # no continuation of its own.  The response context supplies the live
++        # transaction request so this remains the canonical q2 protocol.
+         raw_continuation = body.get("continuation")
+-        if isinstance(raw_continuation, str) and page is not None:
++        if page is not None and context.transaction_request is not None:
+             try:
+-                from polylogue.archive.query.transaction import QueryContinuation
+-
+-                decoded = QueryContinuation.decode(raw_continuation)
++                from polylogue.archive.query.transaction import (
++                    QueryContinuation,
++                    QueryTransactionRequest,
++                )
++
++                request = context.transaction_request
++                if not isinstance(request, QueryTransactionRequest):
++                    raise TypeError("query response context has an invalid transaction request")
+                 raw_original_items: object = getattr(payload, "items", None)
+                 if isinstance(raw_original_items, (tuple, list)):
+                     original_items: tuple[object, ...] | list[object] = raw_original_items
+                 else:
+                     raw_original_items = getattr(payload, "messages", ())
+                     original_items = raw_original_items if isinstance(raw_original_items, (tuple, list)) else ()
+-                narrowed = decoded.request.next(offset=decoded.request.offset - len(original_items) + page[1])
+-                continuation = {
+-                    "tool": "query_units",
+-                    "arguments": {
+-                        "continuation": QueryContinuation(request=narrowed, result_ref=decoded.result_ref).encode()
+-                    },
+-                    "reason": "The original query page exceeded the MCP response budget; continue from the returned prefix.",
+-                }
+-            except ValueError:
++                retained = page[1]
++                needs_continuation = retained < len(original_items) or isinstance(raw_continuation, str)
++                if needs_continuation:
++                    narrowed = request.next(offset=request.offset + retained)
++                    if isinstance(raw_continuation, str):
++                        token = QueryContinuation.decode(raw_continuation).for_request(narrowed)
++                    elif context.continuation_seed is not None:
++                        token = context.continuation_seed.for_request(narrowed)
++                    else:
++                        token = QueryContinuation(request=narrowed, result_ref=request.result_ref)
++                    continuation = {
++                        "tool": "query_units",
++                        "arguments": {"continuation": token.encode()},
++                        "reason": (
++                            "The original query page exceeded the MCP response budget; "
++                            "continue from the returned prefix."
++                        ),
++                    }
++                else:
++                    continuation = None
++                page_payload = page[0].model_copy(update={"continuation": None})
++                # Never expose a clipped or storage-relative cursor in compact
++                # metadata; only the top-level continuation is authoritative.
++                body["continuation"] = None
++            except (TypeError, ValueError):
+                 continuation = None
+     envelope = {
+         "ok": True,
+@@ -328,7 +374,7 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
+         "original_bytes": original_bytes,
+         "payload_type": type(payload).__name__,
+         "metadata": _compact_metadata(body),
+-        "page": page[0].model_dump(mode="json", exclude_none=exclude_none) if page is not None else None,
++        "page": page_payload.model_dump(mode="json", exclude_none=exclude_none) if page_payload is not None else None,
+         "returned_items": page[1] if page is not None else 0,
+         "continuation": continuation,
+         "next_action": (
+@@ -383,8 +429,29 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
+       paths, or other internal state.
+     """
+     from polylogue.archive.query.expression import ExpressionCompileError
++    from polylogue.archive.query.transaction import (
++        QueryContinuationError,
++        QueryTransactionExecutionError,
++    )
+ 
+-    if isinstance(exc, QuerySpecError | ExpressionCompileError):
++    if isinstance(exc, QueryTransactionExecutionError):
++        payload = MCPErrorPayload(
++            message=f"{fn_name}: {exc.code}",
++            code=exc.code,
++            error=exc.code,
++            detail=type(exc).__name__,
++            tool=fn_name,
++            receipt=exc.receipt.to_dict(),
++        )
++    elif isinstance(exc, QueryContinuationError):
++        payload = MCPErrorPayload(
++            message=f"{fn_name}: {exc.code}",
++            code=exc.code,
++            error=exc.code,
++            detail=type(exc).__name__,
++            tool=fn_name,
++        )
++    elif isinstance(exc, QuerySpecError | ExpressionCompileError):
+         field = exc.field
+         valid_values = _QUERY_ERROR_VALID_VALUES.get(field, ()) if field is not None else ()
+         valid_hint = f" Valid values: {', '.join(valid_values)}." if valid_values else ""
+diff --git a/polylogue/mcp/server_tools.py b/polylogue/mcp/server_tools.py
+index e8688f762d1b6e9cb48566cf8ddabfc4b0f01a98..0430153c1a755b10cbb24002e79c658f554bbedd 100644
+--- a/polylogue/mcp/server_tools.py
++++ b/polylogue/mcp/server_tools.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+ 
+ import sqlite3
+ from collections import Counter
+-from collections.abc import Sequence
++from collections.abc import Mapping, Sequence
+ from dataclasses import asdict, dataclass, replace
+ from pathlib import Path
+ from time import monotonic
+@@ -257,7 +257,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+ 
+     @mcp.tool()
+     async def query_units(
+-        expression: str,
++        expression: str = "",
+         limit: MCPToolLimit = 10,
+         offset: MCPToolOffset = 0,
+         origin: str | None = None,
+@@ -289,42 +289,87 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+         message_type: str | None = None,
+         continuation: str | None = None,
+     ) -> str:
+-        """Return terminal rows for explicit unit-source query expressions."""
++        """Return or resume terminal rows for a canonical unit-source transaction."""
+ 
+         requested_expression = expression
+ 
+         async def run() -> str:
+             from polylogue.archive.query.execution_control import classify_unit_expression_workload
+             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+-            from polylogue.archive.query.transaction import QueryContinuation, QueryTransaction, QueryTransactionRequest
++            from polylogue.archive.query.transaction import (
++                QueryContinuation,
++                QueryContinuationError,
++                QueryTransaction,
++                QueryTransactionRequest,
++                decode_query_units_continuation,
++                query_units_transaction_request,
++            )
+             from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+ 
+             config = hooks.get_config()
+-            effective_expression = requested_expression
+-            effective_limit = limit
+-            effective_offset = offset
+-            continuation_request = None
++            archive_root = mcp_archive_root(config)
++            resume: QueryContinuation | None = None
++            transaction_request: QueryTransactionRequest
+             if continuation is not None:
+-                try:
+-                    continuation_request = QueryContinuation.decode(continuation).request
+-                except ValueError as exc:
+-                    return hooks.error_json(str(exc), code="invalid_continuation", tool="query_units")
+-                if continuation_request.operation != "query_units":
++                has_overrides = any(
++                    (
++                        bool(requested_expression.strip()),
++                        limit != 10,
++                        offset != 0,
++                        origin is not None,
++                        exclude_origin is not None,
++                        tag is not None,
++                        exclude_tag is not None,
++                        repo is not None,
++                        project is not None,
++                        has_type is not None,
++                        referenced_path is not None,
++                        cwd_prefix is not None,
++                        action is not None,
++                        exclude_action is not None,
++                        action_sequence is not None,
++                        action_text is not None,
++                        tool is not None,
++                        exclude_tool is not None,
++                        title is not None,
++                        since is not None,
++                        until is not None,
++                        has_tool_use,
++                        has_thinking,
++                        has_paste_evidence,
++                        typed_only,
++                        min_messages is not None,
++                        max_messages is not None,
++                        min_words is not None,
++                        max_words is not None,
++                        message_type is not None,
++                    )
++                )
++                if has_overrides:
+                     return hooks.error_json(
+-                        "continuation belongs to a different query operation",
++                        "continuation requests must not override the original query parameters",
+                         code="invalid_continuation",
+                         tool="query_units",
+                     )
+-                effective_expression = str(continuation_request.arguments.get("expression", requested_expression))
+-                effective_offset = continuation_request.offset
+-                effective_limit = continuation_request.page_size
+-                session_filters = continuation_request.arguments.get("session_filters")
+-                if not isinstance(session_filters, dict):
+-                    return hooks.error_json(
+-                        "continuation has invalid session filters", code="invalid_continuation", tool="query_units"
+-                    )
++                try:
++                    decoded = decode_query_units_continuation(continuation, archive_root=archive_root)
++                except QueryContinuationError as exc:
++                    return hooks.error_json(str(exc), code=exc.code, tool="query_units")
++                resume = decoded
++                transaction_request = decoded.request
++                effective_expression = transaction_request.arguments["expression"]
++                filters_value = transaction_request.arguments["session_filters"]
++                assert isinstance(effective_expression, str)
++                assert isinstance(filters_value, Mapping)
++                session_filters = dict(filters_value)
++                effective_limit = transaction_request.page_size
++                effective_offset = transaction_request.offset
+             else:
++                effective_expression = requested_expression
+                 session_filters = None
++                effective_limit = limit
++                effective_offset = offset
++
+             try:
+                 if parse_unit_source_expression(effective_expression) is None:
+                     return hooks.error_json(
+@@ -334,6 +379,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+                     )
+             except ExpressionCompileError as exc:
+                 return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
++
+             try:
+                 clamped_limit = hooks.clamp_limit(effective_limit)
+                 clamped_offset = max(0, effective_offset)
+@@ -370,23 +416,27 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+                     max_words=max_words,
+                     message_type=message_type,
+                 )
+-                canonical_arguments = {
+-                    "expression": effective_expression,
+-                    "session_filters": dict(unit_request.session_filters or {}),
+-                }
+-                transaction = QueryTransaction(
+-                    mcp_archive_root(config),
+-                    QueryTransactionRequest(
+-                        operation="query_units",
+-                        arguments=canonical_arguments,
++                if continuation is None:
++                    transaction_request = query_units_transaction_request(
++                        archive_root=archive_root,
++                        expression=effective_expression,
++                        session_filters=unit_request.session_filters or {},
+                         page_size=clamped_limit,
+                         offset=clamped_offset,
+-                        projection="terminal-unit-envelope",
+-                        stable_order="canonical",
+-                    ),
++                    )
++                canonical_arguments = dict(transaction_request.arguments)
++                transaction = QueryTransaction(
++                    archive_root,
++                    transaction_request,
+                     workload_class=classify_unit_expression_workload(effective_expression),
++                    resume=resume,
+                 )
+-                with hooks.response_context("query_units", canonical_arguments):
++                with hooks.response_context(
++                    "query_units",
++                    canonical_arguments,
++                    transaction_request=transaction.request,
++                    continuation_seed=transaction.continuation_seed,
++                ):
+                     return hooks.json_payload(
+                         await transaction.run(
+                             lambda archive: query_unit_envelope(
+@@ -394,6 +444,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+                                 unit_request,
+                                 execution_context=transaction.context,
+                                 transaction_request=transaction.request,
++                                continuation_seed=transaction.continuation_seed,
+                             ),
+                         )
+                     )
+diff --git a/polylogue/storage/sqlite/archive_tiers/archive.py b/polylogue/storage/sqlite/archive_tiers/archive.py
+index e784327ec3da6b06ea5dd2fcbc8c984cd632e4b1..98c976abba860e355b9d69031c83889b044628e8 100644
+--- a/polylogue/storage/sqlite/archive_tiers/archive.py
++++ b/polylogue/storage/sqlite/archive_tiers/archive.py
+@@ -1363,6 +1363,32 @@ class ArchiveStore:
+ 
+         self._conn.execute("BEGIN")
+ 
++    def read_query_epoch(self) -> str:
++        """Return every terminal-query tier frame from this owned snapshot."""
++
++        version_row = self._conn.execute("PRAGMA user_version").fetchone()
++        version = int(version_row[0]) if version_row is not None else 0
++        frame_row = self._conn.execute("SELECT COUNT(*), MAX(rowid), MAX(updated_at_ms) FROM sessions").fetchone()
++        count = int(frame_row[0]) if frame_row is not None and frame_row[0] is not None else 0
++        max_rowid = int(frame_row[1]) if frame_row is not None and frame_row[1] is not None else 0
++        watermark = int(frame_row[2]) if frame_row is not None and frame_row[2] is not None else 0
++        index_epoch = f"index:v{version}:{count}:{max_rowid}:{watermark}"
++
++        if not self.user_db_path.exists():
++            user_epoch = "user:absent"
++        else:
++            self._attach_user_tier_if_present()
++            user_version_row = self._conn.execute("PRAGMA user_tier.user_version").fetchone()
++            user_version = int(user_version_row[0]) if user_version_row is not None else 0
++            user_frame = self._conn.execute(
++                "SELECT COUNT(*), MAX(rowid), MAX(updated_at_ms) FROM user_tier.assertions"
++            ).fetchone()
++            user_count = int(user_frame[0]) if user_frame is not None and user_frame[0] is not None else 0
++            user_max_rowid = int(user_frame[1]) if user_frame is not None and user_frame[1] is not None else 0
++            user_watermark = int(user_frame[2]) if user_frame is not None and user_frame[2] is not None else 0
++            user_epoch = f"user:v{user_version}:{user_count}:{user_max_rowid}:{user_watermark}"
++        return f"{index_epoch}|{user_epoch}"
++
+     def end_read_snapshot(self) -> None:
+         """Release the owned read snapshot without ever committing read work."""
+ 
+diff --git a/polylogue/surfaces/payloads.py b/polylogue/surfaces/payloads.py
+index a029733fb9b9898dcbe65fbc1e25519383f53967..4661b04b5e79f57910f4457a2915569ad0f3e6cf 100644
+--- a/polylogue/surfaces/payloads.py
++++ b/polylogue/surfaces/payloads.py
+@@ -1177,13 +1177,15 @@ class QueryErrorPayload(SurfacePayloadModel):
+     """Shared error payload for daemon HTTP, MCP, and other surfaces.
+ 
+     Compatible with daemon HTTP's ``{"ok": False, "error": ..., "detail": ...}``
+-    shape and MCP's ``MCPErrorPayload``.
++    shape and MCP's ``MCPErrorPayload``. Transaction failures additionally
++    expose a safe receipt with opaque query/result identity and retry state.
+     """
+ 
+     ok: Literal[False] = False
+     error: str
+     detail: str | None = None
+     field: str | None = None
++    receipt: dict[str, object] | None = None
+ 
+ 
+ class QueryMissReasonPayload(SurfacePayloadModel):
+diff --git a/tests/unit/archive/query/test_transaction.py b/tests/unit/archive/query/test_transaction.py
+index b1fd57649e6cac3e4eba40564a17573fa05694d8..22df970420aaadf8ebbde2407de01d03b2d04466 100644
+--- a/tests/unit/archive/query/test_transaction.py
++++ b/tests/unit/archive/query/test_transaction.py
+@@ -1,51 +1,82 @@
+ from __future__ import annotations
+ 
++import asyncio
++import sqlite3
++import threading
++from pathlib import Path
++from typing import cast
++
+ import pytest
+ 
+-from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
++from polylogue.archive.query.transaction import (
++    QueryContinuation,
++    QueryContinuationError,
++    QueryContinuationExpiredError,
++    QueryContinuationStaleError,
++    QueryExecutionLimits,
++    QueryTransaction,
++    QueryTransactionFailureReceipt,
++    QueryTransactionRequest,
++    archive_index_epoch,
++    archive_query_epoch,
++    archive_user_epoch,
++)
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+ 
+ 
+-def test_query_continuation_round_trips_complete_request_state() -> None:
+-    request = QueryTransactionRequest(
++def _framed_request(*, offset: int = 14) -> QueryTransactionRequest:
++    return QueryTransactionRequest(
+         operation="query_units",
+-        arguments={"expression": "actions where tool:Workflow", "repo": "polylogue"},
++        arguments={"expression": "actions where tool:Workflow", "session_filters": {}},
+         page_size=7,
+-        offset=14,
+-        projection="compact-action",
+-        stable_order="session,message,block",
++        offset=offset,
++        projection="terminal-unit-envelope",
++        stable_order="canonical",
++        archive_epoch="index:v24:2:2:1000",
++    )
++
++
++def test_query_continuation_round_trips_complete_request_state() -> None:
++    request = _framed_request()
++    continuation = QueryContinuation(
++        request=request,
++        result_ref=request.result_ref,
++        issued_at_ms=1_000,
++        expires_at_ms=10_000,
+     )
+-    token = QueryContinuation(request=request, result_ref="result:abc123").encode()
+ 
+-    decoded = QueryContinuation.decode(token)
++    decoded = QueryContinuation.decode(continuation.encode(), now_ms=2_000)
+ 
+-    assert decoded.result_ref == "result:abc123"
++    assert decoded.result_ref == request.result_ref
+     assert decoded.request == request
+     assert decoded.request.next(offset=21).arguments == request.arguments
++    assert decoded.issued_at_ms == 1_000
++    assert decoded.expires_at_ms == 10_000
+ 
+ 
+-def test_query_ref_is_logical_and_independent_of_page_offset() -> None:
++def test_query_ref_is_logical_and_result_ref_binds_archive_epoch() -> None:
+     first = QueryTransactionRequest("search", {"query": "Workflow"}, page_size=10, offset=0)
+     later = first.next(offset=10)
++    moved = QueryTransactionRequest(
++        operation=first.operation,
++        arguments=first.arguments,
++        page_size=first.page_size,
++        archive_epoch="index:v24:changed",
++    )
+ 
+-    assert first.query_ref == later.query_ref
++    assert first.query_ref == later.query_ref == moved.query_ref
++    assert first.result_ref == later.result_ref
++    assert first.result_ref != moved.result_ref
+ 
+ 
+-def test_query_unit_envelope_can_adopt_the_caller_transaction_identity() -> None:
+-    """The page protocol does not mint a second identity behind an adapter."""
++def test_query_unit_envelope_adopts_the_caller_transaction_identity() -> None:
+     from polylogue.archive.query.expression import parse_unit_source_expression
+     from polylogue.archive.query.unit_results import QueryUnitRequest, query_unit_envelope
+ 
+     source = parse_unit_source_expression("actions where tool:Workflow")
+     assert source is not None
+-    transaction = QueryTransactionRequest(
+-        operation="query_units",
+-        arguments={"expression": "actions where tool:Workflow", "session_filters": {}},
+-        page_size=1,
+-        projection="terminal-unit-envelope",
+-    )
++    transaction = _framed_request(offset=0)
+ 
+-    # A tiny fake archive keeps this a protocol test: the production behavior
+-    # exercised is identity ownership, not a duplicate action-query replica.
+     class _Archive:
+         def query_actions(self, *_args: object, **_kwargs: object) -> list[object]:
+             return []
+@@ -57,10 +88,181 @@ def test_query_unit_envelope_can_adopt_the_caller_transaction_identity() -> None
+     )
+ 
+     assert envelope.query_ref == transaction.query_ref
+-    assert envelope.result_ref == "result:" + transaction.query_ref.removeprefix("query:")
++    assert envelope.result_ref == transaction.result_ref
+ 
+ 
+-@pytest.mark.parametrize("token", ["q1._", "q1.////", "q1.8J+SqQ"])
+-def test_query_continuation_rejects_malformed_payloads_as_value_errors(token: str) -> None:
+-    with pytest.raises(ValueError, match="invalid query continuation"):
++@pytest.mark.parametrize("token", ["q1._", "q2._", "q2.////", "q2.8J+SqQ"])
++def test_query_continuation_rejects_malformed_payloads_as_typed_errors(token: str) -> None:
++    with pytest.raises(QueryContinuationError):
+         QueryContinuation.decode(token)
++
++
++def test_query_continuation_rejects_tampering() -> None:
++    request = _framed_request()
++    token = QueryContinuation(request=request, result_ref=request.result_ref).encode()
++    replacement = "A" if token[-1] != "A" else "B"
++
++    with pytest.raises(QueryContinuationError, match="invalid query continuation"):
++        QueryContinuation.decode(token[:-1] + replacement)
++
++
++def test_query_continuation_expires_typed_instead_of_restarting() -> None:
++    request = _framed_request()
++    token = QueryContinuation(
++        request=request,
++        result_ref=request.result_ref,
++        issued_at_ms=1_000,
++        expires_at_ms=2_000,
++    ).encode()
++
++    with pytest.raises(QueryContinuationExpiredError) as raised:
++        QueryContinuation.decode(token, now_ms=2_000)
++
++    assert raised.value.code == "query_continuation_expired"
++
++
++def _make_index_db(path: Path, *, user_version: int = 24) -> None:
++    with sqlite3.connect(path) as conn:
++        conn.execute(f"PRAGMA user_version = {user_version}")
++        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, updated_at_ms INTEGER)")
++        conn.commit()
++
++
++def _make_user_db(path: Path, *, user_version: int = 11) -> None:
++    with sqlite3.connect(path) as conn:
++        conn.execute(f"PRAGMA user_version = {user_version}")
++        conn.execute("CREATE TABLE assertions (assertion_id TEXT PRIMARY KEY, updated_at_ms INTEGER NOT NULL)")
++        conn.commit()
++
++
++def test_archive_index_epoch_tracks_new_and_updated_sessions(tmp_path: Path) -> None:
++    index_db = tmp_path / "index.db"
++    _make_index_db(index_db)
++    assert archive_index_epoch(index_db) == "index:v24:0:0:0"
++
++    with sqlite3.connect(index_db) as conn:
++        conn.execute("INSERT INTO sessions VALUES ('s1', 1000)")
++        conn.commit()
++    assert archive_index_epoch(index_db) == "index:v24:1:1:1000"
++
++    with sqlite3.connect(index_db) as conn:
++        conn.execute("UPDATE sessions SET updated_at_ms = 2000 WHERE session_id = 's1'")
++        conn.commit()
++    assert archive_index_epoch(index_db) == "index:v24:1:1:2000"
++
++
++def test_archive_query_epoch_tracks_assertion_tier_changes(tmp_path: Path) -> None:
++    _make_index_db(tmp_path / "index.db")
++    user_db = tmp_path / "user.db"
++    _make_user_db(user_db)
++
++    assert archive_user_epoch(user_db) == "user:v11:0:0:0"
++    assert archive_query_epoch(tmp_path) == "index:v24:0:0:0|user:v11:0:0:0"
++
++    with sqlite3.connect(user_db) as conn:
++        conn.execute("INSERT INTO assertions VALUES ('a1', 1000)")
++        conn.commit()
++    assert archive_query_epoch(tmp_path) == "index:v24:0:0:0|user:v11:1:1:1000"
++
++    with sqlite3.connect(user_db) as conn:
++        conn.execute("UPDATE assertions SET updated_at_ms = 2000 WHERE assertion_id = 'a1'")
++        conn.commit()
++    assert archive_query_epoch(tmp_path) == "index:v24:0:0:0|user:v11:1:1:2000"
++
++    store = ArchiveStore.open_existing(tmp_path)
++    try:
++        store.begin_read_snapshot()
++        assert store.read_query_epoch() == archive_query_epoch(tmp_path)
++    finally:
++        store.close()
++
++
++def test_transaction_rechecks_epoch_inside_the_owned_snapshot(tmp_path: Path) -> None:
++    archive_root = tmp_path / "archive"
++    ArchiveStore(archive_root).close()
++    request = QueryTransactionRequest(
++        operation="query_units",
++        arguments={"expression": "messages where text:needle", "session_filters": {}},
++        page_size=5,
++        projection="terminal-unit-envelope",
++        archive_epoch=archive_query_epoch(archive_root),
++    )
++
++    with sqlite3.connect(archive_root / "index.db") as conn:
++        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
++        conn.execute(f"PRAGMA user_version = {version + 1}")
++        conn.commit()
++
++    transaction = QueryTransaction(
++        archive_root,
++        request,
++        limits=QueryExecutionLimits(timeout_s=None),
++    )
++    with pytest.raises(QueryContinuationStaleError):
++        transaction.run_sync(lambda _archive: None)
++
++
++def test_resumed_transaction_preserves_the_original_continuation_window(tmp_path: Path) -> None:
++    request = _framed_request(offset=7)
++    seed = QueryContinuation(
++        request=request,
++        result_ref=request.result_ref,
++        issued_at_ms=1_000,
++        expires_at_ms=10_000,
++    )
++    transaction = QueryTransaction(
++        tmp_path,
++        request,
++        limits=QueryExecutionLimits(timeout_s=None),
++        resume=seed,
++    )
++
++    advanced = QueryContinuation.decode(
++        transaction.continuation_for(request.next(offset=14)).encode(),
++        now_ms=2_000,
++    )
++    retry = QueryContinuation.decode(transaction.failure_receipt().retry_continuation or "", now_ms=2_000)
++
++    assert advanced.request.offset == 14
++    assert retry.request.offset == 7
++    assert advanced.issued_at_ms == retry.issued_at_ms == seed.issued_at_ms
++    assert advanced.expires_at_ms == retry.expires_at_ms == seed.expires_at_ms
++
++
++@pytest.mark.asyncio
++async def test_cancelled_transaction_attaches_resumable_failure_receipt(tmp_path: Path) -> None:
++    archive_root = tmp_path / "archive"
++    ArchiveStore(archive_root).close()
++    request = QueryTransactionRequest(
++        operation="query_units",
++        arguments={"expression": "messages where text:needle", "session_filters": {}},
++        page_size=5,
++        projection="terminal-unit-envelope",
++        archive_epoch=archive_query_epoch(archive_root),
++    )
++    transaction = QueryTransaction(
++        archive_root,
++        request,
++        limits=QueryExecutionLimits(timeout_s=None),
++    )
++    started = threading.Event()
++    release = threading.Event()
++
++    def work(_archive: ArchiveStore) -> None:
++        started.set()
++        release.wait(timeout=2.0)
++
++    task = asyncio.create_task(transaction.run(work))
++    assert await asyncio.to_thread(started.wait, 1.0)
++    task.cancel()
++    release.set()
++
++    with pytest.raises(asyncio.CancelledError) as raised:
++        await task
++
++    receipt = cast(QueryTransactionFailureReceipt, raised.value.__dict__["query_receipt"])
++    assert receipt.query_ref == request.query_ref
++    assert receipt.result_ref == request.result_ref
++    assert receipt.offset == 0
++    assert receipt.retry_continuation is not None
++    assert QueryContinuation.decode(receipt.retry_continuation).request == request
+diff --git a/tests/unit/daemon/test_daemon_http_contracts.py b/tests/unit/daemon/test_daemon_http_contracts.py
+index 47dd17d7b3f25b940691652141a932253b72c408..86a71f28a62275a3343bb3847b713eb643414058 100644
+--- a/tests/unit/daemon/test_daemon_http_contracts.py
++++ b/tests/unit/daemon/test_daemon_http_contracts.py
+@@ -921,9 +921,10 @@ class TestErrorEnvelopeContract:
+     ``_send_error`` is the single helper for daemon error responses; it emits
+     ``{"ok": False, "error": <code>, "detail": <str|null>, "field": <str|null>}``
+     through the shared ``QueryErrorPayload``, identical to the
+-    ``daemon_safe_handler`` decorator and the cursor-rejection path. Health and
+-    status payloads use a deliberately separate shape (``status`` / ``alerts`` /
+-    ``quick_check`` keys) and must NOT be routed through this helper.
++    ``daemon_safe_handler`` decorator and the cursor-rejection path. Controlled
++    transaction failures may add ``receipt``; ordinary errors omit it. Health
++    and status payloads use a deliberately separate shape (``status`` /
++    ``alerts`` / ``quick_check`` keys) and must NOT use this helper.
+     """
+ 
+     def test_send_error_emits_canonical_envelope(self) -> None:
+@@ -970,7 +971,7 @@ class TestErrorEnvelopeContract:
+ 
+         # The canonical error envelope never carries health-status keys.
+         error_keys = set(QueryErrorPayload(error="x").model_dump(mode="json"))
+-        assert error_keys == {"ok", "error", "detail", "field"}
++        assert error_keys == {"ok", "error", "detail", "field", "receipt"}
+         assert "status" not in error_keys
+         assert "alerts" not in error_keys
+         assert "quick_check" not in error_keys
+diff --git a/tests/unit/daemon/test_web_reader.py b/tests/unit/daemon/test_web_reader.py
+index ea32864eb5c7ee82053e8a02b8378541382d1f31..ca3a6e9f4140cb36de7939515a6be7249f991cae 100644
+--- a/tests/unit/daemon/test_web_reader.py
++++ b/tests/unit/daemon/test_web_reader.py
+@@ -2142,7 +2142,7 @@ class TestReaderQueryUnits:
+                 _get_json(base_url, f"/api/query-units?continuation={quote(continuation)}"),
+             )
+ 
+-        assert continuation.startswith("q1.")
++        assert continuation.startswith("q2.")
+         assert first["query_ref"] == second["query_ref"]
+         assert first["result_ref"] == second["result_ref"]
+         assert second["offset"] == 1
+diff --git a/tests/unit/mcp/test_bounded_query_transport.py b/tests/unit/mcp/test_bounded_query_transport.py
+index 166edcde470540c3cac0d54078daf3de7c919b95..db34069842527e6e65254fcb4ea50423f85fca25 100644
+--- a/tests/unit/mcp/test_bounded_query_transport.py
++++ b/tests/unit/mcp/test_bounded_query_transport.py
+@@ -4,7 +4,7 @@ import json
+ 
+ from pydantic import BaseModel
+ 
+-from polylogue.mcp.server_support import _json_payload, _response_context
++from polylogue.mcp.server_support import _exception_to_error_json, _json_payload, _response_context
+ 
+ 
+ class _LargeItem(BaseModel):
+@@ -37,3 +37,67 @@ def test_oversized_item_envelope_returns_useful_advancing_page() -> None:
+     assert body["page"]["items"]
+     assert body["continuation"]["arguments"]["offset"] == body["returned_items"]
+     assert len(result.encode("utf-8")) <= 25_000
++
++
++def test_terminal_query_budget_trim_mints_q2_cursor_without_storage_continuation() -> None:
++    from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
++
++    request = QueryTransactionRequest(
++        operation="query_units",
++        arguments={"expression": "messages", "session_filters": {}},
++        page_size=8,
++        offset=0,
++        projection="terminal-unit-envelope",
++        stable_order="canonical",
++        archive_epoch="index:v1:1:1:1",
++    )
++
++    class _TerminalPage(_LargePage):
++        query_ref: str
++        result_ref: str
++        continuation: str | None = None
++
++    payload = _TerminalPage(
++        items=tuple(_LargeItem(text=f"item-{index}-" + "x" * 5000) for index in range(8)),
++        total=8,
++        limit=8,
++        offset=0,
++        next_offset=None,
++        query_ref=request.query_ref,
++        result_ref=request.result_ref,
++        continuation=None,
++    )
++
++    with _response_context(
++        "query_units",
++        dict(request.arguments),
++        transaction_request=request,
++    ):
++        result = _json_payload(payload)
++
++    body = json.loads(result)
++    assert body["status"] == "response_budget_exceeded"
++    assert 0 < body["returned_items"] < len(payload.items)
++    assert body["page"]["continuation"] is None
++    assert body["metadata"]["continuation"] is None
++    token = body["continuation"]["arguments"]["continuation"]
++    decoded = QueryContinuation.decode(token)
++    assert decoded.request.offset == body["returned_items"]
++    assert decoded.request.result_ref == request.result_ref
++    assert len(result.encode("utf-8")) <= 25_000
++
++
++def test_mcp_exception_translation_keeps_same_snapshot_stale_cursor_typed() -> None:
++    from polylogue.archive.query.transaction import QueryContinuationStaleError
++
++    body = json.loads(
++        _exception_to_error_json(
++            "query_units",
++            QueryContinuationStaleError(issued_epoch="index:v1", current_epoch="index:v2"),
++        )
++    )
++
++    assert body["ok"] is False
++    assert body["code"] == "query_continuation_stale"
++    assert body["error"] == "query_continuation_stale"
++    assert body["detail"] == "QueryContinuationStaleError"
+diff --git a/tests/unit/mcp/test_query_transaction_certification.py b/tests/unit/mcp/test_query_transaction_certification.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6600184ee4429935c24c1a5dddfcc7cabcf25dd5
+--- /dev/null
++++ b/tests/unit/mcp/test_query_transaction_certification.py
+@@ -0,0 +1,443 @@
++"""Cross-surface certification for the canonical resumable read transaction."""
++
++from __future__ import annotations
++
++import json
++import threading
++from collections.abc import Iterator
++from contextlib import contextmanager
++from http import HTTPStatus
++from pathlib import Path
++from types import SimpleNamespace
++from typing import cast
++from unittest.mock import patch
++from urllib.error import HTTPError
++from urllib.parse import quote
++from urllib.request import Request, urlopen
++
++import pytest
++
++from polylogue.api import Polylogue
++from polylogue.archive.message.roles import Role
++from polylogue.archive.query.expression import parse_unit_source_expression
++from polylogue.archive.query.transaction import (
++    QueryContinuation,
++    QueryContinuationError,
++    QueryContinuationExpiredError,
++    QueryContinuationStaleError,
++    QueryExecutionLimits,
++    QueryTransactionBudgetExceededError,
++    QueryTransactionDeadlineExceededError,
++    QueryTransactionExecutionError,
++)
++from polylogue.core.enums import BlockType, Provider
++from polylogue.core.identity_law import message_id as archive_message_id
++from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
++from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
++from polylogue.surfaces.payloads import MessageQueryRowPayload
++from tests.infra.mcp import MCPServerUnderTest, invoke_surface, invoke_surface_async
++
++pytestmark = pytest.mark.xdist_group("query-transaction-certification")
++
++
++@contextmanager
++def _running_http_server() -> Iterator[str]:
++    from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
++
++    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
++    server.auth_token = ""
++    server.api_host = "127.0.0.1"
++    thread = threading.Thread(target=server.serve_forever, name="query-transaction-http", daemon=True)
++    thread.start()
++    try:
++        yield f"http://127.0.0.1:{server.server_address[1]}"
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=2.0)
++
++
++def _http_json(base_url: str, path: str) -> tuple[int, dict[str, object]]:
++    request = Request(f"{base_url}{path}")
++    try:
++        with urlopen(request, timeout=10) as response:
++            return response.status, cast(dict[str, object], json.loads(response.read()))
++    except HTTPError as exc:
++        return exc.code, cast(dict[str, object], json.loads(exc.read()))
++
++
++def _seed_overflow_corpus(archive_root: Path, *, members: int = 20, start: int = 0) -> list[str]:
++    expected: list[str] = []
++    with ArchiveStore(archive_root) as archive:
++        for index in range(start, start + members):
++            native_id = f"transaction-certification-{index:03d}"
++            native_message_id = f"transaction-message-{index:03d}"
++            minute, second = divmod(index, 60)
++            timestamp = f"2026-01-01T00:{minute:02d}:{second:02d}+00:00"
++            text = f"certificationneedle member-{index:03d} " + ("x" * 3500)
++            session_id = archive.write_parsed(
++                ParsedSession(
++                    source_name=Provider.CODEX,
++                    provider_session_id=native_id,
++                    title=f"Transaction certification {index:03d}",
++                    created_at=timestamp,
++                    updated_at=timestamp,
++                    messages=[
++                        ParsedMessage(
++                            provider_message_id=native_message_id,
++                            role=Role.USER,
++                            text=text,
++                            timestamp=timestamp,
++                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
++                        )
++                    ],
++                )
++            )
++            expected.append(archive_message_id(session_id, native_message_id, position=0))
++    return expected
++
++
++def _page_member_ids(page: dict[str, object]) -> list[str]:
++    items = cast(list[dict[str, object]], page["items"])
++    return [str(item["message_id"]) for item in items]
++
++
++def _mcp_page(payload: dict[str, object]) -> tuple[dict[str, object], str | None]:
++    if payload.get("status") == "response_budget_exceeded":
++        page = cast(dict[str, object], payload["page"])
++        continuation = cast(dict[str, object], payload["continuation"])
++        arguments = cast(dict[str, object], continuation["arguments"])
++        return page, str(arguments["continuation"])
++    return payload, cast(str | None, payload.get("continuation"))
++
++
++def _tamper(token: str) -> str:
++    position = len(token) // 2
++    replacement = "A" if token[position] != "A" else "B"
++    return token[:position] + replacement + token[position + 1 :]
++
++
++@pytest.mark.asyncio
++async def test_overflowing_corpus_exhausts_losslessly_through_api_mcp_and_http(
++    workspace_env: dict[str, Path],
++    mcp_server: MCPServerUnderTest,
++) -> None:
++    """Exercise production grammar, SQL, transaction, MCP budget, API, and HTTP routes.
++
++    Anti-vacuity: reducing the corpus text below the MCP byte budget, removing
++    cursor rebasing, or changing any adapter to reconstruct filters/offsets
++    makes the explicit overflow and ordered-member assertions fail.
++    """
++
++    archive_root = workspace_env["archive_root"]
++    expected = _seed_overflow_corpus(archive_root)
++    expression = "messages where text:certificationneedle | sort by time asc"
++
++    discovery_raw = invoke_surface(mcp_server._resource_manager._resources["polylogue://capabilities/query"].fn)
++    discovery = cast(dict[str, object], json.loads(discovery_raw))
++    for unit in cast(list[dict[str, object]], discovery["units"]):
++        example = str(unit["example"])
++        assert parse_unit_source_expression(example) is not None, example
++
++    api = Polylogue(archive_root=archive_root)
++    api_first = await api.query_units(expression, limit=9)
++    api_ids: list[str] = []
++    api_refs: set[tuple[str | None, str | None]] = set()
++    api_window: tuple[int, int | None] | None = None
++    api_page = api_first
++    api_first_cursor = api_first.continuation
++    while True:
++        api_ids.extend(item.message_id for item in cast(tuple[MessageQueryRowPayload, ...], api_page.items))
++        api_refs.add((api_page.query_ref, api_page.result_ref))
++        if api_page.continuation is None:
++            break
++        cursor_state = QueryContinuation.decode(api_page.continuation)
++        window = (cursor_state.issued_at_ms, cursor_state.expires_at_ms)
++        api_window = window if api_window is None else api_window
++        assert window == api_window
++        api_page = await api.query_units(continuation=api_page.continuation)
++
++    assert len(api_first.items) == 9
++    assert api_first_cursor is not None
++    assert api_first_cursor.startswith("q2.")
++
++    with (
++        patch("polylogue.mcp.server._get_config") as mock_get_config,
++        patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
++    ):
++        mock_get_config.return_value = SimpleNamespace(
++            archive_root=archive_root,
++            db_path=archive_root / "index.db",
++        )
++        mock_get_polylogue.side_effect = AssertionError("query_units must use the shared archive transaction")
++        mcp_raw = cast(
++            str,
++            await invoke_surface_async(
++                mcp_server._tool_manager._tools["query_units"].fn,
++                expression=expression,
++                limit=9,
++            ),
++        )
++        mcp_payload = cast(dict[str, object], json.loads(mcp_raw))
++        assert mcp_payload["status"] == "response_budget_exceeded"
++        original_bytes = mcp_payload["original_bytes"]
++        returned_items = mcp_payload["returned_items"]
++        assert isinstance(original_bytes, int) and original_bytes > MCP_RESPONSE_BUDGET_BYTES
++        assert isinstance(returned_items, int) and 0 < returned_items < 9
++
++        mcp_ids: list[str] = []
++        mcp_refs: set[tuple[str, str]] = set()
++        mcp_window: tuple[int, int | None] | None = None
++        for _ in range(100):
++            page, cursor = _mcp_page(mcp_payload)
++            mcp_ids.extend(_page_member_ids(page))
++            mcp_refs.add((str(page["query_ref"]), str(page["result_ref"])))
++            if cursor is None:
++                break
++            cursor_state = QueryContinuation.decode(cursor)
++            window = (cursor_state.issued_at_ms, cursor_state.expires_at_ms)
++            mcp_window = window if mcp_window is None else mcp_window
++            assert window == mcp_window
++            mcp_raw = cast(
++                str,
++                await invoke_surface_async(
++                    mcp_server._tool_manager._tools["query_units"].fn,
++                    continuation=cursor,
++                ),
++            )
++            mcp_payload = cast(dict[str, object], json.loads(mcp_raw))
++        else:
++            pytest.fail("MCP continuation did not exhaust")
++
++    http_ids: list[str] = []
++    http_refs: set[tuple[str, str]] = set()
++    http_window: tuple[int, int | None] | None = None
++    with _running_http_server() as base_url:
++        path = f"/api/query-units?expression={quote(expression, safe='')}&limit=9"
++        http_first: dict[str, object] | None = None
++        for _ in range(100):
++            status, page = _http_json(base_url, path)
++            assert status == HTTPStatus.OK
++            if http_first is None:
++                http_first = page
++            http_ids.extend(_page_member_ids(page))
++            http_refs.add((str(page["query_ref"]), str(page["result_ref"])))
++            cursor = cast(str | None, page.get("continuation"))
++            if cursor is None:
++                break
++            cursor_state = QueryContinuation.decode(cursor)
++            window = (cursor_state.issued_at_ms, cursor_state.expires_at_ms)
++            http_window = window if http_window is None else http_window
++            assert window == http_window
++            path = f"/api/query-units?continuation={quote(cursor, safe='')}"
++        else:
++            pytest.fail("HTTP continuation did not exhaust")
++
++    assert http_first is not None
++    assert len(cast(list[object], http_first["items"])) == 9
++    assert http_first["continuation"] is not None
++    assert api_ids == mcp_ids == http_ids == expected
++    assert len(api_ids) == len(set(api_ids))
++    assert len(api_refs) == len(mcp_refs) == len(http_refs) == 1
++    assert api_refs == mcp_refs == http_refs
++
++    assert api_first_cursor is not None
++    with (
++        patch("polylogue.mcp.server._get_config") as mock_get_config,
++        patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
++    ):
++        mock_get_config.return_value = SimpleNamespace(
++            archive_root=archive_root,
++            db_path=archive_root / "index.db",
++        )
++        mock_get_polylogue.side_effect = AssertionError("cross-surface resume must stay on the transaction")
++        cross_mcp = json.loads(
++            cast(
++                str,
++                await invoke_surface_async(
++                    mcp_server._tool_manager._tools["query_units"].fn,
++                    continuation=api_first_cursor,
++                ),
++            )
++        )
++    cross_mcp_page, _ = _mcp_page(cast(dict[str, object], cross_mcp))
++    assert cross_mcp_page["offset"] == 9
++    assert cross_mcp_page["result_ref"] == api_first.result_ref
++
++    with _running_http_server() as base_url:
++        cross_status, cross_http = _http_json(
++            base_url,
++            f"/api/query-units?continuation={quote(api_first_cursor, safe='')}",
++        )
++    assert cross_status == HTTPStatus.OK
++    assert cross_http["offset"] == 9
++    assert cross_http["result_ref"] == api_first.result_ref
++
++    decoded = QueryContinuation.decode(api_first_cursor)
++    expired = QueryContinuation(
++        request=decoded.request,
++        result_ref=decoded.result_ref,
++        issued_at_ms=1,
++        expires_at_ms=2,
++    ).encode()
++    tampered = _tamper(api_first_cursor)
++
++    with pytest.raises(QueryContinuationExpiredError):
++        await api.query_units(continuation=expired)
++    with pytest.raises(QueryContinuationError):
++        await api.query_units(continuation=tampered)
++
++    with (
++        patch("polylogue.mcp.server._get_config") as mock_get_config,
++        patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
++    ):
++        mock_get_config.return_value = SimpleNamespace(
++            archive_root=archive_root,
++            db_path=archive_root / "index.db",
++        )
++        mock_get_polylogue.side_effect = AssertionError("cursor validation must not restart through the facade")
++        expired_mcp = json.loads(
++            cast(
++                str,
++                await invoke_surface_async(
++                    mcp_server._tool_manager._tools["query_units"].fn,
++                    continuation=expired,
++                ),
++            )
++        )
++        invalid_mcp = json.loads(
++            cast(
++                str,
++                await invoke_surface_async(
++                    mcp_server._tool_manager._tools["query_units"].fn,
++                    continuation=tampered,
++                ),
++            )
++        )
++    assert expired_mcp["code"] == "query_continuation_expired"
++    assert invalid_mcp["code"] == "invalid_continuation"
++    assert "items" not in expired_mcp and "items" not in invalid_mcp
++
++    with _running_http_server() as base_url:
++        expired_status, expired_http = _http_json(
++            base_url,
++            f"/api/query-units?continuation={quote(expired, safe='')}",
++        )
++        invalid_status, invalid_http = _http_json(
++            base_url,
++            f"/api/query-units?continuation={quote(tampered, safe='')}",
++        )
++    assert expired_status == invalid_status == HTTPStatus.BAD_REQUEST
++    assert expired_http["error"] == "query_continuation_expired"
++    assert invalid_http["error"] == "invalid_continuation"
++    assert "items" not in expired_http and "items" not in invalid_http
++
++    _seed_overflow_corpus(archive_root, members=1, start=100)
++    with pytest.raises(QueryContinuationStaleError):
++        await api.query_units(continuation=api_first_cursor)
++
++    with (
++        patch("polylogue.mcp.server._get_config") as mock_get_config,
++        patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
++    ):
++        mock_get_config.return_value = SimpleNamespace(
++            archive_root=archive_root,
++            db_path=archive_root / "index.db",
++        )
++        mock_get_polylogue.side_effect = AssertionError("stale cursor validation must not restart the query")
++        stale_mcp = json.loads(
++            cast(
++                str,
++                await invoke_surface_async(
++                    mcp_server._tool_manager._tools["query_units"].fn,
++                    continuation=api_first_cursor,
++                ),
++            )
++        )
++    assert stale_mcp["code"] == "query_continuation_stale"
++
++    with _running_http_server() as base_url:
++        stale_status, stale_http = _http_json(
++            base_url,
++            f"/api/query-units?continuation={quote(api_first_cursor, safe='')}",
++        )
++    assert stale_status == HTTPStatus.CONFLICT
++    assert stale_http["error"] == "query_continuation_stale"
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    ("limits", "error_type", "code"),
++    [
++        (QueryExecutionLimits(timeout_s=0.0), QueryTransactionDeadlineExceededError, "query_deadline_exceeded"),
++        (
++            QueryExecutionLimits(timeout_s=None, sqlite_vm_step_budget=1),
++            QueryTransactionBudgetExceededError,
++            "query_work_budget_exceeded",
++        ),
++    ],
++)
++async def test_deadline_and_budget_failures_keep_receipts_on_every_surface(
++    workspace_env: dict[str, Path],
++    mcp_server: MCPServerUnderTest,
++    monkeypatch: pytest.MonkeyPatch,
++    limits: QueryExecutionLimits,
++    error_type: type[QueryTransactionExecutionError],
++    code: str,
++) -> None:
++    archive_root = workspace_env["archive_root"]
++    _seed_overflow_corpus(archive_root, members=2)
++    expression = "messages where text:certificationneedle | sort by time asc"
++    monkeypatch.setattr(
++        "polylogue.archive.query.transaction.query_execution_limits",
++        lambda _operation: limits,
++    )
++
++    api = Polylogue(archive_root=archive_root)
++    with pytest.raises(error_type) as api_failure:
++        await api.query_units(expression, limit=1)
++    api_receipt = api_failure.value.receipt.to_dict()
++
++    with (
++        patch("polylogue.mcp.server._get_config") as mock_get_config,
++        patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
++    ):
++        mock_get_config.return_value = SimpleNamespace(
++            archive_root=archive_root,
++            db_path=archive_root / "index.db",
++        )
++        mock_get_polylogue.side_effect = AssertionError("failure path must remain on the transaction")
++        mcp_failure = cast(
++            dict[str, object],
++            json.loads(
++                cast(
++                    str,
++                    await invoke_surface_async(
++                        mcp_server._tool_manager._tools["query_units"].fn,
++                        expression=expression,
++                        limit=1,
++                    ),
++                )
++            ),
++        )
++
++    with _running_http_server() as base_url:
++        http_status, http_failure = _http_json(
++            base_url,
++            f"/api/query-units?expression={quote(expression, safe='')}&limit=1",
++        )
++
++    assert mcp_failure["code"] == code
++    assert http_status == HTTPStatus.SERVICE_UNAVAILABLE
++    assert http_failure["error"] == code
++    for raw_receipt in (api_receipt, mcp_failure["receipt"], http_failure["receipt"]):
++        receipt = cast(dict[str, object], raw_receipt)
++        query_ref = receipt["query_ref"]
++        result_ref = receipt["result_ref"]
++        assert isinstance(query_ref, str) and query_ref.startswith("query:")
++        assert isinstance(result_ref, str) and result_ref.startswith("result:")
++        assert receipt["offset"] == 0
++        retry = receipt["retry_continuation"]
++        assert isinstance(retry, str) and retry.startswith("q2.")
++        assert QueryContinuation.decode(retry).request.offset == 0
+diff --git a/tests/unit/mcp/test_server_surfaces.py b/tests/unit/mcp/test_server_surfaces.py
+index 32134969b335c7f0149cebb2110760c53ce3ad01..e1e0fc704c36630fafe28b14a464083d4e73aa51 100644
+--- a/tests/unit/mcp/test_server_surfaces.py
++++ b/tests/unit/mcp/test_server_surfaces.py
+@@ -1050,7 +1050,6 @@ class TestArchiveGenericToolSurfaces:
+             first_payload = json.loads(first)
+             second = await invoke_surface_async(
+                 mcp_server._tool_manager._tools["query_units"].fn,
+-                expression="actions where tool:ignored",
+                 continuation=first_payload["continuation"],
+             )
+ 
+diff --git a/webui/src/api/generated.ts b/webui/src/api/generated.ts
+index 997f64e940f33b28f3f218d77ee5096974910cf4..cd90e65314dfe33647e5332d8efb50cf831c5f9f 100644
+--- a/webui/src/api/generated.ts
++++ b/webui/src/api/generated.ts
+@@ -239,6 +239,9 @@ export type QueryErrorPayload = {
+   readonly error: string;
+   readonly field?: string | null;
+   readonly ok?: false;
++  readonly receipt?: ({
++  readonly [key: string]: unknown;
++}) | null;
+ };
+ 
+ export type QueryMissDiagnosticsPayload = {

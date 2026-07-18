@@ -35,6 +35,7 @@
     {"job":"support-b","revision":"r01","state":"needs_rebase_review"},
     {"job":"support-d","revision":"r01","state":"ready_for_review"},
     {"job":"support-a","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"mandate-03","revision":"r01","state":"snapshot_mismatch"}
+    {"job":"mandate-03","revision":"r01","state":"snapshot_mismatch"},
+    {"job":"support-c","revision":"r01","state":"needs_rebase_review"}
   ]
 }
