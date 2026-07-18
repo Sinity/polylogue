@@ -77,6 +77,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
+        "/app/cost",
+        "browser_shell",
+        "shell_supported",
+        "credential_if_configured",
+        "semantic cost/usage HTML",
+        "SSR-first registry-driven cost rollup, usage timeline, and session drill-down; credentials protect embedded spend evidence when configured.",
+    ),
+    RouteContract(
+        "GET",
         "/app/sessions",
         "browser_shell",
         "shell_supported",

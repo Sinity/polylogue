@@ -20,6 +20,7 @@ export default defineConfig({
         observability: fileURLToPath(new URL('./src/entrypoints/observability.tsx', import.meta.url)),
         'session-list': fileURLToPath(new URL('./src/entrypoints/session-list.tsx', import.meta.url)),
         'session-read': fileURLToPath(new URL('./src/entrypoints/session-read.tsx', import.meta.url)),
+        cost: fileURLToPath(new URL('./src/entrypoints/cost.tsx', import.meta.url)),
       },
       output: {
         entryFileNames: '[name]-[hash].js',

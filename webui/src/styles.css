@@ -553,6 +553,115 @@ a:focus-visible {
   margin-bottom: 0;
 }
 
+.cost-panel {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+}
+
+.cost-panel h2 {
+  margin-bottom: 0.6rem;
+}
+
+.cost-degraded {
+  padding: 0.75rem 1rem;
+  border-inline-start: 0.3rem solid DarkOrange;
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+}
+
+.cost-no-evidence {
+  font-style: italic;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
+.cost-table {
+  width: 100%;
+  margin-top: 0.75rem;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.cost-table th,
+.cost-table td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 16%, Canvas 84%);
+  text-align: left;
+  vertical-align: top;
+}
+
+.cost-table th[scope="row"] {
+  font-weight: 700;
+}
+
+.cost-table td[data-lane] {
+  transition: opacity 0.15s ease;
+}
+
+.cost-table[data-lane-focus] td[data-lane],
+.cost-table[data-lane-focus] th[data-lane] {
+  opacity: 0.35;
+}
+
+.cost-table[data-lane-focus="provider_reported_usd"] [data-lane="provider_reported_usd"],
+.cost-table[data-lane-focus="api_equivalent_usd"] [data-lane="api_equivalent_usd"],
+.cost-table[data-lane-focus="subscription_equivalent_usd"] [data-lane="subscription_equivalent_usd"],
+.cost-table[data-lane-focus="catalog_priced_usd"] [data-lane="catalog_priced_usd"],
+.cost-table[data-lane-focus="tool_surcharge_usd"] [data-lane="tool_surcharge_usd"] {
+  opacity: 1;
+  font-weight: 700;
+}
+
+.cost-lane-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.cost-lane-toggle button {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 999px;
+  background: Canvas;
+  color: CanvasText;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.cost-lane-toggle button.is-active {
+  border-color: Highlight;
+  background: color-mix(in srgb, Highlight 18%, Canvas 82%);
+  font-weight: 700;
+}
+
+.cost-session-list {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cost-session-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, Canvas 86%);
+  font-size: 0.9rem;
+}
+
+.cost-session-origin {
+  font-weight: 700;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
+.cost-session-row[data-cost-status="unavailable"] {
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
 @media (max-width: 42rem) {
   .site-header,
   .activity-panel__heading {
@@ -562,5 +671,15 @@ a:focus-visible {
 
   .site-header {
     flex-direction: column;
+  }
+
+  .session-facets {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .cost-table {
+    display: block;
+    overflow-x: auto;
   }
 }

@@ -3097,6 +3097,14 @@ x-polylogue-route-contracts:
   response_contract: semantic observability HTML
   notes: SSR-first registry and status projection; credentials protect embedded insight evidence when configured.
 - method: GET
+  pattern: /app/cost
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: semantic cost/usage HTML
+  notes: SSR-first registry-driven cost rollup, usage timeline, and session drill-down; credentials protect embedded spend
+    evidence when configured.
+- method: GET
   pattern: /app/sessions
   kind: browser_shell
   stability: shell_supported

@@ -427,6 +427,7 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/"),
         ("GET", "/app"),
         ("GET", "/app/observability"),
+        ("GET", "/app/cost"),
         ("GET", "/app/sessions"),
         ("GET", "/app/sessions/:session_id"),
         ("GET", "/app/assets/:asset"),
@@ -1589,6 +1590,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return
             self._serve_webui_observability()
             return
+        if path == ["app", "cost"]:
+            if not self._check_auth():
+                return
+            self._serve_webui_cost()
+            return
         if path == ["app", "sessions"]:
             if not self._check_shell_bootstrap_access():
                 return
@@ -2170,6 +2176,42 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         assert bundle is not None
         self._send_webui_html(HTTPStatus.OK, render_observability_page(bundle, payload))
+
+    def _serve_webui_cost(self) -> None:
+        """Serve the registry-driven cost/usage explorer SSR page."""
+        from polylogue.daemon.webui import (
+            WebUIAssetBundle,
+            WebUIAssetError,
+            build_cost_payload,
+            render_cost_page,
+            render_webui_asset_error,
+        )
+
+        bundle: WebUIAssetBundle | None = None
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+            payload = self._sync_run(lambda poly: build_cost_payload(poly))
+            if not isinstance(payload, Mapping):
+                raise RuntimeError("cost projection returned an invalid payload")
+        except WebUIAssetError as exc:
+            logger.error("webui asset discovery failed: %s", exc)
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+        except Exception:
+            logger.exception("webui cost render failed")
+            if bundle is None:
+                self._send_webui_html(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    render_webui_asset_error("Cost and usage assets are temporarily unavailable."),
+                )
+                return
+            self._send_webui_html(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                render_cost_page(bundle, None, notice="Cost and usage data is temporarily unavailable."),
+            )
+            return
+        assert bundle is not None
+        self._send_webui_html(HTTPStatus.OK, render_cost_page(bundle, payload))
 
     def _serve_webui_asset(self, name: str) -> None:
         from polylogue.daemon.webui import WebUIAssetBundle, WebUIAssetError
