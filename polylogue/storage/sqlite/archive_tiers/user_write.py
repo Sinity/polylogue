@@ -781,9 +781,16 @@ def upsert_recall_pack(
     recall_pack_id: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveRecallPackEnvelope:
-    """Insert-or-update one recall-pack assertion."""
+    """Insert-or-update one recall pack by stable name identity.
+
+    A caller-provided id remains authoritative. Without one, the id must not
+    incorporate the payload: doing so made a content change to a named pack
+    compute a different assertion_id, so ON CONFLICT never matched and each
+    update appended a new, disconnected row instead of updating the existing
+    logical pack (polylogue-2o3d).
+    """
     timestamp = now_ms if now_ms is not None else _now_ms()
-    resolved_id = recall_pack_id or _deterministic_id("recall-pack", name, _json_dumps(payload))
+    resolved_id = recall_pack_id or _deterministic_id("recall-pack", name)
     upsert_assertion(
         conn,
         assertion_id=assertion_id_for_recall_pack(resolved_id),
