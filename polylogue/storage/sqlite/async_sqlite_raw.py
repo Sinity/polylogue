@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING
@@ -10,16 +9,12 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
-from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import raw as raw_queries
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -29,7 +24,6 @@ class SQLiteRawMixin:
     if TYPE_CHECKING:
         queries: SQLiteQueryStore
         _transaction_depth: int
-        _source_db_path: Path
 
         def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
@@ -94,85 +88,16 @@ class SQLiteRawMixin:
             yield raw_header
 
     async def save_raw_session(self, record: RawSessionRecord) -> bool:
-        """Save a raw session record. Returns True if inserted."""
-        # payload_provider wins when the payload has been classified; otherwise
-        # fall back to the source_name token (#1743 collapses both onto origin).
-        if record.payload_provider is not None:
-            origin = origin_from_provider(record.payload_provider)
-        else:
-            origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
-        # ``payload_provider`` may be the canonical compatibility projection
-        # for a historical NULL capture mode.  Preserve that NULL unless an
-        # acquisition path explicitly supplied capture provenance.
-        capture_mode = record.capture_mode
-        blob_hash_hex = record.blob_hash or record.raw_id
-        try:
-            blob_hash = bytes.fromhex(blob_hash_hex)
-        except ValueError:
-            blob_hash = blob_hash_hex.encode("utf-8")
-        if len(blob_hash) != 32:
-            blob_hash = hashlib.sha256(blob_hash).digest()
+        """Save a raw session record. Returns True if inserted.
 
-        acquired_at_ms = _timestamp_ms(record.acquired_at) or 0
-        async with aiosqlite.connect(self._source_db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            await conn.execute("PRAGMA foreign_keys = ON")
-            cursor = await conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
-            existing = await cursor.fetchone()
-            existed = existing is not None
-            if existing is not None and existing["capture_mode"] is not None:
-                capture_mode = Provider.from_string(str(existing["capture_mode"]))
-            await conn.execute(
-                """
-                INSERT OR REPLACE INTO raw_sessions (
-                    raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
-                    blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
-                    validated_at_ms, validation_status, validation_error, validation_drift_count,
-                    validation_mode, detection_warnings_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.raw_id,
-                    origin.value,
-                    capture_mode.value if capture_mode is not None else None,
-                    None,
-                    record.source_path,
-                    int(record.source_index or 0),
-                    blob_hash,
-                    int(record.blob_size),
-                    acquired_at_ms,
-                    _timestamp_ms(record.file_mtime),
-                    _timestamp_ms(record.parsed_at),
-                    record.parse_error,
-                    _timestamp_ms(record.validated_at),
-                    record.validation_status.value if record.validation_status is not None else None,
-                    record.validation_error,
-                    int(record.validation_drift_count or 0),
-                    record.validation_mode.value if record.validation_mode is not None else None,
-                    record.detection_warnings or "[]",
-                ),
-            )
-            await conn.execute(
-                """
-                INSERT OR REPLACE INTO blob_refs (
-                    blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
-                ) VALUES (?, ?, 'raw_payload', ?, ?, ?)
-                """,
-                (
-                    blob_hash,
-                    record.raw_id,
-                    record.source_path,
-                    int(record.blob_size),
-                    acquired_at_ms,
-                ),
-            )
-            if record.blob_publication_receipt_id is not None:
-                await conn.execute(
-                    "DELETE FROM blob_publication_reservations WHERE publication_id = ? AND blob_hash = ?",
-                    (record.blob_publication_receipt_id, blob_hash),
-                )
-            await conn.commit()
-            return not existed
+        Delegates to the single canonical writer (``queries/raw_writes.py``)
+        instead of hand-rolling SQL here: a second, narrower column list for
+        the same durable-tier table let re-saves silently reset revision
+        evidence (raw_id, revision_kind, source_revision, ...) to defaults
+        (polylogue-vwia). Do not reintroduce a parallel INSERT here.
+        """
+        async with self._get_connection() as conn:
+            return await raw_queries.save_raw_session(conn, record, self._transaction_depth)
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool:
         """Persist or refresh one durable artifact observation."""
