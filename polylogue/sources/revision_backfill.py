@@ -541,7 +541,17 @@ def _census_parse_worker(
             with publisher.open(blob_hash) as payload:
                 sessions = _parse_stream(provider, payload, source_path)
         else:
-            sessions = _parse_one(provider, publisher.read_all(blob_hash), source_path)
+            payload_path = None
+            if provider is Provider.HERMES:
+                candidate_path = publisher.blob_path(blob_hash)
+                payload_path = candidate_path if candidate_path.exists() else None
+            sessions = _parse_one(
+                provider,
+                publisher.read_all(blob_hash),
+                source_path,
+                payload_path=payload_path,
+                archive_root=Path(blob_root_str).parent,
+            )
         return raw_id, sessions, None
     except Exception as exc:
         return raw_id, None, str(exc)

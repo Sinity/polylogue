@@ -781,3 +781,66 @@ def test_parallel_census_matches_sequential_archive_state(tmp_path: Path) -> Non
             return conn.execute("SELECT native_id, message_count, raw_id FROM sessions ORDER BY native_id").fetchall()
 
     assert _sessions(sequential_root) == _sessions(parallel_root)
+
+
+def _state_db_bytes_for_session(tmp_path: Path, *, session_id: str, message_text: str) -> bytes:
+    """Variant of _single_session_state_db_bytes with a distinct session id."""
+    db_path = tmp_path / f"state-source-{session_id}.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (19);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, source TEXT, model_config TEXT, parent_session_id TEXT,
+                started_at REAL, ended_at REAL, end_reason TEXT, title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+                timestamp REAL NOT NULL, tool_calls TEXT, observed INTEGER DEFAULT 0,
+                active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, model_config, started_at, ended_at, end_reason, title) "
+            "VALUES (?, 'cli', '{}', 1.0, 8.0, 'completed', ?)",
+            (session_id, session_id),
+        )
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, ?, 'user', ?, 2.0)",
+            (session_id, message_text),
+        )
+    return db_path.read_bytes()
+
+
+def test_parallel_census_threads_hermes_sqlite_payload_path(tmp_path: Path) -> None:
+    """Regression for the #3113/polylogue-1zex SQLite-detection branch under
+    parallel dispatch: _census_parse_worker must thread payload_path (the
+    real on-disk blob path) and archive_root through to _parse_one the same
+    way the sequential parse_retained_raw_sessions does, so a Hermes
+    state.db raw parsed by a pool worker still opens via sqlite3 against a
+    real file instead of only working by accident through the temp-file
+    fallback. Two independent single-session state.db raws force
+    ingest_workers>1 to actually dispatch through the process pool.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(2):
+            payload = _state_db_bytes_for_session(tmp_path, session_id=f"hermes-{index}", message_text=f"hi {index}")
+            archive.write_raw_payload(
+                provider=Provider.HERMES,
+                payload=payload,
+                source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
+                acquired_at_ms=index,
+            )
+
+    result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
+
+    assert result.scanned == 2
+    assert result.replayed_logical_sources == 2
+    assert result.quarantined == 0
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        rows = conn.execute("SELECT native_id, message_count FROM sessions ORDER BY native_id").fetchall()
+    assert [native_id.startswith("hermes-") for native_id, _count in rows] == [True, True]
+    assert [count for _native_id, count in rows] == [1, 1]
