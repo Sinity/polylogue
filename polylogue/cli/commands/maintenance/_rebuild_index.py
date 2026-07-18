@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import sqlite3
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
@@ -311,6 +312,18 @@ def _rebuild_index_selection_plan(
     help="Maximum source rows scheduled by this invocation; rerun with --operation-id to continue.",
 )
 @click.option(
+    "--pass-byte-budget-mb",
+    type=float,
+    default=None,
+    help="Aggregate raw bytes scheduled per resumable pass; never excludes later source rows.",
+)
+@click.option(
+    "--pass-deadline-seconds",
+    type=float,
+    default=None,
+    help="Wall-clock deadline for one resumable pass; expiry defers remaining source rows.",
+)
+@click.option(
     "--output-format",
     "output_format",
     type=click.Choice(["plain", "json"]),
@@ -327,6 +340,8 @@ def rebuild_index_command(
     plan_limit: int,
     operation_id: str | None,
     raw_batch_size: int,
+    pass_byte_budget_mb: float | None,
+    pass_deadline_seconds: float | None,
     output_format: str,
     no_promote: bool,
 ) -> None:
@@ -350,6 +365,10 @@ def rebuild_index_command(
         raise click.BadParameter("plan limit must be positive", param_hint="--plan-limit")
     if raw_batch_size <= 0:
         raise click.BadParameter("raw batch size must be positive", param_hint="--raw-batch-size")
+    if pass_byte_budget_mb is not None and pass_byte_budget_mb <= 0:
+        raise click.BadParameter("pass byte budget must be positive", param_hint="--pass-byte-budget-mb")
+    if pass_deadline_seconds is not None and pass_deadline_seconds <= 0:
+        raise click.BadParameter("pass deadline must be positive", param_hint="--pass-deadline-seconds")
     if operation_id is not None and (raw_ids or only_missing or max_blob_mb is not None or plan_only):
         raise click.UsageError("--operation-id only resumes an unfiltered full-source rebuild")
 
@@ -371,18 +390,18 @@ def rebuild_index_command(
             click.echo(f"Archive root: {root}")
             click.echo("No source.db raw_sessions rows found.")
         return
-    selected_raw_ids = (
-        list(dict.fromkeys(raw_ids))
-        if raw_ids
-        else _missing_index_raw_ids(root)
-        if only_missing
-        else _all_index_rebuild_raw_ids(root)
-    )
-    unfiltered_selected_raw_count = len(selected_raw_ids)
-    selected_raw_ids = _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb)
-    selected_raw_count = len(selected_raw_ids)
-    skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
     if plan_only:
+        selected_raw_ids = (
+            list(dict.fromkeys(raw_ids))
+            if raw_ids
+            else _missing_index_raw_ids(root)
+            if only_missing
+            else _all_index_rebuild_raw_ids(root)
+        )
+        unfiltered_selected_raw_count = len(selected_raw_ids)
+        selected_raw_ids = _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb)
+        selected_raw_count = len(selected_raw_ids)
+        skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
         payload = _rebuild_index_selection_plan(
             root,
             selected_raw_ids=selected_raw_ids,
@@ -448,13 +467,24 @@ def rebuild_index_command(
         raw_count = _count_source_raw_sessions(root)
         resumable_full_source = not raw_ids and not only_missing and max_blob_mb is None
         transaction = None
-        page: tuple[tuple[str, int], ...] = ()
+        page = None
+        pass_started_at_ms = int(time.time() * 1000)
         if resumable_full_source:
             transaction = (
                 generation_store.load_transaction(operation_id)
                 if operation_id is not None
-                else generation_store.create_transaction(source_snapshot=source_revision_snapshot(root))
+                else generation_store.create_transaction(
+                    source_snapshot=source_revision_snapshot(root),
+                    pass_byte_budget=(
+                        int(pass_byte_budget_mb * 1024 * 1024) if pass_byte_budget_mb is not None else None
+                    ),
+                    pass_deadline_ms=(int(pass_deadline_seconds * 1000) if pass_deadline_seconds is not None else None),
+                )
             )
+            if operation_id is not None and (pass_byte_budget_mb is not None or pass_deadline_seconds is not None):
+                raise click.UsageError(
+                    "resumed rebuild budgets are durable; omit pass budget options with --operation-id"
+                )
             if transaction.status in {"promoted", "stale"}:
                 raise click.ClickException(
                     f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
@@ -472,7 +502,7 @@ def rebuild_index_command(
             if generation.owner_id != transaction.generation_owner_id or generation.state != "inactive":
                 raise click.ClickException(f"rebuild operation {transaction.operation_id} lost its inactive candidate")
             page = generation_store.next_raw_page(transaction, limit=raw_batch_size)
-            selected_raw_ids = [raw_id for raw_id, _acquired_at_ms in page]
+            selected_raw_ids = [raw_id for raw_id, _acquired_at_ms, _blob_size in page.rows]
             selected_raw_count = len(selected_raw_ids)
             skipped_by_blob_limit_count = 0
         else:
@@ -488,6 +518,7 @@ def rebuild_index_command(
             selected_raw_count = len(selected_raw_ids)
             skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
             generation = generation_store.create(source_snapshot=source_revision_snapshot(root))
+        source_drifted = False
         try:
             generation_root = Path(generation.index_path).parent
             config = Config(
@@ -509,41 +540,52 @@ def rebuild_index_command(
             )
             if transaction is not None and selected_raw_ids:
                 if source_revision_snapshot(root) != transaction.source_snapshot:
-                    generation_store.checkpoint_transaction(
+                    transaction = generation_store.checkpoint_transaction(
                         transaction,
                         status="stale",
                         error="source evidence changed during this bounded rebuild pass",
                     )
+                    source_drifted = True
                     raise click.ClickException(
                         f"rebuild operation {transaction.operation_id} is stale because source evidence changed"
                     )
-                last_raw_id, last_acquired_at_ms = page[-1]
+                assert page is not None
+                last_raw_id, last_acquired_at_ms, _blob_size = page.rows[-1]
+                elapsed_ms = int(time.time() * 1000) - pass_started_at_ms
+                deadline_expired = (
+                    transaction.pass_deadline_ms is not None and elapsed_ms >= transaction.pass_deadline_ms
+                )
+                status = "deferred" if page.deferred_reason == "byte-budget" or deadline_expired else "paused"
+                if deadline_expired:
+                    status = "deferred"
                 transaction = generation_store.checkpoint_transaction(
                     transaction,
-                    status="paused",
+                    status=status,
                     last_acquired_at_ms=last_acquired_at_ms,
                     last_raw_id=last_raw_id,
                     processed_raw_count=transaction.processed_raw_count + len(selected_raw_ids),
+                    processed_blob_bytes=transaction.processed_blob_bytes + sum(row[2] for row in page.rows),
                 )
-                payload = {
-                    "archive_root": str(root),
-                    "raw_session_count": raw_count,
-                    "selected_raw_count": selected_raw_count,
-                    "skipped_by_blob_limit_count": 0,
-                    "status": "paused",
-                    "materialized": False,
-                    "generation": asdict(generation),
-                    "transaction": asdict(transaction),
-                    **result,
-                }
-                if output_format == "json":
-                    click.echo(json.dumps(payload, indent=2, sort_keys=True))
-                else:
-                    click.echo(f"Rebuild operation: {transaction.operation_id}")
-                    click.echo(f"Scheduled:         {selected_raw_count:,} raw row(s)")
-                    click.echo(f"Paused cursor:     {transaction.cursor or 'start'}")
-                    click.echo("Resume with --operation-id after this bounded pass.")
-                return
+                if page.has_more or deadline_expired:
+                    payload = {
+                        "archive_root": str(root),
+                        "raw_session_count": raw_count,
+                        "selected_raw_count": selected_raw_count,
+                        "skipped_by_blob_limit_count": 0,
+                        "status": status,
+                        "materialized": False,
+                        "generation": asdict(generation),
+                        "transaction": asdict(transaction),
+                        **result,
+                    }
+                    if output_format == "json":
+                        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+                    else:
+                        click.echo(f"Rebuild operation: {transaction.operation_id}")
+                        click.echo(f"Scheduled:         {selected_raw_count:,} raw row(s)")
+                        click.echo(f"Paused cursor:     {transaction.cursor or 'start'}")
+                        click.echo("Resume with --operation-id after this bounded pass.")
+                    return
             from polylogue.storage.repair import repair_session_insights
 
             insight_result = repair_session_insights(
@@ -555,6 +597,13 @@ def rebuild_index_command(
             if not insight_result.success:
                 raise click.ClickException(f"session insight materialization failed: {insight_result.detail}")
             if source_revision_snapshot(root) != generation.source_snapshot:
+                if transaction is not None:
+                    transaction = generation_store.checkpoint_transaction(
+                        transaction,
+                        status="stale",
+                        error="source evidence changed before terminal readiness",
+                    )
+                    source_drifted = True
                 raise click.ClickException(f"source evidence changed while rebuilding {generation.generation_id}")
             readiness = _archive_readiness_status(generation_root)
             if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
@@ -571,15 +620,17 @@ def rebuild_index_command(
                 raise click.ClickException(
                     f"inactive generation {generation.generation_id} is not exact-ready; {detail}"
                 )
-            if not no_promote:
-                generation = generation_store.promote(generation)
             if transaction is not None:
                 transaction = generation_store.checkpoint_transaction(
                     transaction,
-                    status="promoted" if not no_promote else "ready-to-promote",
+                    status="ready",
                 )
+            if not no_promote:
+                generation = generation_store.promote(generation)
+                if transaction is not None:
+                    transaction = generation_store.checkpoint_transaction(transaction, status="promoted")
         except Exception:
-            if transaction is not None:
+            if transaction is not None and not source_drifted:
                 with contextlib.suppress(Exception):
                     generation_store.checkpoint_transaction(
                         transaction,

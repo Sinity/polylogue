@@ -12,6 +12,7 @@ from polylogue.storage.index_generation import (
     IndexGenerationStore,
     RebuildLease,
     RebuildLeaseUnavailableError,
+    source_revision_snapshot,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -198,9 +199,12 @@ def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archiv
             )
 
     store = IndexGenerationStore(tmp_path)
-    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="resume-me")
+    transaction = store.create_transaction(
+        source_snapshot="source-v1", operation_id="resume-me", pass_byte_budget=2, pass_deadline_ms=5_000
+    )
     first_page = store.next_raw_page(transaction, limit=2)
-    assert first_page == (("raw-a", 10), ("raw-b", 10))
+    assert first_page.rows == (("raw-a", 10, 1), ("raw-b", 10, 1))
+    assert first_page.deferred_reason == "raw-batch"
 
     transaction = store.checkpoint_transaction(
         transaction,
@@ -211,4 +215,45 @@ def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archiv
     )
     assert transaction.cursor == "source:10:raw-b"
     assert store.load_transaction("resume-me") == transaction
-    assert store.next_raw_page(transaction, limit=2) == (("raw-c", 30),)
+    assert store.next_raw_page(transaction, limit=2).rows == (("raw-c", 30, 1),)
+    assert transaction.pass_byte_budget == 2
+
+
+def test_rebuild_byte_budget_defers_without_excluding_an_oversized_first_raw(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        for raw_id, acquired_at_ms, blob_size in (("large", 1, 100), ("later", 2, 1)):
+            conn.execute(
+                """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
+                   blob_size, acquired_at_ms, validation_status)
+                   VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), ?, ?, 'passed')""",
+                (raw_id, raw_id, f"/{raw_id}", blob_size, acquired_at_ms),
+            )
+    store = IndexGenerationStore(tmp_path)
+    transaction = store.create_transaction(source_snapshot="source-v1", pass_byte_budget=10)
+    first = store.next_raw_page(transaction, limit=10)
+    assert first.rows == (("large", 1, 100),)
+    assert first.deferred_reason == "byte-budget"
+    transaction = store.checkpoint_transaction(
+        transaction,
+        status="deferred",
+        last_acquired_at_ms=1,
+        last_raw_id="large",
+        processed_raw_count=1,
+        processed_blob_bytes=100,
+    )
+    assert store.next_raw_page(transaction, limit=10).rows == (("later", 2, 1),)
+
+
+def test_source_snapshot_changes_when_retained_blob_identity_changes(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
+               blob_size, acquired_at_ms, validation_status)
+               VALUES ('raw-a', 'codex-session', 'raw-a', '/raw-a', 0, randomblob(32), 1, 1, 'passed')"""
+        )
+    before = source_revision_snapshot(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET blob_hash = randomblob(32), blob_size = 2 WHERE raw_id = 'raw-a'")
+    assert source_revision_snapshot(tmp_path) != before

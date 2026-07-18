@@ -69,6 +69,34 @@ def test_default_convergence_stages_retry_bounded_false_results(tmp_path: Path) 
     assert stages_by_name["insights"].false_means_pending is True
 
 
+def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sinex.models import PublicationMode
+
+    configured_root = tmp_path / "configured"
+    captured: dict[str, object] = {}
+
+    class CapturePublicationService:
+        mode = PublicationMode.PRIMARY
+
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def blocking_object_ids(self, object_ids: object) -> set[str]:
+            del object_ids
+            return set()
+
+    monkeypatch.setattr(stages, "load_polylogue_config", lambda: SimpleNamespace(sinex_mode="primary"))
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: configured_root)
+    monkeypatch.setattr("polylogue.sinex.service.PublicationService", CapturePublicationService)
+    monkeypatch.setattr("polylogue.sinex.transport.resolve_configured_transport", lambda: object())
+
+    make_default_convergence_stages(tmp_path / "external-generation" / "index.db")
+
+    assert captured["source_db_path"] == configured_root / "source.db"
+
+
 def test_file_probe_exceptions_log_and_fail_toward_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
