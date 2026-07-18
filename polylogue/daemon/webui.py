@@ -835,6 +835,7 @@ def _render_site_header(current_path: str) -> str:
         '<header class="site-header"><p class="eyebrow">Polylogue</p><nav aria-label="WebUI views">'
         + link("/app", "Archive overview")
         + link("/app/sessions", "Sessions")
+        + link("/app/search", "Search")
         + link("/app/cost", "Cost & usage")
         + link("/app/observability", "Observability")
         + link("/", "Legacy reader")
@@ -1153,6 +1154,180 @@ def _render_session_cost_row(session: Mapping[str, object]) -> str:
     )
 
 
+SEARCH_RESULT_LIMIT = 20
+#: Parser-gated examples copied verbatim from the generated discovery corpus
+#: (``docs/search.md``, ``devtools render query-discovery``) so the page never
+#: teaches an expression the production parser would reject.
+SEARCH_EXAMPLE_QUERIES = ("repo:example-repo since:30d", 'near:"semantic search"')
+
+
+def render_search_page(
+    bundle: WebUIAssetBundle,
+    result: Mapping[str, object] | None,
+    query: str,
+    *,
+    parse_error: str | None = None,
+    notice: str | None = None,
+) -> str:
+    """Render the search vertical: DSL query input, ranked hits, degraded states.
+
+    Semantics stay server-side: the browser never re-filters or re-ranks
+    ``result``, it renders whatever the shared ``SearchEnvelope`` reports.
+    """
+
+    entry = bundle.entrypoint_for("search")
+    stylesheet_links = "\n".join(
+        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+    )
+    examples_markup = " or ".join(f"<code>{html.escape(example)}</code>" for example in SEARCH_EXAMPLE_QUERIES)
+    examples_plain = " or ".join(SEARCH_EXAMPLE_QUERIES)
+
+    if parse_error is not None:
+        state = "parse-error"
+        summary = "The query could not be parsed."
+        results_markup = (
+            '        <li class="search-degraded" data-search-state="parse-error">'
+            f"<p>{html.escape(parse_error)}</p>"
+            f"<p>Try a known-good expression instead, e.g. {examples_markup}.</p></li>"
+        )
+        next_cursor: object = None
+        disabled = ' disabled=""'
+    elif result is None and notice is not None:
+        state = "unavailable"
+        summary = notice
+        results_markup = (
+            f'        <li class="search-degraded" data-search-state="unavailable"><p>{html.escape(notice)}</p></li>'
+        )
+        next_cursor = None
+        disabled = ' disabled=""'
+    elif result is not None and result.get("ok") is False:
+        state = "rejected"
+        detail = str(result.get("detail") or result.get("error") or "The search request was rejected.")
+        summary = detail
+        results_markup = (
+            f'        <li class="search-degraded" data-search-state="rejected"><p>{html.escape(detail)}</p></li>'
+        )
+        next_cursor = None
+        disabled = ' disabled=""'
+    else:
+        hits_raw = result.get("hits") if isinstance(result, Mapping) else None
+        rows = hits_raw if isinstance(hits_raw, list) else []
+        total = result.get("total") if isinstance(result, Mapping) else None
+        exactness = str(result.get("exactness")) if isinstance(result, Mapping) and result.get("exactness") else None
+        retrieval_lane = (
+            str(result.get("retrieval_lane")) if isinstance(result, Mapping) and result.get("retrieval_lane") else None
+        )
+        next_cursor = result.get("next_cursor") if isinstance(result, Mapping) else None
+        if not query:
+            state = "idle"
+            summary = f"Enter a query to search the archive, e.g. {examples_plain}."
+            results_markup = ""
+            disabled = ' disabled=""'
+        elif rows:
+            state = "ok"
+            coverage = "exact" if exactness == "exact" else "qualified, top-k relevance, not exhaustive"
+            lane_text = f" via the {retrieval_lane} lane" if retrieval_lane else ""
+            total_text = f"{total:,}" if isinstance(total, int) else "an unknown number of"
+            summary = notice or f"Showing {len(rows)} of {total_text} matches ({coverage}){lane_text}."
+            results_markup = "\n".join(_render_search_hit(hit) for hit in rows)
+            disabled = "" if next_cursor else ' disabled=""'
+        else:
+            state = "empty"
+            diagnostics = result.get("diagnostics") if isinstance(result, Mapping) else None
+            summary = _search_empty_summary(diagnostics, query)
+            results_markup = (
+                f'        <li class="search-degraded" data-search-state="empty"><p>{html.escape(summary)}</p></li>'
+            )
+            disabled = ' disabled=""'
+    bootstrap = _json_script({"query": query, "next_cursor": next_cursor if disabled == "" else None})
+    button_text = "Load more results" if disabled == "" else "All matching results loaded"
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Search · Polylogue</title>
+{stylesheet_links}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to search</a>
+    {_render_site_header("/app/search")}
+    <main id="main" class="page-shell">
+      <p class="eyebrow">Daemon-ranked archive search</p>
+      <h1>Search</h1>
+      <p class="lede">The real query DSL — fielded predicates (<code>origin:</code>, <code>repo:</code>, <code>since:</code>), booleans, and <code>near:"…"</code> semantic phrases. Try {examples_markup}.</p>
+      <form class="search-form" method="get" action="/app/search" role="search" aria-label="Archive search">
+        <label for="search-q">Query</label>
+        <input id="search-q" name="q" type="text" value="{html.escape(query, quote=True)}" placeholder="{html.escape(SEARCH_EXAMPLE_QUERIES[0], quote=True)}" autocomplete="off">
+        <button type="submit">Search</button>
+      </form>
+      <section class="search-panel" aria-labelledby="search-results-title" data-search-state="{state}">
+        <div class="activity-panel__heading">
+          <h2 id="search-results-title">Results</h2>
+          <p>{html.escape(summary)}</p>
+        </div>
+        <ol id="search-results" class="search-results">
+{results_markup}
+        </ol>
+        <div id="search-island" data-island="search">
+          <button class="load-more" type="button"{disabled} aria-controls="search-results-more" aria-busy="false">{button_text}</button>
+          <p class="island-status" role="status" aria-live="polite"></p>
+          <ol id="search-results-more" class="search-results search-results--continued" aria-label="Additional search results"></ol>
+        </div>
+      </section>
+    </main>
+    <script id="search-bootstrap" type="application/json">{bootstrap}</script>
+    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+  </body>
+</html>
+"""
+
+
+def _search_empty_summary(diagnostics: object, query: str) -> str:
+    if isinstance(diagnostics, Mapping):
+        message = diagnostics.get("message")
+        if message:
+            return str(message)
+    return f"No sessions matched {query!r}."
+
+
+def _render_search_hit(raw: object) -> str:
+    hit = raw if isinstance(raw, Mapping) else {}
+    raw_session = hit.get("session")
+    raw_match = hit.get("match")
+    session: Mapping[str, object] = raw_session if isinstance(raw_session, Mapping) else {}
+    match: Mapping[str, object] = raw_match if isinstance(raw_match, Mapping) else {}
+    session_id = str(session.get("id") or session.get("session_id") or "")
+    title = session.get("title") or session.get("display_title") or session_id or "[untitled session]"
+    origin = str(session.get("origin") or "unknown-export")
+    message_id = match.get("message_id")
+    href = f"/app/sessions/{quote(session_id, safe='')}"
+    if message_id:
+        href += f"#msg-{quote(str(message_id), safe='')}"
+    snippet = match.get("snippet")
+    snippet_markup = f'<p class="search-hit__snippet">{_highlight_snippet(str(snippet))}</p>' if snippet else ""
+    score_kind = match.get("score_kind")
+    matched_terms = match.get("matched_terms")
+    terms_markup = (
+        " ".join(f'<span class="search-hit__term">{html.escape(str(term))}</span>' for term in matched_terms)
+        if isinstance(matched_terms, list) and matched_terms
+        else ""
+    )
+    rank = match.get("rank")
+    return f"""        <li class="search-hit" data-session-id="{html.escape(session_id, quote=True)}" data-score-kind="{html.escape(str(score_kind or "unknown"), quote=True)}">
+          <div class="search-hit__meta"><span class="search-hit__origin">{html.escape(origin)}</span>{f"<span>rank {rank}</span>" if isinstance(rank, int) else ""}</div>
+          <h3><a href="{href}">{html.escape(str(title))}</a></h3>
+{snippet_markup}
+          <div class="search-hit__terms">{terms_markup}</div>
+        </li>"""
+
+
+def _highlight_snippet(snippet: str) -> str:
+    escaped = html.escape(snippet)
+    return escaped.replace("[", "<mark>").replace("]", "</mark>")
+
+
 async def build_observability_payload(
     operations: object,
     status: Mapping[str, object],
@@ -1434,6 +1609,8 @@ __all__ = [
     "ARCHIVE_OVERVIEW_EXPRESSION",
     "ARCHIVE_OVERVIEW_LIMIT",
     "COST_ROLLUP_LIMIT",
+    "SEARCH_EXAMPLE_QUERIES",
+    "SEARCH_RESULT_LIMIT",
     "SESSION_COST_DRILLDOWN_LIMIT",
     "SESSION_LIST_LIMIT",
     "SESSION_READ_MESSAGE_LIMIT",
@@ -1448,6 +1625,7 @@ __all__ = [
     "render_archive_overview_page",
     "render_cost_page",
     "render_observability_page",
+    "render_search_page",
     "render_session_list_page",
     "render_session_read_page",
     "render_webui_asset_error",

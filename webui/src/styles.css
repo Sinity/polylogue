@@ -662,6 +662,107 @@ a:focus-visible {
   color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
 }
 
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  max-width: 48rem;
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+}
+
+.search-form label {
+  grid-column: 1 / -1;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.search-form input {
+  min-width: 0;
+  padding: 0.6rem;
+  font: inherit;
+}
+
+.search-form button {
+  padding: 0.6rem 1rem;
+  font: inherit;
+  font-weight: 700;
+}
+
+.search-results,
+.search-results--continued {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.search-results--continued:not(:empty) {
+  margin-top: 1rem;
+}
+
+.search-hit {
+  min-width: 0;
+  padding: 1.1rem;
+  margin-bottom: 1rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+}
+
+.search-hit__meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: 0.78rem;
+}
+
+.search-hit__origin {
+  font-weight: 700;
+}
+
+.search-hit h3 {
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+.search-hit__snippet {
+  overflow-wrap: anywhere;
+  margin-bottom: 0.6rem;
+  line-height: 1.55;
+}
+
+.search-hit__snippet mark {
+  background: color-mix(in srgb, Highlight 35%, Canvas 65%);
+  color: inherit;
+}
+
+.search-hit__terms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.search-hit__term {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.search-degraded {
+  padding: 1rem;
+  border-inline-start: 0.3rem solid DarkOrange;
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+}
+
+.search-panel[data-search-state="idle"] .search-degraded {
+  border-inline-start-color: color-mix(in srgb, CanvasText 22%, Canvas 78%);
+}
+
 @media (max-width: 42rem) {
   .site-header,
   .activity-panel__heading {
@@ -681,5 +782,9 @@ a:focus-visible {
   .cost-table {
     display: block;
     overflow-x: auto;
+  }
+
+  .search-form {
+    grid-template-columns: 1fr;
   }
 }

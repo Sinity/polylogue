@@ -95,7 +95,7 @@ classified with explicit auth and response posture.
 
 | Route class | Auth policy | Examples |
 |-------------|-------------|----------|
-| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /app/sessions`, `GET /app/sessions/:session_id`, `GET /s/:id`, `GET /p`, `GET /a` |
+| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /app/sessions`, `GET /app/sessions/:session_id`, `GET /app/search`, `GET /s/:id`, `GET /p`, `GET /a` |
 | WebUI observability page | bearer or scoped web credential when configured | `GET /app/observability` |
 | WebUI cost/usage page | bearer or scoped web credential when configured | `GET /app/cost` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
@@ -123,6 +123,20 @@ Health check with database statistics.
 
 Full daemon status including component state, source lag, ingestion throughput,
 FTS readiness, and insight freshness.
+
+### GET /app/search
+
+Server-rendered WebUI v2 search page. Query params: `q` (the query DSL
+expression — fielded predicates, booleans, `near:"…"` semantic phrases),
+`cursor` (opaque continuation token), `limit`. Delegates to the same
+`compile_expression_into`/ranked-search path as
+`GET /api/sessions?query=…`, so the browser always renders the shared
+`SearchEnvelope` — matched terms, snippets, score kind, exactness — rather
+than a second, client-side interpretation of relevance. A DSL parse error
+renders a distinct degraded state with the parser's diagnostic and a
+known-good corrected example; local Preact assets add cursor-based paging
+only (no offset "load everything" mode). Shares `/app`'s unauthenticated
+loopback bootstrap posture.
 
 ### GET /app/observability
 

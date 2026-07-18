@@ -2547,6 +2547,51 @@ class TestWebUIV2:
         assert 'data-lane="catalog_priced_usd">$12.50' in html_body
         assert "4 priced, 1 unavailable of 5 (no_tokens×1)" in html_body
 
+    def test_search_page_idle_state_without_a_query(self, workspace_env: dict[str, Path]) -> None:
+        """``/app/search`` renders the DSL-teaching idle state before any query is entered."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, "/app/search")
+
+        assert status == HTTPStatus.OK
+        assert "<h1>Search</h1>" in html_body
+        assert 'data-search-state="idle"' in html_body
+        assert 'name="q"' in html_body
+        assert "repo:example-repo since:30d" in html_body
+        assert 'data-island="search"' in html_body
+        assert re.search(r'src="/app/assets/search-[^"]+\.js"', html_body)
+
+    def test_search_page_renders_ranked_hits_with_provenance(self, workspace_env: dict[str, Path]) -> None:
+        """A matching query renders a hit deep-linked into the session read anchor."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/search?q={quote('reader')}")
+
+        assert status == HTTPStatus.OK
+        assert 'data-search-state="ok"' in html_body
+        assert 'class="search-hit"' in html_body
+        assert f'href="/app/sessions/{quote(C1, safe="")}#msg-{quote(M_C1, safe="")}"' in html_body
+        assert "top-k relevance, not exhaustive" in html_body
+
+    def test_search_page_renders_empty_state_for_no_matches(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/search?q={quote('zzz-no-such-term-zzz')}")
+
+        assert status == HTTPStatus.OK
+        assert 'data-search-state="empty"' in html_body
+        assert "No sessions matched" in html_body
+
+    def test_search_page_renders_parse_error_with_corrected_example(self, workspace_env: dict[str, Path]) -> None:
+        """An unparseable DSL expression surfaces the parser's diagnostic, not a silent empty result."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/search?q={quote('notarealfield:banana')}")
+
+        assert status == HTTPStatus.OK
+        assert 'data-search-state="parse-error"' in html_body
+        assert "unknown query field" in html_body
+        assert "repo:example-repo since:30d" in html_body
+
 
 class TestReaderQueryUnits:
     def test_query_units_endpoint_returns_terminal_message_rows(self, workspace_env: dict[str, Path]) -> None:

@@ -3119,6 +3119,13 @@ x-polylogue-route-contracts:
   response_contract: semantic session read HTML
   notes: 'SSR-first session shell: header, lineage banner, and a simple message-flow placeholder Preact enhances with paging.'
 - method: GET
+  pattern: /app/search
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic search results HTML
+  notes: SSR-first ranked search over the shared SearchEnvelope; Preact enhances only cursor-based pagination.
+- method: GET
   pattern: /app/assets/:asset
   kind: browser_shell
   stability: shell_supported
