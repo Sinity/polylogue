@@ -24,11 +24,7 @@ from polylogue.mcp.archive_support import (
 )
 from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
-    MCPArchiveSearchHitPayload,
-    MCPArchiveSearchPayload,
-    MCPArchiveSessionListPayload,
     MCPArchiveSessionPayload,
-    MCPArchiveSessionSummaryPayload,
     MCPArchiveStatsPayload,
     MCPAssertionClaimListPayload,
     MCPBlackboardNoteListPayload,
@@ -198,7 +194,6 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             )
 
             clamped_limit = hooks.clamp_limit(request.limit)
-            clamped_offset = max(0, request.offset)
             decoded_cursor = None
             if request.cursor:
                 try:
@@ -214,6 +209,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     offset=decoded_cursor.r,
                     limit=(spec.limit or clamped_limit) + clamped_limit,
                 )
+            effective_offset = max(0, spec.offset)
             config = hooks.get_config()
             archive_root = mcp_archive_root(config)
             from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
@@ -224,7 +220,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     operation="search",
                     arguments=request.response_arguments(),
                     page_size=clamped_limit,
-                    offset=clamped_offset,
+                    offset=effective_offset,
                     projection="search-envelope",
                     stable_order=request.sort or "date",
                 ),
@@ -237,7 +233,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                             spec,
                             query=request.query or "",
                             limit=clamped_limit,
-                            offset=clamped_offset,
+                            offset=effective_offset,
                             retrieval_lane=request.retrieval_lane or "dialogue",
                             sort=request.sort,
                             config=config,
@@ -495,207 +491,6 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(MCPContextImagePayload.model_validate(image), exclude_none=True)
 
         return await hooks.async_safe_call("compile_context", run)
-
-    async def archive_list_sessions(
-        origin: str | None = None,
-        exclude_origin: str | None = None,
-        tag: str | None = None,
-        exclude_tag: str | None = None,
-        repo: str | None = None,
-        project: str | None = None,
-        has_type: str | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        has_paste_evidence: bool = False,
-        tool: str | None = None,
-        exclude_tool: str | None = None,
-        action: str | None = None,
-        exclude_action: str | None = None,
-        action_sequence: str | None = None,
-        action_text: str | None = None,
-        referenced_path: str | None = None,
-        cwd_prefix: str | None = None,
-        typed_only: bool = False,
-        message_type: str | None = None,
-        title: str | None = None,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        limit: MCPToolLimit = 10,
-        offset: MCPToolOffset = 0,
-        sample: int | None = None,
-    ) -> str:
-        """List sessions from the split archive store."""
-
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            clamped_limit = hooks.clamp_limit(sample if sample is not None else limit)
-            clamped_offset = 0 if sample is not None else max(0, offset)
-            excluded_origins = _split_archive_csv(exclude_origin)
-            tags = _split_archive_csv(tag)
-            excluded_tags = _split_archive_csv(exclude_tag)
-            repo_names = _split_archive_csv(repo)
-            project_refs = _split_archive_csv(project)
-            has_types = _split_archive_csv(has_type)
-            tool_terms = _split_archive_csv(tool)
-            excluded_tool_terms = _split_archive_csv(exclude_tool)
-            action_terms = _split_archive_csv(action)
-            excluded_action_terms = _split_archive_csv(exclude_action)
-            action_sequence_terms = _split_archive_csv(action_sequence)
-            action_text_terms = _split_archive_csv(action_text)
-            referenced_paths = _split_archive_csv(referenced_path)
-            summaries = await poly.archive_list_sessions(
-                origin=origin,
-                excluded_origins=excluded_origins,
-                tags=tags,
-                excluded_tags=excluded_tags,
-                repo_names=repo_names,
-                project_refs=project_refs,
-                has_types=has_types,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                has_paste=has_paste_evidence,
-                tool_terms=tool_terms,
-                excluded_tool_terms=excluded_tool_terms,
-                action_terms=action_terms,
-                excluded_action_terms=excluded_action_terms,
-                action_sequence=action_sequence_terms,
-                action_text_terms=action_text_terms,
-                referenced_paths=referenced_paths,
-                cwd_prefix=cwd_prefix,
-                typed_only=typed_only,
-                message_type=message_type,
-                title=title,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                since=since,
-                until=until,
-                limit=clamped_limit,
-                offset=clamped_offset,
-                sample=sample is not None,
-            )
-            total = await poly.archive_count_sessions(
-                origin=origin,
-                excluded_origins=excluded_origins,
-                tags=tags,
-                excluded_tags=excluded_tags,
-                repo_names=repo_names,
-                project_refs=project_refs,
-                has_types=has_types,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                has_paste=has_paste_evidence,
-                tool_terms=tool_terms,
-                excluded_tool_terms=excluded_tool_terms,
-                action_terms=action_terms,
-                excluded_action_terms=excluded_action_terms,
-                action_sequence=action_sequence_terms,
-                action_text_terms=action_text_terms,
-                referenced_paths=referenced_paths,
-                cwd_prefix=cwd_prefix,
-                typed_only=typed_only,
-                message_type=message_type,
-                title=title,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                since=since,
-                until=until,
-            )
-            return hooks.json_payload(
-                MCPArchiveSessionListPayload(
-                    items=tuple(MCPArchiveSessionSummaryPayload.from_summary(summary) for summary in summaries),
-                    total=total,
-                    limit=clamped_limit,
-                    offset=clamped_offset,
-                    origin=origin,
-                )
-            )
-
-        return await hooks.async_safe_call("archive_list_sessions", run)
-
-    async def archive_search_sessions(
-        query: str,
-        origin: str | None = None,
-        exclude_origin: str | None = None,
-        tag: str | None = None,
-        exclude_tag: str | None = None,
-        repo: str | None = None,
-        project: str | None = None,
-        has_type: str | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        has_paste_evidence: bool = False,
-        tool: str | None = None,
-        exclude_tool: str | None = None,
-        action: str | None = None,
-        exclude_action: str | None = None,
-        action_sequence: str | None = None,
-        action_text: str | None = None,
-        referenced_path: str | None = None,
-        cwd_prefix: str | None = None,
-        typed_only: bool = False,
-        message_type: str | None = None,
-        title: str | None = None,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        limit: MCPToolLimit = 10,
-    ) -> str:
-        """Search session block text."""
-
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            clamped_limit = hooks.clamp_limit(limit)
-            hits = await poly.archive_search_sessions(
-                query,
-                origin=origin,
-                excluded_origins=_split_archive_csv(exclude_origin),
-                tags=_split_archive_csv(tag),
-                excluded_tags=_split_archive_csv(exclude_tag),
-                repo_names=_split_archive_csv(repo),
-                project_refs=_split_archive_csv(project),
-                has_types=_split_archive_csv(has_type),
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                has_paste=has_paste_evidence,
-                tool_terms=_split_archive_csv(tool),
-                excluded_tool_terms=_split_archive_csv(exclude_tool),
-                action_terms=_split_archive_csv(action),
-                excluded_action_terms=_split_archive_csv(exclude_action),
-                action_sequence=_split_archive_csv(action_sequence),
-                action_text_terms=_split_archive_csv(action_text),
-                referenced_paths=_split_archive_csv(referenced_path),
-                cwd_prefix=cwd_prefix,
-                typed_only=typed_only,
-                message_type=message_type,
-                title=title,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                since=since,
-                until=until,
-                limit=clamped_limit,
-            )
-            return hooks.json_payload(
-                MCPArchiveSearchPayload(
-                    items=tuple(MCPArchiveSearchHitPayload.from_hit(hit) for hit in hits),
-                    total=len(hits),
-                    limit=clamped_limit,
-                    query=query,
-                    origin=origin,
-                )
-            )
-
-        return await hooks.async_safe_call("archive_search_sessions", run)
 
     @mcp.tool()
     async def archive_get_session(session_id: str) -> str:

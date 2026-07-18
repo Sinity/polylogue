@@ -433,8 +433,6 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "save_workspace": ("archive_routed", "user", "writes workspaces through user.db"),
     "archive_count_sessions": ("archive_direct", "index", "current archive helper"),
     "archive_get_session": ("archive_direct", "index", "current archive helper"),
-    "archive_list_sessions": ("archive_direct", "index", "current archive helper"),
-    "archive_search_sessions": ("archive_direct", "index", "current archive helper"),
     "search": ("archive_routed", "index", "searches index.db block FTS"),
     "search_session_hits": ("archive_direct", "index", "projects FTS/hybrid search hits from index.db"),
     "search_envelope": ("archive_routed", "index", "builds envelopes from index.db"),

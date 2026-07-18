@@ -643,6 +643,61 @@ class TestQueryTools:
         assert parsed["next_cursor"]
 
     @pytest.mark.asyncio
+    async def test_canonical_query_tools_exclude_retired_names_and_advance_pages(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        """Exercise discovery plus both canonical pagination routes end to end.
+
+        Production dependencies: FastMCP's registered tool manager, the
+        canonical ``search``/``list_sessions`` handlers, ``QueryTransaction``,
+        and the archive SQLite reader. Removing either canonical handler or its
+        transaction-backed page parameters makes the second page repeat or fail.
+        """
+        archive_root = tmp_path / "archive"
+        first_session = _seed_archive(archive_root, native_id="page-one", text="planning alpha")
+        second_session = _seed_archive(archive_root, native_id="page-two", text="planning beta")
+        retired_names = {"archive_list" + "_sessions", "archive_search" + "_sessions"}
+
+        assert retired_names.isdisjoint(mcp_server._tool_manager._tools)
+        with _archive_config(archive_root):
+            first_search = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["search"].fn,
+                    query="planning",
+                    limit=1,
+                )
+            )
+            second_search = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["search"].fn,
+                    query="planning",
+                    limit=1,
+                    cursor=first_search["next_cursor"],
+                )
+            )
+            first_list = json.loads(
+                await invoke_surface_async(mcp_server._tool_manager._tools["list_sessions"].fn, limit=1)
+            )
+            second_list = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["list_sessions"].fn,
+                    limit=1,
+                    offset=first_list["next_offset"],
+                )
+            )
+
+        assert first_search["hits"], first_search
+        assert second_search["hits"], second_search
+        assert first_list["items"], first_list
+        assert second_list["items"], second_list
+        assert {first_search["hits"][0]["session"]["id"], second_search["hits"][0]["session"]["id"]} == {
+            first_session,
+            second_session,
+        }
+        assert first_search["hits"][0]["session"]["id"] != second_search["hits"][0]["session"]["id"]
+        assert first_list["items"][0]["id"] != second_list["items"][0]["id"]
+
+    @pytest.mark.asyncio
     async def test_query_tools_reject_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = MagicMock()

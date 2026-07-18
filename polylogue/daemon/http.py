@@ -2294,7 +2294,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            self._send_json(HTTPStatus.OK, self._do_archive_list_sessions(archive_root, params, limit, offset, route))
+            self._send_json(HTTPStatus.OK, self._do_archive_session_list(archive_root, params, limit, offset, route))
             return
 
         async def _list(poly: Polylogue) -> object:
@@ -2420,7 +2420,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(mode="json")
         return envelope.model_dump(mode="json")
 
-    def _do_archive_list_sessions(
+    def _do_archive_session_list(
         self,
         archive_root: Path,
         params: dict[str, list[str]],
