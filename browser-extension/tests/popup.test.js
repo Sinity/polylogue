@@ -705,5 +705,31 @@ describe("popup capture", () => {
     document.getElementById("backfill-pause").click();
     await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("paused"));
   });
+});
+
+describe("popup DOM/action budget", () => {
+  // AC6 (polylogue-yyvg.7): the healthy compact surface -- everything
+  // outside the collapsed <details id="diagnostics"> -- must stay small and
+  // bounded, not silently regrow toward the old always-visible control
+  // panel. Ceilings carry headroom above the current count (6 controls / 67
+  // nodes) rather than pinning the exact number, so ordinary additions to
+  // the compact surface don't require bumping this test every time; a large
+  // jump means something meant for progressive disclosure landed outside it.
+  it("keeps the always-visible surface within a small interactive-control and DOM-node budget", () => {
+    const html = readFileSync(join(TEST_DIR, "..", "src", "popup.html"), "utf8");
+    const dom = new JSDOM(html);
+    const doc = dom.window.document;
+    const diagnostics = doc.getElementById("diagnostics");
+    expect(diagnostics).not.toBeNull();
+    expect(diagnostics.hasAttribute("open")).toBe(false);
+
+    const interactive = [...doc.querySelectorAll("main button, main input, main select")];
+    const outsideDiagnostics = interactive.filter((el) => !diagnostics.contains(el));
+    expect(outsideDiagnostics.length).toBeLessThanOrEqual(8);
+
+    const allNodes = doc.querySelectorAll("main *").length;
+    const diagnosticsNodes = diagnostics.querySelectorAll("*").length;
+    expect(allNodes - diagnosticsNodes).toBeLessThanOrEqual(90);
+  });
 
 });

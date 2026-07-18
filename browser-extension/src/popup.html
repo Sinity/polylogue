@@ -13,33 +13,33 @@
         --surface: #ffffff;
         --panel: #f4f7f9;
         --panel-strong: #eaf1f8;
-        --ok: #14764e;
+        --ok: #17805a;
         --warn: #9a5b00;
         --bad: #ad2f2f;
         --neutral: #59636e;
-        --accent: #325d8f;
-        --accent-hover: #264f7d;
-        --focus: #0f6cbd;
-        --gpt: #087f65;
-        --claude: #b85f32;
+        --accent: #6d5ae0;
+        --accent-hover: #5b46c9;
+        --focus: #6d5ae0;
+        --gpt: #10a37f;
+        --claude: #d97757;
         --grok: #111827;
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --ink: #eef3f6;
-          --muted: #aab5be;
-          --line: #3a4650;
-          --surface: #151a1f;
-          --panel: #20272d;
-          --panel-strong: #29353f;
-          --ok: #3ca97c;
-          --warn: #d89a36;
-          --bad: #e06c6c;
-          --neutral: #86929c;
-          --accent: #6e9fd2;
-          --accent-hover: #83b2e1;
-          --focus: #8cc5ff;
-          --grok: #4b5563;
+          --ink: #eef1f6;
+          --muted: #9aa4b2;
+          --line: #262d38;
+          --surface: #0b0e13;
+          --panel: #12161d;
+          --panel-strong: #171c25;
+          --ok: #4ec98f;
+          --warn: #e6b552;
+          --bad: #f06a6a;
+          --neutral: #6b7482;
+          --accent: #8b7bf2;
+          --accent-hover: #6d5ae0;
+          --focus: #a99bf7;
+          --grok: #333c49;
         }
       }
       * { box-sizing: border-box; }
@@ -50,7 +50,7 @@
         margin: 0;
         color: var(--ink);
         background: var(--surface);
-        font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 14px/1.45 "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       main { padding: 18px; }
       header {
@@ -82,20 +82,32 @@
       .work-pill {
         display: inline-flex;
         align-items: center;
+        gap: 6px;
         justify-content: center;
         width: fit-content;
         border-radius: 999px;
-        color: #fff;
-        background: var(--neutral);
-        font-weight: 700;
+        color: var(--ink);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        font-weight: 600;
       }
-      .badge { min-width: 88px; padding: 6px 10px; font-size: 12px; }
+      .badge::before,
+      .state-chip::before,
+      .work-pill::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--dot, var(--neutral));
+      }
+      .badge { min-width: 88px; padding: 6px 11px 6px 9px; font-size: 12px; }
       .state-chip,
-      .work-pill { padding: 3px 8px; font-size: 11px; }
-      .badge.ok, .state-chip.ok, .work-pill.ok { background: var(--ok); }
-      .badge.warn, .state-chip.warn, .work-pill.warn { background: var(--warn); }
-      .badge.bad, .state-chip.bad, .work-pill.bad { background: var(--bad); }
-      .badge.neutral, .state-chip.neutral, .work-pill.neutral { background: var(--neutral); }
+      .work-pill { padding: 3px 9px 3px 7px; font-size: 11px; }
+      .badge.ok, .state-chip.ok, .work-pill.ok { --dot: var(--ok); }
+      .badge.warn, .state-chip.warn, .work-pill.warn { --dot: var(--warn); }
+      .badge.bad, .state-chip.bad, .work-pill.bad { --dot: var(--bad); }
+      .badge.neutral, .state-chip.neutral, .work-pill.neutral { --dot: var(--neutral); }
       section { padding: 14px 0; border-bottom: 1px solid var(--line); }
       section:last-child { border-bottom: 0; padding-bottom: 0; }
       .active-card,
@@ -103,7 +115,7 @@
         margin-top: 12px;
         padding: 12px;
         border: 1px solid var(--line);
-        border-radius: 9px;
+        border-radius: 13px;
         background: var(--panel);
       }
       .surface-card { margin-top: 8px; }
@@ -139,6 +151,7 @@
         padding: 0 6px;
         border-radius: 6px;
         color: #fff;
+        font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
         font-size: 11px;
         font-weight: 800;
       }
@@ -153,7 +166,7 @@
       .work-item {
         padding: 9px 10px;
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: 11px;
         background: var(--surface);
       }
       .tab-item {
@@ -177,7 +190,7 @@
       select {
         min-height: 40px;
         border: 1px solid var(--line);
-        border-radius: 7px;
+        border-radius: 9px;
         color: var(--ink);
         background: var(--surface);
         font: inherit;
@@ -193,8 +206,13 @@
       button:hover { border-color: var(--accent); background: var(--panel-strong); }
       button:active { transform: translateY(1px); }
       button:disabled { cursor: not-allowed; opacity: .58; }
-      button.primary { border-color: var(--accent); color: #fff; background: var(--accent); }
-      button.primary:hover { background: var(--accent-hover); }
+      button.primary {
+        border-color: transparent;
+        color: #fff;
+        background: linear-gradient(180deg, var(--accent), var(--accent-hover));
+        box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent);
+      }
+      button.primary:hover { filter: brightness(1.06); }
       button.danger { border-color: color-mix(in srgb, var(--bad), var(--line) 45%); }
       button:focus-visible,
       input:focus-visible,
@@ -235,7 +253,9 @@
       .link-button { min-height: 34px; padding: 5px 8px; }
       details { margin-top: 10px; }
       summary { color: var(--muted); cursor: pointer; }
-      .pairing-id { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .mono,
+      .pairing-id,
+      .log-time { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace; }
       .empty { color: var(--muted); padding: 5px 0; }
       @media (max-width: 520px) {
         body { width: 100vw; min-width: 360px; }
@@ -262,7 +282,7 @@
       </header>
 
       <section class="row" aria-label="Pending browser actions">
-        <span class="label">Pending browser actions</span><span id="pending-action-count" class="value">0</span>
+        <span class="label">Pending browser actions</span><span id="pending-action-count" class="value mono">0</span>
       </section>
 
       <section id="attention-section" class="active-card" hidden aria-labelledby="attention-heading">
@@ -274,7 +294,7 @@
       </section>
 
       <section>
-        <div class="section-head"><strong>Open conversations</strong><span id="open-tab-count" class="value">0</span></div>
+        <div class="section-head"><strong>Open conversations</strong><span id="open-tab-count" class="value mono">0</span></div>
         <div id="open-tabs" class="tab-list" aria-live="polite"></div>
       </section>
 
@@ -283,11 +303,8 @@
         <div class="row"><span id="page" class="value provider-chip">Unknown</span><span id="fidelity-flag" class="state-chip warn" hidden>Partial fidelity</span></div>
         <p id="state">Checking receiver...</p>
         <p id="state-detail"></p>
-        <div class="row conversation-only"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
-        <div class="row conversation-only"><span class="label">Captured / visible</span><span id="turns" class="value">--</span></div>
-        <div class="row conversation-only"><span class="label">Cost / tokens</span><span id="cost-tokens" class="value">Unavailable</span></div>
-        <div class="row conversation-only"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
-        <div id="asset-failures" class="log-meta conversation-only"></div>
+        <div class="row conversation-only"><span class="label">Captured / visible</span><span id="turns" class="value mono">--</span></div>
+        <div class="row conversation-only"><span class="label">Cost / tokens</span><span id="cost-tokens" class="value mono">Unavailable</span></div>
       </section>
 
       <section aria-label="Conversation controls">
@@ -306,6 +323,13 @@
       <details id="diagnostics">
         <summary>Diagnostics · leases, retries, request ids, receiver identity, backfill, raw logs</summary>
 
+        <section aria-labelledby="capture-detail-heading">
+          <div class="section-head"><strong id="capture-detail-heading">Capture detail</strong></div>
+          <div class="row conversation-only"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
+          <div class="row conversation-only"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
+          <div id="asset-failures" class="log-meta conversation-only"></div>
+        </section>
+
         <section aria-labelledby="receiver-heading">
           <div class="section-head"><strong id="receiver-heading">Paired receiver</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
           <div class="surface-card">
@@ -319,11 +343,11 @@
         </section>
 
         <section aria-labelledby="work-heading">
-          <div class="section-head"><strong id="work-heading">Work queue</strong><span id="work-count" class="value">0</span></div>
+          <div class="section-head"><strong id="work-heading">Work queue</strong><span id="work-count" class="value mono">0</span></div>
           <p class="section-note">One vocabulary covers local capture retries and provider backfills.</p>
           <div id="work-queue" class="work-list" aria-live="polite"></div>
           <details>
-            <summary>Capture retry detail · <span id="queue-count">0</span></summary>
+            <summary>Capture retry detail · <span id="queue-count" class="mono">0</span></summary>
             <div id="queue-log" class="log"></div>
           </details>
         </section>
@@ -341,9 +365,9 @@
             </select>
             <input id="backfill-cutoff" type="date" aria-label="Capture conversations updated since">
           </div>
-          <div class="row"><span class="label">Inventory cursor</span><span id="backfill-cursor" class="value">--</span></div>
-          <div class="row"><span class="label">Progress</span><span id="backfill-progress" class="value">--</span></div>
-          <div class="row"><span class="label">Cadence / cooldown</span><span id="backfill-rate" class="value">--</span></div>
+          <div class="row"><span class="label">Inventory cursor</span><span id="backfill-cursor" class="value mono">--</span></div>
+          <div class="row"><span class="label">Progress</span><span id="backfill-progress" class="value mono">--</span></div>
+          <div class="row"><span class="label">Cadence / cooldown</span><span id="backfill-rate" class="value mono">--</span></div>
           <div class="row"><span class="label">Last ACK / error</span><span id="backfill-last" class="value">--</span></div>
           <div class="controls">
             <button id="backfill-start" class="primary"><span class="button-label">Start</span><span class="button-status"></span></button>
@@ -356,23 +380,23 @@
         </section>
 
         <section>
-          <div class="section-head"><span class="label">Recent capture log</span><span id="log-count" class="value">0</span></div>
+          <div class="section-head"><span class="label">Recent capture log</span><span id="log-count" class="value mono">0</span></div>
           <div id="log" class="log"></div>
         </section>
 
         <section>
-          <div class="section-head"><span class="label">Debug log</span><span id="debug-count" class="value">0</span></div>
+          <div class="section-head"><span class="label">Debug log</span><span id="debug-count" class="value mono">0</span></div>
           <div class="debug-actions">
             <button id="debug-toggle" class="link-button"><span class="button-label">Show details</span><span class="button-status"></span></button>
             <button id="debug-export" class="link-button"><span class="button-label">Export JSON</span><span class="button-status"></span></button>
           </div>
           <div id="debug-panel" hidden>
-            <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
+            <div class="row"><span class="label">Receiver</span><span id="receiver" class="value mono">127.0.0.1:8765</span></div>
             <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
             <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
-            <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
+            <div class="row"><span class="label">Request</span><span id="receiver-request" class="value mono">--</span></div>
             <div class="row"><span class="label">Extension build</span><span id="extension-build" class="value">--</span></div>
-            <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
+            <div class="row"><span class="label">Updated</span><span id="updated" class="value mono">--</span></div>
             <div id="debug-log" class="log"></div>
           </div>
         </section>
