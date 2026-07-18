@@ -312,8 +312,13 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/completions.py
-    loc: 632
+    loc: 701
     target: polylogue/archive/query/completions.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/discovery.py
+    loc: 1567
+    target: polylogue/archive/query/discovery.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/evaluator.py
@@ -447,7 +452,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/transaction.py
-    loc: 458
+    loc: 495
     target: polylogue/archive/query/transaction.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -771,7 +776,7 @@ files:
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 571
+    loc: 586
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -2158,11 +2163,11 @@ files:
     target: polylogue/mcp/server_personal_state_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
-    loc: 556
+    loc: 563
     target: polylogue/mcp/server_prompts.py
     owner: stable
   - path: polylogue/mcp/server_resources.py
-    loc: 357
+    loc: 398
     target: polylogue/mcp/server_resources.py
     owner: stable
   - path: polylogue/mcp/server_support.py
@@ -2372,7 +2377,7 @@ files:
     target: polylogue/product/__init__.py
     owner: stable
   - path: polylogue/product/continuity_scenarios.py
-    loc: 257
+    loc: 945
     target: polylogue/product/continuity_scenarios.py
     owner: stable
   - path: polylogue/product/raw_authority.py
@@ -3887,7 +3892,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 1574
+    loc: 1620
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py

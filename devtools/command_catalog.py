@@ -205,6 +205,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_quality_reference",
     ),
     CommandSpec(
+        "render query-discovery",
+        "generated surfaces",
+        "Render parser-gated query discovery examples and result semantics into docs/search.md.",
+        "devtools.render_query_discovery",
+        use_when=(
+            "Refresh or verify query examples after changing the expression grammar, query-unit metadata, "
+            "result-semantics vocabulary, completions, or MCP cookbook recipes."
+        ),
+        examples=("devtools render query-discovery", "devtools render query-discovery --check"),
+    ),
+    CommandSpec(
         "render mcp-equivalence",
         "generated surfaces",
         "Render docs/generated/mcp-equivalence.json from executable MCP declarations.",

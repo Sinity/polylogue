@@ -142,17 +142,42 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://capabilities/query")
     def query_capabilities_resource() -> str:
         """Expose the executable query vocabulary as bounded model-facing data."""
+        from polylogue.archive.query.discovery import (
+            QUERY_DISCOVERY_EXAMPLES,
+            QUERY_DISCOVERY_GRAMMAR,
+            QUERY_DISCOVERY_NEGATIVE_EXAMPLES,
+            RESULT_SEMANTICS_TEACHING,
+            query_discovery_examples,
+        )
         from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_source_list
-        from polylogue.mcp.declarations import TARGET_DEFAULT_READ_ALGEBRA, TARGET_PROMPTS, TARGET_RESOURCES
+        from polylogue.mcp.declarations import (
+            TARGET_DEFAULT_READ_ALGEBRA,
+            TARGET_PROMPTS,
+            TARGET_RESOURCES,
+            MCPResultSemantics,
+        )
 
+        mcp_result_semantics = {
+            "exhaustive": MCPResultSemantics.EXHAUSTIVE_PAGE,
+            "top-k": MCPResultSemantics.TOP_K,
+            "sample": MCPResultSemantics.SAMPLE,
+            "aggregate": MCPResultSemantics.AGGREGATE,
+            "bounded-context": MCPResultSemantics.BOUNDED_CONTEXT,
+            "recursive-page": MCPResultSemantics.RECURSIVE_GRAPH,
+        }
         units = []
         for descriptor in query_unit_descriptors(terminal_supported=True):
+            declared_examples = query_discovery_examples(unit_source=descriptor.plural_source)
             units.append(
                 {
                     "unit": descriptor.unit,
                     "source": descriptor.plural_source,
                     "description": descriptor.description,
-                    "example": descriptor.terminal_example or descriptor.example,
+                    "example": (
+                        declared_examples[0].expression
+                        if declared_examples
+                        else descriptor.terminal_example or descriptor.example
+                    ),
                     # Keep the catalog itself below the MCP response budget. Full
                     # field descriptions remain available from query explain/
                     # completion routes; discovery needs the bounded vocabulary,
@@ -161,27 +186,43 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     "aggregate_group_fields": list(descriptor.aggregate_group_fields),
                     "exists_supported": descriptor.exists_supported,
                     "lowerer": descriptor.lowerer_kind,
-                    "authority": "normalized evidence; derived rows retain source refs",
-                    "coverage": "current index generation; check readiness for freshness",
+                    "example_key": declared_examples[0].key if declared_examples else None,
                     "stable_order": "time" if descriptor.time_sort_supported else "canonical",
-                    "execution": {
-                        "result_semantics": "exhaustive_page",
-                        "continuation": "query_units response continuation",
-                    },
+                    "result_semantics": "exhaustive",
                 }
             )
         return hooks.json_payload(
             MCPRootPayload(
                 root={
-                    "version": 1,
+                    "version": 2,
                     "kind": "query-capability-catalog",
                     "terminal_sources": terminal_query_source_list(),
                     "grammar": {
-                        "terminal_form": "<terminal-source> where <predicate>",
-                        "pipeline_form": "<sources> where <predicate> | group by <field> | count",
-                        "scope_form": "sessions where <predicate> | <terminal-source> projection",
-                        "terminal_sources": terminal_query_source_list(),
+                        **QUERY_DISCOVERY_GRAMMAR,
                         "required_recovery": "Use the returned continuation to advance; do not replay the same page.",
+                    },
+                    "corpus": {
+                        "positive_count": len(QUERY_DISCOVERY_EXAMPLES),
+                        "negative_count": len(QUERY_DISCOVERY_NEGATIVE_EXAMPLES),
+                        "examples_via": {"tool": "query_completions", "arguments": {"kind": "example"}},
+                        "errors_via": {"tool": "query_completions", "arguments": {"kind": "error"}},
+                        # Completion candidates expose one of these declaration
+                        # routes verbatim in their ``route`` field; no
+                        # adapter-only aliases obscure route-dependent semantics.
+                        "routes": sorted({example.route for example in QUERY_DISCOVERY_EXAMPLES}),
+                    },
+                    "result_semantics": {
+                        contract.coverage: {
+                            "total": contract.total,
+                            "continuation": contract.continuation,
+                            "mcp_declaration": mcp_result_semantics[contract.coverage].value,
+                            "teaching": contract.phrase,
+                        }
+                        for contract in RESULT_SEMANTICS_TEACHING
+                    },
+                    "row_contract": {
+                        "authority": "normalized evidence; derived rows retain source refs",
+                        "coverage": "current index generation; check readiness for freshness",
                     },
                     "mcp_algebra": {
                         "read_transactions": [asdict(entry) for entry in TARGET_DEFAULT_READ_ALGEBRA],

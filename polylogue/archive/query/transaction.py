@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 from polylogue.archive.query.execution_control import (
     InterruptibleSQLiteRead,
@@ -31,6 +31,39 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 T = TypeVar("T")
+
+# Shared protocol vocabulary for describing what a bounded query result does and
+# does not cover. Discovery surfaces import these aliases so coverage and total
+# claims use the same words as transaction/page contracts.
+QueryCoverageClass = Literal[
+    "exhaustive",
+    "top-k",
+    "sample",
+    "aggregate",
+    "bounded-context",
+    "recursive-page",
+]
+QueryTotalSemantics = Literal["exact", "qualified", "aggregate", "not-applicable"]
+QueryContinuationSemantics = Literal[
+    "none",
+    "cursor-or-offset",
+    "ranked-frontier",
+    "recursive-cursor",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class QueryResultSemanticsContract:
+    """Truthful coverage, total, and continuation claims for one result class."""
+
+    coverage: QueryCoverageClass
+    total: QueryTotalSemantics
+    continuation: QueryContinuationSemantics
+    phrase: str
+
+
+# V2 binds a page to the exact index+user-tier frame that supplied its rows.
+# V1 remains decode-only for continuations issued before frame validation.
 _TOKEN_VERSION = 2
 _LEGACY_TOKEN_VERSION = 1
 
@@ -446,7 +479,11 @@ __all__ = [
     "QueryContinuation",
     "QueryArchiveEpochUnreadableError",
     "QueryContinuationStaleError",
+    "QueryContinuationSemantics",
+    "QueryCoverageClass",
     "QueryResultPage",
+    "QueryResultSemanticsContract",
+    "QueryTotalSemantics",
     "QueryTransaction",
     "QueryTransactionRequest",
     "archive_snapshot_epoch",

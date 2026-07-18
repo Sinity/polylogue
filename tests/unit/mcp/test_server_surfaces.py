@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 from collections.abc import Callable
@@ -48,6 +49,50 @@ from tests.infra.mcp import (
 )
 
 SerializationCase = tuple[str, Session, dict[str, object], str]
+
+
+def _query_calls_from_prompt(prompt: str) -> tuple[tuple[str, str], ...]:
+    """Extract executable query strings from one rendered cookbook prompt."""
+
+    calls: list[tuple[str, str]] = []
+    for line in prompt.splitlines():
+        for tool, keyword in (("query_units", "expression"), ("search", "query")):
+            marker = f"{tool}("
+            start = line.find(marker)
+            if start < 0:
+                continue
+            call_text = line[start:]
+            quote: str | None = None
+            escaped = False
+            depth = 0
+            end = 0
+            for index, character in enumerate(call_text):
+                if quote is not None:
+                    if escaped:
+                        escaped = False
+                    elif character == "\\":
+                        escaped = True
+                    elif character == quote:
+                        quote = None
+                    continue
+                if character in {"'", '"'}:
+                    quote = character
+                elif character == "(":
+                    depth += 1
+                elif character == ")":
+                    depth -= 1
+                    if depth == 0:
+                        end = index + 1
+                        break
+            assert end > 0, f"unterminated {tool} call in prompt line: {line!r}"
+            node = ast.parse(call_text[:end], mode="eval").body
+            assert isinstance(node, ast.Call)
+            value_node = next((item.value for item in node.keywords if item.arg == keyword), None)
+            assert value_node is not None, f"{tool} call omitted {keyword!r}: {call_text[:end]}"
+            value = ast.literal_eval(value_node)
+            assert isinstance(value, str)
+            calls.append((tool, value))
+    return tuple(calls)
 
 
 def _write_archive_session(
@@ -1147,7 +1192,9 @@ class TestArchiveGenericToolSurfaces:
 
         Production dependencies: FastMCP resource/tool registration, the
         query transaction, and the SQLite action relation. Removing the
-        transaction identity makes this route's refs and continuation diverge.
+        transaction identity makes this route's refs and continuation diverge;
+        changing the envelope total to a relation-wide count makes the
+        page-local-total assertion fail.
         """
         archive_root = tmp_path / "archive"
         with ArchiveStore(archive_root) as archive:
@@ -1184,11 +1231,15 @@ class TestArchiveGenericToolSurfaces:
 
         discovery_payload = json.loads(discovery)
         second_payload = json.loads(second)
-        assert "action" in discovery_payload["grammar"]["terminal_sources"]
+        assert "action" in discovery_payload["terminal_sources"]
         assert first_payload["query_ref"] == second_payload["query_ref"]
         assert first_payload["result_ref"] == second_payload["result_ref"]
         assert first_payload["continuation"] is not None
+        assert first_payload["total"] == len(first_payload["items"]) == 1
         assert first_payload["items"][0]["tool_use_block_id"] != second_payload["items"][0]["tool_use_block_id"]
+        exhaustive = discovery_payload["result_semantics"]["exhaustive"]
+        assert exhaustive["total"] == "qualified"
+        assert "page-local" in exhaustive["teaching"]
 
     @pytest.mark.asyncio
     async def test_query_units_tool_rejects_session_expression(self: object, mcp_server: MCPServerUnderTest) -> None:
@@ -1616,6 +1667,38 @@ class TestPromptSurfaces:
         result = await invoke_surface_async(mcp_server._prompt_manager._prompts[prompt_name].fn, **kwargs)
         for tool in expected_tools:
             assert tool in result, f"{prompt_name} recipe must name tool {tool}"
+
+    @pytest.mark.asyncio
+    async def test_cookbook_prompt_query_strings_parse_through_production_routes(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        """Removing a corpus-backed parser branch invalidates the emitted recipe itself."""
+        from polylogue.archive.query.expression import compile_expression, parse_unit_source_expression
+
+        prompts = mcp_server._prompt_manager._prompts
+        rendered = (
+            await invoke_surface_async(prompts["decisions_about"].fn, topic='schema "versioning"'),
+            await invoke_surface_async(
+                prompts["unacknowledged_failures"].fn,
+                repo="example repository",
+                since="2026-06-30",
+            ),
+            await invoke_surface_async(
+                prompts["sessions_touching_file"].fn,
+                path="src/query parser.py",
+                repo="example repository",
+            ),
+            await invoke_surface_async(prompts["cost_of"].fn, since="2026-06-30"),
+        )
+
+        calls = tuple(call for prompt in rendered for call in _query_calls_from_prompt(prompt))
+        assert calls
+        assert {tool for tool, _query in calls} == {"query_units", "search"}
+        for tool, query in calls:
+            if tool == "query_units":
+                assert parse_unit_source_expression(query) is not None
+            else:
+                compile_expression(query)
 
     @pytest.mark.asyncio
     async def test_cookbook_prompts_prefill_repo_context(self: object, mcp_server: MCPServerUnderTest) -> None:
