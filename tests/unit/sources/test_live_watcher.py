@@ -1614,6 +1614,124 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         await archive.close()
 
 
+def _browser_capture_payload(*, provider_session_id: str, assistant_turn_id: str, updated_at: str) -> dict[str, object]:
+    return {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": f"chatgpt:{provider_session_id}",
+        "provenance": {
+            "source_url": f"https://chatgpt.com/c/{provider_session_id}",
+            "page_title": "title",
+            "captured_at": updated_at,
+            "adapter_name": "chatgpt-dom-v1",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": provider_session_id,
+            "title": "title",
+            "updated_at": updated_at,
+            "turns": [
+                {"provider_turn_id": "u1", "role": "user", "text": "hello", "ordinal": 0},
+                {
+                    "provider_turn_id": assistant_turn_id,
+                    "role": "assistant",
+                    "text": "hi",
+                    "ordinal": 1,
+                    "attachments": [
+                        {
+                            "provider_attachment_id": "att-1",
+                            "name": "f.md",
+                            "mime_type": "text/markdown",
+                            "url": "https://chatgpt.com/attachment/1",
+                        }
+                    ],
+                },
+            ],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_over_ambiguous_membership_defers_instead_of_failing(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Regression test for polylogue-emx2 (adoption idempotency). Live
+    evidence 2026-07-18: 24,626/25,324 complete-census raws in the production
+    archive had a pending (NULL/'ambiguous') membership decision --
+    classify_membership_revisions correctly refuses to pick a winner between
+    two genuinely conflicting browser-capture snapshots of the same session,
+    but before this fix the watcher's full-ingest aggregation
+    (_ingest_full_paths_sync) silently counted that outcome as a FAILED
+    file: no exception was ever raised, no log line was ever written, yet
+    the cursor was marked failed and the file was retried on every
+    subsequent catch-up sweep with no progress. This proves the fix: a raw
+    whose census completed but whose authority decision is legitimately
+    deferred to async arbitration is treated as succeeded/idempotent, not
+    failed.
+    """
+    root = workspace_env["data_root"] / "browser-capture"
+    chatgpt_dir = root / "chatgpt"
+    chatgpt_dir.mkdir(parents=True)
+    source_path = chatgpt_dir / "conv-emx2.json"
+    db_path = workspace_env["data_root"] / "membership-defer.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        source_path.write_text(
+            json.dumps(
+                _browser_capture_payload(
+                    provider_session_id="conv-emx2",
+                    assistant_turn_id="a1",
+                    updated_at="2026-07-18T00:00:00+00:00",
+                )
+            ),
+            encoding="utf-8",
+        )
+        first = await processor.ingest_files([source_path], emit_event=False)
+        assert first.succeeded_file_count == 1
+        assert first.failed_file_count == 0
+
+        # Second snapshot: same message count/shape but a genuinely
+        # different assistant turn identity -- classify_membership_revisions
+        # cannot pick a winner (identity not preserved, frontier doesn't
+        # strictly grow) and correctly returns ambiguous, not accepted.
+        source_path.write_text(
+            json.dumps(
+                _browser_capture_payload(
+                    provider_session_id="conv-emx2",
+                    assistant_turn_id="a2",
+                    updated_at="2026-07-18T00:05:00+00:00",
+                )
+            ),
+            encoding="utf-8",
+        )
+        second = await processor.ingest_files([source_path], emit_event=False)
+        assert second.failed_file_count == 0, "ambiguous membership decision must defer, not fail"
+        assert second.succeeded_file_count == 1
+
+        record = cursor.get_record(source_path)
+        assert record is not None
+        assert record.failure_count == 0
+
+        # Idempotent re-observation: identical bytes must not be reprocessed
+        # as a fresh failure/retry.
+        third = await processor.ingest_files([source_path], emit_event=False)
+        assert third.failed_file_count == 0
+        record_after_replay = cursor.get_record(source_path)
+        assert record_after_replay is not None
+        assert record_after_replay.failure_count == 0
+    finally:
+        await archive.close()
+
+
 @pytest.mark.asyncio
 async def test_live_append_merges_tail_visible_through_public_archive_read(workspace_env: dict[str, Path]) -> None:
     root = workspace_env["data_root"] / "claude-projects"

@@ -219,6 +219,15 @@ def _captured_jsonl_ends_at_record_boundary(
 @dataclass(slots=True)
 class _ArchiveFullWriteResult:
     raw_ids: dict[str, str] = field(default_factory=dict)
+    # polylogue-emx2: a raw whose membership census completed but whose
+    # authority decision is still pending (arbitration deferred to the async
+    # raw-materialization conveyor) is a hand-off, not a failure. Bytes are
+    # durably acquired; only the classification decision is outstanding.
+    # Tracked separately from raw_ids so the aggregation layer in
+    # _ingest_full_paths_sync can treat re-observation of these files as
+    # idempotent (cursor succeeded, no retry churn) instead of silently
+    # counting them as full-ingest failures with no exception ever raised.
+    deferred_raw_ids: dict[str, str] = field(default_factory=dict)
     session_ids: list[str] = field(default_factory=list)
     session_count: int = 0
     message_count: int = 0
@@ -1542,8 +1551,17 @@ class LiveBatchProcessor:
                     force=True,
                 )
             archive_write = self._ingest_full_records_archive(raw_records, raw_payloads, blob_store)
-            failed.extend(raw_by_id[raw_id] for raw_id in raw_by_id if raw_id not in archive_write.raw_ids)
-            raw_by_id = {archive_write.raw_ids.get(raw_id, raw_id): path for raw_id, path in raw_by_id.items()}
+            # deferred_raw_ids is a conveyor hand-off, not a failure -- only
+            # raws in neither map (a real exception was raised) count below.
+            failed.extend(
+                raw_by_id[raw_id]
+                for raw_id in raw_by_id
+                if raw_id not in archive_write.raw_ids and raw_id not in archive_write.deferred_raw_ids
+            )
+            raw_by_id = {
+                (archive_write.raw_ids.get(raw_id) or archive_write.deferred_raw_ids.get(raw_id) or raw_id): path
+                for raw_id, path in raw_by_id.items()
+            }
             if heartbeat is not None:
                 heartbeat(
                     "full_archive_write_completed",
@@ -1804,6 +1822,8 @@ class LiveBatchProcessor:
                             )
                             plan = archive.classify_raw_revision_cohort(logical_source_key)
                             if not plan.accepted_raw_ids:
+                                # No candidate accepted yet -- deferred, not failed.
+                                result.deferred_raw_ids[record.raw_id] = record_raw_id
                                 continue
                             parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
                             session_id, applied_raw_ids = archive.apply_raw_revision_replay(
@@ -1842,6 +1862,11 @@ class LiveBatchProcessor:
                         )
                     if raw_authority_complete:
                         result.raw_ids[record.raw_id] = record_raw_id
+                    else:
+                        # Census recorded, no exception -- the raw-authority
+                        # protocol's own async classification hasn't decided
+                        # this raw yet. Not a failure; see deferred_raw_ids.
+                        result.deferred_raw_ids[record.raw_id] = record_raw_id
                     result.session_ids.extend(record_session_ids)
                     result.session_count += record_session_count
                     result.message_count += record_message_count
