@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.claim_vs_evidence import build_report
+from devtools.claim_vs_evidence import _economy_rows, build_report
 from polylogue.archive.actions.followup import classify_failed_followup_evidence
 from polylogue.demo import seed_demo_archive
 
@@ -234,6 +234,29 @@ def _seed_archive(root: Path) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def test_economy_rows_empty_session_ids_short_circuits(tmp_path: Path) -> None:
+    conn = sqlite3.connect(tmp_path / "empty.db")
+    conn.executescript(
+        """
+        CREATE TABLE session_model_usage (
+            session_id TEXT NOT NULL, model_name TEXT NOT NULL,
+            input_tokens INTEGER, output_tokens INTEGER,
+            cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+            cost_usd REAL, cost_provenance TEXT
+        );
+        """
+    )
+    economy = _economy_rows(conn, session_ids=(), silent_by_origin={})
+    assert economy == {"by_model": [], "by_origin": []}
+
+
+def test_economy_rows_missing_usage_table_returns_empty(tmp_path: Path) -> None:
+    conn = sqlite3.connect(tmp_path / "no-usage-table.db")
+    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT)")
+    economy = _economy_rows(conn, session_ids=("s1",), silent_by_origin={})
+    assert economy == {"by_model": [], "by_origin": []}
 
 
 def test_protocol_only_followup_is_ambiguous_not_silent_proceed() -> None:
