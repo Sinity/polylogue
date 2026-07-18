@@ -24,7 +24,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
-from polylogue.core.json import dumps
+from polylogue.core.json import JSONDocument, dumps, json_document, loads
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.daemon.browser_capture import browser_capture_command
 
@@ -1823,6 +1823,40 @@ def main() -> None:
 main.add_command(browser_capture_command)
 
 
+_LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
+
+
+def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_S) -> JSONDocument | None:
+    """Return a running daemon's cached ``/api/status`` snapshot, or ``None``.
+
+    ``polylogued status`` used to always recompute the full rich status
+    in-process, cold, with every expensive diagnostic flag on by default —
+    the same collection a running daemon already keeps refreshed
+    off-request and exposes here. Preferring the live daemon's answer
+    (bounded, cheap) avoids repeating that expensive collection when a
+    daemon is already up, which was the reported ">15s although
+    heartbeat/DB descriptors were healthy" hang (polylogue-20d.17). Honours
+    ``POLYLOGUE_DAEMON_URL`` like the archive CLI's ``polylogue status`` so
+    tests can route this probe to an unreachable address (#1325).
+    """
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    url = os.environ.get("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766").rstrip("/")
+    try:
+        req = Request(f"{url}/api/status", headers={"Accept": "application/json"}, method="GET")
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except (OSError, URLError, ValueError):
+        return None
+    try:
+        parsed = loads(body)
+    except ValueError:
+        return None
+    document = json_document(parsed)
+    return document or None
+
+
 @main.command("status", help="Show configured daemon component status.")
 @click.option(
     "--spool",
@@ -1839,18 +1873,22 @@ main.add_command(browser_capture_command)
 )
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
     configure_logging()
-    if output_format == "json":
-        with redirect_stdout(sys.stderr):
+    payload = _live_daemon_status_payload()
+    if payload is None:
+        if output_format == "json":
+            with redirect_stdout(sys.stderr):
+                payload = daemon_status_payload(
+                    browser_capture_spool_path=spool_path,
+                    include_browser_capture_spool_path=spool_path is not None,
+                )
+        else:
             payload = daemon_status_payload(
                 browser_capture_spool_path=spool_path,
                 include_browser_capture_spool_path=spool_path is not None,
             )
+    if output_format == "json":
         click.echo(dumps(payload))
         return
-    payload = daemon_status_payload(
-        browser_capture_spool_path=spool_path,
-        include_browser_capture_spool_path=spool_path is not None,
-    )
     for line in format_daemon_status_lines(payload):
         click.echo(line)
 

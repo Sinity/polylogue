@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6161
+    loc: 6097
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -476,12 +476,12 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/transaction.py
-    loc: 563
+    loc: 495
     target: polylogue/archive/query/transaction.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 582
+    loc: 577
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1476,7 +1476,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2173
+    loc: 2166
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1496,7 +1496,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 2007
+    loc: 1987
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/convergence_standing_queries.py
@@ -1560,7 +1560,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 5267
+    loc: 5270
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
@@ -1637,7 +1637,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2711
+    loc: 2840
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -1713,7 +1713,7 @@ files:
     target: polylogue/daemon/web_shell_workspace.py
     owner: stable
   - path: polylogue/daemon/webui.py
-    loc: 1137
+    loc: 885
     target: polylogue/daemon/webui.py
     owner: stable
   - path: polylogue/daemon/workspace_routes.py
@@ -2159,7 +2159,7 @@ files:
     target: polylogue/mcp/declarations/models.py
     owner: stable
   - path: polylogue/mcp/declarations/registry.py
-    loc: 3716
+    loc: 3461
     target: polylogue/mcp/declarations/registry.py
     owner: stable
   - path: polylogue/mcp/insight_tool_contracts.py
@@ -2186,10 +2186,6 @@ files:
     loc: 199
     target: polylogue/mcp/server_context_tools.py
     owner: stable
-  - path: polylogue/mcp/server_cutover.py
-    loc: 1443
-    target: polylogue/mcp/server_cutover.py
-    owner: stable
   - path: polylogue/mcp/server_insight_tools.py
     loc: 808
     target: polylogue/mcp/server_insight_tools.py
@@ -2215,11 +2211,11 @@ files:
     target: polylogue/mcp/server_resources.py
     owner: stable
   - path: polylogue/mcp/server_support.py
-    loc: 698
+    loc: 700
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1237
+    loc: 1214
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -2257,6 +2253,10 @@ files:
   - path: polylogue/operations/specs.py
     loc: 870
     target: polylogue/operations/specs.py
+    owner: stable
+  - path: polylogue/operations/status_protocol.py
+    loc: 342
+    target: polylogue/operations/status_protocol.py
     owner: stable
   - path: polylogue/paths/__init__.py
     loc: 78
@@ -2421,11 +2421,11 @@ files:
     target: polylogue/product/__init__.py
     owner: stable
   - path: polylogue/product/continuity_scenarios.py
-    loc: 943
+    loc: 945
     target: polylogue/product/continuity_scenarios.py
     owner: stable
   - path: polylogue/product/raw_authority.py
-    loc: 110
+    loc: 109
     target: polylogue/product/raw_authority.py
     owner: stable
   - path: polylogue/product/workflows.py
@@ -3281,7 +3281,7 @@ files:
     target: polylogue/sources/parsers/hermes_lifecycle.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_spans.py
-    loc: 854
+    loc: 779
     target: polylogue/sources/parsers/hermes_spans.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
@@ -4337,7 +4337,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 3690
+    loc: 3688
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py

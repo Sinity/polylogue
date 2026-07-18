@@ -9,7 +9,7 @@ import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -57,6 +57,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     workload_fields,
 )
 from polylogue.logging import get_logger
+from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.readiness.claim_guard import derive_claim_guard
@@ -1661,6 +1662,48 @@ def _check_daemon_liveness(lifecycle: dict[str, object] | None = None) -> bool:
     return bool(lifecycle.get("running", False))
 
 
+_COLLECTION_STATE_BY_READINESS_KEY: dict[str, str] = {
+    "search": "fts_readiness",
+    "raw_materialization": "raw_materialization",
+    "session_profiles": "insight_freshness",
+    "embeddings": "embedding_readiness",
+    "archive_storage": "archive_storage",
+    "daemon_ingest": "live_ingest_attempts",
+}
+
+
+def _attach_collection_state(
+    component_readiness: dict[str, object],
+    snapshots: dict[str, ComponentSnapshot],
+) -> None:
+    """Attach polylogue-20d.17 collection state (fresh/stale/timed_out/...) to each readiness entry.
+
+    Business readiness (``state``: ready/degraded/stale/missing/unknown) and
+    collection health (``collection.state``: fresh/stale/refreshing/
+    timed_out/unavailable/degraded) are independent axes: a component can be
+    business-ready from a stale collection, or business-degraded from a
+    perfectly fresh one. Nested under ``collection`` so it is additive and
+    does not disturb the existing readiness vocabulary. Deliberately omits
+    ``ComponentSnapshot.value`` — several collectors return pydantic models
+    (not JSON values), and the surrounding readiness entry already carries a
+    business-appropriate projection of that value via its own fields.
+    """
+    for readiness_key, component_name in _COLLECTION_STATE_BY_READINESS_KEY.items():
+        entry = component_readiness.get(readiness_key)
+        snapshot = snapshots.get(component_name)
+        if not isinstance(entry, dict) or snapshot is None:
+            continue
+        entry["collection"] = {
+            "state": snapshot.state,
+            "captured_at": snapshot.captured_at,
+            "age_s": round(snapshot.age_s, 3),
+            "deadline_s": snapshot.deadline_s,
+            "fingerprint": snapshot.fingerprint,
+            "error": snapshot.error,
+            "last_good_at": snapshot.last_good_at,
+        }
+
+
 def _daemon_component_readiness(
     *,
     component_state: ComponentState,
@@ -2018,15 +2061,128 @@ def build_daemon_status(
         if browser_capture_enabled is not None
         else effective_browser_capture_spool_path is not None
     )
-    db_info = _db_size_info()
-    storage_info = _archive_storage_info()
-    fts = _fts_readiness_info()
-    freshness = _insight_freshness_info()
-    raw_materialization_readiness = _raw_materialization_readiness_info(
-        classify_gaps=include_exact_raw_materialization_readiness
-    )
+    active_db = _active_status_db_path()
+
+    # Build health status. Keep the default bounded; medium includes exact
+    # FTS invariant scans and must be requested explicitly by operator paths.
+    from polylogue.daemon.health import HealthTier
+
+    health_tiers: set[HealthTier] = {HealthTier.FAST}
+    if include_expensive_health:
+        health_tiers.update({HealthTier.MEDIUM, HealthTier.EXPENSIVE})
+
+    def _checked_health() -> DaemonHealth:
+        try:
+            return check_health(tiers=health_tiers)
+        except Exception as exc:
+            # DaemonHealth() alone defaults to overall_status=OK with zero
+            # alerts — the single most misleading fallback possible for a
+            # health check: a failed check would present as "everything is
+            # fine" instead of "the check itself broke" (polylogue-cpf.4).
+            logger.warning("status: check_health() failed: %s", exc, exc_info=True)
+            return DaemonHealth(
+                overall_status=HealthSeverity.ERROR,
+                checked_at=datetime.now(UTC).isoformat(),
+                alerts=[
+                    HealthAlert(
+                        check_name="check_health",
+                        tier=HealthTier.FAST,
+                        severity=HealthSeverity.ERROR,
+                        message=f"health check itself failed: {exc}",
+                        checked_at=datetime.now(UTC).isoformat(),
+                    )
+                ],
+            )
+
+    # polylogue-20d.17: each fact below used to be collected sequentially in
+    # one synchronous call chain, so one slow probe (raw materialization gap
+    # classification, embedding readiness, an FTS scan under contention)
+    # stalled every other fact behind it — the reported ">15s although
+    # heartbeat/DB descriptors were healthy" hang. A fresh, per-call registry
+    # runs them concurrently, each under its own deadline: overall wall time
+    # is bounded by the slowest *unresolved* component, not the sum, and a
+    # stalled one reports an explicit timed_out/degraded state (with
+    # whatever it last collected successfully, if anything) instead of
+    # blocking the healthy facts sitting behind it in a call chain.
+    specs = [
+        StatusComponentSpec(name="db_size", scope="archive", collector=_db_size_info, deadline_s=0.5),
+        StatusComponentSpec(name="blob_size", scope="archive", collector=_blob_size_info, deadline_s=0.5),
+        StatusComponentSpec(
+            name="archive_storage",
+            scope="archive",
+            collector=_archive_storage_info,
+            deadline_s=1.5,
+            cost_class="moderate",
+        ),
+        StatusComponentSpec(
+            name="fts_readiness", scope="lexical", collector=_fts_readiness_info, deadline_s=1.5, cost_class="moderate"
+        ),
+        StatusComponentSpec(
+            name="insight_freshness",
+            scope="archive",
+            collector=_insight_freshness_info,
+            deadline_s=1.5,
+            cost_class="moderate",
+        ),
+        StatusComponentSpec(
+            name="raw_materialization",
+            scope="archive",
+            collector=lambda: _raw_materialization_readiness_info(
+                classify_gaps=include_exact_raw_materialization_readiness
+            ),
+            deadline_s=3.0 if include_exact_raw_materialization_readiness else 1.5,
+            cost_class="expensive" if include_exact_raw_materialization_readiness else "moderate",
+        ),
+        StatusComponentSpec(
+            name="raw_replay_backlog",
+            scope="archive",
+            collector=lambda: _raw_replay_backlog_info(include=include_raw_replay_backlog),
+            deadline_s=3.0 if include_raw_replay_backlog else 0.3,
+            cost_class="expensive" if include_raw_replay_backlog else "cheap",
+        ),
+        StatusComponentSpec(name="live_cursor", scope="daemon", collector=_live_cursor_summary_info, deadline_s=0.5),
+        StatusComponentSpec(
+            name="live_ingest_attempts",
+            scope="daemon",
+            collector=_live_ingest_attempt_summary_info,
+            deadline_s=0.5,
+        ),
+        StatusComponentSpec(
+            name="convergence",
+            scope="daemon",
+            collector=lambda: convergence_debt_summary_info(active_db),
+            deadline_s=0.5,
+        ),
+        StatusComponentSpec(
+            name="cursor_lag", scope="daemon", collector=lambda: cursor_lag_summary_info(active_db), deadline_s=0.5
+        ),
+        StatusComponentSpec(
+            name="raw_failures", scope="archive", collector=_raw_failure_info, deadline_s=1.0, cost_class="moderate"
+        ),
+        StatusComponentSpec(
+            name="embedding_readiness",
+            scope="semantic",
+            collector=lambda: embedding_readiness_info(active_db),
+            deadline_s=2.0,
+            cost_class="moderate",
+        ),
+        StatusComponentSpec(
+            name="health", scope="daemon", collector=_checked_health, deadline_s=1.5, cost_class="moderate"
+        ),
+    ]
+    snapshots = StatusComponentRegistry(specs).collect()
+
+    def _v(name: str, default: Any) -> Any:
+        value = snapshots[name].value
+        return value if value is not None else default
+
+    db_info: dict[str, object] = _v("db_size", {})
+    storage_info = _v("archive_storage", ArchiveStorageStatus())
+    fts: dict[str, object] = _v("fts_readiness", {})
+    freshness: dict[str, object] = _v("insight_freshness", {})
+    raw_materialization_readiness = _v("raw_materialization", RawMaterializationReadiness())
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
-    raw_replay_backlog = _raw_replay_backlog_info(include=include_raw_replay_backlog)
+    raw_replay_backlog: dict[str, object] = _v("raw_replay_backlog", {})
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
     )
@@ -2036,47 +2192,18 @@ def build_daemon_status(
             "archive_ready": storage_info.archive_ready and materialization_ready,
         }
     )
-    live_cursor = _live_cursor_summary_info()
-    live_ingest_attempts = _live_ingest_attempt_summary_info()
-    active_db = _active_status_db_path()
-    convergence = convergence_debt_summary_info(active_db)
-    cursor_lag = cursor_lag_summary_info(active_db)
+    live_cursor = _v("live_cursor", LiveCursorSummary())
+    live_ingest_attempts = _v("live_ingest_attempts", LiveIngestAttemptSummary())
+    convergence = _v("convergence", ConvergenceDebtSummary())
+    cursor_lag = _v("cursor_lag", CursorLagSummary())
     catchup = catchup_status_info(
         active_db,
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
         convergence=convergence,
     )
-    raw_failures = _raw_failure_info()
-    embedding_info = embedding_readiness_info(active_db)
-
-    # Build health status. Keep the default bounded; medium includes exact
-    # FTS invariant scans and must be requested explicitly by operator paths.
-    from polylogue.daemon.health import HealthTier
-
-    health_tiers: set[HealthTier] = {HealthTier.FAST}
-    if include_expensive_health:
-        health_tiers.update({HealthTier.MEDIUM, HealthTier.EXPENSIVE})
-    try:
-        health = check_health(tiers=health_tiers)
-    except Exception as exc:
-        # DaemonHealth() alone defaults to overall_status=OK with zero
-        # alerts — the single most misleading fallback possible for a
-        # health check: a failed check would present as "everything is
-        # fine" instead of "the check itself broke" (polylogue-cpf.4).
-        logger.warning("status: check_health() failed: %s", exc, exc_info=True)
-        health = DaemonHealth(
-            overall_status=HealthSeverity.ERROR,
-            checked_at=datetime.now(UTC).isoformat(),
-            alerts=[
-                HealthAlert(
-                    check_name="check_health",
-                    tier=HealthTier.FAST,
-                    severity=HealthSeverity.ERROR,
-                    message=f"health check itself failed: {exc}",
-                    checked_at=datetime.now(UTC).isoformat(),
-                )
-            ],
-        )
+    raw_failures: dict[str, object] = _v("raw_failures", {})
+    embedding_info: dict[str, object] = _v("embedding_readiness", {})
+    health = _v("health", _checked_health())
 
     # Surface memory pressure from the most recent running attempt
     rss_current_mb: float | None = None
@@ -2153,6 +2280,17 @@ def build_daemon_status(
     from polylogue.daemon.lifecycle import lifecycle_status
 
     daemon_lifecycle = lifecycle_status()
+    component_readiness = _daemon_component_readiness(
+        component_state=component_state,
+        fts_readiness=fts_readiness,
+        insight_freshness=insight_freshness,
+        embedding_readiness=embedding_readiness,
+        raw_materialization_readiness=raw_materialization_readiness,
+        raw_frontier_integrity=raw_frontier_integrity,
+        archive_storage=storage_info,
+        live_ingest_attempts=live_ingest_attempts,
+    )
+    _attach_collection_state(component_readiness, snapshots)
     return DaemonStatus(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
@@ -2172,7 +2310,7 @@ def build_daemon_status(
         cursor_lag=cursor_lag,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
-        blob_dir_size_bytes=_blob_size_info(),
+        blob_dir_size_bytes=_v("blob_size", 0),
         disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
         fts_readiness=fts_readiness,
         insight_freshness=insight_freshness,
@@ -2181,16 +2319,7 @@ def build_daemon_status(
         raw_frontier_integrity=raw_frontier_integrity,
         raw_replay_backlog=raw_replay_backlog,
         archive_storage=storage_info,
-        component_readiness=_daemon_component_readiness(
-            component_state=component_state,
-            fts_readiness=fts_readiness,
-            insight_freshness=insight_freshness,
-            embedding_readiness=embedding_readiness,
-            raw_materialization_readiness=raw_materialization_readiness,
-            raw_frontier_integrity=raw_frontier_integrity,
-            archive_storage=storage_info,
-            live_ingest_attempts=live_ingest_attempts,
-        ),
+        component_readiness=component_readiness,
         claim_guard=_daemon_claim_guard(
             archive_storage=storage_info,
             raw_materialization_readiness=raw_materialization_readiness,
@@ -2243,7 +2372,29 @@ def daemon_status_payload(
         include_raw_replay_backlog=include_raw_replay_backlog,
         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
     )
-    archive_debt = _archive_debt_status_summary() if include_archive_debt else _excluded_archive_debt_status_summary()
+    if include_archive_debt:
+        # polylogue-20d.17: this scan is a full archive-debt listing, not a
+        # cheap fact — on a large archive it can run well past every other
+        # component's deadline combined (the direct-cold-path root cause).
+        # Bound it the same way build_daemon_status bounds its own
+        # components: on timeout, fall back to the cheap excluded pointer
+        # payload that tells the caller where to fetch the real listing.
+        debt_snapshot = StatusComponentRegistry(
+            [
+                StatusComponentSpec(
+                    name="archive_debt",
+                    scope="archive",
+                    collector=_archive_debt_status_summary,
+                    deadline_s=3.0,
+                    cost_class="expensive",
+                )
+            ]
+        ).collect()["archive_debt"]
+        archive_debt = (
+            debt_snapshot.value if debt_snapshot.value is not None else _excluded_archive_debt_status_summary()
+        )
+    else:
+        archive_debt = _excluded_archive_debt_status_summary()
 
     return json_document(
         {

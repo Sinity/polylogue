@@ -2236,3 +2236,37 @@ def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_p
     assert status.live_cursor.retry_due_file_count == 1
     assert status.live_cursor.in_backoff_file_count == 0
     assert [item.source_path for item in status.live_cursor.failing_files] == [str(excluded), str(failed)]
+
+
+def test_daemon_status_payload_stalled_component_does_not_block_healthy_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity for polylogue-20d.17.
+
+    Fails on the pre-20d.17 synchronous call chain: there, one collector
+    sleeping past its deadline delays every fact collected after it, so total
+    wall time approaches the *sum* of every component's cost. Here each
+    component runs under its own independent deadline, so total wall time is
+    bounded by roughly the slowest *unresolved* component (~1.5s for
+    ``fts_readiness``), not the sum across all ~14 declared components.
+    """
+    import time
+
+    def _slow_fts_readiness() -> dict[str, object]:
+        time.sleep(2.0)
+        return {"messages_ready": True}  # pragma: no cover - never reached within the test's own wait budget
+
+    monkeypatch.setattr("polylogue.daemon.status._fts_readiness_info", _slow_fts_readiness)
+
+    start = time.perf_counter()
+    payload = daemon_status_payload(sources=())
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 3.0, f"stalled fts_readiness collector should not delay the whole response ({elapsed:.2f}s)"
+
+    readiness = cast(dict[str, Any], payload["component_readiness"])
+    search_collection = cast(dict[str, Any], cast(dict[str, Any], readiness["search"])["collection"])
+    assert search_collection["state"] == "timed_out"
+
+    archive_storage_collection = cast(dict[str, Any], cast(dict[str, Any], readiness["archive_storage"])["collection"])
+    assert archive_storage_collection["state"] == "fresh"
