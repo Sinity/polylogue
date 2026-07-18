@@ -195,7 +195,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/cli/test_check.py",
             "tests/unit/cli/test_source_selection_helpers.py",
             "tests/unit/cli/test_deterministic_output.py",
-            "tests/unit/mcp/test_tool_contracts.py",
             "tests/integration/test_health.py",
         ),
         tags=("contract", "maintenance"),
@@ -211,7 +210,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "0",
             "tests/unit/cli/test_insights.py",
             "tests/unit/core/test_facade_api.py",
-            "tests/unit/mcp/test_tool_contracts.py",
             "tests/unit/cli/test_query_verbs_runtime.py",
             "tests/unit/cli/test_check.py",
             "tests/unit/cli/test_click_app.py",
@@ -231,7 +229,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/core/test_repo_identity.py",
             "tests/unit/cli/test_insights.py",
             "tests/unit/core/test_facade_api.py",
-            "tests/unit/mcp/test_tool_contracts.py",
             "tests/unit/cli/test_check.py",
             "tests/unit/core/test_schema_registry.py",
             "tests/unit/core/test_schema_generation.py",
@@ -248,7 +245,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
     ),
     "retrieval-checks": LaneEntry(
         name="retrieval-checks",
-        description="Action-aware query truth, grouped retrieval stats, archive readiness, and MCP retrieval payload coverage",
+        description="Action-aware query truth, grouped retrieval stats, and archive readiness",
         timeout_s=480,
         category="contract",
         execution=pytest_execution(
@@ -260,7 +257,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/storage/test_store_ops.py",
             "tests/unit/core/test_filters_props.py",
             "tests/unit/core/test_health_core.py",
-            "tests/unit/mcp/test_tool_contracts.py",
             "tests/unit/cli/test_source_selection_helpers.py",
         ),
         path_targets=("session-query-loop", "message-fts-readiness-loop"),
@@ -281,7 +277,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/storage/test_embedding_stats.py",
             "tests/unit/core/test_health_core.py",
             "tests/unit/cli/test_source_selection_helpers.py",
-            "tests/unit/mcp/test_tool_contracts.py",
         ),
         path_targets=("embedding-materialization-loop", "embedding-status-query-loop", "retrieval-band-readiness-loop"),
         artifact_targets=(
@@ -325,13 +320,12 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "0",
             "tests/unit/cli/test_insights.py",
             "tests/unit/core/test_facade_api.py",
-            "tests/unit/mcp/test_tool_contracts.py",
             "tests/unit/pipeline/test_prepare_semantic.py",
         ),
     ),
     "mixed-consumer-contracts": LaneEntry(
         name="mixed-consumer-contracts",
-        description="CLI, facade, MCP, and readiness surfaces consuming the same evidence/inference insight model",
+        description="CLI, facade, and readiness surfaces consuming the same evidence/inference insight model",
         timeout_s=480,
         category="contract",
         execution=pytest_execution(
@@ -340,7 +334,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "0",
             "tests/unit/cli/test_insights.py",
             "tests/unit/core/test_facade_api.py",
-            "tests/unit/mcp/test_tool_contracts.py",
             "tests/unit/cli/test_check.py",
             "tests/integration/test_health.py",
         ),
@@ -358,7 +351,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/storage/test_embedding_stats.py",
             "tests/unit/core/test_health_core.py",
             "tests/unit/cli/test_check.py",
-            "tests/unit/mcp/test_tool_contracts.py",
         ),
         path_targets=("embedding-status-query-loop", "retrieval-band-readiness-loop", "message-fts-readiness-loop"),
         artifact_targets=(
@@ -390,7 +382,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
     ),
     "probabilistic-enrichment-contracts": LaneEntry(
         name="probabilistic-enrichment-contracts",
-        description="Session-enrichment contracts across CLI, facade, MCP, storage, and retrieval-band status",
+        description="Session-enrichment contracts across CLI, facade, storage, and retrieval-band status",
         timeout_s=720,
         category="contract",
         execution=pytest_execution(
@@ -399,7 +391,6 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "0",
             "tests/unit/cli/test_insights.py",
             "tests/unit/core/test_facade_api.py",
-            "tests/unit/mcp/test_tool_contracts.py",
             "tests/unit/storage/test_embedding_stats.py",
             "tests/unit/storage/test_store_ops.py",
             "tests/unit/core/test_health_core.py",

@@ -269,7 +269,8 @@ rows:
     target_files:
       - polylogue/mcp/
     representative_tests:
-      - tests/unit/mcp/test_tool_contracts.py
+      - tests/unit/mcp/test_tool_discovery.py
+      - tests/unit/mcp/test_envelope_contracts.py
       - tests/unit/mcp/test_server_surfaces.py
       - tests/unit/mcp/test_mcp_edge_cases.py
       - tests/integration/test_mcp.py

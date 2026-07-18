@@ -21,83 +21,19 @@ from tests.infra.mcp import MCPServerUnderTest, invoke_surface
 
 #: Synthetic session id for tools that require one — we accept not_found.
 _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
+_SYNTHETIC_REF = f"session:{_SYNTHETIC_CONV_ID}"
 
-#: Minimal known-good kwargs per tool name. Tools not listed here are called
-#: with no kwargs and must return a valid JSON envelope (empty results, stats
-#: for an empty archive, etc.).
+#: Minimal known-good kwargs per tool name for the six-tool cutover surface.
+#: Every read-role tool must have an entry (see
+#: ``test_read_tools_have_known_minimal_kwargs``) since all six declare at
+#: least one required argument.
 _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
-    "search": {"query": "hello", "limit": 1},
-    "query_units": {"expression": "messages where text:hello", "limit": 1},
-    "resolve_ref": {"ref": f"session:{_SYNTHETIC_CONV_ID}"},
-    "compile_context": {"seed_ref": f"session:{_SYNTHETIC_CONV_ID}", "read_views": "messages"},
-    "get_context_delivery": {
-        "snapshot_ref": "context-snapshot:test:conv-discovery-nonexistent:explicit-recall",
-        "recipient_ref": "agent:discovery",
-    },
-    "blackboard_list": {},
-    "get_session_summary": {"id": _SYNTHETIC_CONV_ID},
-    "get_messages": {"session_id": _SYNTHETIC_CONV_ID, "limit": 1},
-    "get_session_tree": {"session_id": _SYNTHETIC_CONV_ID},
-    "get_session_topology": {"session_id": _SYNTHETIC_CONV_ID},
-    "get_logical_session": {"session_id": _SYNTHETIC_CONV_ID},
-    "session_profile": {"session_id": _SYNTHETIC_CONV_ID},
-    "session_latency_profile": {"session_id": _SYNTHETIC_CONV_ID},
-    "get_resume_brief": {"session_id": _SYNTHETIC_CONV_ID},
-    "raw_artifacts": {"session_id": _SYNTHETIC_CONV_ID},
-    "session_costs": {"session_id": _SYNTHETIC_CONV_ID},
-    "cost_outlook": {"plan": "claude-pro"},
-    "find_resume_candidates": {"repo_path": "/tmp/nonexistent"},
-    "aggregate_sessions": {},
-    "compose_context_preamble": {},
-    "compare_sessions": {"session_ids": "test:a,test:b"},
-    "find_similar_sessions": {"session_id": _SYNTHETIC_CONV_ID},
-    "correlate_session": {"session_id": _SYNTHETIC_CONV_ID},
-    "correlate_sessions": {"metric_x": "message_count", "metric_y": "word_count"},
-    "session_tool_timing": {"session_id": _SYNTHETIC_CONV_ID},
-    "facets": {"limit": 1},
-    "neighbor_candidates": {"query": "test"},
-    "insight_rigor_audit": {},
-    "list_sessions": {"limit": 1},
-    "archive_get_session": {"session_id": _SYNTHETIC_CONV_ID},
-    "session_profiles": {"limit": 1},
-    "session_work_events": {"limit": 1},
-    "session_phases": {"limit": 1},
-    "session_tag_rollups": {"limit": 1},
-    "threads": {"limit": 1},
-    "archive_coverage": {"limit": 1},
-    "archive_debt": {"limit": 1},
-    "explain_import": {"raw_ref": "raw:discovery-nonexistent", "limit": 1},
-    "cost_rollups": {"limit": 1},
-    "tool_usage": {"limit": 1},
-    "tool_call_latency_distribution": {"limit": 1},
-    "workflow_shape_distribution": {},
-    "find_stuck_sessions": {"limit": 1},
-    "find_abandoned_sessions": {"limit": 1},
-    "get_stats_by": {"group_by": "origin"},
-    "list_read_view_profiles": {},
-    "list_assertion_claims": {"target_ref": f"session:{_SYNTHETIC_CONV_ID}", "limit": 1},
-    "list_assertion_candidates": {"limit": 1},
-    "list_assertion_candidate_reviews": {"limit": 1},
-    "join_typed_annotations": {
-        "schema_id": "discovery",
-        "schema_version": 1,
-        "statuses": ["candidate"],
-        "limit": 1,
-    },
-    "named_source_freshness": {"source_path": "/tmp/polylogue-discovery-nonexistent"},
-    "explain_query_expression": {"expression": "repo:polylogue"},
-    "query_completions": {"kind": "field", "incomplete": "d"},
-    "action_affordances": {},
-    "agent_coordination": {},
-    "usage_timeline": {"limit": 1},
-    "embedding_status": {},
-    "embedding_preflight": {},
-    "build_context_image": {"project_repo": "test"},
-    "readiness_check": {},
-    "stats": {},
-    "get_postmortem_bundle": {},
-    "get_pathologies": {"limit": 1},
-    "provider_usage": {"limit": 1},
+    "query": {"expression": "messages where text:hello", "limit": 1},
+    "read": {"ref": _SYNTHETIC_REF},
+    "get": {"ref": _SYNTHETIC_REF},
+    "explain": {"subject": "capability"},
+    "context": {"intent": "resume"},
+    "status": {"scope": "archive"},
 }
 
 
@@ -156,17 +92,8 @@ def test_tool_returns_valid_response_envelope(tool_name: str, kwargs: dict[str, 
 
 
 def test_all_read_tools_discovered() -> None:
-    """Sanity: we discovered at least the known headline read tools."""
-    for expected in [
-        "search",
-        "list_sessions",
-        "stats",
-        "facets",
-        "readiness_check",
-        "get_session_summary",
-        "build_context_image",
-    ]:
-        assert expected in _READ_TOOL_NAMES, f"missing expected read tool: {expected}"
+    """Sanity: the read-role server exposes exactly the six cutover tools."""
+    assert {"query", "read", "get", "explain", "context", "status"} == _READ_TOOL_NAMES
 
 
 def test_no_mutation_tools_in_read_role() -> None:

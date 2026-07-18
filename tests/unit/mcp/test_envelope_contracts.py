@@ -46,126 +46,20 @@ EnvelopeSpec = tuple[str, frozenset[str]]
 ToolKind = EnvelopeSpec | str
 
 TOOL_CONTRACT: dict[str, ToolKind] = {
-    # ------- search and list (envelope) -------
-    "search": ("envelope", frozenset({"hits", "total"})),
-    "query_units": ("envelope", frozenset({"items", "total", "unit", "limit", "offset"})),
-    "list_sessions": ("envelope", frozenset({"items", "total"})),
-    "neighbor_candidates": ("envelope", frozenset({"items", "total", "limit"})),
-    "get_session_tree": ("envelope", frozenset({"items", "total"})),
-    "get_session_topology": (
-        "envelope",
-        frozenset({"target_id", "root_id", "nodes", "edges", "ancestors", "descendants", "siblings", "thread"}),
-    ),
-    "get_logical_session": (
-        "envelope",
-        frozenset({"session_id", "root_id", "thread", "siblings", "descendants", "cycle_detected"}),
-    ),
-    "get_messages": ("envelope", frozenset({"messages", "total"})),
-    "list_read_view_profiles": ("envelope", frozenset({"read_views", "total"})),
-    "list_assertion_claims": ("envelope", frozenset({"items", "total", "limit"})),
-    "list_assertion_candidates": ("envelope", frozenset({"items", "total", "limit"})),
-    "list_assertion_candidate_reviews": ("envelope", frozenset({"items", "total", "limit"})),
-    "join_typed_annotations": (
-        "envelope",
-        frozenset({"rows", "groups", "selected_annotation_count", "joined_count"}),
-    ),
-    "named_source_freshness": "single_object",
-    "explain_query_expression": "single_object",
-    "query_completions": "single_object",
-    "action_affordances": "single_object",
-    "agent_coordination": "single_object",
-    "resolve_ref": "single_object",
-    "explain_import": "typed_envelope",
-    "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
-    "find_abandoned_sessions": ("envelope", frozenset({"items", "total"})),
-    "find_stuck_sessions": ("envelope", frozenset({"items", "total"})),
-    "find_resume_candidates": ("envelope", frozenset({"candidates", "total"})),
-    # ------- blackboard (#1697) -------
-    "blackboard_list": ("envelope", frozenset({"items", "total"})),
-    "blackboard_post": "operation_result",
-    "capture_assertion_candidate": "single_object",
-    # ------- mutation list -------
-    "list_tags": "stats_map",  # RootModel[dict[tag, count]]; small, by design
-    "list_marks": ("envelope", frozenset({"items", "total"})),
-    "list_annotations": ("envelope", frozenset({"items", "total"})),
-    "list_saved_views": ("envelope", frozenset({"items", "total"})),
-    "list_recall_packs": ("envelope", frozenset({"items", "total"})),
-    "list_workspaces": ("envelope", frozenset({"items", "total"})),
-    # ------- single record -------
-    "get_session_summary": "single_object",
-    "get_context_delivery": "single_object",
-    "compile_context": "single_object",
-    "archive_get_session": "single_object",
-    "get_metadata": "single_object",
-    "session_profile": "single_object",
-    "session_latency_profile": "single_object",
-    "get_resume_brief": "single_object",
-    "cost_outlook": "single_object",
-    "stats": "single_object",
-    "embedding_status": "single_object",
-    "embedding_preflight": "single_object",
-    "facets": "single_object",
-    "build_context_image": "single_object",
-    "readiness_check": "single_object",
-    "insight_rigor_audit": "single_object",
-    "aggregate_sessions": "single_object",
-    "compare_sessions": "single_object",
-    "find_similar_sessions": "single_object",
-    "correlate_sessions": "single_object",
-    "correlate_session": "single_object",
-    "session_tool_timing": "single_object",
-    "compose_context_preamble": "single_object",
-    "provider_usage": "single_object",
-    # ------- stats / map -------
-    "get_stats_by": "stats_map",
-    "tool_call_latency_distribution": "single_object",
-    "workflow_shape_distribution": "single_object",
-    # ------- mutation tools -------
-    "import_annotation_batch": "single_object",
-    "add_tag": "operation_result",
-    "add_mark": "operation_result",
-    "remove_tag": "operation_result",
-    "remove_mark": "operation_result",
-    "save_annotation": "operation_result",
-    "delete_annotation": "operation_result",
-    "bulk_tag_sessions": "operation_result",
-    "save_saved_view": "operation_result",
-    "delete_saved_view": "operation_result",
-    "save_recall_pack": "operation_result",
-    "delete_recall_pack": "operation_result",
-    "save_workspace": "operation_result",
-    "delete_workspace": "operation_result",
-    "set_metadata": "operation_result",
-    "delete_metadata": "operation_result",
-    "delete_session": "operation_result",
-    "judge_assertion_candidate": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
-    "judge_assertion_candidates": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
-    # ------- learning corrections (#1131) -------
-    "record_correction": "operation_result",
-    "list_corrections": ("envelope", frozenset({"corrections", "total"})),
-    "clear_corrections": "operation_result",
-    # ------- maintenance tools -------
-    "rebuild_index": "operation_result",
-    "rebuild_session_insights": "operation_result",
-    "update_index": "operation_result",
-    "get_postmortem_bundle": "single_object",
-    "get_pathologies": "single_object",
-    "maintenance_preview": "operation_result",
-    "maintenance_execute": "operation_result",
-    "maintenance_status": "operation_result",
-    "maintenance_list": ("envelope", frozenset({"items", "total"})),
-    # ------- insight registry tools -------
-    "session_profiles": ("envelope", frozenset({"items", "total"})),
-    "session_phases": ("envelope", frozenset({"items", "total"})),
-    "session_tag_rollups": ("envelope", frozenset({"items", "total"})),
-    "session_work_events": ("envelope", frozenset({"items", "total"})),
-    "session_costs": ("envelope", frozenset({"items", "total"})),
-    "cost_rollups": ("envelope", frozenset({"items", "total"})),
-    "usage_timeline": ("envelope", frozenset({"items", "total"})),
-    "archive_coverage": ("envelope", frozenset({"items", "total"})),
-    "threads": ("envelope", frozenset({"items", "total"})),
-    "tool_usage": ("envelope", frozenset({"items", "total"})),
-    "archive_debt": "typed_envelope",
+    # ------- six-tool cutover surface (t46.8.2) -------
+    # ``query`` always returns the terminal QueryUnitEnvelope shape.
+    "query": ("envelope", frozenset({"items", "total", "unit", "limit", "offset"})),
+    # ``read``/``get``/``explain``/``context``/``status`` are each declared
+    # MCPResultSemantics.SINGLE_OBJECT (or BOUNDED_CONTEXT/AGGREGATE, which
+    # this matrix has historically folded into "single_object" — see
+    # compile_context/stats/provider_usage prior to the cutover). Some views
+    # (e.g. ``read(view="topology")``) return a richer nested shape, but the
+    # tool's primary/declared contract is one object, not a list envelope.
+    "read": "single_object",
+    "get": "single_object",
+    "explain": "single_object",
+    "context": "single_object",
+    "status": "single_object",
 }
 
 
@@ -219,36 +113,10 @@ class TestRegistryWideClassification:
 
 
 def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
-    from polylogue.mcp.payloads import (
-        MCPAssertionClaimListPayload,
-        MCPMessagesListPayload,
-        MCPNeighborCandidatesPayload,
-        MCPPaginatedQueryResultPayload,
-        MCPRawArtifactsListPayload,
-        MCPSessionTopologyPayload,
-        MCPSessionTreePayload,
-    )
-    from polylogue.surfaces.payloads import (
-        ArchiveDebtListPayload,
-        ImportExplainPayload,
-        PublicRefResolutionPayload,
-        QueryUnitEnvelope,
-        SearchEnvelope,
-    )
+    from polylogue.surfaces.payloads import QueryUnitEnvelope
 
     return {
-        "search": SearchEnvelope,
-        "query_units": QueryUnitEnvelope,
-        "archive_debt": ArchiveDebtListPayload,
-        "explain_import": ImportExplainPayload,
-        "resolve_ref": PublicRefResolutionPayload,
-        "list_sessions": MCPPaginatedQueryResultPayload,
-        "neighbor_candidates": MCPNeighborCandidatesPayload,
-        "get_session_tree": MCPSessionTreePayload,
-        "get_session_topology": MCPSessionTopologyPayload,
-        "get_messages": MCPMessagesListPayload,
-        "list_assertion_claims": MCPAssertionClaimListPayload,
-        "raw_artifacts": MCPRawArtifactsListPayload,
+        "query": QueryUnitEnvelope,
     }
 
 
@@ -647,12 +515,12 @@ class TestNativeReadSurfaceHonorsContract:
     @pytest.mark.parametrize(
         ("tool_name", "kwargs"),
         [
-            ("search", {"query": "needle", "limit": 10}),
-            ("query_units", {"expression": "messages where text:needle", "limit": 10}),
-            ("list_sessions", {"limit": 10}),
-            ("get_session_summary", {}),
-            ("get_messages", {}),  # session_id filled from seeded session
-            ("stats", {}),
+            ("query", {"expression": "messages where text:needle", "limit": 10}),
+            ("read", {}),  # ref filled from seeded session
+            ("get", {}),  # ref filled from seeded session
+            ("explain", {"subject": "capability"}),
+            ("context", {"intent": "resume"}),
+            ("status", {"scope": "archive"}),
         ],
     )
     def test_archive_read_tool_matches_classification(
@@ -662,25 +530,30 @@ class TestNativeReadSurfaceHonorsContract:
         admin_server: MCPServerUnderTest,
         tmp_path: Path,
     ) -> None:
-        from types import SimpleNamespace
-        from unittest.mock import patch as _patch
-
+        from polylogue.config import Config
+        from polylogue.mcp import server_support
+        from polylogue.services import RuntimeServices
         from tests.infra.mcp import invoke_surface
 
         archive_root = tmp_path / "archive"
         session_id = self._seed(archive_root)
         call_kwargs = dict(kwargs)
-        if tool_name == "get_session_summary":
-            call_kwargs["id"] = session_id
-        if tool_name == "get_messages":
-            call_kwargs["session_id"] = session_id
+        if tool_name in ("read", "get"):
+            call_kwargs["ref"] = f"session:{session_id}"
 
-        with _patch("polylogue.mcp.server._get_config") as mock_get_config:
-            mock_get_config.return_value = SimpleNamespace(
-                archive_root=archive_root,
-                db_path=archive_root / "index.db",
-            )
+        # ``query``/``context``/``explain`` route through the cached
+        # ``_get_polylogue()`` facade rather than ``_get_config()`` alone, so
+        # the seeded archive must be installed as the actual runtime service
+        # scope (patching ``_get_config`` in isolation does not reach it).
+        services = RuntimeServices(
+            config=Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[]),
+        )
+        original_services = server_support._get_runtime_services()
+        server_support._set_runtime_services(services)
+        try:
             raw = invoke_surface(admin_server._tool_manager._tools[tool_name].fn, **call_kwargs)
+        finally:
+            server_support._set_runtime_services(original_services)
 
         body = json.loads(raw)
         assert isinstance(body, dict), f"{tool_name}: archive output is not a JSON object: {raw!r}"
@@ -691,8 +564,4 @@ class TestNativeReadSurfaceHonorsContract:
             for field in classification[1]:
                 assert field in body, f"{tool_name}: archive envelope missing classified field {field!r}: {body}"
         elif classification == "single_object":
-            # Single-object tools return the record's own fields; ``id`` is the
-            # stable identity anchor for the seeded session/session tools.
-            assert "id" in body or "total_sessions" in body, (
-                f"{tool_name}: archive single-object payload has no identity field: {body}"
-            )
+            assert body, f"{tool_name}: archive single-object payload is empty: {body}"
