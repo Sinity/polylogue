@@ -686,10 +686,13 @@ def _drain_raw_materialization_once(
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
     metrics = dict(getattr(result, "metrics", {}))
     remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
+    if remaining == 0:
+        remaining = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0))
     return raw_authority.RawMaterializationCounts(
         repaired_sessions=result.repaired_count,
         executed_plans=frontier_repaired,
         remaining_candidates=remaining,
+        censused_components=int(metrics.get("raw_materialization_census_components_attempted", 0)),
     )
 
 
