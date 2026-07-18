@@ -1,0 +1,89 @@
+{
+  "manifest_version": 3,
+  "name": "Polylogue Browser Capture",
+  "version": "0.9.0",
+  "description": "Capture supported web LLM sessions into the local Polylogue inbox.",
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://grok.com/*",
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Polylogue Capture",
+    "default_popup": "src/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "src/content/chatgpt_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/chatgpt.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/content/claude_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/claude.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://grok.com/*",
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "src/common.js",
+        "src/content/grok.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
