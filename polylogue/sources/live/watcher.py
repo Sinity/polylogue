@@ -1098,7 +1098,7 @@ def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[Candida
     return ordered
 
 
-def default_sources() -> tuple[WatchSource, ...]:
+def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
 
     Includes the archive inbox so that ``polylogue ingest PATH``
@@ -1119,7 +1119,17 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="claude-code", root=claude_code_path()),
         WatchSource(name="codex", root=codex_path()),
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
-        WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json", ".db", ".sqlite", ".sqlite3")),
+        # Hermes emits four independently durable source classes under its
+        # runtime root: state.db, optional session snapshots, NeMo Relay ATIF
+        # documents, and append-only ATOF JSONL.  The ledger database is
+        # admitted as a live SQLite source too; parsing it remains a separate
+        # fidelity/normalization contract rather than an implicit filename
+        # fallback.
+        WatchSource(
+            name="hermes",
+            root=hermes_root if hermes_root is not None else hermes_sessions_path(),
+            suffixes=(".json", ".jsonl", ".db", ".sqlite", ".sqlite3"),
+        ),
         WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
         WatchSource(name="browser-capture", root=browser_capture_spool_root(), suffixes=(".json",)),
         # #1683: inbox accepts archive, zip, and json-line formats so that
