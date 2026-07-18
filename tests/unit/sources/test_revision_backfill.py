@@ -70,6 +70,73 @@ def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> 
     assert sessions[0].working_directories == [str(source_path.parent.parent.resolve())]
 
 
+def _single_session_state_db_bytes(tmp_path: Path) -> bytes:
+    db_path = tmp_path / "state-source.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (19);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, source TEXT, model_config TEXT, parent_session_id TEXT,
+                started_at REAL, ended_at REAL, end_reason TEXT, title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+                timestamp REAL NOT NULL, tool_calls TEXT, observed INTEGER DEFAULT 0,
+                active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, model_config, started_at, ended_at, end_reason, title) "
+            "VALUES ('root', 'cli', '{}', 1.0, 8.0, 'completed', 'root')"
+        )
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'root', 'user', 'hi', 2.0)"
+        )
+    return db_path.read_bytes()
+
+
+def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path: Path) -> None:
+    """Regression for polylogue-1zex: _parse_one previously had no SQLite
+    awareness and crashed with UnicodeDecodeError trying to json-parse raw
+    SQLite bytes for a single-session state.db. Calling _parse_one directly
+    with no payload_path exercises the bounded temp-file spill fallback (the
+    real on-disk blob path is proven separately by the live-watcher and
+    historical-backfill end-to-end tests, which always have one)."""
+
+    payload = _single_session_state_db_bytes(tmp_path)
+
+    sessions = _parse_one(Provider.HERMES, payload, str(tmp_path / "hermes-home" / "state.db"))
+
+    assert len(sessions) == 1
+    assert sessions[0].messages
+    assert sessions[0].messages[0].text == "hi"
+
+
+def test_historical_backfill_replays_single_session_state_db(tmp_path: Path) -> None:
+    """End-to-end proof that the historical-repair entry point (which always
+    has a real on-disk blob path, unlike the direct-bytes test above) also
+    replays a single-session state.db raw revision correctly."""
+
+    initialize_active_archive_root(tmp_path)
+    payload = _single_session_state_db_bytes(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.HERMES,
+            payload=payload,
+            source_path=str(tmp_path / "hermes-home" / "state.db"),
+            acquired_at_ms=1,
+        )
+
+    result = backfill_historical_revision_evidence(tmp_path)
+
+    assert result.scanned == 1
+    assert result.replayed_logical_sources == 1
+    assert result.quarantined == 0
+
+
 def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

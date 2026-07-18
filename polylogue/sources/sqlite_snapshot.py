@@ -18,6 +18,7 @@ _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
 _STAGING_METADATA_SUFFIX = ".polylogue-import"
 _STAGING_METADATA_VERSION = 1
 _HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v1\0"
+_SQLITE_MAGIC_HEADER = b"SQLite format 3\x00"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +51,18 @@ def hermes_profile_raw_id(source_path: Path | str, source_index: int, blob_hash:
 
 def is_sqlite_path(path: Path) -> bool:
     return path.suffix.lower() in _SQLITE_SUFFIXES
+
+
+def looks_like_sqlite_bytes(payload: bytes) -> bool:
+    """Return whether *payload* starts with the SQLite file-format magic header.
+
+    Path-suffix detection (``is_sqlite_path``) is useless once bytes have
+    already been read into memory as a raw revision (e.g. replay/backfill
+    call sites, which only have ``payload: bytes`` -- see
+    ``revision_backfill.py``). This is the single shared byte-level sniffer
+    for that case; do not duplicate it.
+    """
+    return payload.startswith(_SQLITE_MAGIC_HEADER)
 
 
 def sqlite_database_for_sidecar(path: Path) -> Path | None:

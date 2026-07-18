@@ -2258,6 +2258,19 @@ class ArchiveStore:
         assert self._blob_publisher is not None
         return provider, self._blob_publisher.read_all(blob_hash), source_path, kind
 
+    def blob_path_for_hash(self, blob_hash: str) -> Path | None:
+        """Return the real on-disk path for a content-addressed blob, if materialized.
+
+        Some payload shapes (Hermes state.db/verification_evidence.db) need a
+        real filesystem path -- ``sqlite3.connect`` cannot open in-memory
+        bytes. Returns ``None`` when the blob is not (yet) materialized on
+        disk so callers fall back to a bounded temp-file spill instead of
+        trusting an unverified path.
+        """
+        assert self._blob_publisher is not None
+        path = self._blob_publisher.blob_path(blob_hash)
+        return path if path.exists() else None
+
     def _raw_revision_payload_digest_and_size(self, raw_id: str) -> tuple[str, int]:
         digest = hashlib.sha256()
         size = 0
