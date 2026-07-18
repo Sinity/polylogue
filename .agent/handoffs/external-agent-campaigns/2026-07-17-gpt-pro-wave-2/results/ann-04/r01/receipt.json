@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-17",
+  "workload_id": "warroom-wave2",
+  "job_id": "ann-04",
+  "package_revision": "r01",
+  "state": "needs_rebase_review",
+  "artifact": {
+    "filename": "PATCH.diff",
+    "sha256": "a72c7e066521721cec2de5784d3e8071f2604496c5bb27ea2bb90b7699e7ec76",
+    "size_bytes": 189695
+  },
+  "verification": "Loose-file delivery (no ZIP); clipboard FINAL-SUMMARY captured and matches HANDOFF.md. PATCH.diff built against 536a53e; git apply --check fails on current master (docs/cli-reference.md, archive_tiers/archive.py, archive_tiers/user_write.py, help snapshots). 41ow writer-slot fix (BEGIN IMMEDIATE/SAVEPOINT) with two-connection race regression is the load-bearing content; adjudicate via rebase-review before Lane G's 41ow item."
+}

@@ -1,42 +1,188 @@
 {
-  "schema_version": 1,
-  "campaign_id": "gpt-pro-wave-2026-07-17",
-  "workload_id": "warroom-wave2",
-  "received_at": "2026-07-18",
-  "entries": [
-    {"job":"webui-01","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"webui-02","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"webui-03","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"webui-03","revision":"r02","state":"snapshot_mismatch"},
-    {"job":"webui-04","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"webui-05","revision":"r01","state":"incomplete_delivery"},
-    {"job":"webui-07","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"webui-08","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"mcp-01","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"mcp-02","revision":"r01","state":"analysis_only"},
-    {"job":"mcp-03","revision":"r01","state":"analysis_only"},
-    {"job":"mcp-04","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"ann-01","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"ann-02","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"ann-03","revision":"r01","state":"analysis_only"},
-    {"job":"ann-05","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"perf-01","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"perf-02","revision":"r01","state":"needs_rebase_review"},
-    {"job":"perf-03","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"perf-04","revision":"r01","state":"needs_rebase_review"},
-    {"job":"lin-01","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"lin-02","revision":"r02","state":"snapshot_mismatch"},
-    {"job":"lin-03","revision":"r01","state":"needs_rebase_review"},
-    {"job":"lin-04","revision":"r01","state":"needs_rebase_review"},
-    {"job":"res-04","revision":"r01","state":"analysis_only"},
-    {"job":"misc-01","revision":"r01","state":"superseded"},
-    {"job":"misc-02","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"misc-03","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"mandate-02","revision":"r01","state":"needs_rebase_review"},
-    {"job":"support-b","revision":"r01","state":"needs_rebase_review"},
-    {"job":"support-d","revision":"r01","state":"superseded"},
-    {"job":"support-a","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"mandate-03","revision":"r01","state":"snapshot_mismatch"},
-    {"job":"support-c","revision":"r01","state":"needs_rebase_review"}
-  ]
+ "schema_version": 1,
+ "campaign_id": "gpt-pro-wave-2026-07-17",
+ "workload_id": "warroom-wave2",
+ "received_at": "2026-07-18",
+ "entries": [
+  {
+   "job": "ann-01",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "ann-02",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "ann-03",
+   "revision": "r01",
+   "state": "analysis_only"
+  },
+  {
+   "job": "ann-04",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "ann-05",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "lin-01",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "lin-02",
+   "revision": "r02",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "lin-03",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "lin-04",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "mandate-01",
+   "revision": "r01",
+   "state": "integrated"
+  },
+  {
+   "job": "mandate-02",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "mandate-03",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "mcp-01",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "mcp-02",
+   "revision": "r01",
+   "state": "analysis_only"
+  },
+  {
+   "job": "mcp-03",
+   "revision": "r01",
+   "state": "analysis_only"
+  },
+  {
+   "job": "mcp-04",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "misc-01",
+   "revision": "r01",
+   "state": "superseded"
+  },
+  {
+   "job": "misc-02",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "misc-03",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "perf-01",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "perf-02",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "perf-03",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "perf-04",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "res-04",
+   "revision": "r01",
+   "state": "analysis_only"
+  },
+  {
+   "job": "support-a",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "support-b",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "support-c",
+   "revision": "r01",
+   "state": "needs_rebase_review"
+  },
+  {
+   "job": "support-d",
+   "revision": "r01",
+   "state": "superseded"
+  },
+  {
+   "job": "webui-01",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "webui-02",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "webui-03",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "webui-03",
+   "revision": "r02",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "webui-04",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "webui-05",
+   "revision": "r01",
+   "state": "incomplete_delivery"
+  },
+  {
+   "job": "webui-07",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  },
+  {
+   "job": "webui-08",
+   "revision": "r01",
+   "state": "snapshot_mismatch"
+  }
+ ]
 }

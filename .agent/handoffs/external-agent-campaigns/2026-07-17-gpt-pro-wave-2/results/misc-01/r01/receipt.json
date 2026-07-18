@@ -1,1 +1,14 @@
-{"schema_version":1,"campaign_id":"gpt-pro-wave-2026-07-17","workload_id":"warroom-wave2","job_id":"misc-01","package_revision":"r01","state":"superseded","artifact":{"filename":"config-closure-current (3).diff","sha256":"9010ddf7efafedf982cbe2f51e3435d117e9f5585b78c93c797c76ed5ade7256","size_bytes":68593},"verification":"Diff custody passed; it does not apply to current master because the config-closure slice landed in #3079."}
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-17",
+  "workload_id": "warroom-wave2",
+  "job_id": "misc-01",
+  "package_revision": "r01",
+  "state": "superseded",
+  "artifact": {
+    "filename": "PATCH.diff",
+    "sha256": "9223e943cc1db08f58c1b0b47bd7bc510da95727f81c340e9f7e1643e32e0d81",
+    "size_bytes": 227848
+  },
+  "verification": "Second delivery copy of the config-resolution-closure mission as loose files; mission already superseded by merged PR #3079 (ResolvedRuntimeConfig) per prior r01 adjudication. Retained for provenance only."
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-17",
+  "workload_id": "warroom-wave2",
+  "job_id": "mandate-01",
+  "package_revision": "r01",
+  "state": "integrated",
+  "artifact": {
+    "filename": "mandate-01-claude-workflow-admission-r01.zip",
+    "sha256": "d4cd9507ecbeaec5992a0ce69e7f2aeae3e4a7736ae4609c93950d2c3111a878",
+    "size_bytes": 47024
+  },
+  "verification": "ZIP integrity passed; applied verbatim at declared snapshot bf8191b3f, rebase-integrated onto master (typed-payload fixes), 91 focused tests passed in real devshell, devtools verify --quick green; delivered as PR #3088."
+}
