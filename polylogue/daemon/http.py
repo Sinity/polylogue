@@ -403,6 +403,11 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
         _StaticPostRoute("/api/maintenance/run", ("api", "maintenance", "run"), "_handle_maintenance_run"),
+        _StaticPostRoute(
+            "/api/maintenance/rebuild-index",
+            ("api", "maintenance", "rebuild-index"),
+            "_handle_rebuild_index",
+        ),
     )
 
 
@@ -4786,6 +4791,94 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         result = execute_backfill(config, targets=targets, dry_run=dry_run, scope_filter=scope_filter)
         envelope = envelope_from_operation(result, origin="daemon", mode="execute")
         self._send_json(HTTPStatus.OK, envelope.to_dict())
+
+    @daemon_safe_handler
+    def _handle_rebuild_index(self) -> None:
+        """POST /api/maintenance/rebuild-index — one coordinator-owned replay pass."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if not isinstance(body, dict):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        raw_ids_value = body.get("raw_ids", [])
+        if not isinstance(raw_ids_value, list) or not all(
+            isinstance(raw_id, str) and raw_id for raw_id in raw_ids_value
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        only_missing = body.get("only_missing", False)
+        promote = body.get("promote", True)
+        max_blob_mb = body.get("max_blob_mb")
+        operation_id = body.get("operation_id")
+        raw_batch_size = body.get("raw_batch_size", 500)
+        pass_byte_budget_mb = body.get("pass_byte_budget_mb")
+        pass_deadline_seconds = body.get("pass_deadline_seconds")
+        if not isinstance(only_missing, bool) or not isinstance(promote, bool):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if max_blob_mb is not None and (
+            isinstance(max_blob_mb, bool) or not isinstance(max_blob_mb, int | float) or max_blob_mb <= 0
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if operation_id is not None and (not isinstance(operation_id, str) or not operation_id):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if isinstance(raw_batch_size, bool) or not isinstance(raw_batch_size, int):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if pass_byte_budget_mb is not None and (
+            isinstance(pass_byte_budget_mb, bool) or not isinstance(pass_byte_budget_mb, int | float)
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if pass_deadline_seconds is not None and (
+            isinstance(pass_deadline_seconds, bool) or not isinstance(pass_deadline_seconds, int | float)
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        from polylogue.maintenance.rebuild_index import (
+            RebuildIndexRequest,
+            rebuild_index_from_source_sync,
+            validate_rebuild_index_request,
+        )
+        from polylogue.paths import archive_root
+
+        request = RebuildIndexRequest(
+            archive_root=archive_root(),
+            only_missing=only_missing,
+            raw_ids=tuple(raw_ids_value),
+            max_blob_mb=float(max_blob_mb) if max_blob_mb is not None else None,
+            promote=promote,
+            operation_id=operation_id,
+            raw_batch_size=raw_batch_size,
+            pass_byte_budget_mb=float(pass_byte_budget_mb) if pass_byte_budget_mb is not None else None,
+            pass_deadline_seconds=(float(pass_deadline_seconds) if pass_deadline_seconds is not None else None),
+        )
+        try:
+            validate_rebuild_index_request(request)
+        except ValueError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        bridge = getattr(self.server, "write_bridge", None)
+        if bridge is None:
+            # Direct handler unit tests predate the server-owned bridge; real
+            # daemon servers always install it and therefore use run_sync.
+            receipt = rebuild_index_from_source_sync(request)
+        else:
+            receipt = cast(DaemonWriteThreadBridge, bridge).run_sync(
+                "http.maintenance.rebuild-index",
+                rebuild_index_from_source_sync,
+                request,
+            )
+        self._send_json(HTTPStatus.OK, receipt.to_dict())
 
     @daemon_safe_handler
     def _handle_maintenance_status(self, operation_id: str) -> None:

@@ -25,6 +25,10 @@ class _RecordingBridge:
         finally:
             self.timeline.append(f"exit:{actor}")
 
+    def run_sync(self, actor: str, function: Callable[..., object], *args: object) -> object:
+        self.timeline.append(f"run_sync:{actor}")
+        return function(*args)
+
 
 def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
     def allow_auth(required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
@@ -90,6 +94,20 @@ def test_user_post_and_delete_hold_named_gates_around_dispatch() -> None:
         "body",
         "exit:http.user.annotations.delete",
     ]
+
+
+def test_rebuild_index_route_uses_the_bridge_run_sync_writer_path() -> None:
+    timeline: list[str] = []
+    handler = _handler(["api", "maintenance", "rebuild-index"], timeline)
+
+    def body() -> None:
+        bridge = handler.server.write_bridge
+        bridge.run_sync("http.maintenance.rebuild-index", lambda: timeline.append("body"))
+
+    handler._handle_rebuild_index = body  # type: ignore[method-assign]
+    handler._do_post_impl()
+
+    assert timeline == ["run_sync:http.maintenance.rebuild-index", "body"]
 
 
 @pytest.mark.parametrize("signal", ["traces", "metrics", "logs"])
