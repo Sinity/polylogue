@@ -100,6 +100,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools render agent-manual` | Render the declaration-generated six-tool agent manual and packaged integration assets. |
 | `devtools render all` | Refresh or verify generated docs and agent files. |
 | `devtools render cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
 | `devtools render cli-reference` | Render docs/cli-reference.md from live CLI help. |
@@ -166,6 +167,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
+| `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
 | `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |

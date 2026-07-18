@@ -1,0 +1,320 @@
+{
+  "content_version": "2026-07-17.6tool-r01",
+  "recipes": [
+    {
+      "family": "continuity",
+      "id": "resume-session",
+      "intent": "Recover current work, failed effects, open loops, and a bounded next-step context without trusting a stale summary.",
+      "prompts": [
+        "resume_context"
+      ],
+      "queries": [
+        {
+          "expression": "sessions where repo:polylogue AND NOT tag:complete",
+          "purpose": "Likely unfinished work for session resumption.",
+          "source_test": "tests/unit/cli/test_query_expression.py Boolean predicate coverage",
+          "surface": "session"
+        },
+        {
+          "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+          "purpose": "Recent failed effects for resumption or forensics.",
+          "source_test": "tests/unit/cli/test_query_expression.py terminal session-field scoping coverage",
+          "surface": "terminal"
+        }
+      ],
+      "resources": [
+        "polylogue://session/{id}",
+        "polylogue://result-set/{id}"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "include": [
+              "identity",
+              "coverage",
+              "freshness",
+              "readiness"
+            ],
+            "scope": "archive"
+          },
+          "capture": null,
+          "purpose": "Establish which archive and source generations can support the answer.",
+          "tool": "status"
+        },
+        {
+          "arguments": {
+            "expression": "sessions where repo:polylogue AND NOT tag:complete",
+            "limit": 20,
+            "projection": "session-summary"
+          },
+          "capture": "candidate_result_ref",
+          "purpose": "Find likely unfinished sessions.",
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+            "limit": 20,
+            "projection": "action-evidence"
+          },
+          "capture": "failure_result_ref",
+          "purpose": "Find recent failed effects that may invalidate an optimistic handoff.",
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "limit": 20,
+            "ref": "polylogue://session/codex-session:demo-lineage-fork",
+            "view": "chronicle"
+          },
+          "capture": null,
+          "purpose": "Read the strongest candidate with evidence refs; continue until the needed boundary is reached.",
+          "tool": "read"
+        },
+        {
+          "arguments": {
+            "budget_tokens": 4000,
+            "intent": "resume",
+            "result_ref": "result:0123456789abcdef01234567"
+          },
+          "capture": null,
+          "purpose": "Compile a bounded resume packet from the selected result set and retain its receipt.",
+          "tool": "context"
+        }
+      ],
+      "title": "Resume a session from evidence"
+    },
+    {
+      "family": "evidence",
+      "id": "forensic-lookup",
+      "intent": "Reconstruct a failure from parser-valid row evidence, exact objects, surrounding transcript, and authority status.",
+      "prompts": [
+        "postmortem_last",
+        "unacknowledged_failures"
+      ],
+      "queries": [
+        {
+          "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+          "purpose": "Terminal aggregate with declared group field.",
+          "source_test": "tests/unit/cli/test_query_expression.py::test_terminal_observed_event_tool_finished_aggregate_reads_blocks_without_materialization",
+          "surface": "terminal"
+        },
+        {
+          "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+          "purpose": "Recent failed effects for resumption or forensics.",
+          "source_test": "tests/unit/cli/test_query_expression.py terminal session-field scoping coverage",
+          "surface": "terminal"
+        }
+      ],
+      "resources": [
+        "polylogue://block/{id}",
+        "polylogue://session/{id}"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+            "subject": "query"
+          },
+          "capture": null,
+          "purpose": "Confirm grammar, group field, selected unit, and aggregate semantics before execution.",
+          "tool": "explain"
+        },
+        {
+          "arguments": {
+            "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+            "limit": 20,
+            "projection": "aggregate-with-evidence"
+          },
+          "capture": "aggregate_result_ref",
+          "purpose": "Measure failed versus successful shell events.",
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+            "limit": 20,
+            "projection": "action-evidence"
+          },
+          "capture": "failure_result_ref",
+          "purpose": "Locate exact failed action refs.",
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "projection": "evidence",
+            "ref": "block:codex-session:demo-receipts:call-receipts-test-fail:0"
+          },
+          "capture": null,
+          "purpose": "Resolve the exact cited failure block rather than quoting a search snippet.",
+          "tool": "get"
+        },
+        {
+          "arguments": {
+            "limit": 20,
+            "ref": "polylogue://session/codex-session:demo-receipts",
+            "view": "chronicle"
+          },
+          "capture": null,
+          "purpose": "Read the surrounding chronology and any recovery verification.",
+          "tool": "read"
+        }
+      ],
+      "title": "Perform a forensic lookup"
+    },
+    {
+      "family": "discovery",
+      "id": "prior-art-search",
+      "intent": "Combine semantic retrieval with file-touch history, then inspect exact prior rationale and outcomes.",
+      "prompts": [
+        "decisions_about",
+        "sessions_touching_file"
+      ],
+      "queries": [
+        {
+          "expression": "sessions where semantic:\"preview-bound confirmation\"",
+          "purpose": "Semantic prior-art retrieval.",
+          "source_test": "tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers",
+          "surface": "session"
+        },
+        {
+          "expression": "files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
+          "purpose": "File-touch history with deterministic ordering and limit.",
+          "source_test": "tests/unit/cli/test_query_expression.py file-source coverage",
+          "surface": "terminal"
+        }
+      ],
+      "resources": [
+        "polylogue://query/{id}",
+        "polylogue://result-set/{id}",
+        "polylogue://message/{id}"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "sessions where semantic:\"preview-bound confirmation\"",
+            "subject": "query"
+          },
+          "capture": null,
+          "purpose": "Verify semantic lowering and any readiness dependency.",
+          "tool": "explain"
+        },
+        {
+          "arguments": {
+            "expression": "sessions where semantic:\"preview-bound confirmation\"",
+            "limit": 20,
+            "projection": "session-summary"
+          },
+          "capture": "semantic_result_ref",
+          "purpose": "Find conceptually related sessions even when vocabulary differs.",
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
+            "limit": 20,
+            "projection": "file-evidence"
+          },
+          "capture": "file_result_ref",
+          "purpose": "Find concrete edits under the relevant subsystem.",
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "limit": 20,
+            "ref": "result:0123456789abcdef01234567",
+            "view": "ranked-evidence"
+          },
+          "capture": null,
+          "purpose": "Read the retained result set rather than rerunning a changed query.",
+          "tool": "read"
+        },
+        {
+          "arguments": {
+            "projection": "evidence",
+            "ref": "message:codex-session:demo-lineage-fork:fork-a3"
+          },
+          "capture": null,
+          "purpose": "Resolve the exact message containing the rationale selected from the result set.",
+          "tool": "get"
+        }
+      ],
+      "title": "Search prior art before changing a subsystem"
+    },
+    {
+      "family": "authority",
+      "id": "cost-audit",
+      "intent": "Measure the declared cohort without mixing exact counters, estimates, missing coverage, or logical and physical grains.",
+      "prompts": [
+        "cost_of"
+      ],
+      "queries": [
+        {
+          "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
+          "purpose": "Provider cohort for a cost audit.",
+          "source_test": "tests/unit/cli/test_query_expression.py origin alternatives and readable date comparison coverage",
+          "surface": "session"
+        }
+      ],
+      "resources": [
+        "polylogue://result-set/{id}",
+        "polylogue://session/{id}"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "include": [
+              "coverage",
+              "freshness",
+              "usage-counter-support"
+            ],
+            "scope": "sources"
+          },
+          "capture": null,
+          "purpose": "Establish which origins have exact, partial, estimated, or absent usage evidence.",
+          "tool": "status"
+        },
+        {
+          "arguments": {
+            "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
+            "limit": 50,
+            "projection": "cost-rollup"
+          },
+          "capture": "cost_result_ref",
+          "purpose": "Compute the requested cohort using declared cost semantics.",
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "ref": "result:0123456789abcdef01234567",
+            "subject": "result"
+          },
+          "capture": null,
+          "purpose": "Inspect denominator, physical/logical grain, missing counts, estimate policy, and continuation state.",
+          "tool": "explain"
+        },
+        {
+          "arguments": {
+            "limit": 50,
+            "ref": "result:0123456789abcdef01234567",
+            "view": "cost-evidence"
+          },
+          "capture": null,
+          "purpose": "Read per-session evidence and continue through every exhaustive page required by the claim.",
+          "tool": "read"
+        },
+        {
+          "arguments": {
+            "projection": "usage-provenance",
+            "ref": "session:codex-session:demo-receipts"
+          },
+          "capture": null,
+          "purpose": "Resolve a representative source record when a counter or estimate is disputed.",
+          "tool": "get"
+        }
+      ],
+      "title": "Audit model/provider cost"
+    }
+  ],
+  "schema_version": 1
+}

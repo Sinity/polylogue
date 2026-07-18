@@ -126,6 +126,8 @@ MCP_TOOL_NAME_BASELINE = frozenset(
 EXPECTED_TOOL_NAMES = set(declared_tool_names("admin"))
 
 EXPECTED_RESOURCE_URIS = {
+    "polylogue://agent/manual",
+    "polylogue://agent/reference",
     "polylogue://stats",
     "polylogue://sessions",
     "polylogue://tags",
@@ -133,6 +135,7 @@ EXPECTED_RESOURCE_URIS = {
 }
 
 EXPECTED_RESOURCE_TEMPLATE_URIS = {
+    "polylogue://agent/manifest/{role}",
     "polylogue://session/{conv_id}",
     "polylogue://raw-authority-census/{census_id}/{offset}",
     "polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}",

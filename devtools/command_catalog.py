@@ -114,6 +114,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "render agent-manual",
+        "generated surfaces",
+        "Render the declaration-generated six-tool agent manual and packaged integration assets.",
+        "devtools.render_agent_manual",
+        use_when="Refresh or check cold-start guidance after MCP, query, origin, recipe, or delivery changes.",
+        examples=("devtools render agent-manual", "devtools render agent-manual --check"),
+    ),
+    CommandSpec(
         "render cli-reference",
         "generated surfaces",
         "Render docs/cli-reference.md from live CLI help.",
@@ -812,6 +820,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools lab projections",
             "devtools lab projections --source-kind validation-lane --artifact-target session_insight_rows",
             "devtools lab projections --json",
+        ),
+    ),
+    CommandSpec(
+        "verify agent-integration",
+        "verification",
+        "Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures.",
+        "devtools.verify_agent_integration",
+        use_when="Validate the six-tool manual or native integration; add --require-live after the MCP cutover lands.",
+        examples=(
+            "devtools verify agent-integration",
+            "devtools verify agent-integration --json",
+            "devtools verify agent-integration --require-live",
         ),
     ),
     CommandSpec(

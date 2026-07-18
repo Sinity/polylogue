@@ -16,6 +16,30 @@ files:
     target: polylogue/_sqlite_compat.py
     owner: kernel
     reason: kernel root rule
+  - path: polylogue/agent_integration/__init__.py
+    loc: 10
+    target: polylogue/agent_integration/__init__.py
+    owner: stable
+  - path: polylogue/agent_integration/assets.py
+    loc: 77
+    target: polylogue/agent_integration/assets.py
+    owner: stable
+  - path: polylogue/agent_integration/data/__init__.py
+    loc: 1
+    target: polylogue/agent_integration/data/__init__.py
+    owner: stable
+  - path: polylogue/agent_integration/installer.py
+    loc: 1348
+    target: polylogue/agent_integration/installer.py
+    owner: stable
+  - path: polylogue/agent_integration/manifest.py
+    loc: 132
+    target: polylogue/agent_integration/manifest.py
+    owner: stable
+  - path: polylogue/agent_integration/spec.py
+    loc: 951
+    target: polylogue/agent_integration/spec.py
+    owner: stable
   - path: polylogue/annotations/__init__.py
     loc: 67
     target: polylogue/annotations/__init__.py
@@ -312,12 +336,12 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/completions.py
-    loc: 695
+    loc: 701
     target: polylogue/archive/query/completions.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/discovery.py
-    loc: 1569
+    loc: 1567
     target: polylogue/archive/query/discovery.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -780,7 +804,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 202
+    loc: 205
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -794,6 +818,10 @@ files:
   - path: polylogue/cli/commands/__init__.py
     loc: 1
     target: polylogue/cli/commands/__init__.py
+    owner: stable
+  - path: polylogue/cli/commands/agent.py
+    loc: 195
+    target: polylogue/cli/commands/agent.py
     owner: stable
   - path: polylogue/cli/commands/agents.py
     loc: 139
@@ -2139,7 +2167,7 @@ files:
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
-    loc: 96
+    loc: 110
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_context_tools.py
@@ -2167,7 +2195,7 @@ files:
     target: polylogue/mcp/server_prompts.py
     owner: stable
   - path: polylogue/mcp/server_resources.py
-    loc: 395
+    loc: 423
     target: polylogue/mcp/server_resources.py
     owner: stable
   - path: polylogue/mcp/server_support.py
@@ -2377,7 +2405,7 @@ files:
     target: polylogue/product/__init__.py
     owner: stable
   - path: polylogue/product/continuity_scenarios.py
-    loc: 257
+    loc: 945
     target: polylogue/product/continuity_scenarios.py
     owner: stable
   - path: polylogue/product/raw_authority.py

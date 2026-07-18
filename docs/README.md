@@ -17,6 +17,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
 | [Hooks](hooks.md) | Hook-event capture, configuration, and event catalog. |
 | [Cloud Agents](cloud-agents.md) | Privacy and setup boundaries for cloud-agent work. |
+| [Standing Agent Manual](agent-manual.md) | Generated six-tool invocation, continuity, query-language, and role guidance for MCP agents. |
 | [Generate](generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
 | [Maintenance](maintenance.md) | Operator guide for preview, plan, run, resume, and incident recovery. |
 | [Providers](providers/README.md) | Provider-specific parsing and export-format notes. |
@@ -35,6 +36,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [MCP Reference](mcp-reference.md) | Generated MCP tool and contract reference. |
 | [Library API](library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
+| [Agent Integration Reference](agent-integration-reference.md) | Generated typed contract, recipes, client delivery, and cutover reconciliation reference. |
 | [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Glossary](glossary.md) | Plain-language translation of the internal taxonomy. |
 | [Provider, Origin, and Source Identity](provider-origin-identity.md) | Vocabulary map for provider-wire family, public origin, material source, and parser binding. |
