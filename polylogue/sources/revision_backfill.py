@@ -228,92 +228,130 @@ def _census_historical_revision_evidence(
     selected_raw_ids: list[str] | None,
     max_payload_bytes: int | None,
     ingest_workers: int = 1,
+    commit_batch_size: int | None = None,
 ) -> _RevisionCensusState:
-    """Persist a complete bounded parser census without mutating index.db."""
+    """Persist a complete bounded parser census without mutating index.db.
+
+    ``commit_batch_size`` (polylogue-amg1): when set to a positive integer,
+    ``replace_raw_membership_census``/``bind_raw_revision`` writes for up to
+    that many raws share one source.db commit instead of one commit per raw
+    (``sqlite3.Connection.__exit__`` -- fsync -- measured at 42.6% of wall
+    time on an independent-raw corpus). This only defers WHEN bytes already
+    proven durable by ``write_raw_payload`` become visible as census rows; a
+    crash mid-batch loses at most one batch's progress, which the caller
+    re-derives identically on retry (census is idempotent and re-run from
+    durable raw bytes) -- it never leaves a raw half-written or duplicates
+    an outcome. Every batch is committed (or the whole batch is discarded on
+    an exception, via the caller's ``rollback()``) before this function
+    returns or propagates; a crash further downstream (replay phase) cannot
+    observe a partially-committed census. Default ``None`` preserves the
+    original per-raw-commit behavior for every existing caller.
+    """
     state = _RevisionCensusState(0, 0, 0, set(), {}, {})
+    batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
+    batched = batch_size is not None
+    pending_commits = 0
     census_selections: tuple[tuple[str, ...] | None, ...]
     if selected_raw_ids is None:
         census_selections = (None,)
     else:
         census_selections = archive.raw_membership_selection_components(selected_raw_ids)
-    for initial_selection in census_selections:
-        census_selection = initial_selection
-        while True:
-            rows = archive.raw_membership_census_rows(census_selection)
-            pending_rows = [(raw_id, source_index) for raw_id, source_index in rows if raw_id not in state.censused]
-            if max_payload_bytes is not None:
-                payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
-                total_payload_bytes = sum(payload_sizes.values())
-                oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-                if oversized or total_payload_bytes > max_payload_bytes:
-                    blocked_ids = oversized or list(payload_sizes)
-                    raise RawRevisionReplayResourceBlockedError(
-                        sorted(blocked_ids), max_payload_bytes, total_payload_bytes
-                    )
-            # Parse is read-only blob->ParsedSession decode and authority-neutral;
-            # spread it across a process pool when there is more than one raw to
-            # parse. Archive writes below stay in fixed `pending_rows` order
-            # regardless of worker completion order, so parallel and sequential
-            # runs remain byte-identical.
-            parseable_raw_ids = [raw_id for raw_id, source_index in pending_rows if source_index >= 0]
-            parsed_outcomes = _parse_retained_raws(archive, parseable_raw_ids, ingest_workers=ingest_workers)
-            for raw_id, source_index in pending_rows:
-                state.scanned += 1
-                state.censused.add(raw_id)
-                if source_index < 0:
-                    archive.replace_raw_membership_census(
-                        raw_id,
-                        None,
-                        parser_fingerprint="revision-membership-v1",
-                        censused_at_ms=0,
-                        detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-                    )
-                    state.quarantined += 1
-                    continue
-                outcome = parsed_outcomes[raw_id]
-                if isinstance(outcome, Exception):
-                    archive.replace_raw_membership_census(
-                        raw_id,
-                        None,
-                        parser_fingerprint="revision-membership-v1",
-                        censused_at_ms=0,
-                        detail=str(outcome),
-                    )
-                    state.quarantined += 1
-                    continue
-                sessions, payload_bytes, revision_kind = outcome
-                state.classified += int(len(sessions) == 1)
-                spill.add(raw_id, sessions, payload_bytes=payload_bytes)
-                if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
-                    session = sessions[0]
-                    logical_key = f"{session.source_name.value}:{session.provider_session_id}"
-                    archive.bind_raw_revision(
-                        raw_id,
-                        RawRevisionEnvelope(
-                            logical_source_key=logical_key,
-                            kind=RawRevisionKind.FULL,
-                            source_revision=raw_id,
-                            acquisition_generation=0,
-                            authority=RawRevisionAuthority.QUARANTINED,
-                        ),
-                    )
-                    state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
-                elif revision_kind is RawRevisionKind.UNKNOWN:
-                    archive.replace_raw_membership_census(
-                        raw_id,
-                        sessions,
-                        parser_fingerprint="revision-membership-v1",
-                        censused_at_ms=0,
-                    )
-                    for session in sessions:
-                        logical_key = f"{session.source_name.value}:{session.provider_session_id}"
-                        state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
-            if census_selection is None:
-                break
-            expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
-            if set(expanded) == set(census_selection):
-                break
-            census_selection = expanded
+    try:
+        for initial_selection in census_selections:
+            census_selection = initial_selection
+            while True:
+                rows = archive.raw_membership_census_rows(census_selection)
+                pending_rows = [(raw_id, source_index) for raw_id, source_index in rows if raw_id not in state.censused]
+                if max_payload_bytes is not None:
+                    payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
+                    total_payload_bytes = sum(payload_sizes.values())
+                    oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
+                    if oversized or total_payload_bytes > max_payload_bytes:
+                        blocked_ids = oversized or list(payload_sizes)
+                        raise RawRevisionReplayResourceBlockedError(
+                            sorted(blocked_ids), max_payload_bytes, total_payload_bytes
+                        )
+                # Parse is read-only blob->ParsedSession decode and authority-neutral;
+                # spread it across a process pool when there is more than one raw to
+                # parse. Archive writes below stay in fixed `pending_rows` order
+                # regardless of worker completion order, so parallel and sequential
+                # runs remain byte-identical.
+                parseable_raw_ids = [raw_id for raw_id, source_index in pending_rows if source_index >= 0]
+                parsed_outcomes = _parse_retained_raws(archive, parseable_raw_ids, ingest_workers=ingest_workers)
+                for raw_id, source_index in pending_rows:
+                    state.scanned += 1
+                    state.censused.add(raw_id)
+                    if source_index < 0:
+                        archive.replace_raw_membership_census(
+                            raw_id,
+                            None,
+                            parser_fingerprint="revision-membership-v1",
+                            censused_at_ms=0,
+                            detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                            manage_transaction=not batched,
+                        )
+                        state.quarantined += 1
+                        pending_commits += 1
+                    else:
+                        outcome = parsed_outcomes[raw_id]
+                        if isinstance(outcome, Exception):
+                            archive.replace_raw_membership_census(
+                                raw_id,
+                                None,
+                                parser_fingerprint="revision-membership-v1",
+                                censused_at_ms=0,
+                                detail=str(outcome),
+                                manage_transaction=not batched,
+                            )
+                            state.quarantined += 1
+                            pending_commits += 1
+                        else:
+                            sessions, payload_bytes, revision_kind = outcome
+                            state.classified += int(len(sessions) == 1)
+                            spill.add(raw_id, sessions, payload_bytes=payload_bytes)
+                            if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
+                                session = sessions[0]
+                                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                                archive.bind_raw_revision(
+                                    raw_id,
+                                    RawRevisionEnvelope(
+                                        logical_source_key=logical_key,
+                                        kind=RawRevisionKind.FULL,
+                                        source_revision=raw_id,
+                                        acquisition_generation=0,
+                                        authority=RawRevisionAuthority.QUARANTINED,
+                                    ),
+                                    manage_transaction=not batched,
+                                )
+                                state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+                                pending_commits += 1
+                            elif revision_kind is RawRevisionKind.UNKNOWN:
+                                archive.replace_raw_membership_census(
+                                    raw_id,
+                                    sessions,
+                                    parser_fingerprint="revision-membership-v1",
+                                    censused_at_ms=0,
+                                    manage_transaction=not batched,
+                                )
+                                for session in sessions:
+                                    logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                                    state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+                                pending_commits += 1
+                    if batch_size is not None and pending_commits >= batch_size:
+                        archive.commit()
+                        pending_commits = 0
+                if census_selection is None:
+                    break
+                expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
+                if set(expanded) == set(census_selection):
+                    break
+                census_selection = expanded
+    except BaseException:
+        if batched and pending_commits > 0:
+            archive.rollback()
+        raise
+    if batched and pending_commits > 0:
+        archive.commit()
     return state
 
 
@@ -323,6 +361,7 @@ def census_historical_revision_evidence(
     selected_raw_ids: list[str] | None = None,
     max_payload_bytes: int | None = None,
     ingest_workers: int = 1,
+    commit_batch_size: int | None = None,
 ) -> RevisionCensusResult:
     """Complete the source-tier census stage without applying index changes."""
     with (
@@ -335,6 +374,7 @@ def census_historical_revision_evidence(
             selected_raw_ids=selected_raw_ids,
             max_payload_bytes=max_payload_bytes,
             ingest_workers=ingest_workers,
+            commit_batch_size=commit_batch_size,
         )
         expanded, logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
     _record_raw_authority_parser_census(archive_root, tuple(expanded))
@@ -356,6 +396,7 @@ def backfill_historical_revision_evidence(
     max_payload_bytes: int | None = None,
     max_cached_payload_bytes: int | None = None,
     ingest_workers: int = 1,
+    commit_batch_size: int | None = None,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -371,6 +412,15 @@ def backfill_historical_revision_evidence(
     caller keeps its current exactly-sized cache; pass it explicitly to cache
     parse output for an unbounded (``max_payload_bytes=None``) census without
     also activating envelope blocking.
+
+    ``commit_batch_size`` (polylogue-amg1) batches the CENSUS phase's
+    per-raw source.db commits only; the replay phase's cohort-apply and
+    terminal-raw finalize commit granularity is unchanged (see
+    ``_census_historical_revision_evidence`` for why: the replay phase's
+    "index commits, then source terminal marker commits" ordering is a
+    crash-recovery invariant pinned by
+    ``test_backfill_resumes_after_index_receipt_commits_before_source_terminal``
+    et al. and batching it needs its own reviewed change).
     """
     adoption_deferred = 0
     quarantined = 0
@@ -395,6 +445,7 @@ def backfill_historical_revision_evidence(
             selected_raw_ids=selected_raw_ids,
             max_payload_bytes=max_payload_bytes,
             ingest_workers=ingest_workers,
+            commit_batch_size=commit_batch_size,
         )
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         # The direct backfill entry point must publish the same current-parser
@@ -557,6 +608,48 @@ def _census_parse_worker(
         return raw_id, None, str(exc)
 
 
+_DEFAULT_PARSE_DISPATCH_MAX_BYTES = 262_144  # 256 KiB
+
+
+def _parse_dispatch_max_bytes() -> int:
+    """Payload-size ceiling for pool dispatch to still be a net win (polylogue-amg1).
+
+    polylogue-amg1's own measurement: 200 raws at ~50KB average with 8
+    workers measured 1.22x (net win); 80 raws at ~1.7MB average measured
+    0.63x (net LOSS, slower than sequential) on the same machine. The
+    process-pool round trip pickles the returned ``ParsedSession`` list back
+    across the process boundary -- for large payloads that pickle cost
+    exceeds the parse time saved by running concurrently. Raws at or above
+    this size parse sequentially in-process (no IPC); raws below it dispatch
+    to the pool, where aggregate parse time genuinely dominates transfer
+    cost. Override with POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES.
+    """
+    raw = os.environ.get("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES")
+    if raw is None:
+        return _DEFAULT_PARSE_DISPATCH_MAX_BYTES
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_PARSE_DISPATCH_MAX_BYTES
+
+
+def _partition_raws_by_dispatch_size(
+    raw_ids: list[str],
+    payload_sizes: dict[str, int],
+    *,
+    dispatch_max_bytes: int,
+) -> tuple[list[str], list[str]]:
+    """Split raw ids into (pool-eligible, sequential) by payload size.
+
+    Preserves ``raw_ids`` input order within each bucket so callers stay
+    deterministic. See ``_parse_dispatch_max_bytes`` for why size, not count,
+    decides pool eligibility (polylogue-amg1).
+    """
+    pool_raw_ids = [raw_id for raw_id in raw_ids if payload_sizes[raw_id] < dispatch_max_bytes]
+    sequential_raw_ids = [raw_id for raw_id in raw_ids if payload_sizes[raw_id] >= dispatch_max_bytes]
+    return pool_raw_ids, sequential_raw_ids
+
+
 def _parse_retained_raws(
     archive: ArchiveStore,
     raw_ids: list[str],
@@ -570,11 +663,32 @@ def _parse_retained_raws(
     exception. Read-only blob->ParsedSession decode is authority-neutral and
     embarrassingly parallel; callers apply archive writes afterwards in a
     fixed deterministic order independent of completion order here, so
-    parallel and sequential execution produce byte-identical archive state.
+    parallel and sequential execution produce byte-identical archive state
+    regardless of which raws take the pool path versus the sequential path.
     """
+    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
     if ingest_workers <= 1 or len(raw_ids) <= 1:
-        results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
         for raw_id in raw_ids:
+            try:
+                results[raw_id] = _parse_retained_raw(archive, raw_id)
+            except Exception as exc:
+                results[raw_id] = exc
+        return results
+
+    descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+    payload_sizes = {raw_id: descriptor[4] for raw_id, descriptor in descriptors.items()}
+    pool_raw_ids, sequential_raw_ids = _partition_raws_by_dispatch_size(
+        raw_ids, payload_sizes, dispatch_max_bytes=_parse_dispatch_max_bytes()
+    )
+
+    for raw_id in sequential_raw_ids:
+        try:
+            results[raw_id] = _parse_retained_raw(archive, raw_id)
+        except Exception as exc:
+            results[raw_id] = exc
+
+    if len(pool_raw_ids) <= 1:
+        for raw_id in pool_raw_ids:
             try:
                 results[raw_id] = _parse_retained_raw(archive, raw_id)
             except Exception as exc:
@@ -585,13 +699,11 @@ def _parse_retained_raws(
 
     from polylogue.pipeline.services.process_pool import process_pool_executor
 
-    descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
     blob_root_str = str(archive.archive_root / "blob")
     source_db_path_str = str(archive.source_db_path)
-    results = {}
-    with process_pool_executor(max_workers=min(ingest_workers, len(raw_ids))) as pool:
+    with process_pool_executor(max_workers=min(ingest_workers, len(pool_raw_ids))) as pool:
         future_to_raw_id = {}
-        for raw_id in raw_ids:
+        for raw_id in pool_raw_ids:
             provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
             future = pool.submit(
                 _census_parse_worker,

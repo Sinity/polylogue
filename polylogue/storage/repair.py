@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import time
@@ -80,6 +81,14 @@ _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
 RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT = 25
+# polylogue-amg1: census-phase commit batching. Measured on independent-raw
+# corpora (200 raws/~50KB avg, 80 raws/~1.7MB avg): batch sizes 20/50/100
+# performed similarly (~1.1x-1.34x median wall-clock vs per-raw commit);
+# 20 was chosen as the default -- no measured benefit from larger batches,
+# and a smaller batch bounds how much census progress one crash can lose.
+# Override with POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE; <= 0 restores
+# per-raw commit (escape hatch, matches COMMIT_BATCH_MESSAGE_THRESHOLD).
+RAW_MATERIALIZATION_COMMIT_BATCH_SIZE = 20
 RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT = 8
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
@@ -5560,6 +5569,20 @@ def preview_session_insights(*, count: int) -> RepairResult:
     )
 
 
+def _resolve_raw_authority_commit_batch_size(commit_batch_size: int | None) -> int | None:
+    """Resolve the census-phase commit batch size (polylogue-amg1)."""
+    if commit_batch_size is not None:
+        return commit_batch_size
+    raw = os.environ.get("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE")
+    if raw is None:
+        return RAW_MATERIALIZATION_COMMIT_BATCH_SIZE
+    try:
+        resolved = int(raw)
+    except ValueError:
+        return RAW_MATERIALIZATION_COMMIT_BATCH_SIZE
+    return resolved if resolved > 0 else None
+
+
 def repair_raw_materialization(
     config: Config,
     dry_run: bool = False,
@@ -5571,6 +5594,7 @@ def repair_raw_materialization(
     raw_artifact_limit: int | None = None,
     max_payload_bytes: int = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
     ingest_workers: int | None = None,
+    commit_batch_size: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
     """Converge retained raws through typed per-session revision authority.
@@ -5581,6 +5605,13 @@ def repair_raw_materialization(
     read-only and authority-neutral; component classification and apply
     order remain strictly sequential in this single writer regardless of
     worker count.
+
+    ``commit_batch_size`` (polylogue-amg1) batches the CENSUS phase's
+    per-raw source.db commits; ``None`` resolves
+    ``POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE`` /
+    ``RAW_MATERIALIZATION_COMMIT_BATCH_SIZE``. Only the census phase batches
+    -- see ``_census_historical_revision_evidence`` for why the replay
+    phase's commit granularity is unchanged.
     """
     if max_payload_bytes < 1:
         raise ValueError("max_payload_bytes must be positive")
@@ -5588,6 +5619,7 @@ def repair_raw_materialization(
         from polylogue.pipeline.services.process_pool import resolve_parse_worker_count
 
         ingest_workers = resolve_parse_worker_count()
+    commit_batch_size = _resolve_raw_authority_commit_batch_size(commit_batch_size)
     archive_root = _raw_materialization_archive_root(config)
     recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
     for recovered_census_id, recovered_scope in recovered_censuses:
@@ -5662,6 +5694,7 @@ def repair_raw_materialization(
                     selected_raw_ids=[seed],
                     max_payload_bytes=max_payload_bytes,
                     ingest_workers=ingest_workers,
+                    commit_batch_size=commit_batch_size,
                 )
             except RawRevisionReplayResourceBlockedError as exc:
                 logger.warning(
@@ -6073,6 +6106,7 @@ def repair_raw_materialization(
                 selected_raw_ids=[raw_id],
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
+                commit_batch_size=commit_batch_size,
             )
         except RawRevisionReplayResourceBlockedError as exc:
             metrics["raw_materialization_resource_blocked_count"] = max(
