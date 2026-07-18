@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionMessageRow } from '../contracts/session-read';
+import type { SemanticEntry } from '../contracts/semantic-cards';
 import { SessionReadIsland } from './session-read';
 
 const toolMessage: SessionMessageRow = {
@@ -12,6 +13,8 @@ const toolMessage: SessionMessageRow = {
   has_tool_use: true,
   has_thinking: false,
   has_paste_evidence: false,
+  semantic_entries: [],
+  semantic_card_suppressed: false,
 };
 
 describe('SessionReadIsland', () => {
@@ -73,5 +76,65 @@ describe('SessionReadIsland', () => {
 
     await screen.findByText('The linked message could not be located within the paged transcript.');
     expect(loadPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a semantic card family for a message carrying materialized entries', async () => {
+    const shellCard: SemanticEntry = {
+      entry_type: 'card',
+      card: {
+        kind: 'shell',
+        title: 'Shell command',
+        summary: null,
+        source: { session_id: 's1', provider_family: 'codex' },
+        outcome: { state: 'failed', is_error: true, exit_code: 1 },
+        fields: [{ label: 'command', value: 'pytest -k flaky' }],
+        previews: [],
+        caveats: [],
+      },
+    };
+    const cardMessage: SessionMessageRow = { ...toolMessage, id: 'message:3', semantic_entries: [shellCard] };
+    const loadPage = vi.fn(async () => ({ messages: [cardMessage], total: 1 }));
+    render(<SessionReadIsland sessionId="s1" initialNextOffset={30} loadPage={loadPage} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more messages' }));
+
+    expect(await screen.findByText('pytest -k flaky')).toBeInTheDocument();
+    expect(screen.getByText('FAILED')).toBeInTheDocument();
+    expect(screen.queryByText('Ran the build and inspected the failing tool result.')).not.toBeInTheDocument();
+  });
+
+  it('hyperlinks a card field value using the registry session: ref convention', async () => {
+    const lineageCard: SemanticEntry = {
+      entry_type: 'card',
+      card: {
+        kind: 'lineage',
+        title: 'Lineage boundary · fork',
+        summary: null,
+        source: { session_id: 'child-1', provider_family: 'codex' },
+        outcome: null,
+        fields: [{ label: 'parent', value: 'session:codex-session:parent-1' }],
+        previews: [],
+        caveats: [],
+      },
+    };
+    const cardMessage: SessionMessageRow = { ...toolMessage, id: 'message:5', semantic_entries: [lineageCard] };
+    const loadPage = vi.fn(async () => ({ messages: [cardMessage], total: 1 }));
+    render(<SessionReadIsland sessionId="s1" initialNextOffset={30} loadPage={loadPage} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more messages' }));
+
+    const link = await screen.findByRole('link', { name: 'session:codex-session:parent-1' });
+    expect(link).toHaveAttribute('href', '/app/sessions/codex-session%3Aparent-1');
+  });
+
+  it('renders nothing for a message whose evidence was absorbed into a paired card', async () => {
+    const suppressedMessage: SessionMessageRow = { ...toolMessage, id: 'message:4', semantic_card_suppressed: true };
+    const loadPage = vi.fn(async () => ({ messages: [suppressedMessage], total: 1 }));
+    render(<SessionReadIsland sessionId="s1" initialNextOffset={30} loadPage={loadPage} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more messages' }));
+
+    await vi.waitFor(() => expect(loadPage).toHaveBeenCalled());
+    expect(document.getElementById('msg-message:4')).not.toBeInTheDocument();
   });
 });

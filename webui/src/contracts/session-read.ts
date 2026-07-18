@@ -1,4 +1,5 @@
 import { isRecord, nullableString, optionalBoolean, requiredNumber, requiredString } from './runtime';
+import { parseSemanticEntries, type SemanticEntry } from './semantic-cards';
 
 export const SESSION_READ_MESSAGE_LIMIT = 30;
 
@@ -11,6 +12,8 @@ export interface SessionMessageRow {
   readonly has_tool_use: boolean;
   readonly has_thinking: boolean;
   readonly has_paste_evidence: boolean;
+  readonly semantic_entries: readonly SemanticEntry[];
+  readonly semantic_card_suppressed: boolean;
 }
 
 export interface SessionMessagePage {
@@ -33,6 +36,8 @@ function parseSessionMessageRow(value: unknown, index: number): SessionMessageRo
     has_tool_use: optionalBoolean(value, 'has_tool_use'),
     has_thinking: optionalBoolean(value, 'has_thinking'),
     has_paste_evidence: optionalBoolean(value, 'has_paste_evidence'),
+    semantic_entries: parseSemanticEntries(value.semantic_entries),
+    semantic_card_suppressed: optionalBoolean(value, 'semantic_card_suppressed'),
   };
 }
 

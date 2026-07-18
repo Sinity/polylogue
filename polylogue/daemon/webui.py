@@ -524,6 +524,21 @@ def render_session_read_page(
 
 
 def _render_lineage_banner(session: Mapping[str, object]) -> str:
+    """Prefer the registry's evidence-bearing lineage card; fall back to the plain banner.
+
+    A ``kind: "lineage"`` card (from the session-level ``semantic_entries``)
+    carries relation/resolution/cycle-detection evidence a bare
+    ``parent_id``/``branch_type`` pair does not; render it when materialized.
+    """
+
+    session_entries_raw = session.get("semantic_entries")
+    session_entries = session_entries_raw if isinstance(session_entries_raw, list) else []
+    for entry in session_entries:
+        if not isinstance(entry, Mapping) or entry.get("entry_type") != "card":
+            continue
+        card = entry.get("card")
+        if isinstance(card, Mapping) and card.get("kind") == "lineage":
+            return f'      <div class="lineage-banner">{_render_semantic_card(card)}</div>'
     parent_id = session.get("parent_id")
     if not parent_id:
         return ""
@@ -542,11 +557,59 @@ def _render_lineage_banner(session: Mapping[str, object]) -> str:
     )
 
 
+#: Display label per SemanticCardKind, matching the legacy web shell's SEM_CARD_LABEL
+#: (polylogue/daemon/web_shell_semantic_cards.py) so both surfaces read the same vocabulary.
+SEMANTIC_CARD_LABELS: Mapping[str, str] = {
+    "shell": "shell",
+    "file_read": "read",
+    "file_edit": "edit",
+    "search": "search",
+    "web": "web",
+    "task": "task",
+    "mcp": "mcp",
+    "lineage": "lineage",
+    "attachment": "attachment",
+    "fallback": "tool",
+}
+
+
 def _render_message_flow_item(raw: object) -> str:
     message = raw if isinstance(raw, Mapping) else {}
+    if message.get("semantic_card_suppressed"):
+        return ""
     message_id = str(message.get("id") or "")
     role = str(message.get("role") or "unknown")
     material_origin = str(message.get("material_origin") or "unknown")
+    timestamp = message.get("timestamp")
+    time_markup = (
+        f'<time datetime="{html.escape(str(timestamp), quote=True)}">{html.escape(str(timestamp))}</time>'
+        if timestamp
+        else "<span>Time unavailable</span>"
+    )
+    entries_raw = message.get("semantic_entries")
+    entries = entries_raw if isinstance(entries_raw, list) and entries_raw else None
+    body = (
+        "".join(_render_semantic_entry(entry) for entry in entries)
+        if entries is not None
+        else _render_message_flow_fallback_body(message)
+    )
+    return f"""        <li class="message-flow__item" id="msg-{html.escape(message_id, quote=True)}" data-role="{html.escape(role, quote=True)}" data-material-origin="{html.escape(material_origin, quote=True)}">
+          <div class="message-flow__meta">
+            <span class="message-flow__role">{html.escape(role)}</span>
+            <span class="message-flow__material-origin">{html.escape(material_origin)}</span>
+            {time_markup}
+          </div>
+{body}
+        </li>"""
+
+
+def _render_message_flow_fallback_body(message: Mapping[str, object]) -> str:
+    """Render the honest role/material_origin/text placeholder.
+
+    Used only when the archive has no materialized ``semantic_entries`` for
+    this message (older un-reindexed rows) - evidence is never dropped, it
+    just isn't card-classified yet.
+    """
     text = message.get("text")
     preview = _compact_preview(str(text or ""), limit=600) or "[empty message]"
     flags: list[str] = []
@@ -557,21 +620,201 @@ def _render_message_flow_item(raw: object) -> str:
     if message.get("has_paste_evidence"):
         flags.append('<span class="message-flag" data-flag="paste">paste</span>')
     flags_markup = " ".join(flags)
-    timestamp = message.get("timestamp")
-    time_markup = (
-        f'<time datetime="{html.escape(str(timestamp), quote=True)}">{html.escape(str(timestamp))}</time>'
-        if timestamp
-        else "<span>Time unavailable</span>"
+    return (
+        f'          <p class="message-flow__text">{html.escape(preview)}</p>\n'
+        f'          <div class="message-flow__flags">{flags_markup}</div>'
     )
-    return f"""        <li class="message-flow__item" id="msg-{html.escape(message_id, quote=True)}" data-role="{html.escape(role, quote=True)}" data-material-origin="{html.escape(material_origin, quote=True)}">
-          <div class="message-flow__meta">
-            <span class="message-flow__role">{html.escape(role)}</span>
-            <span class="message-flow__material-origin">{html.escape(material_origin)}</span>
-            {time_markup}
-          </div>
-          <p class="message-flow__text">{html.escape(preview)}</p>
-          <div class="message-flow__flags">{flags_markup}</div>
-        </li>"""
+
+
+def _render_semantic_entry(raw: object) -> str:
+    entry = raw if isinstance(raw, Mapping) else {}
+    entry_type = entry.get("entry_type")
+    if entry_type == "card" and isinstance(entry.get("card"), Mapping):
+        return _render_semantic_card(entry["card"])
+    if entry_type == "prose" and isinstance(entry.get("prose"), Mapping):
+        return _render_semantic_prose(entry["prose"])
+    if entry_type == "notice" and isinstance(entry.get("notice"), Mapping):
+        return _render_semantic_notice(entry["notice"])
+    return ""
+
+
+def _render_card_field_value(value: str) -> str:
+    """Render a card field value, hyperlinking the registry's ``session:``/``message:`` ref convention.
+
+    ``_build_lineage_card``/``_build_task_card`` (polylogue/rendering/semantic_cards.py)
+    encode cross-session and cross-message references as plain ``session:<id>``/
+    ``message:<id>`` field values rather than a separate typed ref field. Linking
+    them generically here (not just for the lineage card) means any card family
+    that adopts the same convention - e.g. a future task/delegation child-session
+    reference - gets working navigation for free.
+    """
+
+    if value.startswith("session:") and len(value) > len("session:"):
+        session_ref = value[len("session:") :]
+        return f'<a class="card__field-value" href="/app/sessions/{quote(session_ref, safe="")}"><code>{html.escape(value)}</code></a>'
+    if value.startswith("message:") and len(value) > len("message:"):
+        message_ref = value[len("message:") :]
+        return f'<a class="card__field-value" href="#msg-{quote(message_ref, safe="")}"><code>{html.escape(value)}</code></a>'
+    return f'<code class="card__field-value">{html.escape(value)}</code>'
+
+
+def _render_semantic_card(card: Mapping[str, object]) -> str:
+    kind = str(card.get("kind") or "fallback")
+    label = SEMANTIC_CARD_LABELS.get(kind, kind)
+    title = str(card.get("title") or "")
+    fields_raw = card.get("fields")
+    fields = fields_raw if isinstance(fields_raw, list) else []
+    summary = card.get("summary")
+    has_summary_field = any(isinstance(f, Mapping) and f.get("value") == summary for f in fields)
+    summary_markup = (
+        f'<p class="card__summary">{html.escape(str(summary))}</p>' if summary and not has_summary_field else ""
+    )
+    fields_markup = "".join(
+        f'<div class="card__field"><span class="card__field-label">{html.escape(str(f.get("label") or ""))}</span>'
+        f"{_render_card_field_value(str(f.get('value') or ''))}</div>"
+        for f in fields
+        if isinstance(f, Mapping)
+    )
+    previews_raw = card.get("previews")
+    previews_markup = (
+        "".join(_render_semantic_preview(p) for p in previews_raw if isinstance(p, Mapping))
+        if isinstance(previews_raw, list)
+        else ""
+    )
+    caveats_raw = card.get("caveats")
+    caveats_markup = (
+        '<ul class="card__caveats">' + "".join(f"<li>{html.escape(str(c))}</li>" for c in caveats_raw) + "</ul>"
+        if isinstance(caveats_raw, list) and caveats_raw
+        else ""
+    )
+    source_markup = _render_semantic_source(card.get("source"))
+    outcome_markup = _render_semantic_outcome(card.get("outcome"))
+    return (
+        f'<div class="card card--{html.escape(kind, quote=True)}" data-card-kind="{html.escape(kind, quote=True)}">'
+        f'<div class="card__header"><span class="card__kind">{html.escape(label)}</span>'
+        f'<span class="card__title">{html.escape(title)}</span>{outcome_markup}</div>'
+        f"{summary_markup}{fields_markup}{previews_markup}{caveats_markup}{source_markup}</div>"
+    )
+
+
+def _render_semantic_outcome(raw: object) -> str:
+    if not isinstance(raw, Mapping):
+        return ""
+    state = str(raw.get("state") or "unknown")
+    label = {"succeeded": "ok", "failed": "FAILED"}.get(state, "unknown")
+    detail_bits = []
+    is_error = raw.get("is_error")
+    if isinstance(is_error, bool):
+        detail_bits.append(f"is_error={is_error}")
+    exit_code = raw.get("exit_code")
+    if isinstance(exit_code, int):
+        detail_bits.append(f"exit {exit_code}")
+    title = f"{label} ({', '.join(detail_bits)})" if detail_bits else label
+    return (
+        f'<span class="card__outcome" data-outcome-state="{html.escape(state, quote=True)}" '
+        f'title="{html.escape(title, quote=True)}">{html.escape(label)}</span>'
+    )
+
+
+def _render_semantic_preview(preview: Mapping[str, object]) -> str:
+    line_count = preview.get("line_count")
+    lines = line_count if isinstance(line_count, int) else 0
+    meta_bits = [f"{lines} line{'' if lines == 1 else 's'}"]
+    omitted_lines = preview.get("omitted_lines")
+    if isinstance(omitted_lines, int) and omitted_lines:
+        meta_bits.append(f"{omitted_lines} omitted")
+    omitted_chars = preview.get("omitted_characters")
+    if isinstance(omitted_chars, int) and omitted_chars:
+        meta_bits.append(f"{omitted_chars} chars omitted")
+    replacements = preview.get("encoding_replacements")
+    if isinstance(replacements, int) and replacements:
+        meta_bits.append(f"{replacements} replacements")
+    kind = str(preview.get("kind") or "preview")
+    text = str(preview.get("text") or "")
+    body = _render_diff_lines(text) if kind == "diff" else html.escape(text)
+    return (
+        f'<details class="card__preview" data-preview-kind="{html.escape(kind, quote=True)}">'
+        f"<summary>{html.escape(kind)} · {html.escape(', '.join(meta_bits))}</summary>"
+        f"<pre>{body}</pre></details>"
+    )
+
+
+def _render_diff_lines(text: str) -> str:
+    rendered_lines = []
+    for line in text.split("\n"):
+        css_class = "diff-ctx"
+        if line.startswith("+") and not line.startswith("+++"):
+            css_class = "diff-add"
+        elif line.startswith("-") and not line.startswith("---"):
+            css_class = "diff-del"
+        elif line.startswith("@"):
+            css_class = "diff-hunk"
+        rendered_lines.append(f'<span class="{css_class}">{html.escape(line)}</span>')
+    return "\n".join(rendered_lines)
+
+
+_SOURCE_FIELD_ORDER = (
+    "session_id",
+    "provider_family",
+    "origin",
+    "message_id",
+    "block_id",
+    "block_index",
+    "tool_name",
+    "tool_id",
+    "attachment_id",
+    "material_origin",
+    "occurred_at",
+    "duration_ms",
+    "parent_message_id",
+    "variant_index",
+    "is_active_path",
+    "is_active_leaf",
+    "inherited_prefix",
+    "result_message_id",
+    "result_block_id",
+    "result_block_index",
+    "result_duration_ms",
+    "result_material_origin",
+    "result_inherited_prefix",
+)
+
+
+def _render_semantic_source(raw: object) -> str:
+    source = raw if isinstance(raw, Mapping) else {}
+    bits = [f"{key}={source[key]}" for key in _SOURCE_FIELD_ORDER if source.get(key) is not None]
+    if not bits:
+        return ""
+    return f'<details class="card__source"><summary>evidence</summary><code>{html.escape(chr(10).join(bits))}</code></details>'
+
+
+def _render_semantic_prose(prose: Mapping[str, object]) -> str:
+    block_type = str(prose.get("block_type") or "")
+    text = str(prose.get("text") or "")
+    meta_bits = [bit for bit in (block_type, prose.get("language")) if bit]
+    material_origin = prose.get("material_origin")
+    if material_origin:
+        meta_bits.append(f"material:{material_origin}")
+    meta_markup = (
+        '<div class="prose__meta">'
+        + "".join(f'<span class="chip">{html.escape(str(bit))}</span>' for bit in meta_bits)
+        + "</div>"
+        if meta_bits
+        else ""
+    )
+    text_markup = f'<p class="prose__text">{html.escape(text)}</p>' if text else ""
+    return f'<div class="prose" data-semantic-block-type="{html.escape(block_type, quote=True)}">{meta_markup}{text_markup}</div>'
+
+
+def _render_semantic_notice(notice: Mapping[str, object]) -> str:
+    count = notice.get("count")
+    count_int = count if isinstance(count, int) else 0
+    kind = str(notice.get("kind") or "notice")
+    label = "thinking absent" if kind == "empty_thinking" else kind
+    return (
+        f'<div class="notice" data-notice-kind="{html.escape(kind, quote=True)}">'
+        f"<strong>{html.escape(label)}</strong> · {count_int} typed block{'' if count_int == 1 else 's'}</div>"
+    )
 
 
 def _render_site_header(current_path: str) -> str:
