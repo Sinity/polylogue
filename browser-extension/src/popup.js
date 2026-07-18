@@ -161,12 +161,25 @@ function activeConversationState(tab, globalState, ledger) {
     provider_session_id: context.sessionId,
     active_page_state: "conversation",
   };
+  const item = context.ledger;
   if (
     globalState?.provider === context.provider
     && globalState?.provider_session_id === context.sessionId
-  ) return globalState;
+  ) {
+    // globalState (background's live/mission snapshot) agrees with the ledger
+    // on which conversation this is, but the two are updated by separate,
+    // independently-timed paths (a synchronous storage read vs. an async
+    // background round-trip) and can transiently disagree -- e.g. right
+    // after a receiver reconfiguration, the snapshot can lag a ledger write
+    // that already landed. Prefer whichever is actually newer instead of
+    // unconditionally trusting globalState.
+    const globalUpdatedAt = Date.parse(globalState?.updated_at || "");
+    const ledgerUpdatedAt = Date.parse(item.updated_at || "");
+    const ledgerIsFresher = Number.isFinite(ledgerUpdatedAt)
+      && (!Number.isFinite(globalUpdatedAt) || ledgerUpdatedAt > globalUpdatedAt);
+    if (!ledgerIsFresher) return globalState;
+  }
 
-  const item = context.ledger;
   return {
     ...onlineState,
     provider: context.provider,
