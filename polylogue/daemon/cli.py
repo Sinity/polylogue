@@ -7,6 +7,7 @@ import atexit
 import contextlib
 import faulthandler
 import fcntl
+import functools
 import os
 import sqlite3
 import sys
@@ -69,7 +70,13 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
-_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 1
+# Rows per bounded writer-held pass. Small enough to keep the write
+# coordinator responsive to live appends, large enough to amortise the
+# per-pass census/recovery overhead over more than one row.
+_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 16
+# Between backlog burst passes the loop yields the writer briefly so live
+# ingest and interactive writes never queue behind a long drain.
+_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
 _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 
@@ -379,13 +386,18 @@ async def _run_drive_source_catchup_safely() -> int:
 
 
 async def _periodic_drive_source_catchup() -> None:
-    """Periodically converge remote Drive sources such as AiStudio exports."""
+    """Periodically converge remote Drive sources such as AiStudio exports.
+
+    The first pass runs immediately in the background: Drive catch-up is
+    serial network I/O and must never sit between daemon startup and the
+    local convergence loops or the live watcher.
+    """
     while True:
-        await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
         coordinator = daemon_write_coordinator()
         changed = await coordinator.run("maintenance.drive_catchup", _run_drive_source_catchup_safely)
         if changed:
             logger.info("daemon: Drive catch-up refreshed %d session(s)", changed)
+        await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
 
 
 async def _periodic_heartbeat() -> None:
@@ -499,32 +511,40 @@ async def _retry_convergence_debt_once(db: Path) -> None:
 
 
 async def _periodic_raw_materialization_convergence() -> None:
-    """Continuously converge durable raw source rows into the index tier."""
-    await _periodic_raw_materialization_convergence_after()
+    """Continuously converge durable raw source rows into the index tier.
 
-
-async def _periodic_raw_materialization_convergence_after(
-    catch_up_complete: asyncio.Event | None = None,
-) -> None:
-    """Continuously converge durable raw rows after initial source catch-up."""
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    Deliberately ungated on watcher catch-up: the candidates live in the
+    local durable ``source.db``, so materializing them has no acquisition
+    precondition. When a backlog exists (e.g. after an index rebuild) the
+    loop bursts through bounded passes back-to-back — yielding the writer
+    between passes — instead of waiting a full interval per pass, which
+    would stretch a large drain into weeks.
+    """
     while True:
         if _browser_capture_spool_has_pending_files():
             logger.info("raw materialization: yielding to pending browser-capture spool files")
             await asyncio.sleep(_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS)
             continue
+        recover = True
         try:
-            materialized = await daemon_write_coordinator().run_sync(
-                "maintenance.raw_materialization",
-                _drain_raw_materialization_once,
-            )
-            if materialized.made_progress:
-                logger.info(
-                    "raw materialization: repaired %d session(s), executed %d frontier plan(s)",
-                    materialized.repaired_sessions,
-                    materialized.executed_plans,
+            while True:
+                materialized = await daemon_write_coordinator().run_sync(
+                    "maintenance.raw_materialization",
+                    functools.partial(_drain_raw_materialization_once, recover=recover),
                 )
+                recover = False
+                if materialized.made_progress:
+                    logger.info(
+                        "raw materialization: repaired %d session(s), executed %d frontier plan(s), %d candidate(s) remaining",
+                        materialized.repaired_sessions,
+                        materialized.executed_plans,
+                        materialized.remaining_candidates,
+                    )
+                if materialized.remaining_candidates <= 0 or not materialized.made_progress:
+                    break
+                if _browser_capture_spool_has_pending_files():
+                    break
+                await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 logger.info("raw materialization: archive busy; retrying on next tick: %s", exc)
@@ -612,8 +632,17 @@ async def _reconcile_blob_publications() -> None:
         )
 
 
-def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT) -> Any:
-    """Run one bounded raw source→index convergence pass."""
+def _drain_raw_materialization_once(
+    *,
+    limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
+    recover: bool = True,
+) -> Any:
+    """Run one bounded raw source→index convergence pass.
+
+    ``recover`` gates the interrupted-frontier recovery scan: it only has
+    work after a crash/restart, so backlog burst continuations within one
+    healthy cycle skip it instead of re-scanning per pass.
+    """
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
     from polylogue.product import raw_authority
@@ -637,7 +666,8 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
         render_root=render_root(),
         sources=[],
     )
-    raw_authority.recover_interrupted_frontier(config)
+    if recover:
+        raw_authority.recover_interrupted_frontier(config)
     try:
         result = raw_authority.repair_materialization(
             config,
@@ -651,9 +681,12 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
     frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
+    metrics = dict(getattr(result, "metrics", {}))
+    remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
     return raw_authority.RawMaterializationCounts(
         repaired_sessions=result.repaired_count,
         executed_plans=frontier_repaired,
+        remaining_candidates=remaining,
     )
 
 
@@ -1462,18 +1495,11 @@ async def run_daemon_services(
             # not trigger a merge of the full (hundreds-of-MB) existing
             # segments (#1851).  A periodic merge pass amortises the cost.
             await _configure_fts_automerge()
-            if enable_source_catchup:
-                changed_drive_sessions = await write_coordinator.run(
-                    "startup.drive_catchup",
-                    _run_drive_source_catchup_safely,
-                )
-                if changed_drive_sessions:
-                    logger.info("daemon: startup Drive catch-up refreshed %d session(s)", changed_drive_sessions)
-            else:
+            if not enable_source_catchup:
                 logger.info("daemon: configured source catch-up disabled for this run")
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
             periodic_loops = [
-                _periodic_raw_materialization_convergence_after(catch_up_complete_gate),
+                _periodic_raw_materialization_convergence(),
                 _periodic_session_insight_convergence_after(catch_up_complete_gate),
                 _periodic_convergence_check(sources, catch_up_complete=catch_up_complete_gate),
                 _periodic_wal_checkpoint(),
