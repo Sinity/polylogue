@@ -35,9 +35,11 @@ function installPage(url = "https://chatgpt.com/") {
 // top-level model switcher with one always-checked radio item is the entire
 // selection UI (see polylogue-ptx live-smoke notes, 2026-07-18).
 function installFreeTierPage(url = "https://chatgpt.com/") {
+  // No Chat/Work toggle at all: that mode split is itself a paid/team
+  // feature. There is no data-testid="model-switcher-dropdown-button" data
+  // absent either -- confirmed live, 2026-07-18 -- there is only ever the
+  // one implicit chat surface.
   const dom = new JSDOM(`<!doctype html><body>
-    <button aria-pressed="true">Chat</button>
-    <button aria-pressed="false">Work</button>
     <button data-testid="model-switcher-dropdown-button">ChatGPT</button>
     <div role="menuitem"><span>ChatGPT Plus</span><div>Our smartest model &amp; more</div></div>
     <div role="menuitemradio" aria-checked="true"><span>ChatGPT</span><div>Great for everyday tasks</div></div>

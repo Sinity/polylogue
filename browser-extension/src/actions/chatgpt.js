@@ -71,6 +71,10 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
   };
   const selectedMode = () => {
     const mode = modeButtons();
+    // Work mode is a paid/team feature; accounts without it never render a
+    // Chat/Work toggle at all -- there is only ever the one implicit chat
+    // surface, already selected, with nothing to click.
+    if (!mode.chat && !mode.work) return { chat: true, work: false };
     return { chat: mode.chatSelected, work: mode.workSelected };
   };
   const checkedModelOptions = () => [...document.querySelectorAll('[role="menuitemradio"][aria-checked="true"]')]
@@ -163,9 +167,10 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     await waitFor(() => document.querySelector("#prompt-textarea"), 30_000, "composer");
     const initialMode = await waitFor(() => {
       const mode = modeButtons();
+      if (!mode.chat && !mode.work) return { noToggle: true };
       return mode.chat && mode.work ? mode : null;
     }, 10_000, "surface_controls");
-    if (!initialMode.chatSelected || initialMode.workSelected) {
+    if (!initialMode.noToggle && (!initialMode.chatSelected || initialMode.workSelected)) {
       pointerClick(initialMode.chat);
     }
     const mode = await waitFor(() => {
