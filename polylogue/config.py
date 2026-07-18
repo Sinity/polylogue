@@ -1642,7 +1642,7 @@ def resolve_runtime_config(
     browser_spool = _resolved_runtime_path(
         settings.browser_capture_spool_path,
         bootstrap=bootstrap,
-        fallback=bootstrap.data_home / "browser-capture",
+        fallback=archive / "browser-capture",
     )
     hook_sidecar = _resolved_runtime_path(
         settings.hook_sidecar_dir,
@@ -1671,7 +1671,7 @@ def resolve_runtime_config(
         blob_root=archive / "blob",
         inbox_root=archive / "inbox",
         browser_capture_spool_root=browser_spool,
-        browser_capture_receiver_token_path=bootstrap.state_home / "browser-capture-receiver-token",
+        browser_capture_receiver_token_path=archive / "browser-capture-receiver-token",
         hook_sidecar_root=hook_sidecar,
         drive_cache_root=drive_cache,
     )
