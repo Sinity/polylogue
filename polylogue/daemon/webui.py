@@ -835,9 +835,321 @@ def _render_site_header(current_path: str) -> str:
         '<header class="site-header"><p class="eyebrow">Polylogue</p><nav aria-label="WebUI views">'
         + link("/app", "Archive overview")
         + link("/app/sessions", "Sessions")
+        + link("/app/cost", "Cost & usage")
         + link("/app/observability", "Observability")
         + link("/", "Legacy reader")
         + "</nav></header>"
+    )
+
+
+COST_ROLLUP_LIMIT = 20
+USAGE_TIMELINE_LIMIT = 24
+SESSION_COST_DRILLDOWN_LIMIT = 20
+
+#: Lane semantics copied verbatim from docs/cost-model.md's Basis Taxonomy
+#: table so the page never paraphrases the non-authoritative caveats loosely.
+COST_LANE_LEGEND: tuple[tuple[str, str], ...] = (
+    (
+        "provider_reported_usd",
+        "Cost reported verbatim by the provider. Populated only when the source supplies an exact total. "
+        "Preserved without rounding or scaling.",
+    ),
+    (
+        "api_equivalent_usd",
+        "What the same usage would cost against API pricing. Mirrors provider_reported_usd when an exact "
+        "total is present; otherwise filled from catalog.",
+    ),
+    (
+        "subscription_equivalent_usd",
+        "What the same usage would cost against the user's subscription plan. Always zero unless the cost "
+        "cluster is configured with a quota basis.",
+    ),
+    (
+        "catalog_priced_usd",
+        "Catalog-priced estimate from the curated LiteLLM-shaped seed.",
+    ),
+    (
+        "tool_surcharge_usd",
+        "Tool/sidecar usage surcharge. Tracked separately so tool-heavy sessions don't silently inflate the "
+        "headline cost.",
+    ),
+)
+
+
+async def build_cost_payload(operations: object) -> dict[str, object]:
+    """Return the cost/usage rollup, timeline, and session drill-down documents.
+
+    Reuses the same registry-driven ``fetch_insights_async`` the observability
+    view calls - no web-local cost aggregation or reclassification. Bases are
+    reported exactly as the substrate computed them and are never summed into
+    one collapsed number (docs/cost-model.md's named anti-goal).
+    """
+    from polylogue.insights.archive import ArchiveInsightUnavailableError
+    from polylogue.insights.registry import INSIGHT_REGISTRY, fetch_insights_async
+
+    async def _fetch(name: str, **kwargs: object) -> tuple[list[dict[str, object]], str | None]:
+        descriptor = INSIGHT_REGISTRY.get(name)
+        if descriptor is None:
+            return [], f"insight descriptor {name!r} is not registered"
+        try:
+            items = await fetch_insights_async(descriptor, operations, **kwargs)
+        except ArchiveInsightUnavailableError as exc:
+            return [], str(exc)
+        except Exception as exc:
+            logger.warning("webui cost panel degraded: %s", name, exc_info=exc)
+            return [], str(exc)
+        return [item.model_dump(mode="json") for item in items], None
+
+    rollups, rollups_error = await _fetch("cost_rollups", limit=COST_ROLLUP_LIMIT)
+    timeline, timeline_error = await _fetch("usage_timeline", group_by="month-origin-model", limit=USAGE_TIMELINE_LIMIT)
+    sessions, sessions_error = await _fetch("session_costs", limit=SESSION_COST_DRILLDOWN_LIMIT)
+    return {
+        "contract_version": 1,
+        "rollups": {"items": rollups, "error": rollups_error},
+        "timeline": {"items": timeline, "error": timeline_error},
+        "sessions": {"items": sessions, "error": sessions_error},
+    }
+
+
+def render_cost_page(
+    bundle: WebUIAssetBundle,
+    payload: Mapping[str, object] | None,
+    *,
+    notice: str | None = None,
+) -> str:
+    """Render the cost/usage explorer: lane legend, rollups, timeline, session drill-down.
+
+    Every basis lane renders independently and is never summed into one
+    collapsed number (docs/cost-model.md's named anti-goal). Sessions/rows
+    lacking usage evidence render their honest ``unavailable_reason``, never
+    a bare ``$0.00``.
+    """
+
+    entry = bundle.entrypoint_for("cost")
+    stylesheet_links = "\n".join(
+        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+    )
+    if payload is None:
+        body = (
+            f'<p class="cost-degraded">{html.escape(notice or "Cost and usage data is temporarily unavailable.")}</p>'
+        )
+    else:
+        rollups = payload.get("rollups")
+        timeline = payload.get("timeline")
+        sessions = payload.get("sessions")
+        body = (
+            _render_lane_legend()
+            + _render_cost_rollups_section(rollups if isinstance(rollups, Mapping) else {})
+            + _render_usage_timeline_section(timeline if isinstance(timeline, Mapping) else {})
+            + _render_session_cost_drilldown(sessions if isinstance(sessions, Mapping) else {})
+        )
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Cost &amp; usage · Polylogue</title>
+{stylesheet_links}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to cost and usage</a>
+    {_render_site_header("/app/cost")}
+    <main id="main" class="page-shell">
+      <p class="eyebrow">Non-authoritative estimate</p>
+      <h1>Cost &amp; usage</h1>
+      <p class="lede">Polylogue is not a billing system. These figures are a bounded, multi-lane estimate for trend and coverage analysis, not invoicing or rate-limit enforcement.</p>
+      <div id="cost-lane-toggle" data-island="cost-lane-toggle"></div>
+{body}
+    </main>
+    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+  </body>
+</html>
+"""
+
+
+def _render_lane_legend() -> str:
+    rows = "".join(
+        f'<tr><th scope="row"><code>{html.escape(lane)}</code></th><td>{html.escape(description)}</td></tr>'
+        for lane, description in COST_LANE_LEGEND
+    )
+    return (
+        '      <section class="cost-panel" aria-labelledby="lane-legend-title" id="cost-lane-legend">'
+        '<h2 id="lane-legend-title">Cost lanes</h2>'
+        "<p>Bases are independent - they do not sum to one total. The same usage can be expressed on multiple axes at once.</p>"
+        f'<table class="cost-table"><thead><tr><th scope="col">Lane</th><th scope="col">Meaning</th></tr></thead><tbody>{rows}</tbody></table>'
+        "</section>"
+    )
+
+
+def _cost_usd(value: object) -> str:
+    return f"${float(value):,.2f}" if isinstance(value, int | float) else "-"
+
+
+def _render_cost_rollups_section(rollups: Mapping[str, object]) -> str:
+    error = rollups.get("error")
+    items_raw = rollups.get("items")
+    items = items_raw if isinstance(items_raw, list) else []
+    if error and not items:
+        body = f'<p class="cost-degraded">{html.escape(str(error))}</p>'
+    elif not items:
+        body = "<p>No cost rollups are materialized yet.</p>"
+    else:
+        rows = "".join(_render_cost_rollup_row(r) for r in items if isinstance(r, Mapping))
+        body = (
+            '<table class="cost-table" data-lane-table>'
+            "<thead><tr>"
+            '<th scope="col">Origin</th><th scope="col">Model</th><th scope="col">Sessions</th>'
+            '<th scope="col" data-lane="provider_reported_usd">Provider-reported</th>'
+            '<th scope="col" data-lane="api_equivalent_usd">API-equivalent</th>'
+            '<th scope="col" data-lane="subscription_equivalent_usd">Subscription-equivalent</th>'
+            '<th scope="col" data-lane="catalog_priced_usd">Catalog-priced</th>'
+            '<th scope="col" data-lane="tool_surcharge_usd">Tool surcharge</th>'
+            '<th scope="col">Coverage</th>'
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+    return (
+        '      <section class="cost-panel" aria-labelledby="cost-rollups-title" id="cost-rollups">'
+        '<h2 id="cost-rollups-title">Spend by origin &amp; model</h2>'
+        f"{body}</section>"
+    )
+
+
+def _render_cost_rollup_row(rollup: Mapping[str, object]) -> str:
+    origin = str(rollup.get("origin") or "unknown-export")
+    model = rollup.get("normalized_model") or rollup.get("model_name") or "unknown model"
+    session_count = rollup.get("session_count")
+    priced = rollup.get("priced_session_count")
+    unavailable = rollup.get("unavailable_session_count")
+    basis = rollup.get("basis")
+    basis_map = basis if isinstance(basis, Mapping) else {}
+    unavailable_reasons = rollup.get("unavailable_reason_counts")
+    reasons_text = (
+        ", ".join(f"{reason}×{count}" for reason, count in unavailable_reasons.items())
+        if isinstance(unavailable_reasons, Mapping) and unavailable_reasons
+        else "none"
+    )
+    coverage = f"{priced if isinstance(priced, int) else 0} priced, {unavailable if isinstance(unavailable, int) else 0} unavailable of {session_count if isinstance(session_count, int) else 0} ({reasons_text})"
+    # A rollup with zero priced sessions has no measured cost on any basis -
+    # every field is a structural 0.0 default, not a measured $0.00. Render
+    # that honestly instead of five misleading dollar figures (#cost-model
+    # "honest absence" anti-goal).
+    if not isinstance(priced, int) or priced <= 0:
+        no_evidence = '<td colspan="5" class="cost-no-evidence">no priced sessions in this bucket</td>'
+        return (
+            f"<tr><td>{html.escape(origin)}</td><td>{html.escape(str(model))}</td>"
+            f"<td>{session_count if isinstance(session_count, int) else '-'}</td>"
+            f"{no_evidence}<td>{html.escape(coverage)}</td></tr>"
+        )
+    return (
+        f"<tr><td>{html.escape(origin)}</td><td>{html.escape(str(model))}</td>"
+        f"<td>{session_count if isinstance(session_count, int) else '-'}</td>"
+        f'<td data-lane="provider_reported_usd">{_cost_usd(basis_map.get("provider_reported_usd"))}</td>'
+        f'<td data-lane="api_equivalent_usd">{_cost_usd(basis_map.get("api_equivalent_usd"))}</td>'
+        f'<td data-lane="subscription_equivalent_usd">{_cost_usd(basis_map.get("subscription_equivalent_usd"))}</td>'
+        f'<td data-lane="catalog_priced_usd">{_cost_usd(basis_map.get("catalog_priced_usd"))}</td>'
+        f'<td data-lane="tool_surcharge_usd">{_cost_usd(basis_map.get("tool_surcharge_usd"))}</td>'
+        f"<td>{html.escape(coverage)}</td></tr>"
+    )
+
+
+def _cache_hit_ratio(usage: Mapping[str, object]) -> str:
+    input_tokens = usage.get("input_tokens")
+    cache_read = usage.get("cache_read_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(cache_read, int):
+        return "unknown"
+    denominator = input_tokens + cache_read
+    if denominator <= 0:
+        return "no input tokens"
+    return f"{cache_read / denominator:.1%}"
+
+
+def _render_usage_timeline_section(timeline: Mapping[str, object]) -> str:
+    error = timeline.get("error")
+    items_raw = timeline.get("items")
+    items = items_raw if isinstance(items_raw, list) else []
+    if error and not items:
+        body = f'<p class="cost-degraded">{html.escape(str(error))}</p>'
+    elif not items:
+        body = "<p>No usage timeline is materialized yet.</p>"
+    else:
+        rows = "".join(_render_usage_timeline_row(t) for t in items if isinstance(t, Mapping))
+        body = (
+            '<table class="cost-table"><thead><tr>'
+            '<th scope="col">Month</th><th scope="col">Origin</th><th scope="col">Model</th>'
+            '<th scope="col">Sessions</th><th scope="col">Input</th><th scope="col">Output</th>'
+            '<th scope="col">Cache read</th><th scope="col">Cache write</th>'
+            '<th scope="col">Cache hit ratio</th>'
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+    return (
+        '      <section class="cost-panel" aria-labelledby="usage-timeline-title" id="usage-timeline">'
+        '<h2 id="usage-timeline-title">Usage timeline</h2>'
+        "<p>Token lanes are disjoint - cache-read tokens are never double-counted inside input.</p>"
+        f"{body}</section>"
+    )
+
+
+def _token_count(usage: Mapping[str, object], key: str) -> str:
+    value = usage.get(key)
+    return f"{value:,}" if isinstance(value, int) else "-"
+
+
+def _render_usage_timeline_row(row: Mapping[str, object]) -> str:
+    bucket = str(row.get("bucket") or "-")
+    origin = row.get("origin") or "all origins"
+    model = row.get("normalized_model") or row.get("model_name") or "all models"
+    session_count = row.get("session_count")
+    usage = row.get("usage")
+    usage_map = usage if isinstance(usage, Mapping) else {}
+    return (
+        f"<tr><td>{html.escape(bucket)}</td><td>{html.escape(str(origin))}</td><td>{html.escape(str(model))}</td>"
+        f"<td>{session_count if isinstance(session_count, int) else '-'}</td>"
+        f"<td>{_token_count(usage_map, 'input_tokens')}</td>"
+        f"<td>{_token_count(usage_map, 'output_tokens')}</td>"
+        f"<td>{_token_count(usage_map, 'cache_read_tokens')}</td>"
+        f"<td>{_token_count(usage_map, 'cache_write_tokens')}</td>"
+        f"<td>{_cache_hit_ratio(usage_map)}</td></tr>"
+    )
+
+
+def _render_session_cost_drilldown(sessions: Mapping[str, object]) -> str:
+    error = sessions.get("error")
+    items_raw = sessions.get("items")
+    items = items_raw if isinstance(items_raw, list) else []
+    if error and not items:
+        body = f'<p class="cost-degraded">{html.escape(str(error))}</p>'
+    elif not items:
+        body = "<p>No session-level cost estimates are materialized yet.</p>"
+    else:
+        rows = "\n".join(_render_session_cost_row(s) for s in items if isinstance(s, Mapping))
+        body = f'<ol class="cost-session-list">{rows}</ol>'
+    return (
+        '      <section class="cost-panel" aria-labelledby="cost-sessions-title" id="cost-sessions">'
+        '<h2 id="cost-sessions-title">Session drill-down</h2>'
+        f"{body}</section>"
+    )
+
+
+def _render_session_cost_row(session: Mapping[str, object]) -> str:
+    session_id = str(session.get("session_id") or "")
+    title = session.get("title") or session_id or "[untitled session]"
+    origin = str(session.get("origin") or "unknown-export")
+    estimate = session.get("estimate")
+    estimate_map = estimate if isinstance(estimate, Mapping) else {}
+    status = str(estimate_map.get("status") or "unavailable")
+    unavailable_reason = estimate_map.get("unavailable_reason")
+    if status == "unavailable":
+        cost_text = f"no cost evidence ({html.escape(str(unavailable_reason or 'unknown reason'))})"
+    else:
+        basis = estimate_map.get("basis")
+        basis_map = basis if isinstance(basis, Mapping) else {}
+        cost_text = f"API-equiv {_cost_usd(basis_map.get('api_equivalent_usd'))} · catalog {_cost_usd(basis_map.get('catalog_priced_usd'))}"
+    return (
+        f'<li class="cost-session-row" data-cost-status="{html.escape(status, quote=True)}">'
+        f'<span class="cost-session-origin">{html.escape(origin)}</span>'
+        f'<a href="/app/sessions/{quote(session_id, safe="")}">{html.escape(str(title))}</a>'
+        f"<span>{cost_text}</span></li>"
     )
 
 
@@ -1121,15 +1433,20 @@ def _json_script(payload: object) -> str:
 __all__ = [
     "ARCHIVE_OVERVIEW_EXPRESSION",
     "ARCHIVE_OVERVIEW_LIMIT",
+    "COST_ROLLUP_LIMIT",
+    "SESSION_COST_DRILLDOWN_LIMIT",
     "SESSION_LIST_LIMIT",
     "SESSION_READ_MESSAGE_LIMIT",
+    "USAGE_TIMELINE_LIMIT",
     "WebUIAsset",
     "WebUIAssetBundle",
     "WebUIAssetError",
     "WebUIEntrypoint",
+    "build_cost_payload",
     "build_observability_payload",
     "load_archive_overview_page",
     "render_archive_overview_page",
+    "render_cost_page",
     "render_observability_page",
     "render_session_list_page",
     "render_session_read_page",

@@ -2467,6 +2467,86 @@ class TestWebUIV2:
         assert 'data-outcome-state="failed"' in html_body
         assert "exit 2" in html_body
 
+    def test_cost_page_serves_lane_legend_and_honest_absence_with_no_priced_sessions(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Rollup buckets with zero priced sessions state absence honestly - never a fabricated $0.00."""
+        headers = {"Authorization": "Bearer webui-test-token"}
+        with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
+            status, _, html_body = _get_text(base_url, "/app/cost", headers=headers)
+
+        assert status == HTTPStatus.OK
+        assert "<h1>Cost &amp; usage</h1>" in html_body
+        assert "<code>provider_reported_usd</code>" in html_body
+        assert "Bases are independent" in html_body
+        assert "No usage timeline is materialized yet." in html_body
+        assert "no priced sessions in this bucket" in html_body
+        assert "no cost evidence (no_tokens)" in html_body
+        assert "$0.00" not in html_body
+        assert 'data-island="cost-lane-toggle"' in html_body
+        assert re.search(r'src="/app/assets/cost-[^"]+\.js"', html_body)
+
+    def test_cost_page_renders_distinct_basis_lanes_for_a_materialized_rollup(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """A materialized rollup renders every basis lane independently, never collapsed into one number."""
+        from polylogue.archive.semantic.pricing import CostBasisPayload, CostUsagePayload
+        from polylogue.insights.archive import ArchiveInsightProvenance, CostRollupInsight
+
+        provenance = ArchiveInsightProvenance(
+            materializer_version=1,
+            materialized_at="2026-07-18T00:00:00+00:00",
+            source_updated_at=None,
+            source_sort_key=None,
+            input_high_water_mark=None,
+            input_high_water_mark_source=None,
+        )
+        rollup = CostRollupInsight(
+            origin="codex-session",
+            model_name="gpt-5.6-terra",
+            normalized_model="gpt-5.6-terra",
+            session_count=5,
+            priced_session_count=4,
+            unavailable_session_count=1,
+            status_counts={"priced": 4, "unavailable": 1},
+            total_usd=12.5,
+            basis=CostBasisPayload(
+                provider_reported_usd=10.0,
+                api_equivalent_usd=12.5,
+                subscription_equivalent_usd=3.2,
+                catalog_priced_usd=12.5,
+                tool_surcharge_usd=0.0,
+            ),
+            unavailable_reason_counts={"no_tokens": 1},
+            usage=CostUsagePayload(input_tokens=1000, output_tokens=500, cache_read_tokens=800, cache_write_tokens=50),
+            confidence=0.85,
+            provenance=provenance,
+        )
+
+        class _FakeCostOperations:
+            async def list_cost_rollup_insights(self, query: object) -> list[CostRollupInsight]:
+                return [rollup]
+
+            async def list_session_cost_insights(self, query: object) -> list[object]:
+                return []
+
+            async def list_usage_timeline_insights(self, query: object) -> list[object]:
+                return []
+
+        from polylogue.daemon.webui import WebUIAssetBundle, build_cost_payload, render_cost_page
+
+        payload = asyncio.run(build_cost_payload(_FakeCostOperations()))
+        bundle = WebUIAssetBundle.discover()
+        html_body = render_cost_page(bundle, payload)
+
+        assert 'data-lane="provider_reported_usd">$10.00' in html_body
+        assert 'data-lane="api_equivalent_usd">$12.50' in html_body
+        assert 'data-lane="subscription_equivalent_usd">$3.20' in html_body
+        assert 'data-lane="catalog_priced_usd">$12.50' in html_body
+        assert "4 priced, 1 unavailable of 5 (no_tokens×1)" in html_body
+
 
 class TestReaderQueryUnits:
     def test_query_units_endpoint_returns_terminal_message_rows(self, workspace_env: dict[str, Path]) -> None:

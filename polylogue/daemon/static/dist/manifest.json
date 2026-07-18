@@ -1,49 +1,66 @@
 {
-  "_styles-BtCtF3Jg.js": {
-    "file": "styles-BtCtF3Jg.js",
+  "_api-Ck1_aTMW.js": {
+    "file": "api-Ck1_aTMW.js",
+    "name": "api"
+  },
+  "_styles-DkC8PaWb.js": {
+    "file": "styles-DkC8PaWb.js",
     "name": "styles",
     "css": [
-      "styles-W8fuFL39.css"
+      "styles-DnANcnmB.css"
     ]
   },
-  "_styles-W8fuFL39.css": {
-    "file": "styles-W8fuFL39.css",
-    "src": "_styles-W8fuFL39.css"
+  "_styles-DnANcnmB.css": {
+    "file": "styles-DnANcnmB.css",
+    "src": "_styles-DnANcnmB.css"
   },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-ds3CLT_p.js",
+    "file": "archive-overview-CAerfwVW.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-BtCtF3Jg.js"
+      "_styles-DkC8PaWb.js",
+      "_api-Ck1_aTMW.js"
+    ]
+  },
+  "src/entrypoints/cost.tsx": {
+    "file": "cost-CyUAgnau.js",
+    "name": "cost",
+    "src": "src/entrypoints/cost.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-DkC8PaWb.js"
     ]
   },
   "src/entrypoints/observability.tsx": {
-    "file": "observability-DKCQybzT.js",
+    "file": "observability-BTu2EZ59.js",
     "name": "observability",
     "src": "src/entrypoints/observability.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-BtCtF3Jg.js"
+      "_styles-DkC8PaWb.js",
+      "_api-Ck1_aTMW.js"
     ]
   },
   "src/entrypoints/session-list.tsx": {
-    "file": "session-list-CmKXIoAt.js",
+    "file": "session-list-D4zzblJW.js",
     "name": "session-list",
     "src": "src/entrypoints/session-list.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-BtCtF3Jg.js"
+      "_styles-DkC8PaWb.js",
+      "_api-Ck1_aTMW.js"
     ]
   },
   "src/entrypoints/session-read.tsx": {
-    "file": "session-read-CQVvBUGZ.js",
+    "file": "session-read-4TZeHN7F.js",
     "name": "session-read",
     "src": "src/entrypoints/session-read.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-BtCtF3Jg.js"
+      "_styles-DkC8PaWb.js",
+      "_api-Ck1_aTMW.js"
     ]
   }
 }

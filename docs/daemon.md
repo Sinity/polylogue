@@ -97,6 +97,7 @@ classified with explicit auth and response posture.
 |-------------|-------------|----------|
 | Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /app/sessions`, `GET /app/sessions/:session_id`, `GET /s/:id`, `GET /p`, `GET /a` |
 | WebUI observability page | bearer or scoped web credential when configured | `GET /app/observability` |
+| WebUI cost/usage page | bearer or scoped web credential when configured | `GET /app/cost` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
 | Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
 | User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
@@ -130,6 +131,22 @@ insight panels and daemon component status without requiring JavaScript;
 local Preact assets add refresh and exact-source lookup controls. Because the
 HTML embeds bounded insight evidence, it requires a bearer or scoped
 first-party credential when the daemon is configured with credentials.
+
+### GET /app/cost
+
+Server-rendered WebUI v2 cost/usage explorer. Projects the `cost_rollups`,
+`usage_timeline`, and `session_costs` insight descriptors (the same
+registry-driven read path `/app/observability` uses) into a lane legend
+(copied from [the cost model doc](../docs/cost-model.md)'s Basis Taxonomy),
+a spend-by-origin/model rollup table, a token/cache usage timeline, and a
+bounded session drill-down list linking into `/app/sessions/:id`. Every
+basis lane (`provider_reported_usd`, `api_equivalent_usd`,
+`subscription_equivalent_usd`, `catalog_priced_usd`, `tool_surcharge_usd`)
+renders independently and is never summed into one collapsed number; rows
+lacking usage evidence render their `unavailable_reason`, never a bare
+`$0.00`. Because the HTML embeds spend evidence, it requires a bearer or
+scoped first-party credential when the daemon is configured with
+credentials.
 
 ### GET /app/sessions
 
