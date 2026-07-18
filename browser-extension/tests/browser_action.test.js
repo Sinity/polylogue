@@ -23,6 +23,36 @@ function installPage(url = "https://chatgpt.com/") {
   globalThis.Event = dom.window.Event;
   globalThis.InputEvent = dom.window.InputEvent;
   globalThis.MouseEvent = dom.window.MouseEvent;
+  globalThis.KeyboardEvent = dom.window.KeyboardEvent;
+  document.execCommand = vi.fn((_command, _ui, value) => {
+    document.querySelector("#prompt-textarea").textContent = value;
+    return true;
+  });
+  return dom;
+}
+
+// Free-tier accounts have no composer-pill/effort surface at all: a flat
+// top-level model switcher with one always-checked radio item is the entire
+// selection UI (see polylogue-ptx live-smoke notes, 2026-07-18).
+function installFreeTierPage(url = "https://chatgpt.com/") {
+  // No Chat/Work toggle at all: that mode split is itself a paid/team
+  // feature. There is no data-testid="model-switcher-dropdown-button" data
+  // absent either -- confirmed live, 2026-07-18 -- there is only ever the
+  // one implicit chat surface.
+  const dom = new JSDOM(`<!doctype html><body>
+    <button data-testid="model-switcher-dropdown-button">ChatGPT</button>
+    <div role="menuitem"><span>ChatGPT Plus</span><div>Our smartest model &amp; more</div></div>
+    <div role="menuitemradio" aria-checked="true"><span>ChatGPT</span><div>Great for everyday tasks</div></div>
+    <div id="prompt-textarea"></div>
+    <button class="composer-submit-button-color">Send</button>
+  </body>`, { url });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.location = dom.window.location;
+  globalThis.Event = dom.window.Event;
+  globalThis.InputEvent = dom.window.InputEvent;
+  globalThis.MouseEvent = dom.window.MouseEvent;
+  globalThis.KeyboardEvent = dom.window.KeyboardEvent;
   document.execCommand = vi.fn((_command, _ui, value) => {
     document.querySelector("#prompt-textarea").textContent = value;
     return true;
@@ -47,6 +77,18 @@ function action(patch = {}) {
     submit_policy: "stage_only",
     ...patch,
   };
+}
+
+function freeTierAction(patch = {}) {
+  return action({
+    presentation: {
+      surface: "chat",
+      model_slug: "chatgpt-auto",
+      model_label: "ChatGPT",
+      effort_label: "Standard",
+    },
+    ...patch,
+  });
 }
 
 function responseJson(body, status = 200) {
@@ -104,6 +146,28 @@ describe("ChatGPT browser action adapter", () => {
       provider_evidence: { composer_verified: true },
     });
     expect(document.querySelector("#prompt-textarea [data-inline-selection-pill]")).toBeNull();
+  });
+
+  it("stages a verified Chat / ChatGPT / Standard draft on the free-tier flat model switcher", async () => {
+    installFreeTierPage();
+    const result = await executeChatGptBrowserActionInPage(freeTierAction(), []);
+
+    expect(result).toMatchObject({
+      ok: true,
+      outcome: "drafted",
+      observed_surface: "Chat",
+      observed_model: "ChatGPT",
+      observed_effort: "Standard",
+      provider_evidence: { composer_verified: true },
+    });
+  });
+
+  it("fails closed when neither a composer pill nor a flat model switcher exists", async () => {
+    installFreeTierPage();
+    document.querySelector('[data-testid="model-switcher-dropdown-button"]').remove();
+    const result = await executeChatGptBrowserActionInPage(freeTierAction(), []);
+
+    expect(result).toMatchObject({ ok: false, detail: "protocol_model_selector_missing" });
   });
 
   it("selects Chat from the provider radio controls before composing", async () => {
@@ -179,6 +243,55 @@ describe("ChatGPT browser action adapter", () => {
         current_node: "assistant-running",
         user_turn_status: "finished_successfully",
       },
+    });
+    expect(reads).toBeGreaterThanOrEqual(2);
+  });
+
+  it("submits a reply and re-verifies the flat model switcher before send, free tier", async () => {
+    installFreeTierPage("https://chatgpt.com/c/conversation-1");
+    let reads = 0;
+    globalThis.fetch = vi.fn(async () => {
+      reads += 1;
+      const mapping = {
+        old: {
+          message: {
+            id: "old-user-turn",
+            author: { role: "user" },
+            content: { parts: ["Earlier turn"] },
+          },
+        },
+      };
+      if (reads > 1) {
+        mapping.submitted = {
+          message: {
+            id: "new-user-turn",
+            author: { role: "user" },
+            content: { parts: ["Implement the targeted change and report substantive output."] },
+            status: "finished_successfully",
+          },
+        };
+      }
+      return responseJson({
+        mapping,
+        current_node: "assistant-running",
+        update_time: 1784160000,
+        gizmo_id: null,
+      });
+    });
+
+    const result = await executeChatGptBrowserActionInPage(freeTierAction({
+      operation: "conversation.reply",
+      target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
+      submit_policy: "submit_once",
+    }), []);
+
+    expect(result).toMatchObject({
+      ok: true,
+      outcome: "submitted",
+      provider_conversation_id: "conversation-1",
+      provider_turn_id: "new-user-turn",
+      observed_model: "ChatGPT",
+      observed_effort: "Standard",
     });
     expect(reads).toBeGreaterThanOrEqual(2);
   });

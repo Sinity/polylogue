@@ -26,6 +26,7 @@ export default [
         location: "readonly",
         PointerEvent: "readonly",
         MouseEvent: "readonly",
+        KeyboardEvent: "readonly",
         DataTransfer: "readonly",
         File: "readonly",
         Event: "readonly",

@@ -187,7 +187,14 @@ def browser_action_capabilities() -> dict[str, object]:
                     "model_label": "GPT-5.6 Sol",
                     "effort_label": "Pro",
                     "project_targeting": "provider_route",
-                }
+                },
+                {
+                    "surface": "chat",
+                    "model_slug": "chatgpt-auto",
+                    "model_label": "ChatGPT",
+                    "effort_label": "Standard",
+                    "project_targeting": "provider_route",
+                },
             ],
         },
         "claude": {
