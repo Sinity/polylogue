@@ -9,6 +9,8 @@ roles whose ladder includes them.
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.mcp.declarations.adapter import register_declared_handler
@@ -16,11 +18,19 @@ from polylogue.mcp.declarations.models import mcp_role_allows
 from polylogue.mcp.payloads import MCPArchiveStatsPayload, MCPRootPayload, session_topology_payload
 
 if TYPE_CHECKING:
+    from polylogue.config import Config
     from polylogue.coordination import CoordinationEnvelopeCache
     from polylogue.maintenance.scope import MaintenanceScopeFilter
     from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
     from polylogue.surfaces.payloads import ContextPreambleProjectState
+
+
+@dataclass(frozen=True)
+class _EmbeddingStatusEnv:
+    """Adapts ``ServerCallbacks`` config access to ``embedding_status_payload``'s ``_HasConfig`` protocol."""
+
+    config: Config
 
 
 def _object_ref(ref: str) -> str:
@@ -130,6 +140,297 @@ async def _query_sessions(
             await transaction.run(
                 lambda archive: archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
             )
+        )
+
+
+#: ``query(projection=..., ...)`` values that list a durable personal-state
+#: record kind rather than an archive content unit. Restores read access the
+#: retired per-tool registrars (``server_mutation_tools.py``,
+#: ``server_personal_state_tools.py``, ``server_tools.py``'s
+#: ``blackboard_list``) used to provide -- the underlying facade calls never
+#: moved.
+_PERSONAL_STATE_PROJECTIONS = frozenset(
+    {"marks", "annotations", "saved_views", "recall_packs", "workspaces", "corrections", "blackboard"}
+)
+
+#: ``query(projection=..., ...)`` values that compile a distilled insight
+#: report over a matched session scope, rather than listing content units.
+_INSIGHT_PROJECTIONS = frozenset({"postmortem", "pathologies", "abandoned_sessions", "stuck_sessions"})
+
+
+def _saved_view_payload(row: dict[str, str]) -> Any:
+    from polylogue.mcp.payloads import MCPSavedViewPayload
+
+    try:
+        query = json.loads(row["query_json"])
+    except (json.JSONDecodeError, TypeError):
+        query = {}
+    if not isinstance(query, dict):
+        query = {}
+    return MCPSavedViewPayload(view_id=row["view_id"], name=row["name"], query=query, created_at=row["created_at"])
+
+
+def _recall_pack_payload(row: dict[str, str]) -> Any:
+    from polylogue.mcp.payloads import MCPRecallPackPayload
+
+    try:
+        session_ids = json.loads(row["session_ids_json"])
+    except (json.JSONDecodeError, TypeError):
+        session_ids = []
+    if not isinstance(session_ids, list):
+        session_ids = []
+    try:
+        payload = json.loads(row["payload_json"])
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return MCPRecallPackPayload(
+        pack_id=row["pack_id"],
+        label=row["label"],
+        session_ids=tuple(str(item) for item in session_ids),
+        payload=payload,
+        created_at=row["created_at"],
+    )
+
+
+def _workspace_payload(row: dict[str, str]) -> Any:
+    from polylogue.mcp.payloads import MCPReaderWorkspacePayload
+
+    try:
+        open_targets = json.loads(row["open_targets_json"])
+    except (json.JSONDecodeError, TypeError):
+        open_targets = []
+    if not isinstance(open_targets, list):
+        open_targets = []
+    try:
+        layout = json.loads(row["layout_json"])
+    except (json.JSONDecodeError, TypeError):
+        layout = {}
+    if not isinstance(layout, dict):
+        layout = {}
+    try:
+        active_target = json.loads(row["active_target_json"])
+    except (json.JSONDecodeError, TypeError):
+        active_target = {}
+    if not isinstance(active_target, dict):
+        active_target = {}
+    return MCPReaderWorkspacePayload(
+        workspace_id=row["workspace_id"],
+        name=row["name"],
+        mode=row["mode"],
+        open_targets=tuple(item for item in open_targets if isinstance(item, dict)),
+        layout=layout,
+        active_target=active_target,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limit: int | None) -> str:
+    """``query(projection=<personal-state kind>, ...)`` -- list durable personal-state records.
+
+    Thin dispatch onto the already-live, already-tested ``Polylogue`` list
+    facade methods. Offset pagination is not yet exposed here, mirroring the
+    ``projection="sessions"`` precedent (also fixed at offset 0).
+    """
+    from polylogue.mcp.archive_support import blackboard_note_payload
+    from polylogue.mcp.mutation_support import page_items
+    from polylogue.mcp.payloads import (
+        MCPBlackboardNoteListPayload,
+        MCPReaderWorkspaceListPayload,
+        MCPRecallPackListPayload,
+        MCPSavedViewListPayload,
+        MCPUserAnnotationListPayload,
+        MCPUserAnnotationPayload,
+        MCPUserMarkListPayload,
+        MCPUserMarkPayload,
+    )
+
+    poly = hooks.get_polylogue()
+    clamped_limit = hooks.clamp_limit(limit)
+
+    with hooks.response_context("query", {"projection": projection, "limit": clamped_limit}):
+        if projection == "marks":
+            rows = await poly.list_marks()
+            mark_items = tuple(
+                MCPUserMarkPayload(
+                    target_type=row["target_type"],
+                    target_id=row["target_id"],
+                    session_id=row["session_id"],
+                    message_id=row.get("message_id") or None,
+                    mark_type=row["mark_type"],
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            )
+            mark_page, mark_total, mark_offset, mark_next_offset = page_items(mark_items, limit=clamped_limit, offset=0)
+            return hooks.json_payload(
+                MCPUserMarkListPayload(
+                    items=mark_page,
+                    total=mark_total,
+                    limit=clamped_limit,
+                    offset=mark_offset,
+                    next_offset=mark_next_offset,
+                )
+            )
+
+        if projection == "annotations":
+            rows = await poly.list_annotations()
+            annotation_items = tuple(
+                MCPUserAnnotationPayload(
+                    annotation_id=row["annotation_id"],
+                    target_type=row["target_type"],
+                    target_id=row["target_id"],
+                    session_id=row["session_id"],
+                    message_id=row.get("message_id") or None,
+                    note_text=row["note_text"],
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+                for row in rows
+            )
+            annotation_page, annotation_total, annotation_offset, annotation_next_offset = page_items(
+                annotation_items, limit=clamped_limit, offset=0
+            )
+            return hooks.json_payload(
+                MCPUserAnnotationListPayload(
+                    items=annotation_page,
+                    total=annotation_total,
+                    limit=clamped_limit,
+                    offset=annotation_offset,
+                    next_offset=annotation_next_offset,
+                )
+            )
+
+        if projection == "saved_views":
+            rows = await poly.list_views()
+            view_items = tuple(_saved_view_payload(row) for row in rows)
+            view_page, view_total, view_offset, view_next_offset = page_items(view_items, limit=clamped_limit, offset=0)
+            return hooks.json_payload(
+                MCPSavedViewListPayload(
+                    items=view_page,
+                    total=view_total,
+                    limit=clamped_limit,
+                    offset=view_offset,
+                    next_offset=view_next_offset,
+                )
+            )
+
+        if projection == "recall_packs":
+            rows = await poly.list_recall_packs()
+            pack_items = tuple(_recall_pack_payload(row) for row in rows)
+            pack_page, pack_total, pack_offset, pack_next_offset = page_items(pack_items, limit=clamped_limit, offset=0)
+            return hooks.json_payload(
+                MCPRecallPackListPayload(
+                    items=pack_page,
+                    total=pack_total,
+                    limit=clamped_limit,
+                    offset=pack_offset,
+                    next_offset=pack_next_offset,
+                )
+            )
+
+        if projection == "workspaces":
+            rows = await poly.list_workspaces()
+            workspace_items = tuple(_workspace_payload(row) for row in rows)
+            workspace_page, workspace_total, workspace_offset, workspace_next_offset = page_items(
+                workspace_items, limit=clamped_limit, offset=0
+            )
+            return hooks.json_payload(
+                MCPReaderWorkspaceListPayload(
+                    items=workspace_page,
+                    total=workspace_total,
+                    limit=clamped_limit,
+                    offset=workspace_offset,
+                    next_offset=workspace_next_offset,
+                )
+            )
+
+        if projection == "corrections":
+            corrections = await poly.list_corrections()
+            all_correction_items = [
+                {
+                    "session_id": correction.session_id,
+                    "kind": correction.kind.value,
+                    "payload": dict(correction.payload),
+                    "note": correction.note,
+                    "created_at": correction.created_at.isoformat(),
+                }
+                for correction in corrections
+            ]
+            correction_page = all_correction_items[:clamped_limit]
+            correction_next_offset = len(correction_page) if len(correction_page) < len(all_correction_items) else None
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "corrections": correction_page,
+                        "total": len(all_correction_items),
+                        "limit": clamped_limit,
+                        "offset": 0,
+                        "next_offset": correction_next_offset,
+                    }
+                )
+            )
+
+        assert projection == "blackboard", f"unhandled personal-state projection: {projection}"
+        notes = await poly.list_blackboard_notes(limit=clamped_limit)
+        note_items = tuple(blackboard_note_payload(note) for note in notes)
+        return hooks.json_payload(MCPBlackboardNoteListPayload(items=note_items, total=len(note_items)))
+
+
+async def _query_insight_projection(
+    hooks: ServerCallbacks,
+    projection: str,
+    *,
+    limit: int | None,
+    origin: str | None,
+    tag: str | None,
+    repo: str | None,
+    since: str | None,
+    until: str | None,
+) -> str:
+    """``query(projection="postmortem"|"pathologies"|"abandoned_sessions"|"stuck_sessions", ...)``.
+
+    ``postmortem``/``pathologies`` reuse the same filter-building scaffolding
+    ``_query_sessions`` does (``build_session_query_request`` ->
+    ``.build_spec(...)``), then drop the MCP default page limit before handing
+    the spec to the analysis-capped facade call -- otherwise the shared
+    ``build_spec`` page-size default (10) would silently cap the matched scope
+    to 10 sessions and defeat the facade's own 200-session analysis cap.
+    """
+    from dataclasses import replace
+
+    from polylogue.mcp.query_contracts import build_session_query_request
+
+    poly = hooks.get_polylogue()
+
+    with hooks.response_context(
+        "query",
+        {"projection": projection, "origin": origin, "tag": tag, "repo": repo, "since": since, "until": until},
+    ):
+        if projection in ("postmortem", "pathologies"):
+            request = build_session_query_request(origin=origin, tag=tag, repo=repo, since=since, until=until)
+            spec = replace(request.build_spec(hooks.clamp_limit), limit=None)
+            if projection == "postmortem":
+                bundle = await poly.postmortem_bundle(spec, limit=limit)
+                return hooks.json_payload(bundle, exclude_none=True)
+            report = await poly.pathology_report(spec, limit=limit)
+            return hooks.json_payload(report, exclude_none=True)
+
+        if projection == "abandoned_sessions":
+            abandoned = await poly.find_abandoned_sessions(since=since, repo_path=repo, limit=hooks.clamp_limit(limit))
+            return hooks.json_payload(MCPRootPayload(root=abandoned), exclude_none=True)
+
+        assert projection == "stuck_sessions", f"unhandled insight projection: {projection}"
+        from polylogue.insights.archive import SessionLatencyProfileInsightQuery
+
+        stuck = await poly.find_stuck_session_latency_profile_insights(
+            SessionLatencyProfileInsightQuery(origin=origin, since=since, until=until, limit=hooks.clamp_limit(limit))
+        )
+        return hooks.json_payload(
+            MCPRootPayload(root={"items": [insight.model_dump(mode="json") for insight in stuck], "total": len(stuck)}),
+            exclude_none=True,
         )
 
 
@@ -243,8 +544,23 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         unit-source rows: ``expression`` becomes a free-text ranked search
         (top-k) when given, or an exhaustive listing filtered by
         origin/tag/repo/since/until/sort/min_messages/max_messages/min_words
-        when omitted. Continuation is not yet implemented for this
-        projection.
+        when omitted.
+
+        ``projection`` also accepts durable personal-state kinds --
+        ``"marks"``, ``"annotations"``, ``"saved_views"``, ``"recall_packs"``,
+        ``"workspaces"``, ``"corrections"``, ``"blackboard"`` -- each listing
+        that record kind (unfiltered, ``limit``-bounded, offset fixed at 0).
+
+        ``projection="postmortem"``/``"pathologies"`` compile a distilled
+        postmortem bundle / pathology-finding report over the session scope
+        matched by origin/tag/repo/since/until (200-session analysis cap by
+        default; ``limit`` raises or lowers it). ``projection`` also accepts
+        ``"abandoned_sessions"`` (dangling-work terminal states) and
+        ``"stuck_sessions"`` (latency-profile-flagged stuck sessions), scoped
+        by the same origin/since/until filters.
+
+        Continuation is not yet implemented for any of these non-default
+        projections.
         """
 
         async def run() -> str:
@@ -268,6 +584,33 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     min_messages=min_messages,
                     max_messages=max_messages,
                     min_words=min_words,
+                )
+
+            if projection in _PERSONAL_STATE_PROJECTIONS:
+                if continuation is not None:
+                    return hooks.error_json(
+                        f"query(projection={projection!r}) does not support continuation yet",
+                        code="invalid_continuation",
+                        tool="query",
+                    )
+                return await _query_personal_state(hooks, projection, limit=limit)
+
+            if projection in _INSIGHT_PROJECTIONS:
+                if continuation is not None:
+                    return hooks.error_json(
+                        f"query(projection={projection!r}) does not support continuation yet",
+                        code="invalid_continuation",
+                        tool="query",
+                    )
+                return await _query_insight_projection(
+                    hooks,
+                    projection,
+                    limit=limit,
+                    origin=origin,
+                    tag=tag,
+                    repo=repo,
+                    since=since,
+                    until=until,
                 )
 
             from polylogue.archive.query.transaction import (
@@ -426,7 +769,18 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         include: tuple[str, ...] = (),
         ref: str | None = None,
     ) -> str:
-        """Report compact archive authority and readiness status."""
+        """Report compact archive authority and readiness status.
+
+        ``scope="sources"`` requires ``ref=<source_path>`` and returns bounded
+        freshness evidence for that one configured source (inherently
+        single-source, matching the retired ``named_source_freshness`` tool).
+        ``scope="embeddings"`` returns embedding catch-up/readiness status;
+        ``include=("detail",)`` and/or ``include=("bands",)`` add retrieval
+        detail and band statistics. ``scope="coordination"`` returns the
+        multi-agent coordination envelope (``include=("detail",)`` for the
+        undiscounted view). ``scope="operation"`` returns readiness plus MCP
+        call-delivery outbox pressure.
+        """
 
         async def run() -> str:
             root: dict[str, object] = {"scope": scope}
@@ -455,6 +809,37 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 else:
                     envelope = _coordination_cache().get_or_build(view="status", cwd=None, limit=10)
                 root["coordination"] = envelope.model_dump(mode="json", exclude_none=True)
+                return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
+
+            if scope == "sources":
+                if ref is None:
+                    return hooks.error_json(
+                        "status(scope='sources') requires ref=<source_path>",
+                        code="invalid_argument",
+                        tool="status",
+                    )
+                from polylogue.archive.query.source_freshness_surfaces import make_source_freshness_mcp_handler
+                from polylogue.mcp.archive_support import mcp_archive_root
+
+                freshness_handler = make_source_freshness_mcp_handler(lambda: mcp_archive_root(hooks.get_config()))
+                root["sources"] = await freshness_handler(ref)
+                return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
+
+            if scope == "embeddings":
+                from polylogue.readiness.capability import component_from_embedding_payload
+                from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+                embeddings_payload = embedding_status_payload(
+                    _EmbeddingStatusEnv(hooks.get_config()),
+                    include_retrieval_bands="bands" in include,
+                    include_detail="detail" in include,
+                )
+                embeddings_result = dict(embeddings_payload)
+                embedding_component = component_from_embedding_payload(embeddings_result)
+                embeddings_result["component_readiness"] = {
+                    embedding_component.component: embedding_component.to_dict()
+                }
+                root["embeddings"] = embeddings_result
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
             from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
