@@ -1033,8 +1033,10 @@ def test_periodic_raw_materialization_burst_continues_through_census_passes(
         RawMaterializationCounts(repaired_sessions=16, executed_plans=0, remaining_candidates=0),
     ]
     sleeps: list[float] = []
+    limits: list[int] = []
 
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
+        limits.append(int(cast(functools.partial[object], func).keywords["limit"]))
         return schedule.pop(0)
 
     async def fake_sleep(seconds: float) -> None:
@@ -1056,6 +1058,14 @@ def test_periodic_raw_materialization_burst_continues_through_census_passes(
         daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
         daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
         daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
+    ]
+    # Census-only results escalate the next pass to the census batch size;
+    # the repairing third pass would drop the following one back to the
+    # replay-sized limit.
+    assert limits == [
+        daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
+        daemon_cli._RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT,
+        daemon_cli._RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT,
     ]
 
 
