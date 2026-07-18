@@ -139,13 +139,28 @@ def active_index_db_path() -> Path:
 
 
 def browser_capture_spool_root() -> Path:
-    """Default browser-capture source artifact spool."""
-    return data_home() / "browser-capture"
+    """Browser-capture source artifact spool, scoped under the archive root.
+
+    Must track ``archive_root()`` (not ``data_home()``) so a
+    ``POLYLOGUE_ARCHIVE_ROOT`` override genuinely isolates a scratch/test
+    archive's capture spool from the default archive's.
+    """
+    return archive_root() / "browser-capture"
 
 
 def browser_capture_receiver_token_path() -> Path:
-    """Default path for the auto-minted browser-capture receiver bearer token."""
-    return state_home() / "browser-capture-receiver-token"
+    """Path for the auto-minted browser-capture receiver bearer token, scoped under the archive root.
+
+    Must track ``archive_root()`` (not ``state_home()``): ``receiver_identity()``
+    hashes this token to derive the receiver's stable id, so an archive-scoped
+    token is also what gives two archive roots distinct receiver identities.
+    Before this, two ``polylogued`` instances with different
+    ``POLYLOGUE_ARCHIVE_ROOT`` values shared one token and one receiver
+    identity, letting a scratch instance silently authenticate against (and,
+    via the extension's canonical-endpoint self-heal, silently reconnect to)
+    a different instance's receiver.
+    """
+    return archive_root() / "browser-capture-receiver-token"
 
 
 def archive_root() -> Path:

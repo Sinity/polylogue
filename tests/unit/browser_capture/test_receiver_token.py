@@ -20,11 +20,14 @@ from pathlib import Path
 from threading import Thread
 from typing import cast
 
+import pytest
+
 from polylogue.browser_capture.receiver import (
     load_or_mint_receiver_token,
     resolve_receiver_auth_token,
 )
 from polylogue.browser_capture.server import make_server
+from polylogue.paths import browser_capture_receiver_token_path, browser_capture_spool_root
 
 _EXTENSION_ORIGIN = "chrome-extension://polylogue-test"
 
@@ -83,6 +86,35 @@ def test_load_or_mint_receiver_token_rotate_changes_the_value(tmp_path: Path) ->
 
     assert rotated != original
     assert reloaded == rotated
+
+
+def test_default_token_and_spool_paths_are_scoped_to_archive_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two POLYLOGUE_ARCHIVE_ROOT values must never resolve to the same
+    default token file (polylogue-x2q3): a scratch archive that collides on
+    port with the real daemon must not silently authenticate against it.
+    """
+    root_a = tmp_path / "archive-a"
+    root_b = tmp_path / "archive-b"
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root_a))
+    token_path_a = browser_capture_receiver_token_path()
+    spool_root_a = browser_capture_spool_root()
+    token_a = load_or_mint_receiver_token()
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root_b))
+    token_path_b = browser_capture_receiver_token_path()
+    spool_root_b = browser_capture_spool_root()
+    token_b = load_or_mint_receiver_token()
+
+    assert token_path_a != token_path_b
+    assert spool_root_a != spool_root_b
+    assert token_a != token_b
+    assert root_a in token_path_a.parents
+    assert root_b in token_path_b.parents
+    assert root_a in spool_root_a.parents
+    assert root_b in spool_root_b.parents
 
 
 def test_resolve_receiver_auth_token_prefers_explicit_token(tmp_path: Path) -> None:
