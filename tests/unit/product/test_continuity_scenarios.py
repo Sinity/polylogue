@@ -1,113 +1,242 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from copy import deepcopy
 
-from devtools.continuity_replay import evaluate_replay
-from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS, continuity_scenario
+from devtools.continuity_replay import (
+    compare_observed_facts,
+    grade_incident_attempt,
+    materialize_route_arguments,
+    project_fact,
+)
+from polylogue.core.json import require_json_document
+from polylogue.product.continuity_scenarios import (
+    CONTINUITY_SCENARIOS,
+    ContinuityFactProjection,
+    continuity_scenario,
+)
+from polylogue.product.workflows import QUERY_ACTION_WORKFLOW_BY_ID
+from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
+from tests.infra.archive_scenarios import ScenarioContentBlock
+from tests.infra.continuity import load_continuity_catalog
 
-FIXTURE = json.loads((Path(__file__).parents[2] / "data" / "continuity" / "incident.json").read_text(encoding="utf-8"))
+_EXPECTED_SCENARIOS = {
+    "resume",
+    "forensic-debug",
+    "prior-art",
+    "decision",
+    "postmortem",
+    "cost",
+    "self-inspection",
+    "parallel-claude-incident",
+}
 
 
-def test_continuity_catalog_contains_all_operator_jobs_and_incident_variant() -> None:
-    assert {scenario.scenario_id for scenario in CONTINUITY_SCENARIOS} == {
-        "resume",
-        "forensic-debug",
-        "prior-art",
-        "decision",
-        "postmortem",
-        "cost",
-        "self-inspection",
-        "mcp-query-transaction",
-        "parallel-claude-incident",
+def test_continuity_catalog_extends_existing_scenario_source_seam() -> None:
+    assert {scenario.scenario_id for scenario in CONTINUITY_SCENARIOS} == _EXPECTED_SCENARIOS
+    for scenario in CONTINUITY_SCENARIOS:
+        assert isinstance(scenario, NamedScenarioSource)
+        assert scenario.projection_source_kind is ScenarioProjectionSourceKind.VALIDATION_LANE
+        assert scenario.privacy_level == "synthetic"
+        assert scenario.operator_question
+        assert scenario.route_steps
+        assert scenario.fact_projections
+        assert scenario.required_facts == tuple(fact.name for fact in scenario.fact_projections)
+        payload = scenario.scenario_payload()
+        assert payload["fixture_key"] == scenario.scenario_id
+        assert payload["operator_question"] == scenario.operator_question
+        assert payload["route_steps"]
+        assert payload["fact_projections"]
+
+
+def test_declarations_use_only_allowed_public_tools_and_existing_workflows() -> None:
+    for scenario in CONTINUITY_SCENARIOS:
+        route_tools = {step.tool for step in scenario.route_steps}
+        assert route_tools == set(scenario.allowed_query_surfaces)
+        assert set(scenario.workflow_ids) <= set(QUERY_ACTION_WORKFLOW_BY_ID)
+        assert len(scenario.required_facts) == len(set(scenario.required_facts))
+        assert scenario.canonical_plan_families
+        assert scenario.route_plan_signature in scenario.equivalent_plan_signatures
+        assert scenario.discovery_requirements
+        assert scenario.coverage_inventory
+        assert scenario.result_semantics.target_population
+        assert scenario.result_semantics.evidence_contract
+        assert scenario.stop_conditions
+        assert scenario.failure_taxonomy
+        assert scenario.mutation_cases
+        for step in scenario.route_steps:
+            if step.paginate:
+                assert step.item_identity_path
+                expression = step.argument_dict().get("expression")
+                assert isinstance(expression, str)
+                unit = expression.split(maxsplit=1)[0]
+                assert step.exact_count_probe is (unit in {"messages", "actions", "assertions", "files"})
+
+
+def test_independent_manifest_matches_every_declared_fact_inventory() -> None:
+    catalog = load_continuity_catalog()
+    oracles = catalog["oracles"]
+    assert isinstance(oracles, dict)
+    assert set(oracles) == _EXPECTED_SCENARIOS
+    for scenario in CONTINUITY_SCENARIOS:
+        oracle = oracles[scenario.fixture_key]
+        assert isinstance(oracle, dict)
+        facts = oracle["facts"]
+        assert isinstance(facts, dict)
+        assert set(facts) == set(scenario.required_facts)
+        assert oracle["source_refs"]
+
+
+def test_parallel_incident_curriculum_keeps_features_and_expected_grades_independent() -> None:
+    catalog = load_continuity_catalog()
+    corpus = require_json_document(catalog["corpus"], context="continuity corpus")
+    incident = require_json_document(corpus["parallel_incident"], context="incident corpus")
+    curriculum = incident["attempt_curriculum"]
+    assert isinstance(curriculum, list)
+    assert len(curriculum) == 6
+    for item in curriculum:
+        record = require_json_document(item, context="incident curriculum record")
+        assert "grade" not in record
+        assert "expected" not in record
+
+    oracles = require_json_document(catalog["oracles"], context="continuity oracles")
+    oracle = require_json_document(oracles["parallel-claude-incident"], context="incident oracle")
+    grades = require_json_document(oracle["attempt_grades"], context="incident attempt grades")
+    assert set(grades) == {
+        "candidate-list",
+        "exact-operator-phrase",
+        "sonnet-lexical-proxy",
+        "sessions-only-query",
+        "correct-topology",
+        "correct-delegation",
     }
-    assert all(scenario.required_facts for scenario in CONTINUITY_SCENARIOS)
-    assert all(scenario.canonical_plan_families for scenario in CONTINUITY_SCENARIOS)
-    assert all(scenario.mutation_cases for scenario in CONTINUITY_SCENARIOS)
 
 
-def test_oracle_is_independent_and_classifies_transport_failures() -> None:
-    fixture = {"resume": ["session:resume-1"]}
-    scenario = continuity_scenario("resume")
-
-    assert scenario.classify(fixture, observed_refs=["session:resume-1"], calls=2) == "pass"
-    assert scenario.classify(fixture, observed_refs=[], calls=2, observed_failure="execution") == "execution"
-    assert scenario.classify(fixture, observed_refs=[], calls=11) == "discovery"
-
-
-def test_replay_emits_expected_and_observed_refs() -> None:
-    result = evaluate_replay(
-        "parallel-claude-incident",
-        {
-            "parallel-claude-incident": [
-                "session:coordinator",
-                "run:wf-1",
-                "commit:abc123",
-                "bead:xyz",
-            ]
-        },
-        {
-            "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
-            "calls": 7,
-        },
+def test_incident_attempt_grader_matches_t8t_failure_curriculum() -> None:
+    assert grade_incident_attempt({"query_shape": "candidate-list", "physical_size": "oversized"}) == (
+        "reasonable_oversized"
     )
-    assert result["classification"] == "pass"
-    assert result["expected_refs"] == result["observed_refs"]
-
-
-def test_incident_known_answer_preserves_independent_census() -> None:
-    result = evaluate_replay(
-        "parallel-claude-incident",
-        FIXTURE,
-        {
-            "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
-            "calls": 8,
-            "answer": {
-                "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
-                "run_ref": "wf_54d4fb2e-841",
-                "workflow_invocations": 4,
-                "call_keys": 50,
-                "attempt_transcripts": 91,
-                "result_records": 65,
-                "completed_call_keys": 49,
-                "unresolved_call_keys": 1,
-                "other_child_sessions": 38,
-                "source": "independent incident census",
-            },
-            "mutations": {
-                "lost-continuation-state": "detected",
-                "global-delegation-materialization": "detected",
-                "wrong-workflow-membership": "detected",
-            },
-        },
+    assert grade_incident_attempt({"query_shape": "exact-operator-phrase", "corpus_match": "false"}) == (
+        "wrong_corpus_assumption"
     )
-
-    assert result["classification"] == "pass"
-    assert result["expected_answer"] == {
-        "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
-        "run_ref": "wf_54d4fb2e-841",
-        "workflow_invocations": 4,
-        "call_keys": 50,
-        "attempt_transcripts": 91,
-        "result_records": 65,
-        "completed_call_keys": 49,
-        "unresolved_call_keys": 1,
-        "other_child_sessions": 38,
-        "source": "independent incident census",
-    }
-
-
-def test_replay_rejects_duplicate_or_nonprogressing_results() -> None:
-    scenario = continuity_scenario("resume")
-    fixture = {"resume": ["session:resume-1"]}
-
-    assert scenario.classify(fixture, observed_refs=["session:resume-1", "session:resume-1"], calls=2) == "projection"
     assert (
-        scenario.classify(
-            fixture,
-            observed_refs=["session:resume-1"],
-            calls=2,
-            non_progressing_continuation=True,
-        )
-        == "execution"
+        grade_incident_attempt({"query_shape": "sonnet-lexical-proxy", "structure_discovery": "absent"})
+        == "weak_lexical_proxy"
     )
+    assert (
+        grade_incident_attempt({"query_shape": "sessions-only-query", "shipped_instruction": "advertised"})
+        == "product_induced_hidden_grammar"
+    )
+    assert grade_incident_attempt({"query_shape": "correct-topology", "outcome": "transport-failure"}) == (
+        "execution_failure"
+    )
+    assert grade_incident_attempt({"query_shape": "correct-delegation", "outcome": "timeout"}) == ("execution_failure")
+    assert grade_incident_attempt({"query_shape": "sessions-only-query", "shipped_instruction": "absent"}) == (
+        "unreasonable_query"
+    )
+
+
+def test_route_templates_are_parameterized_by_the_caller_corpus() -> None:
+    catalog = load_continuity_catalog()
+    scenario = continuity_scenario("parallel-claude-incident")
+    [member_step, *_] = scenario.route_steps
+    default_arguments = materialize_route_arguments(member_step, catalog)
+    assert default_arguments["expression"] == (
+        'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
+    )
+
+    live_catalog = deepcopy(catalog)
+    live_corpus = require_json_document(live_catalog["corpus"], context="live corpus")
+    live_incident = require_json_document(live_corpus["parallel_incident"], context="live incident")
+    live_incident["run_ref"] = "wf_authorized_live_001"
+    live_arguments = materialize_route_arguments(member_step, live_catalog)
+    assert live_arguments["expression"] == (
+        'messages where text:parallel-child AND text:"workflow_run:wf_authorized_live_001"'
+    )
+
+
+def test_fact_projectors_cover_single_unique_count_and_regex_oracles() -> None:
+    observations = require_json_document(
+        {
+            "step": {
+                "items": [
+                    {"session_id": "s1", "text": "call_key:call-01 result_record:yes"},
+                    {"session_id": "s2", "text": "call_key:call-02 result_record:yes"},
+                    {"session_id": "s2", "text": "call_key:call-02"},
+                ]
+            }
+        },
+        context="projector observations",
+    )
+    assert (
+        project_fact(
+            ContinuityFactProjection("sessions", "step", ("items", "*", "session_id"), "unique_count"),
+            observations,
+        )
+        == 2
+    )
+    assert project_fact(
+        ContinuityFactProjection("ids", "step", ("items", "*", "session_id"), "unique_values"),
+        observations,
+    ) == ["s1", "s2"]
+    assert (
+        project_fact(
+            ContinuityFactProjection(
+                "call_keys",
+                "step",
+                ("items", "*", "text"),
+                "regex_unique_count",
+                r"call_key:(call-\d{2})",
+            ),
+            observations,
+        )
+        == 2
+    )
+    assert (
+        project_fact(
+            ContinuityFactProjection(
+                "results",
+                "step",
+                ("items", "*", "text"),
+                "regex_count",
+                r"result_record:yes",
+            ),
+            observations,
+        )
+        == 2
+    )
+
+
+def test_mutated_planted_fact_reports_exact_expected_and_observed_values() -> None:
+    diagnostics = compare_observed_facts(
+        expected={"attempt_transcripts": 92, "call_keys": 50},
+        observed={"attempt_transcripts": 91, "call_keys": 50},
+        source_refs=("fixture:corpus.parallel_incident",),
+    )
+    assert diagnostics == [
+        {
+            "kind": "fact_mismatch",
+            "failure_class": "projection",
+            "fact": "attempt_transcripts",
+            "expected": 92,
+            "observed": 91,
+            "source_refs": ["fixture:corpus.parallel_incident"],
+        }
+    ]
+
+
+def test_existing_archive_scenario_block_seam_can_plant_structural_failures() -> None:
+    payload = ScenarioContentBlock.tool_result(
+        "failed",
+        tool_name="Bash",
+        tool_id="call-1",
+        is_error=True,
+        exit_code=2,
+    ).to_payload()
+    assert payload == {
+        "type": "tool_result",
+        "text": "failed",
+        "tool_name": "Bash",
+        "tool_id": "call-1",
+        "tool_result_is_error": 1,
+        "tool_result_exit_code": 2,
+    }
