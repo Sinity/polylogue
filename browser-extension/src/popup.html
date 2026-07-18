@@ -283,11 +283,8 @@
         <div class="row"><span id="page" class="value provider-chip">Unknown</span><span id="fidelity-flag" class="state-chip warn" hidden>Partial fidelity</span></div>
         <p id="state">Checking receiver...</p>
         <p id="state-detail"></p>
-        <div class="row conversation-only"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
         <div class="row conversation-only"><span class="label">Captured / visible</span><span id="turns" class="value">--</span></div>
         <div class="row conversation-only"><span class="label">Cost / tokens</span><span id="cost-tokens" class="value">Unavailable</span></div>
-        <div class="row conversation-only"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
-        <div id="asset-failures" class="log-meta conversation-only"></div>
       </section>
 
       <section aria-label="Conversation controls">
@@ -305,6 +302,13 @@
 
       <details id="diagnostics">
         <summary>Diagnostics · leases, retries, request ids, receiver identity, backfill, raw logs</summary>
+
+        <section aria-labelledby="capture-detail-heading">
+          <div class="section-head"><strong id="capture-detail-heading">Capture detail</strong></div>
+          <div class="row conversation-only"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
+          <div class="row conversation-only"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
+          <div id="asset-failures" class="log-meta conversation-only"></div>
+        </section>
 
         <section aria-labelledby="receiver-heading">
           <div class="section-head"><strong id="receiver-heading">Paired receiver</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
