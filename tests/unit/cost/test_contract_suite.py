@@ -200,7 +200,6 @@ def test_estimated_status_signals_non_exact() -> None:
     """
     estimate = _priced_estimate()
     assert estimate.status in {"priced", "partial"}
-    assert estimate.status != "exact"
     # Confidence is bounded below 0.95 reserved for exact status.
     assert estimate.confidence < 0.95
 

@@ -215,9 +215,10 @@ def test_coordination_envelope_overlaps_independent_beads_probes(tmp_path: Path)
         }:
             calls.append(key)
             sleep(0.05)
-            if key[1] == "hooks":
+            subcommand: str = key[1]
+            if subcommand == "hooks":
                 return CommandResult(key, 0, '{"hooks": []}', "")
-            if key[1] == "gate":
+            if subcommand == "gate":
                 return CommandResult(key, 0, "[]", "")
             return CommandResult(key, 0, '{"available": true}', "")
         return CommandResult(key, 1, "", "unexpected command")
