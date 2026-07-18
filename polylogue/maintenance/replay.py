@@ -88,6 +88,14 @@ _CURSOR_TARGET_PREFIX: Final[str] = "target:"
 #: files. One JSON file per ``operation_id``.
 _STATE_DIRNAME: Final[str] = ".maintenance-state"
 
+#: Spill-cache bound for the offline ``rebuild-index`` command's one-shot,
+#: archive-wide census (``selected_raw_ids=None`` has no resource envelope,
+#: so this is independent of any envelope block). It only avoids the
+#: census-then-replay double parse for typical raws; oversized raws are
+#: deliberately still not cached (see ``_ParsedSessionSpill``), so the cache
+#: never becomes a second archive-wide materialization.
+_REBUILD_CENSUS_SPILL_CACHE_BYTES: Final[int] = 512 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Target dispatch
@@ -149,11 +157,13 @@ async def rebuild_index_from_source(
     # The caller owns page selection.  Do not widen its bounded page here:
     # revision backfill may still expand that page to a complete authority
     # cohort, which is required for correct newest-revision selection.
-    del ingest_workers, materialize
+    del materialize
     import asyncio
 
+    from polylogue.pipeline.services.process_pool import resolve_parse_worker_count
     from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 
+    resolved_ingest_workers = ingest_workers if ingest_workers is not None else resolve_parse_worker_count()
     if progress_callback is not None:
         progress_callback(0, "classifying retained raw revision cohorts")
     result = await asyncio.to_thread(
@@ -161,6 +171,8 @@ async def rebuild_index_from_source(
         Path(config.archive_root),
         selected_raw_ids=raw_ids,
         owned_inactive_generation=owned_inactive_generation,
+        max_cached_payload_bytes=_REBUILD_CENSUS_SPILL_CACHE_BYTES,
+        ingest_workers=resolved_ingest_workers,
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")
@@ -173,6 +185,7 @@ async def rebuild_index_from_source(
         "authority_selection_expanded": True,
         "scheduled_raw_count": len(raw_ids) if raw_ids is not None else None,
         "raw_batch_size": raw_batch_size,
+        "ingest_workers": resolved_ingest_workers,
     }
 
 

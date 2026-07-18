@@ -5570,11 +5570,24 @@ def repair_raw_materialization(
     source_root: Path | None = None,
     raw_artifact_limit: int | None = None,
     max_payload_bytes: int = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+    ingest_workers: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
-    """Converge retained raws through typed per-session revision authority."""
+    """Converge retained raws through typed per-session revision authority.
+
+    ``ingest_workers`` bounds how many processes parse independent raws
+    within one census/replay component in parallel; ``None`` resolves the
+    shared default (``POLYLOGUE_INGEST_PARSE_WORKERS`` / cpu-1). Parse is
+    read-only and authority-neutral; component classification and apply
+    order remain strictly sequential in this single writer regardless of
+    worker count.
+    """
     if max_payload_bytes < 1:
         raise ValueError("max_payload_bytes must be positive")
+    if ingest_workers is None:
+        from polylogue.pipeline.services.process_pool import resolve_parse_worker_count
+
+        ingest_workers = resolve_parse_worker_count()
     archive_root = _raw_materialization_archive_root(config)
     recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
     for recovered_census_id, recovered_scope in recovered_censuses:
@@ -5648,6 +5661,7 @@ def repair_raw_materialization(
                     archive_root,
                     selected_raw_ids=[seed],
                     max_payload_bytes=max_payload_bytes,
+                    ingest_workers=ingest_workers,
                 )
             except RawRevisionReplayResourceBlockedError as exc:
                 logger.warning(
@@ -6058,6 +6072,7 @@ def repair_raw_materialization(
                 archive_root,
                 selected_raw_ids=[raw_id],
                 max_payload_bytes=max_payload_bytes,
+                ingest_workers=ingest_workers,
             )
         except RawRevisionReplayResourceBlockedError as exc:
             metrics["raw_materialization_resource_blocked_count"] = max(
