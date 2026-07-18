@@ -104,6 +104,15 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional CSV of human labels. Defaults to ack-marker-calibration.labels.csv in --out-dir when present.",
     )
+    parser.add_argument(
+        "--materialize-evidence",
+        action="store_true",
+        help=(
+            "Register this run's structured-failure selection, matched rows, and headline numbers "
+            "as durable query/result-set/finding evidence in the archive's user tier (polylogue-rxdo.13). "
+            "Off by default; report generation stays read-only unless explicitly requested."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON report to stdout.")
     return parser
 
@@ -1174,6 +1183,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "consequential": sorted(_CONSEQUENTIAL_TOOLS),
             "other": "Any tool name outside the explicit benign/consequential methodology sets.",
         },
+        "evidence": {
+            "member_refs": sorted({f"message:{row['tool_result_message_id']}" for row in rows}),
+        },
         "calibration": calibration,
         "calibration_sample": [
             _calibration_row(sample, index) for index, sample in enumerate(calibration_sample, start=1)
@@ -1674,6 +1686,15 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"claim-vs-evidence: {exc}", file=sys.stderr)
         return 2
+    if parsed.materialize_evidence:
+        from devtools.claim_vs_evidence_evidence import materialize_claim_vs_evidence_evidence
+
+        evidence = materialize_claim_vs_evidence_evidence(
+            report,
+            archive_root=Path(report["archive_root"]),
+            now_ms=int(datetime.now(UTC).timestamp() * 1000),
+        )
+        print(f"materialized evidence: {json.dumps(evidence, indent=2, sort_keys=True)}", file=sys.stderr)
     if parsed.json:
         sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     elif parsed.out_dir is not None:
