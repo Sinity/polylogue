@@ -106,6 +106,7 @@ def build_coordination_envelope(
     detail: bool = False,
     runner: CommandRunner | None = None,
     stage_timings_ms: MutableMapping[str, float] | None = None,
+    archive_evidence_registry: StatusComponentRegistry | None = None,
 ) -> AgentCoordinationPayload:
     """Return a bounded, JSON-first coordination envelope for agents.
 
@@ -113,6 +114,12 @@ def build_coordination_envelope(
     intentionally not projected into the agent payload: timing collection is
     for the benchmark harness, while the compact payload remains bounded and
     semantically stable.
+
+    ``archive_evidence_registry``, when given, is a *persistent* registry
+    (see :class:`CoordinationEnvelopeCache`) reused across many calls to this
+    function instead of a fresh one built per call -- see
+    :func:`_bounded_stage` for what that buys (polylogue-20d.17 AC #6:
+    resumable detail collection).
     """
 
     now = datetime.now(UTC).isoformat()
@@ -188,6 +195,7 @@ def build_coordination_envelope(
         ),
         deadline_s=_ARCHIVE_EVIDENCE_DEADLINE_S,
         fallback=archive_evidence_fallback,
+        registry=archive_evidence_registry,
     )
     overlaps = _timed_stage(stage_timings_ms, "overlaps", lambda: _overlap_payloads(repo, work_item, peers, resources))
     advisories = _timed_stage(
@@ -268,6 +276,7 @@ def _bounded_stage(
     *,
     deadline_s: float,
     fallback: _StageResult,
+    registry: StatusComponentRegistry | None = None,
 ) -> _StageResult:
     """Execute one envelope stage under a deadline, falling back on timeout.
 
@@ -280,25 +289,76 @@ def _bounded_stage(
     deadline (no cooperative cancellation for a blocking SQLite query), but
     the caller gets control back with an explicit degraded result instead
     of waiting out however long the query takes.
+
+    ``registry``, when given, must already declare a component named
+    ``name`` and is reused as-is instead of a throwaway one built here --
+    ``call`` is then ignored (the registry's own collector recomputes what
+    it needs). Passing a *persistent* registry — one instance shared across
+    many calls to this stage, as :class:`CoordinationEnvelopeCache` does —
+    is what makes a slow attempt resumable (polylogue-20d.17 AC #6): a
+    second call that arrives while the first call's attempt is still
+    running observes ``refreshing`` immediately instead of starting a
+    duplicate query, and once the background attempt finishes, every
+    subsequent call reuses that result until its own TTL/fingerprint
+    expires — instead of the query being restarted from scratch, forever,
+    on every refresh tick, which is what an ephemeral per-call registry
+    (the default here) does when the caller itself is invoked repeatedly
+    faster than the query completes.
     """
-    registry = StatusComponentRegistry(
-        [
-            StatusComponentSpec(
-                name=name,
-                scope="coordination",
-                collector=call,
-                deadline_s=deadline_s,
-                cost_class="expensive",
-            )
-        ]
-    )
+    owned_registry = registry
+    if owned_registry is None:
+        owned_registry = StatusComponentRegistry(
+            [
+                StatusComponentSpec(
+                    name=name,
+                    scope="coordination",
+                    collector=call,
+                    deadline_s=deadline_s,
+                    cost_class="expensive",
+                )
+            ]
+        )
     started = perf_counter()
-    snapshot = registry.collect()[name]
+    snapshot = owned_registry.collect(names=[name])[name]
     if timings is not None:
         timings[name] = round((perf_counter() - started) * 1_000, 3)
     if snapshot.state in ("fresh", "stale") and snapshot.value is not None:
         return cast(_StageResult, snapshot.value)
     return fallback
+
+
+_ArchiveEvidenceResult = tuple[
+    tuple[CoordinationSessionTreePayload, ...],
+    tuple[CoordinationActivityEpisodePayload, ...],
+    tuple[CoordinationSubagentExchangePayload, ...],
+    tuple[CoordinationProofRefPayload, ...],
+    tuple[CoordinationContextFlowRefPayload, ...],
+    str | None,
+]
+
+
+def _collect_archive_evidence(root_cwd: Path, runner: CommandRunner, limit: int) -> _ArchiveEvidenceResult:
+    """Recompute this stage's own inputs and run the archive-evidence query.
+
+    Only used by :class:`CoordinationEnvelopeCache`'s persistent
+    archive_evidence registry: a spec's collector is fixed at registry
+    construction time, so it cannot be handed a specific
+    :func:`build_coordination_envelope` call's already-computed
+    ``repo``/``self_payload``/``archive`` — it derives its own instead. That
+    repeats a few cheap local git/ps calls (unlike the SQL scan this exists
+    to bound) each time a new attempt actually starts, which only happens on
+    a genuine refresh (TTL/fingerprint expiry or no cached value yet), not
+    on every poll.
+    """
+    repo = _repo_payload(root_cwd, runner)
+    process_result, process_rows = _process_snapshot(runner)
+    self_payload = _self_payload(root_cwd, repo, process_rows, process_result)
+    resources = _resource_scope_payloads(
+        process_rows, process_result, root_cwd, archive_resource=_configured_archive_resource()
+    )
+    archive = _archive_payload(resources)
+    peer_limit = max(1, min(limit, 50))
+    return _archive_evidence_payloads(repo, self_payload, archive, limit=peer_limit)
 
 
 def _coordination_fingerprint(root_cwd: Path) -> str:
@@ -343,12 +403,51 @@ class CoordinationEnvelopeCache:
 
     _TTL_S = 1.0
     _DEADLINE_S = 15.0
+    _ARCHIVE_EVIDENCE_TTL_S = _ARCHIVE_EVIDENCE_DEADLINE_S * 4
 
     def __init__(self) -> None:
         self._registries: dict[tuple[str, str, int], StatusComponentRegistry] = {}
-        self._lock = threading.Lock()
+        self._archive_evidence_registries: dict[str, StatusComponentRegistry] = {}
+        # RLock, not Lock: get_or_build calls _archive_evidence_registry
+        # while already holding this lock, and that method re-acquires it.
+        self._lock = threading.RLock()
 
-    def get_or_build(self, *, view: CoordinationView, cwd: Path | None, limit: int) -> AgentCoordinationPayload:
+    def _archive_evidence_registry(self, root_cwd: Path, runner: CommandRunner, limit: int) -> StatusComponentRegistry:
+        """One persistent registry per cwd, reused across every envelope rebuild.
+
+        This is the resumability fix (polylogue-20d.17 AC #6): without it,
+        each envelope rebuild (every ``_TTL_S`` under sustained polling) built
+        its own throwaway :func:`_bounded_stage` registry, so a genuinely
+        slow ``archive_evidence`` query got restarted from scratch on every
+        tick and could never finish within any single 3s-bounded attempt —
+        forever falling back to the degraded/empty result. A persistent
+        registry lets a still-running attempt be observed (``refreshing``)
+        by later ticks instead of duplicated, and once it does finish, the
+        real result is reused until its own TTL/fingerprint expires.
+        """
+        key = str(root_cwd)
+        with self._lock:
+            registry = self._archive_evidence_registries.get(key)
+            if registry is None:
+                registry = StatusComponentRegistry(
+                    [
+                        StatusComponentSpec(
+                            name="archive_evidence",
+                            scope="coordination",
+                            collector=lambda: _collect_archive_evidence(root_cwd, runner, limit),
+                            deadline_s=_ARCHIVE_EVIDENCE_DEADLINE_S,
+                            ttl_s=self._ARCHIVE_EVIDENCE_TTL_S,
+                            fingerprint=lambda: _coordination_fingerprint(root_cwd),
+                            cost_class="expensive",
+                        )
+                    ]
+                )
+                self._archive_evidence_registries[key] = registry
+        return registry
+
+    def get_or_build(
+        self, *, view: CoordinationView, cwd: Path | None, limit: int, runner: CommandRunner | None = None
+    ) -> AgentCoordinationPayload:
         """Return the compact envelope for ``(view, cwd, limit)``, cached and fingerprinted.
 
         Callers that need a live, uncached read (``detail`` or an explicit
@@ -356,17 +455,24 @@ class CoordinationEnvelopeCache:
         directly instead of this method.
         """
         root_cwd = (cwd or Path.cwd()).resolve()
+        command_runner = runner or _run_command
         key = (view, str(root_cwd), limit)
         with self._lock:
             registry = self._registries.get(key)
             if registry is None:
+                archive_evidence_registry = self._archive_evidence_registry(root_cwd, command_runner, limit)
                 registry = StatusComponentRegistry(
                     [
                         StatusComponentSpec(
                             name="envelope",
                             scope="coordination",
                             collector=lambda: build_coordination_envelope(
-                                view=view, cwd=root_cwd, limit=limit, detail=False
+                                view=view,
+                                cwd=root_cwd,
+                                limit=limit,
+                                detail=False,
+                                runner=command_runner,
+                                archive_evidence_registry=archive_evidence_registry,
                             ),
                             deadline_s=self._DEADLINE_S,
                             ttl_s=self._TTL_S,
@@ -379,7 +485,7 @@ class CoordinationEnvelopeCache:
         snapshot = registry.collect()["envelope"]
         if snapshot.value is not None:
             return cast(AgentCoordinationPayload, snapshot.value)
-        return build_coordination_envelope(view=view, cwd=root_cwd, limit=limit, detail=False)
+        return build_coordination_envelope(view=view, cwd=root_cwd, limit=limit, detail=False, runner=command_runner)
 
 
 def project_coordination_envelope(

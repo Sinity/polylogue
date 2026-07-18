@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from time import sleep
 
 import pytest
 
+from polylogue.coordination import envelope
 from polylogue.coordination.envelope import (
     CommandResult,
     CoordinationEnvelopeCache,
@@ -974,7 +976,7 @@ def test_coordination_envelope_cache_reuses_within_ttl_and_key(tmp_path: Path, m
 
     calls: list[tuple[str, int]] = []
 
-    def fake_build(*, view: str, cwd: Path | None, limit: int, detail: bool) -> object:
+    def fake_build(*, view: str, cwd: Path | None, limit: int, detail: bool, **kwargs: object) -> object:
         calls.append((view, limit))
         return object()
 
@@ -1006,7 +1008,7 @@ def test_coordination_envelope_cache_invalidates_on_fingerprint_change(
 
     calls: list[int] = []
 
-    def fake_build(*, view: str, cwd: Path | None, limit: int, detail: bool) -> object:
+    def fake_build(*, view: str, cwd: Path | None, limit: int, detail: bool, **kwargs: object) -> object:
         calls.append(len(calls))
         return object()
 
@@ -1020,3 +1022,73 @@ def test_coordination_envelope_cache_invalidates_on_fingerprint_change(
     (root / ".git" / "HEAD").write_text("ref: refs/heads/other-branch\n")
     cache.get_or_build(view="status", cwd=root, limit=5)
     assert len(calls) == 2  # fingerprint changed -> forced refresh despite unexpired TTL
+
+
+def test_coordination_envelope_cache_resumes_slow_archive_evidence_across_ticks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow archive_evidence query must not be restarted from scratch on
+    every refresh tick (polylogue-20d.17 AC #6: resumable detail
+    collection).
+
+    Before this fix, ``_bounded_stage`` built a throwaway
+    ``StatusComponentRegistry`` per call, so a query slower than the
+    deadline could never finish within any single bounded attempt: every
+    tick abandoned the previous attempt's thread (which kept running
+    unobserved) and launched a fresh, equally-doomed one, forever falling
+    back to the degraded result. A persistent per-cwd registry lets a later
+    tick observe ("refreshing") an attempt an earlier tick started, and
+    reuse its result once it actually finishes.
+    """
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    _seed_coordination_archive(index)
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope._ARCHIVE_EVIDENCE_DEADLINE_S", 0.05)
+
+    calls = {"n": 0}
+    release = threading.Event()
+    real_archive_evidence_payloads = envelope._archive_evidence_payloads
+
+    def slow_archive_evidence_payloads(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        release.wait(timeout=5.0)
+        return real_archive_evidence_payloads(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("polylogue.coordination.envelope._archive_evidence_payloads", slow_archive_evidence_payloads)
+
+    cache = CoordinationEnvelopeCache()
+    runner = FakeRunner(root, beads_rows=None)
+
+    # Tick 1: the collector starts, blocks past the (patched, 0.05s) deadline.
+    registry = cache._archive_evidence_registry(root, runner, 4)
+    first = registry.collect(names=["archive_evidence"])["archive_evidence"]
+    assert first.state == "timed_out"
+    assert calls["n"] == 1
+
+    # Tick 2 -- as get_or_build's own outer envelope collector would trigger
+    # on its next refresh -- reuses the SAME registry for this cwd and must
+    # observe the still-running attempt instead of launching a second one.
+    second_registry = cache._archive_evidence_registry(root, runner, 4)
+    assert second_registry is registry
+    second = second_registry.collect(names=["archive_evidence"])["archive_evidence"]
+    assert second.state == "refreshing"
+    assert calls["n"] == 1  # still just the one attempt -- not duplicated
+
+    release.set()
+    for _ in range(200):
+        if registry.last_good("archive_evidence") is not None:
+            break
+        sleep(0.01)
+
+    third = registry.collect(names=["archive_evidence"])["archive_evidence"]
+    assert third.state == "fresh"
+    assert calls["n"] == 1  # the one attempt that was allowed to finish
+    session_trees, activity_episodes, _subagents, _proofs, _context_refs, degraded_reason = third.value
+    assert degraded_reason is None  # the real (non-fallback) result was reused
+    assert session_trees or activity_episodes
