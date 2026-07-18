@@ -226,6 +226,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionWorkEvent,
     _timestamp_ms,
     read_archive_session_envelope,
+    read_archive_session_page,
     read_insight_materialization,
     read_session_phases,
     read_session_work_events,
@@ -3421,6 +3422,16 @@ class ArchiveStore:
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
         return read_archive_session_envelope(self._conn, session_id)
+
+    def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
+        """Read a bounded ``[offset, offset + limit)`` page of a session's transcript.
+
+        See ``read_archive_session_page`` for the bounding contract (ordinary
+        sessions compose only the requested window; prefix-sharing lineage
+        children fall back to full composition, matching the DB-backed
+        reader's own established constraint).
+        """
+        return read_archive_session_page(self._conn, session_id, limit=limit, offset=offset)
 
     def has_prefix_lineage(self, session_id: str) -> bool:
         """Return whether a session's logical transcript inherits a prefix."""

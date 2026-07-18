@@ -2083,6 +2083,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _serve_webui_session_read(self, session_id: str) -> None:
         from polylogue.daemon.webui import (
+            SESSION_READ_MESSAGE_LIMIT,
             WebUIAssetBundle,
             WebUIAssetError,
             render_session_read_page,
@@ -2107,7 +2108,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
             return
         try:
-            session = self._do_archive_get_session(archive_root, session_id)
+            session = self._do_archive_get_session(archive_root, session_id, limit=SESSION_READ_MESSAGE_LIMIT, offset=0)
         except sqlite3.OperationalError as exc:
             logger.exception("webui session read failed")
             status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
@@ -3443,7 +3444,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "total": len(conv.messages),
         }
 
-    def _do_archive_get_session(self, archive_root: Path, conv_id: str) -> object | None:
+    def _do_archive_get_session(
+        self,
+        archive_root: Path,
+        conv_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> object | None:
+        """Read one session envelope, optionally bounded to a message page.
+
+        ``limit=None`` (the default) composes the full transcript, for
+        callers that need it whole (the JSON session API, stack, compare).
+        Passing ``limit`` composes only ``[offset, offset + limit)`` at the
+        storage layer (``read_session_page``) so large-session first paint
+        stays bounded by the page size rather than the total message count
+        (polylogue-07g6) -- ``message_count``/``total`` below still report
+        the TRUE total either way.
+        """
         with archive_read_context(
             archive_root,
             operation="http.archive.read",
@@ -3452,7 +3470,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
-                envelope = archive.read_session(session_id)
+                envelope = (
+                    archive.read_session_page(session_id, limit=limit, offset=offset)
+                    if limit is not None
+                    else archive.read_session(session_id)
+                )
                 summary = archive.read_summary(session_id)
             except KeyError:
                 return None
@@ -3490,6 +3512,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             for att in envelope.orphan_attachments
         )
+        total_message_count = (
+            envelope.total_message_count if envelope.total_message_count is not None else len(messages)
+        )
         return {
             "id": session_id,
             "session_id": session_id,
@@ -3501,7 +3526,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "actions": _dump_actions(reader_session_actions()),
             "created_at": created_at,
             "updated_at": updated_at,
-            "message_count": len(messages),
+            "message_count": total_message_count,
             "word_count": word_count,
             "messages": messages,
             "attachments": session_attachments,
@@ -3514,7 +3539,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "model": None,
             "flags": None,
             "summary": None,
-            "total": len(messages),
+            "total": total_message_count,
         }
 
     def _archive_semantic_card_placement(self, envelope: ArchiveSessionEnvelope) -> SemanticCardPlacement:
@@ -4592,6 +4617,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
+        """Return a bounded ``[offset, offset + limit)`` page of a session's messages.
+
+        Composes only the requested window at the storage layer
+        (``read_session_page``) instead of the whole transcript, so repeated
+        "load more" / deep-link-auto-page fetches (webui/src/islands/session-read.tsx)
+        each cost O(page size), not O(session size) (polylogue-07g6). Semantic
+        card placement is computed over that same bounded page, matching the
+        CLI's own paginated ``messages`` read view precedent
+        (``polylogue/cli/messages.py``), which already builds its transcript
+        from a bounded page rather than the full session.
+        """
         with archive_read_context(
             archive_root,
             operation="http.archive.read",
@@ -4600,11 +4636,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
-                envelope = archive.read_session(session_id)
+                envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
             except KeyError:
                 return {"messages": [], "total": 0, "limit": limit, "offset": offset}
-        messages = list(envelope.messages)
-        page = messages[offset : offset + limit]
+        page = list(envelope.messages)
+        total = envelope.total_message_count if envelope.total_message_count is not None else len(page)
         placement = self._archive_semantic_card_placement(envelope)
         return {
             "messages": [
@@ -4618,7 +4654,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 for message in page
             ],
             "semantic_entries": list(placement.session_entries),
-            "total": len(messages),
+            "total": total,
             "limit": limit,
             "offset": offset,
         }

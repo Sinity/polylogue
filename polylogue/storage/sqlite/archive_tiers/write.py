@@ -17,7 +17,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -174,6 +174,13 @@ class ArchiveSessionEnvelope:
     # or ordinary child from an unavailable composition signal.
     lineage_inheritance: str = "none"
     lineage_branch_point_message_id: str | None = None
+    # The TRUE composed transcript length. ``None`` (the default) means
+    # ``messages`` already holds every composed message, i.e. an ordinary
+    # unbounded read via ``read_archive_session_envelope``. A bounded page
+    # read (``read_archive_session_page``) sets this to the full count while
+    # ``messages`` holds only the requested window, so callers can page
+    # without materializing the whole transcript.
+    total_message_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1061,6 +1068,263 @@ def read_archive_session_envelope(
         git_repository_url=session["git_repository_url"],
         provider_project_ref=session["provider_project_ref"],
         orphan_attachments=tuple(attachments_by_message.get(None, ())),
+    )
+
+
+def _row_to_archive_message(
+    row: sqlite3.Row,
+    session_id: str,
+    *,
+    blocks: tuple[ArchiveBlockRow, ...],
+    attachments: tuple[ArchiveAttachmentRow, ...],
+) -> ArchiveMessageRow:
+    return ArchiveMessageRow(
+        message_id=row["message_id"],
+        native_id=row["native_id"],
+        role=row["role"],
+        position=row["position"],
+        variant_index=row["variant_index"],
+        is_active_path=bool(row["is_active_path"]),
+        is_active_leaf=bool(row["is_active_leaf"]),
+        blocks=blocks,
+        message_type=row["message_type"],
+        material_origin=row["material_origin"],
+        word_count=int(row["word_count"] or 0),
+        has_tool_use=bool(row["has_tool_use"]),
+        has_thinking=bool(row["has_thinking"]),
+        has_paste=bool(row["has_paste"]),
+        paste_boundary_state=row["paste_boundary_state"],
+        occurred_at=_iso_from_ms(row["occurred_at_ms"]),
+        duration_ms=int(row["duration_ms"] or 0),
+        parent_message_id=row["parent_message_id"],
+        attachments=attachments,
+        source_session_id=session_id,
+    )
+
+
+def _fetch_message_window(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    offset: int,
+    limit: int,
+    upto_position: int | None = None,
+    upto_variant_index: int | None = None,
+) -> list[ArchiveMessageRow]:
+    """Bounded ``[offset, offset + limit)`` window of a session's OWN rows.
+
+    Batches block/attachment reads for exactly the returned messages instead
+    of the full session's N+1-per-message pattern in
+    ``read_archive_session_envelope``, since the window is small by
+    construction (``read_archive_session_page``'s whole point).
+    """
+    if limit <= 0:
+        return []
+    upto_clause = ""
+    upto_params: tuple[int, int] | tuple[()] = ()
+    if upto_position is not None and upto_variant_index is not None:
+        upto_clause = " AND (position, variant_index) <= (?, ?)"
+        upto_params = (upto_position, upto_variant_index)
+    message_rows = conn.execute(
+        f"""
+        SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
+               message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
+               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id
+        FROM messages
+        WHERE session_id = ?{upto_clause}
+        ORDER BY position, variant_index
+        LIMIT ? OFFSET ?
+        """,
+        (session_id, *upto_params, max(limit, 0), max(offset, 0)),
+    ).fetchall()
+    if not message_rows:
+        return []
+    message_ids = [row["message_id"] for row in message_rows]
+    placeholders = ",".join("?" for _ in message_ids)
+    block_rows = conn.execute(
+        f"""
+        SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
+               tool_input, language, tool_result_is_error, tool_result_exit_code
+        FROM blocks
+        WHERE message_id IN ({placeholders})
+        ORDER BY message_id, position
+        """,
+        message_ids,
+    ).fetchall()
+    blocks_by_message: dict[str, list[ArchiveBlockRow]] = {}
+    for block in block_rows:
+        blocks_by_message.setdefault(block["message_id"], []).append(
+            ArchiveBlockRow(
+                block_id=block["block_id"],
+                message_id=block["message_id"],
+                block_type=block["block_type"],
+                text=block["text"],
+                tool_name=block["tool_name"],
+                tool_id=block["tool_id"],
+                semantic_type=block["semantic_type"],
+                tool_input=block["tool_input"],
+                language=block["language"],
+                tool_result_is_error=block["tool_result_is_error"],
+                tool_result_exit_code=block["tool_result_exit_code"],
+            )
+        )
+    attachment_rows = conn.execute(
+        f"""
+        SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
+               a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
+               r.upload_origin AS upload_origin, r.source_url AS source_url, r.caption AS caption
+        FROM attachment_refs r
+        JOIN attachments a ON a.attachment_id = r.attachment_id
+        WHERE r.message_id IN ({placeholders})
+        ORDER BY r.message_id, a.attachment_id
+        """,
+        message_ids,
+    ).fetchall()
+    attachments_by_message: dict[str, list[ArchiveAttachmentRow]] = {}
+    for attachment in attachment_rows:
+        attachments_by_message.setdefault(attachment["message_id"], []).append(
+            ArchiveAttachmentRow(
+                attachment_id=attachment["attachment_id"],
+                message_id=attachment["message_id"],
+                display_name=attachment["display_name"],
+                media_type=attachment["media_type"],
+                byte_count=int(attachment["byte_count"] or 0),
+                upload_origin=attachment["upload_origin"],
+                source_url=attachment["source_url"],
+                caption=attachment["caption"],
+            )
+        )
+    return [
+        _row_to_archive_message(
+            row,
+            session_id,
+            blocks=tuple(blocks_by_message.get(row["message_id"], ())),
+            attachments=tuple(attachments_by_message.get(row["message_id"], ())),
+        )
+        for row in message_rows
+    ]
+
+
+def read_archive_session_page(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    limit: int,
+    offset: int,
+) -> ArchiveSessionEnvelope:
+    """Read a bounded ``[offset, offset + limit)`` PAGE of a session's transcript.
+
+    For an ordinary (non-lineage) session this composes only the requested
+    message window at the SQL layer -- header, that window's messages, their
+    blocks/attachments, and orphan attachments -- so first paint of a large
+    session is bounded by the page size, not the session's total message
+    count (polylogue-07g6).
+
+    A prefix-sharing lineage child (#2467) still requires the full composed
+    parent-prefix + own-tail transcript to slice a display window correctly,
+    since the child's own rows are only its divergent tail -- the exact same
+    constraint ``get_messages_paginated`` already documents and accepts for
+    the DB-backed reader (#2470). This mirrors that established fallback
+    (full composition, sliced in Python) rather than inventing a different
+    contract for the archive-backed reader; genuinely bounding the lineage
+    case is tracked as a follow-up.
+
+    ``total_message_count`` on the returned envelope always carries the TRUE
+    composed transcript length; ``messages`` holds only the requested
+    window.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN DEFERRED")
+        try:
+            return read_archive_session_page(conn, session_id, limit=limit, offset=offset)
+        finally:
+            conn.execute("ROLLBACK")
+    conn.row_factory = sqlite3.Row
+
+    if _prefix_sharing_edge_sync(conn, session_id) is not None:
+        full = read_archive_session_envelope(conn, session_id)
+        window = full.messages[offset : offset + limit] if limit > 0 else ()
+        return replace(full, messages=window, total_message_count=len(full.messages))
+
+    session = conn.execute(
+        """
+        SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
+               parent_session_id, root_session_id, branch_type,
+               title_source, instructions_text,
+               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if session is None:
+        raise KeyError(session_id)
+    working_directories = tuple(
+        str(row["path"])
+        for row in conn.execute(
+            """
+            SELECT path
+            FROM session_working_dirs
+            WHERE session_id = ?
+            ORDER BY position, path
+            """,
+            (session_id,),
+        ).fetchall()
+    )
+    total_message_count = int(
+        conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+    )
+    messages = _fetch_message_window(conn, session_id, offset=offset, limit=limit)
+    orphan_attachment_rows = conn.execute(
+        """
+        SELECT a.attachment_id AS attachment_id, a.display_name AS display_name, a.media_type AS media_type,
+               a.byte_count AS byte_count, r.upload_origin AS upload_origin, r.source_url AS source_url,
+               r.caption AS caption
+        FROM attachment_refs r
+        JOIN attachments a ON a.attachment_id = r.attachment_id
+        WHERE r.session_id = ? AND r.message_id IS NULL
+        ORDER BY a.attachment_id
+        """,
+        (session_id,),
+    ).fetchall()
+    orphan_attachments = tuple(
+        ArchiveAttachmentRow(
+            attachment_id=row["attachment_id"],
+            message_id=None,
+            display_name=row["display_name"],
+            media_type=row["media_type"],
+            byte_count=int(row["byte_count"] or 0),
+            upload_origin=row["upload_origin"],
+            source_url=row["source_url"],
+            caption=row["caption"],
+        )
+        for row in orphan_attachment_rows
+    )
+    return ArchiveSessionEnvelope(
+        session_id=session["session_id"],
+        native_id=session["native_id"],
+        origin=session["origin"],
+        title=session["title"],
+        session_kind=session["session_kind"],
+        active_leaf_message_id=session["active_leaf_message_id"],
+        messages=tuple(messages),
+        lineage_complete=True,
+        lineage_truncation_reason=None,
+        lineage_inheritance="none",
+        lineage_branch_point_message_id=None,
+        parent_session_id=session["parent_session_id"],
+        root_session_id=session["root_session_id"],
+        branch_type=session["branch_type"],
+        title_source=session["title_source"],
+        instructions_text=session["instructions_text"],
+        created_at=_iso_from_ms(session["created_at_ms"]),
+        updated_at=_iso_from_ms(session["updated_at_ms"]),
+        working_directories=working_directories,
+        git_branch=session["git_branch"],
+        git_repository_url=session["git_repository_url"],
+        provider_project_ref=session["provider_project_ref"],
+        orphan_attachments=orphan_attachments,
+        total_message_count=total_message_count,
     )
 
 
