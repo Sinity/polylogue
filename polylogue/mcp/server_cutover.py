@@ -15,6 +15,7 @@ from polylogue.mcp.payloads import MCPArchiveStatsPayload, MCPRootPayload, sessi
 if TYPE_CHECKING:
     from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
+    from polylogue.surfaces.payloads import ContextPreambleProjectState
 
 
 def _object_ref(ref: str) -> str:
@@ -25,6 +26,78 @@ def _object_ref(ref: str) -> str:
     if not separator or not object_id:
         raise ValueError("stable Polylogue URIs require an object kind and id")
     return f"{prefix}:{object_id}"
+
+
+def _git_project_state(cwd: str | None) -> ContextPreambleProjectState | None:
+    """Read branch + recent commits from a local git checkout, best-effort.
+
+    Never raises: a missing/non-git ``cwd`` must not break SessionStart
+    context injection.
+    """
+    import subprocess
+
+    from polylogue.surfaces.payloads import ContextPreambleProjectState
+
+    try:
+        branch: str | None = None
+        commits: list[str] = []
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd or ".",
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+        result2 = subprocess.run(
+            ["git", "log", "--oneline", "-5"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd or ".",
+        )
+        if result2.returncode == 0:
+            commits = [line.strip() for line in result2.stdout.strip().split("\n") if line]
+        if branch or commits:
+            return ContextPreambleProjectState(branch=branch, recent_commits=commits)
+    except Exception:
+        pass
+    return None
+
+
+async def _resume_preamble(
+    hooks: ServerCallbacks,
+    *,
+    session_id: str | None,
+    repo_path: str | None,
+    cwd: str | None,
+    recent_files: tuple[str, ...],
+    related_limit: int,
+) -> str:
+    """Build the SessionStart preamble: lineage, resume candidates, project git state, assertion guidance."""
+    from polylogue.context.preamble import build_context_preamble_payload
+    from polylogue.surfaces.payloads import ContextPreamble
+
+    preamble = await build_context_preamble_payload(
+        hooks.get_polylogue(),
+        session_id=session_id or "",
+        related_limit=related_limit,
+        repo_path=repo_path,
+        cwd=cwd,
+        recent_files=recent_files,
+        source_tool_calls={"context": "polylogue-mcp"},
+        require_session=False,
+    )
+    if preamble is None:
+        preamble = ContextPreamble(preamble_version="1.0", source_tool_calls={"context": "polylogue-mcp"})
+
+    project = _git_project_state(cwd)
+    if project is not None:
+        payload = preamble.model_dump(mode="json", exclude_none=True)
+        payload["project_state"] = project.model_dump(mode="json", exclude_none=True)
+        preamble = ContextPreamble.model_validate(payload)
+    return hooks.json_payload(preamble, exclude_none=True)
 
 
 def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
@@ -153,11 +226,32 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         query: str | None = None,
         budget_tokens: int | None = None,
         result_ref: str | None = None,
+        repo_path: str | None = None,
+        cwd: str | None = None,
+        recent_files: tuple[str, ...] = (),
+        session_id: str | None = None,
+        limit: int = 5,
     ) -> str:
-        """Compile a policy-gated bounded context image with receipts."""
-        del intent, result_ref
+        """Compile a policy-gated bounded context image with receipts.
+
+        ``intent="resume"`` builds the SessionStart preamble (session
+        lineage, ranked resume candidates, project git state, and
+        provenance-gated assertion guidance) instead of the default
+        seed-query/seed-ref context image. ``limit`` bounds the number of
+        ranked resume candidates for that intent only.
+        """
+        del result_ref
 
         async def run() -> str:
+            if intent == "resume":
+                return await _resume_preamble(
+                    hooks,
+                    session_id=session_id,
+                    repo_path=repo_path,
+                    cwd=cwd,
+                    recent_files=recent_files,
+                    related_limit=hooks.clamp_limit(limit),
+                )
             payload = await hooks.get_polylogue().context_image_payload(
                 query=query,
                 max_tokens=budget_tokens,
@@ -168,7 +262,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             )
             return hooks.json_payload(payload, exclude_none=True)
 
-        return await hooks.async_safe_call("context", run)
+        return await hooks.async_safe_call("context", run, session_id=session_id)
 
     async def status(
         scope: Literal["archive", "sources", "embeddings", "coordination", "operation"],
