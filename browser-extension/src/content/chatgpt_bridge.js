@@ -295,6 +295,43 @@
     }
   }
 
+  // Chunked/streamed responses (common for CDN-served DOM assets, unlike the
+  // sandbox/file endpoints ChatGPT itself controls) may omit Content-Length
+  // entirely, so declaredContentLength alone cannot bound them. Read the body
+  // as a stream and cancel it the moment the budget is exceeded, rather than
+  // buffering an unbounded response and checking its size only afterward.
+  async function readBoundedBody(response, maxBytes) {
+    if (!response.body || typeof response.body.getReader !== "function") {
+      // No Streams API on the body (older polyfill/test double) -- fall back
+      // to buffering, still enforcing the same limit before returning bytes.
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > maxBytes) {
+        return { tooLarge: true, sizeBytes: buffer.byteLength };
+      }
+      return { tooLarge: false, buffer };
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { tooLarge: true, sizeBytes: total };
+      }
+      chunks.push(value);
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { tooLarge: false, buffer: merged.buffer };
+  }
+
   // Shared tail for every asset kind once a concrete https URL is known:
   // fetch it (dropping credentials cross-origin — provider-issued signed
   // URLs and DOM-rendered CDN links must never receive page cookies/bearer),
@@ -333,15 +370,16 @@
         sizeBytes: contentLength
       });
     }
-    const buffer = await fileResponse.arrayBuffer();
-    if (buffer.byteLength > maxBytes) {
+    const bodyResult = await readBoundedBody(fileResponse, maxBytes);
+    if (bodyResult.tooLarge) {
       return assetOutcome("too_large", {
         phase: "signed_bytes",
         httpStatus: fileResponse.status,
         detail: "downloaded_bytes_over_limit",
-        sizeBytes: buffer.byteLength
+        sizeBytes: bodyResult.sizeBytes
       });
     }
+    const buffer = bodyResult.buffer;
     let contentSha256;
     try {
       contentSha256 = await sha256Hex(buffer);

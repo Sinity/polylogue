@@ -470,6 +470,41 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
       harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 }),
     ).resolves.toMatchObject({ status: "too_large", phase: "signed_bytes", detail: "content_length_over_limit" });
   });
+
+  // Codex P2 finding: a response with NO Content-Length (chunked transfer,
+  // common for CDN-served DOM assets unlike ChatGPT's own sandbox/file
+  // endpoints) previously bypassed the declared-length check entirely and
+  // was buffered whole via arrayBuffer() before the post-hoc size check --
+  // an oversized body would be fully downloaded regardless of the budget.
+  // The bounded streaming reader must reject it mid-stream instead.
+  it("bounds a direct URL download mid-stream when Content-Length is not declared", async () => {
+    const domUrl = "https://files.example.test/dom/chunked-huge.png";
+    // byteResponse() with no declaredSize omits Content-Length entirely.
+    const oversizedBody = new Uint8Array(2048);
+    const fetch = vi.fn(async () => byteResponse(oversizedBody));
+    const harness = installBridge({ fetch });
+
+    await expect(
+      harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 }),
+    ).resolves.toMatchObject({
+      status: "too_large",
+      phase: "signed_bytes",
+      detail: "downloaded_bytes_over_limit",
+    });
+  });
+
+  it("acquires a direct URL body streamed without a declared Content-Length", async () => {
+    const domUrl = "https://files.example.test/dom/chunked-ok.png";
+    const bodyBytes = new TextEncoder().encode("streamed without content-length\n");
+    const expectedSha256 = createHash("sha256").update(bodyBytes).digest("hex");
+    const fetch = vi.fn(async () => byteResponse(bodyBytes));
+    const harness = installBridge({ fetch });
+
+    const outcome = await harness.requestAsset({ kind: "url", url: domUrl, maxBytes: 1024 });
+
+    expect(outcome).toMatchObject({ status: "acquired", asset: { size_bytes: bodyBytes.byteLength, sha256: expectedSha256 } });
+    expect(outcome.asset.base64).toBe(Buffer.from(bodyBytes).toString("base64"));
+  });
 });
 
 describe("chatgpt-dom-v1 fallback capture attachment byte acquisition (polylogue-83u.3)", () => {
