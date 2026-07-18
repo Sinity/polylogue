@@ -26,7 +26,7 @@ class GateCommand:
 REQUIRED_COMMANDS: tuple[GateCommand, ...] = (
     GateCommand(("devtools", "release", "readiness"), True, "release gate definition"),
     GateCommand(("devtools", "verify", "--quick"), True, "static/generated baseline"),
-    GateCommand(("devtools", "verify", "public-claims"), True, "public claim/evidence ledger"),
+    GateCommand(("devtools", "verify", "public-claims"), True, "generated public-claims projection"),
     GateCommand(("devtools", "verify", "--lab"), True, "lab baseline"),
     GateCommand(("devtools", "release", "build-package"), True, "wheel/sdist/Nix package smoke"),
     GateCommand(("devtools", "render", "pages"), True, "documentation site build"),

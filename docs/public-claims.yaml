@@ -1,106 +1,211 @@
-schema: external-claims-ledger/v2
-statuses: [proven, capability, aspirational, retired]
-evidence_classes:
-  - deterministic_product_proof
-  - field_observation
-  - implementation_contract
-  - architecture_decision
-  - hypothesis
-public_surfaces:
-  - README.md
-  - docs/demos.md
-  - docs/findings/*.md
-  - docs/sinex-interop.md
-  - docs/site/pages.toml
-retired_phrases:
-  - your AI memory
+schema: polylogue.public-claims-compatibility-view.v1
+generated_by: devtools render public-claims
+authority:
+  claims: AssertionKind.FINDING + explicit capability declarations
+  integrity: polylogue-37t.14 EvidenceIntegrityVerdict
+  projection: polylogue/insights/measurement/public_claims.py
+preset: verified-export
+claim_count: 4
+publishable_claim_keys:
+- category.local-evidence-system
 claims:
-  - id: category.local-evidence-system
-    status: capability
-    evidence_class: implementation_contract
-    publication: Polylogue is a local evidence system for AI work.
-    scope: Product category for the current local archive, query, evidence, and context surfaces.
-    evidence: [README.md, docs/architecture.md, docs/proof-artifacts.md]
-    caveat: Pre-1.0; not every planned memory or coordination feature is complete.
-    owner_beads: [polylogue-3tl.12, polylogue-3tl.8]
-    proof_commands: []
-
-  - id: analogy.flight-recorder
-    status: capability
-    evidence_class: implementation_contract
-    publication: Polylogue can be described as a flight recorder for AI work when the analogy is qualified by its supported origins and evidence limits.
-    scope: Explanatory analogy, not the primary product category or a forensic chain-of-custody claim.
-    evidence: [docs/architecture.md, docs/proof-artifacts.md]
-    caveat: The archive is not tamper-proof, universally complete, or a replacement for production agent observability.
-    owner_beads: [polylogue-3tl.12, polylogue-3tl.16]
-    proof_commands: []
-
-  - id: demo.private-data-free
-    status: proven
-    evidence_class: deterministic_product_proof
-    publication: The deterministic tour exercises five origins, tool outcomes, lineage, subagents, context snapshots, attachments, and user overlays without private data.
-    scope: The committed deterministic provider-shaped demo corpus and its declared construct verifier.
-    evidence: [docs/plans/demo-corpus-construct-audit.md, docs/examples/demo-tour/report.md]
-    caveat: Construct proof, not private-archive scale or real-world prevalence.
-    owner_beads: [polylogue-212.7, polylogue-3tl.5]
-    proof_commands: [polylogue demo tour]
-
-  - id: evidence.structured-outcomes
-    status: proven
-    evidence_class: deterministic_product_proof
-    publication: Polylogue can compare an assistant claim with supported structural tool outcomes without treating prose keywords as the oracle.
-    scope: Provider-normalized tool-result fields represented by the deterministic Evidence Lab receipts fixture.
-    evidence: [docs/demos.md, polylogue/demo/receipts.py, tests/unit/cli/test_demo_command.py]
-    caveat: Unsupported or malformed tool evidence remains explicit rather than being inferred.
-    owner_beads: [polylogue-3tl.15, polylogue-212]
-    proof_commands: [polylogue demo tour, polylogue demo receipts]
-
-  - id: finding.silent-proceed-lower-bound
-    status: proven
-    evidence_class: field_observation
-    publication: In one private archive, a bounded sample found a 24.1% lower bound for silent continuation after structured failure; most cases remained ambiguous.
-    scope: One private archive, a 5,000-row origin-stratified sample, and the documented classifier version.
-    evidence: [docs/findings/claim-vs-evidence.md]
-    caveat: This is not a population estimate and the large ambiguous remainder materially limits interpretation.
-    owner_beads: [polylogue-xyel]
-    proof_commands: [python -m devtools.claim_vs_evidence --help]
-
-  - id: context.compiler
-    status: capability
-    evidence_class: implementation_contract
-    publication: Polylogue can compile bounded evidence-linked context and record omissions and delivery snapshots.
-    scope: The current context compiler, context image, and delivery snapshot contracts.
-    evidence: [polylogue/context/compiler.py, tests/unit/context/test_compiler.py]
-    caveat: No general task-performance uplift claim follows from the existence of the compiler.
-    owner_beads: [polylogue-37t]
-    proof_commands: []
-
-  - id: memory.uplift
-    status: aspirational
-    evidence_class: hypothesis
-    publication: Polylogue is testing whether reviewed evidence-linked context improves resumption.
-    scope: Planned and pilot paired resumption experiments under fixed checkpoints and budgets.
-    evidence: [.agent/demos/uplift-two-arm/current/report.md]
-    caveat: The existing pilot is small and includes a stale-packet counterexample.
-    owner_beads: [polylogue-37t]
-    proof_commands: []
-
-  - id: sinex.backend
-    status: aspirational
-    evidence_class: architecture_decision
-    publication: The maximal target is Sinex-backed Polylogue, with Sinex storing complete durable transcript evidence and Polylogue retaining AI-work semantics and product behavior.
-    scope: Target architecture for Sinex-backed deployments; standalone SQLite Polylogue remains a supported profile.
-    evidence: [docs/sinex-interop.md]
-    caveat: The current bridge is metadata-thin; stable identity, revision settlement, and rebuild proofs have not landed.
-    owner_beads: [polylogue-fs1.9]
-    proof_commands: []
-
-  - id: positioning.your-ai-memory
-    status: retired
-    evidence_class: architecture_decision
-    publication: Do not use this phrase as the primary product category.
-    scope: First-contact copy in README, site, demos, and public findings.
-    evidence: [docs/site/pages.toml, devtools/pages_templates.py]
-    caveat: Memory remains a product capability and roadmap program, but not the external category definition.
-    owner_beads: [polylogue-3tl.12]
-    proof_commands: []
+- claim_key: category.local-evidence-system
+  source_kind: capability
+  source_ref: null
+  status: capability-only
+  integrity_status: null
+  integrity_verdict_present: false
+  badge: '[CAPABILITY ONLY]'
+  publication: Polylogue is a local evidence system for AI work.
+  scope: The current local archive, query, evidence, judgment, and context surfaces.
+  caveat: This is a product-category capability statement, not a measured performance or prevalence claim.
+  public_evidence_refs:
+  - file:README.md
+  - file:docs/architecture.md
+  - file:docs/proof-artifacts.md
+  public_remediation_refs: []
+  presets:
+  - readme
+  - launch
+  - findings-page
+  - verified-export
+  statistic: null
+  qualifiers:
+    finding_epoch: null
+    verdict_as_of_epoch: null
+    finding_frame_ref: null
+    verdict_frame_ref: null
+    evaluation_ref: null
+    definition_ref: null
+  review:
+    assertion_status: null
+    publication: approved
+    privacy: approved
+    judgment_ref: null
+  reason_codes: []
+  blind_spot_codes: []
+  blocker_codes: []
+- claim_key: finding.handler-class-split
+  source_kind: finding
+  source_ref: assertion:assertion-finding:cbb4967fc2d33ce231978b76949205856a68d8306da46a610f478cb4244d2ad8
+  status: unknown
+  integrity_status: unresolved
+  integrity_verdict_present: false
+  badge: '[UNKNOWN · UNRESOLVED]'
+  publication: In that sample, the silent-continuation lower bound was 22.3% for consequential handlers, 27.1% for benign-recovery
+    handlers, and 53.9% for other handlers.
+  scope: 'The same 5,000 sampled failures, partitioned by the packet''s explicit handler-class methodology: 4,175 consequential,
+    634 benign-recovery, and 191 other.'
+  caveat: The classes are method-defined tool-name groups, not severity labels; each group retains a large or material ambiguous
+    remainder.
+  public_evidence_refs:
+  - file:docs/findings/claim-vs-evidence.md
+  - file:.agent/demos/claim-vs-evidence/public-summary.json
+  - file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json
+  public_remediation_refs:
+  - bead:polylogue-37t.14
+  presets:
+  - readme
+  - launch
+  - findings-page
+  - verified-export
+  statistic:
+    op: breakdown
+    unit: structured_failures
+    value:
+      benign_recovery:
+        ambiguous: 455
+        failed_outcomes: 634
+        silent_proceed: 172
+        silent_rate_lower_bound: 0.27129337539432175
+      consequential:
+        ambiguous: 2842
+        failed_outcomes: 4175
+        silent_proceed: 930
+        silent_rate_lower_bound: 0.22275449101796407
+      other:
+        ambiguous: 78
+        failed_outcomes: 191
+        silent_proceed: 103
+        silent_rate_lower_bound: 0.5392670157068062
+  qualifiers:
+    finding_epoch: '2026-07-04T08:55:53.667311+00:00'
+    verdict_as_of_epoch: null
+    finding_frame_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame
+    verdict_frame_ref: null
+    evaluation_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration
+    definition_ref: null
+  review:
+    assertion_status: candidate
+    publication: pending
+    privacy: pending
+    judgment_ref: null
+  reason_codes:
+  - integrity-verdict-not-computed
+  blind_spot_codes: []
+  blocker_codes:
+  - finding-candidate
+- claim_key: finding.per-origin-inspection-counts
+  source_kind: finding
+  source_ref: assertion:assertion-finding:adb1c19ac49d5b835056e68eb12b9389656b83c6eb01d5f09eb7ad6dd5cf7edd
+  status: unknown
+  integrity_status: unresolved
+  integrity_verdict_present: false
+  badge: '[UNKNOWN · UNRESOLVED]'
+  publication: The origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven Claude AI structured failures
+    from origin frames of 31,555, 10,429, and 49 respectively.
+  scope: The 2026-07-04 bounded sample frame, selected deterministically by origin, session, tool, and result-message identifiers.
+  caveat: These are inspection and frame counts, not provider prevalence estimates; the archive's origin mix and the bounded
+    allocation determine them.
+  public_evidence_refs:
+  - file:docs/findings/claim-vs-evidence.md
+  - file:.agent/demos/claim-vs-evidence/public-summary.json
+  - file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json
+  public_remediation_refs:
+  - bead:polylogue-37t.14
+  presets:
+  - readme
+  - launch
+  - findings-page
+  - verified-export
+  statistic:
+    op: breakdown
+    unit: structured_failures
+    value:
+      claude-ai-export:
+        frame_total: 49
+        inspected: 7
+        requested: 7
+      claude-code-session:
+        frame_total: 31555
+        inspected: 3752
+        requested: 3752
+      codex-session:
+        frame_total: 10429
+        inspected: 1241
+        requested: 1241
+  qualifiers:
+    finding_epoch: '2026-07-04T08:55:53.667311+00:00'
+    verdict_as_of_epoch: null
+    finding_frame_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame
+    verdict_frame_ref: null
+    evaluation_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration
+    definition_ref: null
+  review:
+    assertion_status: candidate
+    publication: pending
+    privacy: pending
+    judgment_ref: null
+  reason_codes:
+  - integrity-verdict-not-computed
+  blind_spot_codes: []
+  blocker_codes:
+  - finding-candidate
+- claim_key: finding.silent-proceed-lower-bound
+  source_kind: finding
+  source_ref: assertion:assertion-finding:e5da9c88d1c236d15648fc52ad7898d8a6f7018277e84c624bdc9e7c7d037689
+  status: unknown
+  integrity_status: unresolved
+  integrity_verdict_present: false
+  badge: '[UNKNOWN · UNRESOLVED]'
+  publication: In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures were followed by silent
+    continuation on the next assistant turn, a 24.1% lower bound.
+  scope: One private archive; an origin-stratified 5,000-row sample from a 42,033-row structured-failure frame; next assistant
+    turn only.
+  caveat: This is not a population estimate; 3,375 rows remained ambiguous, and support must be recomputed when the evidence
+    epoch, definition, or frame changes.
+  public_evidence_refs:
+  - file:docs/findings/claim-vs-evidence.md
+  - file:.agent/demos/claim-vs-evidence/public-summary.json
+  - file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json
+  public_remediation_refs:
+  - bead:polylogue-37t.14
+  presets:
+  - readme
+  - launch
+  - findings-page
+  - verified-export
+  statistic:
+    ambiguous: 3375
+    denominator: 5000
+    numerator: 1205
+    op: lower_bound
+    unit: ratio
+    value: 0.241
+  qualifiers:
+    finding_epoch: '2026-07-04T08:55:53.667311+00:00'
+    verdict_as_of_epoch: null
+    finding_frame_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame
+    verdict_frame_ref: null
+    evaluation_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration
+    definition_ref: null
+  review:
+    assertion_status: candidate
+    publication: pending
+    privacy: pending
+    judgment_ref: null
+  reason_codes:
+  - integrity-verdict-not-computed
+  blind_spot_codes: []
+  blocker_codes:
+  - finding-candidate

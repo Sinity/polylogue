@@ -1,85 +1,233 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any, cast
 
-import yaml
+from devtools import public_claims, render_public_claims
+from polylogue.insights.measurement.public_claims import (
+    EvidenceIntegrityStatus,
+    PublicClaimPresetName,
+    PublicClaimProjection,
+    PublicClaimStatus,
+    build_public_claims_payload,
+)
 
-from devtools import public_claims
 
-
-def _write_minimal_repo(tmp_path: Path) -> Path:
-    (tmp_path / "docs").mkdir()
-    (tmp_path / ".beads").mkdir()
-    (tmp_path / "README.md").write_text("Evidence-first product.\n", encoding="utf-8")
-    (tmp_path / "docs" / "proof.md").write_text("proof\n", encoding="utf-8")
-    (tmp_path / ".beads" / "issues.jsonl").write_text(
-        '{"_type":"issue","id":"polylogue-demo","status":"open"}\n',
+def _write_generated_repo(root: Path) -> tuple[PublicClaimProjection, ...]:
+    claims = public_claims.build_repository_projection()
+    (root / "docs" / "generated" / "public-claims").mkdir(parents=True)
+    (root / "docs" / "findings").mkdir(parents=True)
+    (root / "README.md").write_text(
+        "<!-- public-claim:category.local-evidence-system -->\nPolylogue is a local evidence system.\n",
         encoding="utf-8",
     )
-    return tmp_path
+    (root / "docs" / "demos.md").write_text(
+        "<!-- public-claim:finding.silent-proceed-lower-bound -->\nSee the generated claim view.\n",
+        encoding="utf-8",
+    )
+    (root / "docs" / "findings" / "claim-vs-evidence.md").write_text(
+        "\n".join(
+            (
+                "<!-- public-claim:finding.silent-proceed-lower-bound -->",
+                "<!-- public-claim:finding.handler-class-split -->",
+                "<!-- public-claim:finding.per-origin-inspection-counts -->",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts = public_claims.rendered_artifacts(
+        claims,
+        output_dir=root / "docs" / "generated" / "public-claims",
+        compatibility_path=root / "docs" / "public-claims.yaml",
+    )
+    for path, content in artifacts.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return claims
 
 
-def _ledger() -> dict[str, object]:
-    return {
-        "schema": public_claims.SUPPORTED_SCHEMA,
-        "statuses": ["proven", "capability", "aspirational", "retired"],
-        "evidence_classes": [
-            "deterministic_product_proof",
-            "field_observation",
-            "implementation_contract",
-            "architecture_decision",
-            "hypothesis",
-        ],
-        "public_surfaces": ["README.md"],
-        "retired_phrases": ["old slogan"],
-        "claims": [
-            {
-                "id": "demo.receipt",
-                "status": "proven",
-                "evidence_class": "deterministic_product_proof",
-                "publication": "The receipt is structurally verified.",
-                "scope": "One deterministic provider-shaped fixture.",
-                "evidence": ["docs/proof.md"],
-                "caveat": "This does not establish private-archive prevalence.",
-                "owner_beads": ["polylogue-demo"],
-                "proof_commands": ["polylogue demo receipts"],
-            }
-        ],
+def test_repository_projection_has_seeded_findings_and_honest_current_statuses() -> None:
+    claims = public_claims.build_repository_projection()
+    by_key = {claim.claim_key: claim for claim in claims}
+
+    assert set(by_key) == {
+        "category.local-evidence-system",
+        "finding.handler-class-split",
+        "finding.per-origin-inspection-counts",
+        "finding.silent-proceed-lower-bound",
     }
+    assert by_key["category.local-evidence-system"].status is PublicClaimStatus.CAPABILITY_ONLY
+    for key in (
+        "finding.handler-class-split",
+        "finding.per-origin-inspection-counts",
+        "finding.silent-proceed-lower-bound",
+    ):
+        assert by_key[key].status is PublicClaimStatus.UNKNOWN
+        assert by_key[key].integrity_status is EvidenceIntegrityStatus.UNRESOLVED
+        assert by_key[key].integrity_verdict_present is False
+        assert by_key[key].publication_review == "pending"
 
 
-def test_build_report_accepts_grounded_ledger(tmp_path: Path) -> None:
-    root = _write_minimal_repo(tmp_path)
-    ledger_path = root / "docs" / "public-claims.yaml"
-    ledger_path.write_text(yaml.safe_dump(_ledger(), sort_keys=False), encoding="utf-8")
+def test_rendered_artifacts_are_one_projection_across_four_presets(tmp_path: Path) -> None:
+    claims = public_claims.build_repository_projection()
+    artifacts = public_claims.rendered_artifacts(
+        claims,
+        output_dir=tmp_path / "generated",
+        compatibility_path=tmp_path / "public-claims.yaml",
+    )
 
-    report = public_claims.build_report(ledger_path=ledger_path, root=root)
+    assert len(artifacts) == 9
+    statuses_by_preset: dict[str, dict[str, str]] = {}
+    for preset in PublicClaimPresetName:
+        json_path = tmp_path / "generated" / f"{preset.value}.json"
+        payload = json.loads(artifacts[json_path])
+        statuses_by_preset[preset.value] = {claim["claim_key"]: claim["status"] for claim in payload["claims"]}
+        markdown = artifacts[tmp_path / "generated" / f"{preset.value}.md"]
+        assert "Generated by `devtools render public-claims`" in markdown
+        assert "[UNKNOWN · UNRESOLVED]" in markdown
+        assert "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json" in markdown
+
+    assert len({tuple(sorted(statuses.items())) for statuses in statuses_by_preset.values()}) == 1
+    compatibility = artifacts[tmp_path / "public-claims.yaml"]
+    assert "schema: polylogue.public-claims-compatibility-view.v1" in compatibility
+    assert "authority:" in compatibility
+    assert "external-claims-ledger" not in compatibility
+
+
+def test_build_report_accepts_generated_view_and_detects_unknown_or_uncovered_markers(tmp_path: Path) -> None:
+    claims = _write_generated_repo(tmp_path)
+
+    report = public_claims.build_report(root=tmp_path, claims=claims)
 
     assert report["ok"] is True
-    assert report["claim_count"] == 1
-    assert report["evidence_path_count"] == 1
-    assert report["proof_command_count"] == 1
+    assert report["claim_count"] == 4
+    assert report["artifact_count"] == 9
+
+    readme = tmp_path / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "<!-- public-claim:finding.unowned -->\n", encoding="utf-8")
+    broken = public_claims.build_report(root=tmp_path, claims=claims)
+    messages = [problem["message"] for problem in broken["problems"]]
+    assert "public surface marker has no projected claim: README.md" in messages
+
+    readme.write_text("No marker here.\n", encoding="utf-8")
+    uncovered = public_claims.build_report(root=tmp_path, claims=claims)
+    uncovered_messages = [(problem["claim_id"], problem["message"]) for problem in uncovered["problems"]]
+    assert (
+        "category.local-evidence-system",
+        "projected claim is not covered by a public-surface marker",
+    ) in uncovered_messages
 
 
-def test_build_report_rejects_missing_evidence_unknown_bead_and_retired_copy(tmp_path: Path) -> None:
-    root = _write_minimal_repo(tmp_path)
-    (root / "README.md").write_text("The old slogan returned.\n", encoding="utf-8")
-    ledger = _ledger()
-    claims = cast(list[dict[str, Any]], ledger["claims"])
-    claim = claims[0]
-    claim["evidence"] = ["docs/missing.md"]
-    claim["owner_beads"] = ["polylogue-missing"]
-    ledger_path = root / "docs" / "public-claims.yaml"
-    ledger_path.write_text(yaml.safe_dump(ledger, sort_keys=False), encoding="utf-8")
+def test_build_report_detects_generated_drift_and_private_paths(tmp_path: Path) -> None:
+    claims = _write_generated_repo(tmp_path)
+    readme_json = tmp_path / "docs" / "generated" / "public-claims" / "readme.json"
+    readme_json.write_text(readme_json.read_text(encoding="utf-8") + "/home/operator/archive\n", encoding="utf-8")
 
-    report = public_claims.build_report(ledger_path=ledger_path, root=root)
+    report = public_claims.build_report(root=tmp_path, claims=claims)
     messages = [problem["message"] for problem in report["problems"]]
 
-    assert report["ok"] is False
-    assert "evidence path does not exist: docs/missing.md" in messages
-    assert "owner Bead does not exist: polylogue-missing" in messages
-    assert any("retired phrase" in message for message in messages)
+    assert "generated public-claims artifact is out of sync: docs/generated/public-claims/readme.json" in messages
+    assert (
+        "checked-in generated artifact contains an absolute private path: docs/generated/public-claims/readme.json"
+        in messages
+    )
+
+
+def test_integrity_receipt_loader_requires_schema_and_support_qualifiers(tmp_path: Path) -> None:
+    claims = public_claims.build_repository_projection()
+    finding = next(claim for claim in claims if claim.source_kind == "finding")
+    assert finding.source_ref is not None
+    receipt = tmp_path / "verdicts.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": public_claims.VERDICT_EXPORT_SCHEMA,
+                "verdicts": [
+                    {
+                        "finding_ref": finding.source_ref,
+                        "status": "supported",
+                        "public_evidence_refs": ["file:docs/findings/claim-vs-evidence.md"],
+                        "as_of_epoch": "2026-07-04T08:55:53.667311+00:00",
+                        "frame_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+                        "definition_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    provider = public_claims.load_integrity_verdicts(receipt)
+    verdict = provider.verdict_for(finding.source_ref)
+
+    assert verdict is not None
+    assert verdict.status is EvidenceIntegrityStatus.SUPPORTED
+    assert verdict.as_of_epoch == "2026-07-04T08:55:53.667311+00:00"
+
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": public_claims.VERDICT_EXPORT_SCHEMA,
+                "verdicts": [
+                    {
+                        "finding_ref": finding.source_ref,
+                        "status": "stale",
+                        "public_remediation_refs": ["run:/home/operator/private-rerun"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        public_claims.load_integrity_verdicts(receipt)
+    except ValueError as exc:
+        assert "private or absolute path" in str(exc)
+    else:
+        raise AssertionError("unsafe public receipt ref was accepted")
+
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": public_claims.VERDICT_EXPORT_SCHEMA,
+                "verdicts": [{"finding_ref": finding.source_ref, "status": "supported"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        public_claims.load_integrity_verdicts(receipt)
+    except ValueError as exc:
+        assert "require as_of_epoch, frame_ref, and definition_ref" in str(exc)
+    else:
+        raise AssertionError("supported verdict without qualifiers was accepted")
+
+
+def test_render_command_writes_then_checks_same_projection(tmp_path: Path) -> None:
+    output_dir = tmp_path / "generated"
+    compatibility = tmp_path / "public-claims.yaml"
+
+    assert render_public_claims.main(["--output-dir", str(output_dir), "--compatibility-path", str(compatibility)]) == 0
+    assert (
+        render_public_claims.main(
+            [
+                "--output-dir",
+                str(output_dir),
+                "--compatibility-path",
+                str(compatibility),
+                "--check",
+            ]
+        )
+        == 0
+    )
+
+    payload = build_public_claims_payload(
+        public_claims.build_repository_projection(),
+        PublicClaimPresetName.VERIFIED_EXPORT,
+    )
+    assert compatibility.exists()
+    assert payload["claim_count"] == 4
 
 
 def test_public_claims_gate_is_declared_in_ci_and_release_readiness() -> None:

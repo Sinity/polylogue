@@ -41,7 +41,7 @@ files:
     target: polylogue/agent_integration/spec.py
     owner: stable
   - path: polylogue/annotations/__init__.py
-    loc: 67
+    loc: 105
     target: polylogue/annotations/__init__.py
     owner: stable
   - path: polylogue/annotations/batch.py
@@ -49,7 +49,7 @@ files:
     target: polylogue/annotations/batch.py
     owner: stable
   - path: polylogue/annotations/importer.py
-    loc: 342
+    loc: 388
     target: polylogue/annotations/importer.py
     owner: stable
   - path: polylogue/annotations/join.py
@@ -57,11 +57,11 @@ files:
     target: polylogue/annotations/join.py
     owner: stable
   - path: polylogue/annotations/schema.py
-    loc: 763
+    loc: 1119
     target: polylogue/annotations/schema.py
     owner: stable
   - path: polylogue/annotations/write.py
-    loc: 350
+    loc: 878
     target: polylogue/annotations/write.py
     owner: stable
   - path: polylogue/api/__init__.py
@@ -1320,7 +1320,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/enums.py
-    loc: 548
+    loc: 555
     target: polylogue/core/enums.py
     owner: core-primitive
     reason: core primitive
@@ -1916,6 +1916,10 @@ files:
   - path: polylogue/insights/measurement/metric.py
     loc: 184
     target: polylogue/insights/measurement/metric.py
+    owner: stable
+  - path: polylogue/insights/measurement/public_claims.py
+    loc: 942
+    target: polylogue/insights/measurement/public_claims.py
     owner: stable
   - path: polylogue/insights/measurement/ratio.py
     loc: 143
@@ -2515,7 +2519,7 @@ files:
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
-    loc: 1206
+    loc: 1384
     target: polylogue/scenarios/corpus.py
     owner: stable
   - path: polylogue/scenarios/executable.py
@@ -3909,7 +3913,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/bootstrap.py
-    loc: 203
+    loc: 216
     target: polylogue/storage/sqlite/archive_tiers/bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/column_spec.py
@@ -3981,11 +3985,11 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_annotations.py
-    loc: 362
+    loc: 387
     target: polylogue/storage/sqlite/archive_tiers/user_annotations.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_audit.py
-    loc: 134
+    loc: 136
     target: polylogue/storage/sqlite/archive_tiers/user_audit.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_overlay.py
@@ -3993,7 +3997,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 2370
+    loc: 2462
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
@@ -4025,7 +4029,7 @@ files:
     target: polylogue/storage/sqlite/delegation_facts.py
     owner: stable
   - path: polylogue/storage/sqlite/finding_provenance.py
-    loc: 134
+    loc: 253
     target: polylogue/storage/sqlite/finding_provenance.py
     owner: stable
   - path: polylogue/storage/sqlite/holdout_cohorts.py

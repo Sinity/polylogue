@@ -83,6 +83,10 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 |----------|-------------|
 | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
 | [Proof Artifacts](proof-artifacts.md) | Claim-to-proof map for public-facing demo and evidence claims. |
+| [README Public-Claims View](generated/public-claims/readme.md) | Generated compact status view for claims used in README-facing copy. |
+| [Launch Public-Claims View](generated/public-claims/launch.md) | Generated launch-copy claim status with evidence blockers and remediation refs. |
+| [Findings-Page Public-Claims View](generated/public-claims/findings-page.md) | Generated finding status with judgment, privacy, evidence, epoch, and frame qualifiers. |
+| [Verified Public-Claims Export](generated/public-claims/verified-export.md) | Generated full public-claim projection corresponding to the machine-readable export. |
 | [Structured Failure Follow-Up](findings/claim-vs-evidence.md) | Bounded field finding with oracle, sample frame, calibration, and caveats. |
 | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
 | [Insights Rigor Matrix](insights-rigor-matrix.md) | Evidence strengths and limitations for insight families. |

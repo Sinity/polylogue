@@ -15,6 +15,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
 from polylogue.core.assertions import (
@@ -495,6 +496,23 @@ class ArchiveAssertionCandidateReviewEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicClaimDeclaration:
+    """Sanitized publication fields embedded in a FINDING assertion value.
+
+    This is not a support ledger.  The assertion remains the claim owner and
+    the 37t.14 verdict remains the evidence-status owner; these fields merely
+    bound which prose and refs a reviewed public projection may expose.
+    """
+
+    publication: str
+    scope: str
+    caveat: str
+    public_evidence_refs: Sequence[str]
+    presets: Sequence[str] = ("readme", "launch", "findings-page", "verified-export")
+    disclosure: str = "held_private"
+
+
+@dataclass(frozen=True, slots=True)
 class FindingAssertion:
     """One detector-produced claim stored through the assertion lifecycle.
 
@@ -518,6 +536,10 @@ class FindingAssertion:
     evidence_refs: Sequence[str] = ()
     scope_ref: str | None = None
     confidence: float | None = None
+    source_epoch: str | None = None
+    evaluation_ref: str | None = None
+    frame_ref: str | None = None
+    public_claim: PublicClaimDeclaration | None = None
 
 
 def upsert_suppression(
@@ -1381,6 +1403,10 @@ def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudg
 _FINDING_KINDS: Final[frozenset[str]] = frozenset(
     {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence"}
 )
+_PUBLIC_CLAIM_PRESETS: Final[frozenset[str]] = frozenset({"readme", "launch", "findings-page", "verified-export"})
+_PUBLIC_EVIDENCE_REF_KINDS: Final[frozenset[str]] = frozenset(
+    {"file", "commit", "github-issue", "github-pr", "assertion", "finding", "analysis", "run"}
+)
 
 
 def _validate_finding_ref(value: str, *, field: str) -> str:
@@ -1390,6 +1416,57 @@ def _validate_finding_ref(value: str, *, field: str) -> str:
     if not normalized:
         raise ValueError(f"finding {field} must be a non-empty ref")
     return normalized
+
+
+def _validate_public_claim_text(value: str, *, field: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"public claim {field} must be non-empty")
+    return normalized
+
+
+def _validate_public_evidence_ref(value: str) -> str:
+    normalized = _validate_finding_ref(value, field="public_evidence_ref")
+    try:
+        parsed = ObjectRef.parse(normalized)
+    except ValueError as exc:
+        raise ValueError(f"public claim evidence ref must be an ObjectRef: {normalized!r}") from exc
+    if parsed.kind not in _PUBLIC_EVIDENCE_REF_KINDS:
+        raise ValueError(f"public claim evidence ref kind is not publishable: {parsed.kind!r}")
+    if parsed.kind == "file":
+        path = parsed.object_id.split("#", maxsplit=1)[0]
+        if (
+            not path
+            or path.startswith("~")
+            or PurePosixPath(path).is_absolute()
+            or PureWindowsPath(path).is_absolute()
+            or ".." in PurePosixPath(path).parts
+            or ".." in PureWindowsPath(path).parts
+        ):
+            raise ValueError(f"public claim file ref must be repository-relative: {normalized!r}")
+    return normalized
+
+
+def _public_claim_value(declaration: PublicClaimDeclaration) -> dict[str, object]:
+    disclosure = declaration.disclosure.strip()
+    if disclosure not in {"public", "held_private"}:
+        raise ValueError("public claim disclosure must be 'public' or 'held_private'")
+    presets = tuple(dict.fromkeys(item.strip() for item in declaration.presets if item.strip()))
+    if not presets or any(item not in _PUBLIC_CLAIM_PRESETS for item in presets):
+        raise ValueError(f"public claim presets must be drawn from {sorted(_PUBLIC_CLAIM_PRESETS)!r}")
+    public_evidence_refs = tuple(
+        dict.fromkeys(_validate_public_evidence_ref(ref) for ref in declaration.public_evidence_refs)
+    )
+    if not public_evidence_refs:
+        raise ValueError("public claim must expose at least one sanitized evidence ref")
+    return {
+        "publication": _validate_public_claim_text(declaration.publication, field="publication"),
+        "scope": _validate_public_claim_text(declaration.scope, field="scope"),
+        "caveat": _validate_public_claim_text(declaration.caveat, field="caveat"),
+        "public_evidence_refs": list(public_evidence_refs),
+        "presets": list(presets),
+        "disclosure": disclosure,
+    }
 
 
 def _finding_value(finding: FindingAssertion) -> dict[str, object]:
@@ -1428,6 +1505,14 @@ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
         # Future rigor work can add bands, tolerances, or direction-only
         # expectations without a user-tier schema migration.
         value["expected"] = expected
+    if finding.source_epoch is not None:
+        value["source_epoch"] = _validate_public_claim_text(finding.source_epoch, field="source_epoch")
+    if finding.evaluation_ref is not None:
+        value["evaluation_ref"] = _validate_finding_ref(finding.evaluation_ref, field="evaluation_ref")
+    if finding.frame_ref is not None:
+        value["frame_ref"] = _validate_finding_ref(finding.frame_ref, field="frame_ref")
+    if finding.public_claim is not None:
+        value["public_claim"] = _public_claim_value(finding.public_claim)
     return value
 
 
@@ -1455,10 +1540,15 @@ def upsert_findings_as_assertions(
             result_set_ref,
             *(_validate_finding_ref(ref, field="evidence_ref") for ref in finding.evidence_refs),
         ]
-        for field in ("baseline_ref", "current_ref"):
+        for field in ("baseline_ref", "current_ref", "evaluation_ref", "frame_ref"):
             ref = value.get(field)
             if isinstance(ref, str):
                 evidence_refs.append(ref)
+        public_claim = value.get("public_claim")
+        if isinstance(public_claim, dict):
+            public_refs = public_claim.get("public_evidence_refs")
+            if isinstance(public_refs, list):
+                evidence_refs.extend(str(ref) for ref in public_refs)
         evidence_refs = sorted(set(evidence_refs))
         detector_ref = _validate_finding_ref(finding.detector_ref, field="detector_ref")
         assertion_id = assertion_id_for_finding(
@@ -2313,6 +2403,7 @@ __all__ = [
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
     "FindingAssertion",
+    "PublicClaimDeclaration",
     "AssertionKind",
     "AssertionStatus",
     "AssertionVisibility",

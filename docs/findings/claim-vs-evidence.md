@@ -2,7 +2,10 @@
 
 ## Claim
 
-In one bounded private-archive sample, at least 24.1% of sampled structured failures were followed by an assistant turn that proceeded without an acknowledgment marker. Most sampled cases remained ambiguous.
+<!-- public-claim:finding.silent-proceed-lower-bound -->
+The historical packet generated on 2026-07-04 reported that, in one bounded private-archive sample, at least 24.1% of sampled structured failures were followed by an assistant turn that proceeded without an acknowledgment marker. Most sampled cases remained ambiguous.
+
+The generated [findings-page public-claims view](../generated/public-claims/findings-page.md) is the authority for whether this historical number is currently supported, stale, private-held, or unresolved.
 
 This is a lower-bound field observation from one archive and one method. It is not a prevalence estimate for all agents, models, users, providers, or tasks.
 
@@ -18,6 +21,33 @@ The tracked packet was generated on 2026-07-04 against archive schema v24.
 - acknowledged within the next three assistant turns: 722.
 
 The next-turn silent lower bound is therefore 1,205 / 5,000 = 24.1%.
+
+
+## Handler-class split
+
+<!-- public-claim:finding.handler-class-split -->
+The packet partitioned the same 5,000 inspected failures using explicit tool-name methodology classes:
+
+| Handler class | Inspected failures | Silent proceed | Ambiguous | Silent lower bound |
+| --- | ---: | ---: | ---: | ---: |
+| Consequential | 4,175 | 930 | 2,842 | 22.3% |
+| Benign recovery | 634 | 172 | 455 | 27.1% |
+| Other | 191 | 103 | 78 | 53.9% |
+
+These are method-defined groups, not severity labels. The ambiguous remainder remains visible in every class.
+
+## Per-origin inspection counts
+
+<!-- public-claim:finding.per-origin-inspection-counts -->
+The bounded origin-stratified allocation was:
+
+| Origin | Inspected | Requested | Complete origin frame |
+| --- | ---: | ---: | ---: |
+| `claude-code-session` | 3,752 | 3,752 | 31,555 |
+| `codex-session` | 1,241 | 1,241 | 10,429 |
+| `claude-ai-export` | 7 | 7 | 49 |
+
+These are inspection/frame counts determined by this archive and allocation rule, not provider prevalence estimates.
 
 ## Structural oracle
 

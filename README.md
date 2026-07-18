@@ -9,6 +9,7 @@
   <a href="https://github.com/Sinity/homebrew-polylogue"><img src="https://img.shields.io/badge/Homebrew-tap-fbb040?logo=homebrew&logoColor=111827" alt="Homebrew tap"></a>
 </p>
 
+<!-- public-claim:category.local-evidence-system -->
 **Polylogue is a local evidence system for AI work.** It turns ChatGPT, Claude, Codex, Gemini, Antigravity, Hermes, and coding-agent histories into one evidence-addressable archive: search what happened, read tool activity as work rather than chat, audit claims against structural outcomes, understand cost and lineage, and give the next agent reviewed context.
 
 Polylogue answers questions that transcript folders and vendor chat history do not:
@@ -101,7 +102,7 @@ polylogue find 'origin:codex-session' then read --first --view messages
 
 The important distinction is not lexical search. `grep` can find the word `pytest`; Polylogue can pair a provider-native tool call with its result, classify failure from `exit_code` or `is_error`, identify whether a later assistant turn acknowledged it, compose copied lineage without double-counting it, and resolve a derived result to source evidence.
 
-See [Proof Artifacts](docs/proof-artifacts.md) for bounded claims and their evidence. Current examples include:
+See [Proof Artifacts](docs/proof-artifacts.md) for bounded claims and their evidence. The generated [README public-claims view](docs/generated/public-claims/readme.md) shows each claim's current review and evidence-integrity status. Current examples include:
 
 - a deterministic private-data-free corpus and one-command tour;
 - a crafted cross-provider cost-accounting proof;
