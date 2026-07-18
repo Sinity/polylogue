@@ -207,6 +207,78 @@ a:focus-visible {
   font-size: 0.88rem;
 }
 
+.observability-panel {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+}
+
+.status-grid,
+.insight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 1rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.status-card,
+.insight-card {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 0.4rem;
+}
+
+.status-card[data-status-state="timed_out"],
+.status-card[data-status-state="degraded"],
+.insight-card[data-insight-state="degraded"] {
+  border-color: color-mix(in srgb, DarkOrange 65%, CanvasText 35%);
+}
+
+.status-card[data-status-state="unavailable"],
+.insight-card[data-insight-state="unavailable"] {
+  border-style: dashed;
+}
+
+.state-label {
+  margin-bottom: 0.6rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.source-lookup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  max-width: 48rem;
+}
+
+.source-lookup label { grid-column: 1 / -1; font-weight: 700; }
+.source-lookup input { min-width: 0; padding: 0.6rem; font: inherit; }
+.source-lookup button { padding: 0.6rem 1rem; font: inherit; font-weight: 700; }
+
+.freshness-ladder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 1rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.freshness-ladder li {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 999px;
+}
+
+.freshness-ladder li[data-stage-state="current"] { border-color: Highlight; font-weight: 700; }
+.freshness-ladder li[data-stage-state="complete"] { opacity: 0.72; }
+
 @media (max-width: 42rem) {
   .site-header,
   .activity-panel__heading {

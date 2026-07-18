@@ -1,11 +1,31 @@
 {
+  "_styles-D_lSv0z0.css": {
+    "file": "styles-D_lSv0z0.css",
+    "src": "_styles-D_lSv0z0.css"
+  },
+  "_styles-mo6P3paS.js": {
+    "file": "styles-mo6P3paS.js",
+    "name": "styles",
+    "css": [
+      "styles-D_lSv0z0.css"
+    ]
+  },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-CxKzwy2z.js",
+    "file": "archive-overview-DNGDLYU3.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
-    "css": [
-      "archive-overview-Ce5VissO.css"
+    "imports": [
+      "_styles-mo6P3paS.js"
+    ]
+  },
+  "src/entrypoints/observability.tsx": {
+    "file": "observability-D3PM5_9L.js",
+    "name": "observability",
+    "src": "src/entrypoints/observability.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-mo6P3paS.js"
     ]
   }
 }

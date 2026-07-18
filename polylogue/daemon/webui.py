@@ -11,11 +11,13 @@ import hashlib
 import html
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PurePosixPath
+from typing import Any
 from urllib.parse import quote
 
 from polylogue.archive.query.execution_control import classify_unit_expression_workload
@@ -69,15 +71,18 @@ class WebUIAssetBundle:
         return cls(root)
 
     def entrypoint(self) -> WebUIEntrypoint:
+        return self.entrypoint_for(_WEBUI_ENTRY_NAME)
+
+    def entrypoint_for(self, name: str) -> WebUIEntrypoint:
         entry: dict[str, object] | None = None
         for raw in self._manifest.values():
             if not isinstance(raw, dict):
                 continue
-            if raw.get("isEntry") is True and raw.get("name") == _WEBUI_ENTRY_NAME:
+            if raw.get("isEntry") is True and raw.get("name") == name:
                 entry = raw
                 break
         if entry is None:
-            raise WebUIAssetError(f"Vite manifest has no {_WEBUI_ENTRY_NAME!r} entry")
+            raise WebUIAssetError(f"Vite manifest has no {name!r} entry")
         script = self._manifest_asset_name(entry.get("file"))
         raw_css = entry.get("css", [])
         if not isinstance(raw_css, list):
@@ -252,6 +257,205 @@ def render_archive_overview_page(
 """
 
 
+async def build_observability_payload(
+    operations: object,
+    status: Mapping[str, object],
+    *,
+    registry: Mapping[str, Any] | None = None,
+) -> dict[str, object]:
+    """Return descriptor-owned insight panels and a status-snapshot adapter.
+
+    The browser receives display fields from the insight registry, not a copy
+    of its accessors or readiness rules.  A failed descriptor is rendered in
+    place and cannot suppress healthy sibling panels.
+    """
+    from polylogue.insights.archive import ArchiveInsightUnavailableError
+    from polylogue.insights.registry import INSIGHT_REGISTRY, fetch_insights_async
+
+    panels: list[dict[str, object]] = []
+    active_registry: Mapping[str, Any] = INSIGHT_REGISTRY if registry is None else registry
+    for name, descriptor in sorted(active_registry.items()):
+        fields = tuple(descriptor.fields)
+        query_kwargs: dict[str, object] = {}
+        if descriptor.query_model is not None and "limit" in descriptor.query_model.model_fields:
+            query_kwargs["limit"] = min(12, descriptor.mcp_default_limit)
+        panel: dict[str, object] = {
+            "name": name,
+            "display_name": descriptor.display_name,
+            "json_key": descriptor.json_key,
+            "fields": [field.label for field in fields],
+            "readiness": _insight_readiness(status, descriptor.readiness_exempt),
+            "state": "available",
+            "items": [],
+            "error": None,
+        }
+        try:
+            items = await fetch_insights_async(descriptor, operations, **query_kwargs)
+        except ArchiveInsightUnavailableError as exc:
+            panel["state"] = "unavailable"
+            panel["error"] = str(exc)
+        except Exception as exc:
+            panel["state"] = "degraded"
+            panel["error"] = str(exc)
+        else:
+            rendered_items: list[dict[str, object]] = []
+            for item in items:
+                plain_fields: list[dict[str, str]] = []
+                for field in fields:
+                    try:
+                        value = field.accessor(item)
+                    except (AttributeError, KeyError, TypeError):
+                        value = "-"
+                    plain_fields.append({"label": field.label, "value": str(value)})
+                item_json = item.model_dump(mode="json")
+                provenance = item_json.get("provenance")
+                if provenance is None:
+                    provenance = {
+                        key: item_json[key]
+                        for key in ("materializer_version", "materialized_at", "evidence_refs")
+                        if key in item_json
+                    }
+                rendered_items.append({"fields": plain_fields, "json": item_json, "provenance": provenance})
+            panel["items"] = rendered_items
+            if not rendered_items:
+                panel["state"] = "empty"
+        panels.append(panel)
+    return {"contract_version": 1, "status": _status_panel_payload(status), "insights": panels}
+
+
+def _insight_readiness(status: Mapping[str, object], exempt: bool) -> dict[str, object]:
+    if exempt:
+        return {"state": "not_required", "required": False, "reason": "descriptor is readiness-exempt"}
+    components = status.get("component_readiness")
+    component = components.get("insight_freshness") if isinstance(components, Mapping) else None
+    if isinstance(component, Mapping):
+        return {
+            "state": str(component.get("state") or "unknown"),
+            "required": True,
+            "reason": component.get("reason") or component.get("detail") or component.get("summary"),
+        }
+    return {"state": "unknown", "required": True, "reason": "daemon did not provide insight readiness"}
+
+
+def _status_panel_payload(status: Mapping[str, object]) -> dict[str, object]:
+    """Adapt today's readiness map to the StatusComponentSnapshot protocol."""
+    snapshot = status.get("status_snapshot")
+    snapshot_payload = dict(snapshot) if isinstance(snapshot, Mapping) else {"state": "unavailable"}
+    supplied = status.get("status_components")
+    if isinstance(supplied, list):
+        return {"adapter": "status-component-snapshot", "snapshot": snapshot_payload, "components": supplied}
+    legacy = status.get("component_readiness")
+    components: list[dict[str, object]] = []
+    if isinstance(legacy, Mapping):
+        for name, value in sorted(legacy.items()):
+            record = value if isinstance(value, Mapping) else {}
+            legacy_state = str(record.get("state") or "unknown")
+            state = {
+                "ready": "fresh",
+                "stale": "stale",
+                "running": "refreshing",
+                "pending": "refreshing",
+                "blocked": "degraded",
+                "degraded": "degraded",
+            }.get(legacy_state, "unavailable")
+            components.append(
+                {
+                    "name": str(name),
+                    "state": state,
+                    "detail": record.get("reason") or record.get("detail") or record.get("summary"),
+                    "last_good": None,
+                    "age_s": snapshot_payload.get("age_s"),
+                }
+            )
+    return {"adapter": "legacy-component-readiness", "snapshot": snapshot_payload, "components": components}
+
+
+def render_observability_page(
+    bundle: WebUIAssetBundle,
+    payload: Mapping[str, object],
+    *,
+    notice: str | None = None,
+) -> str:
+    """Render observability semantics before the Preact island starts."""
+    entry = bundle.entrypoint_for("observability")
+    stylesheet_links = "\n".join(
+        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+    )
+    status = payload.get("status")
+    status_payload = status if isinstance(status, Mapping) else {}
+    components = status_payload.get("components")
+    insights = payload.get("insights")
+    component_rows = components if isinstance(components, list) else []
+    insight_panels = insights if isinstance(insights, list) else []
+    rendered_components = "\n".join(_render_status_component(component) for component in component_rows)
+    rendered_insights = "\n".join(_render_insight_panel(panel) for panel in insight_panels)
+    summary = (
+        notice
+        or "Status and insight evidence are projected by the daemon; unavailable and degraded states remain visible."
+    )
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Observability · Polylogue</title>
+{stylesheet_links}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to observability</a>
+    <header class="site-header"><p class="eyebrow">Polylogue</p><nav aria-label="WebUI views"><a href="/app">Archive overview</a><a href="/app/observability" aria-current="page">Observability</a><a href="/">Legacy reader</a></nav></header>
+    <main id="main" class="page-shell">
+      <p class="eyebrow">Daemon-projected evidence</p><h1>Archive observability</h1><p class="lede">{html.escape(summary)}</p>
+      <div id="observability-island" data-island="observability">
+        <section class="observability-panel" aria-labelledby="status-title"><h2 id="status-title">Component status</h2><ul class="status-grid">{rendered_components}</ul></section>
+        <section class="observability-panel" aria-labelledby="freshness-title"><h2 id="freshness-title">Named-source freshness</h2><p>Inspect one exact source after web credentials are established. The ladder reports source, cursor, raw, parse, index, FTS, and insight evidence without an archive-wide scan.</p><form class="source-lookup"><label for="source-path">Exact source path</label><input id="source-path" name="source" type="text" autocomplete="off"><button type="submit">Inspect source</button></form><div data-source-freshness></div></section>
+        <section class="observability-panel" aria-labelledby="insights-title"><h2 id="insights-title">Insights</h2><div class="insight-grid">{rendered_insights}</div></section>
+      </div>
+    </main>
+    <script id="observability-bootstrap" type="application/json">{_json_script(payload)}</script>
+    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+  </body>
+</html>
+"""
+
+
+def _render_status_component(raw: object) -> str:
+    component = raw if isinstance(raw, Mapping) else {}
+    name = html.escape(str(component.get("name") or "unknown component"))
+    state = html.escape(str(component.get("state") or "unavailable"))
+    detail = component.get("detail")
+    detail_markup = f"<p>{html.escape(str(detail))}</p>" if detail else ""
+    return f'<li class="status-card" data-status-state="{state}"><h3>{name}</h3><p class="state-label">{state}</p>{detail_markup}</li>'
+
+
+def _render_insight_panel(raw: object) -> str:
+    panel = raw if isinstance(raw, Mapping) else {}
+    title = html.escape(str(panel.get("display_name") or panel.get("name") or "Unnamed insight"))
+    state = html.escape(str(panel.get("state") or "unavailable"))
+    items = panel.get("items")
+    rows = items if isinstance(items, list) else []
+    error = panel.get("error")
+    if error:
+        body = f"<p>{html.escape(str(error))}</p>"
+    elif not rows:
+        body = "<p>No materialized rows are available for this bounded view.</p>"
+    else:
+        rendered_rows: list[str] = []
+        for item in rows:
+            item_record = item if isinstance(item, Mapping) else {}
+            fields = item_record.get("fields")
+            pairs = fields if isinstance(fields, list) else []
+            values = " ".join(
+                f"<span><strong>{html.escape(str(pair.get('label') or 'value'))}</strong> {html.escape(str(pair.get('value') or '-'))}</span>"
+                for pair in pairs
+                if isinstance(pair, Mapping)
+            )
+            rendered_rows.append(f"<li>{values}</li>")
+        body = f"<ul>{''.join(rendered_rows)}</ul>"
+    return f'<article class="insight-card" data-insight-state="{state}"><h3>{title}</h3><p class="state-label">{state}</p>{body}</article>'
+
+
 def render_webui_asset_error(detail: str) -> str:
     """Return a dependency-free semantic error page when the build is absent."""
 
@@ -325,7 +529,9 @@ __all__ = [
     "WebUIAssetBundle",
     "WebUIAssetError",
     "WebUIEntrypoint",
+    "build_observability_payload",
     "load_archive_overview_page",
     "render_archive_overview_page",
+    "render_observability_page",
     "render_webui_asset_error",
 ]

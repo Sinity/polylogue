@@ -103,6 +103,44 @@ def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path) -> None
         assert _web_reader_archive_root() is None
 
 
+def test_observability_payload_projects_a_new_registry_descriptor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A descriptor added to the registry appears without a WebUI code change.
+
+    This production adapter proof fails if registry iteration or descriptor
+    field accessors are replaced by a hand-maintained WebUI panel list.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.daemon.webui import build_observability_payload
+
+    descriptor = SimpleNamespace(
+        display_name="Fake descriptor",
+        json_key="fake_descriptors",
+        fields=(SimpleNamespace(label="proof", accessor=lambda item: item.proof),),
+        query_model=None,
+        mcp_default_limit=50,
+        readiness_exempt=False,
+    )
+    item = SimpleNamespace(proof="registry generated", model_dump=lambda *, mode: {"materializer_version": 7})
+
+    async def fake_fetch(_descriptor: object, _operations: object, **_kwargs: object) -> list[object]:
+        return [item]
+
+    monkeypatch.setattr("polylogue.insights.registry.fetch_insights_async", fake_fetch)
+    payload = asyncio.run(
+        build_observability_payload(
+            object(),
+            {"component_readiness": {"insight_freshness": {"state": "ready"}}},
+            registry={"fake_descriptor": descriptor},
+        )
+    )
+
+    panels = cast(list[dict[str, object]], payload["insights"])
+    assert panels[0]["display_name"] == "Fake descriptor"
+    rows = cast(list[dict[str, object]], panels[0]["items"])
+    assert rows[0]["fields"] == [{"label": "proof", "value": "registry generated"}]
+
+
 def _materialize_run_projection(index_db: Path) -> None:
     """Rebuild session insights for richer digest-derived run-projection rows."""
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
@@ -2050,6 +2088,22 @@ class TestReaderActionAffordances:
 
 
 class TestWebUIV2:
+    def test_observability_page_serves_semantic_registry_panels(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """The real /app route consumes the manifest and descriptor projection."""
+        with _running_server(workspace_env) as (_, base_url):
+            with urlopen(f"{base_url}/app/observability", timeout=10) as response:
+                assert response.status == 200
+                html_body = response.read().decode("utf-8")
+
+        assert "<h1>Archive observability</h1>" in html_body
+        assert 'data-island="observability"' in html_body
+        assert "Named-source freshness" in html_body
+        assert "Insights" in html_body
+        assert re.search(r'src="/app/assets/observability-[^"]+\.js"', html_body)
+
     def test_app_serves_semantic_ssr_and_manifest_hashed_assets(
         self,
         workspace_env: dict[str, Path],

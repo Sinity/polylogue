@@ -17,6 +17,7 @@ export default defineConfig({
         'archive-overview': fileURLToPath(
           new URL('./src/entrypoints/archive-overview.tsx', import.meta.url),
         ),
+        observability: fileURLToPath(new URL('./src/entrypoints/observability.tsx', import.meta.url)),
       },
       output: {
         entryFileNames: '[name]-[hash].js',
