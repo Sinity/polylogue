@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.ingest_support import PARSE_STAGES
-from polylogue.pipeline.payload_types import ParseBatchObservation, ParseBatchObservationSummary
+from polylogue.pipeline.payload_types import IngestDiagnostics, ParseBatchObservation, ParseBatchObservationSummary
 from polylogue.pipeline.services.parsing_models import IngestResult, IngestState, ParseResult
 
 if TYPE_CHECKING:
@@ -295,7 +295,7 @@ async def ingest_sources(
         **{f"{k}_s": round(v, 2) for k, v in timings.items()},
     )
 
-    diagnostics = {
+    diagnostics: IngestDiagnostics = {
         "acquisition": acquire_result.diagnostics,
         "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
     }

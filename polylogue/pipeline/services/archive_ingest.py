@@ -336,7 +336,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
             result.batch_observations.append(
                 {
                     "claude_workflow_materialization": True,
-                    **workflow_summary.as_dict(),
+                    "claude_workflow_summary": workflow_summary.as_dict(),
                 }
             )
         except Exception as exc:
@@ -389,8 +389,7 @@ def _admit_non_session_origin_artifacts(
         )
         if walk is None:
             continue
-        for path in walk.paths_to_process:
-            candidate = path[0] if isinstance(path, tuple) else path
+        for candidate, _mtime in walk.paths_to_process:
             classification = classify_artifact_path(candidate, provider=source.name)
             if classification is None or classification.parse_as_session:
                 continue

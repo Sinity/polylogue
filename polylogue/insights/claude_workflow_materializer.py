@@ -15,6 +15,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.refs import EvidenceRef, ObjectRef
@@ -25,6 +26,7 @@ from polylogue.insights.claude_workflow_evidence import (
     project_claude_workflow_evidence,
 )
 from polylogue.insights.work_evidence import WorkEvidenceGraph
+from polylogue.logging import get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
 from polylogue.sources.parsers.claude.orchestration import (
@@ -34,6 +36,8 @@ from polylogue.sources.parsers.claude.orchestration import (
 )
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.blob_store import BlobStore
+
+logger = get_logger(__name__)
 
 CLAUDE_WORKFLOW_MATERIALIZER_VERSION = 1
 _GRAPH_PREFIX = "claude-workflow:"
@@ -207,6 +211,11 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
                     parse_error="OriginSpec rule was unavailable during materialization",
                 )
         except Exception as exc:
+            logger.warning(
+                "Claude Workflow artifact parse degraded to path-identity fact: %s (%s)",
+                raw.source_path,
+                exc,
+            )
             fallback_fact = _path_identity_fact(raw)
             value = ClaudeOrchestrationArtifact(
                 kind=raw.artifact_kind,
@@ -392,7 +401,7 @@ def _load_session_evidence(
             (raw.raw_id, Origin.CLAUDE_CODE_SESSION.value),
         ).fetchall()
         if len(rows) != 1:
-            state = "unresolved" if not rows else "ambiguous"
+            state: Literal["unresolved", "ambiguous"] = "unresolved" if not rows else "ambiguous"
             detail = (
                 "transcript has no indexed session" if not rows else f"transcript maps to {len(rows)} indexed sessions"
             )
