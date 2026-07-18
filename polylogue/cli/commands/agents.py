@@ -60,7 +60,20 @@ def _emit(
     output_format: str,
     detail: bool,
 ) -> None:
-    payload = _build_coordination_envelope(view=view, cwd=cwd, limit=limit, detail=detail)
+    from polylogue.operations.route_observation import observe_route
+    from polylogue.paths import archive_root as _resolve_archive_root
+
+    try:
+        observed_archive_root: Path | None = _resolve_archive_root()
+    except Exception:
+        observed_archive_root = None
+    with observe_route(
+        archive_root=observed_archive_root,
+        surface="cli",
+        route=f"cli.agents.{view}",
+        verb="detail" if detail else "compact",
+    ):
+        payload = _build_coordination_envelope(view=view, cwd=cwd, limit=limit, detail=detail)
     if json_output or output_format == "json":
         click.echo(payload.to_json(exclude_none=True))
         return

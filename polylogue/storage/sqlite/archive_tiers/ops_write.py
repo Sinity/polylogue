@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from polylogue.core.enums import Origin
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
+ROUTE_OBSERVATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+ROUTE_OBSERVATION_ROW_CAP = 20_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +120,26 @@ class ArchiveMcpCallLogEntry:
     duration_ms: int
     success: bool
     error_detail: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRouteObservation:
+    """Compact read-back row for one route-latency observation (polylogue-jtwu)."""
+
+    observation_id: str
+    trace_id: str
+    surface: str
+    route: str
+    verb: str | None
+    daemon_path: str | None
+    phase: str
+    started_at_ms: int
+    duration_ms: int
+    status: str
+    git_head: str | None
+    archive_epoch: str | None
+    attributes: dict[str, object]
+    sampled: bool
 
 
 def record_query_run(
@@ -1054,6 +1076,133 @@ def _mcp_call_log_entry_from_row(row: sqlite3.Row | tuple[object, ...]) -> Archi
     )
 
 
+def record_route_observation(
+    conn: sqlite3.Connection,
+    *,
+    trace_id: str,
+    surface: str,
+    route: str,
+    started_at_ms: int,
+    duration_ms: int,
+    status: str,
+    verb: str | None = None,
+    daemon_path: str | None = None,
+    phase: str = "total",
+    git_head: str | None = None,
+    archive_epoch: str | None = None,
+    attributes: dict[str, object] | None = None,
+    sampled: bool = True,
+    observation_id: str | None = None,
+) -> str:
+    """Record one bounded route-latency observation and return its id.
+
+    Best-effort telemetry, not audit evidence: unlike ``record_mcp_call``
+    (durable, conflict-checked, delivered via an outbox so a dropped
+    connection cannot silently lose an entry), this writer is a plain
+    direct INSERT -- callers that cannot reach ops.db (no archive
+    configured, disposable tier missing) are expected to catch and drop the
+    observation rather than block or retry. Bounded by both time (
+    ``ROUTE_OBSERVATION_RETENTION_MS``) and row count
+    (``ROUTE_OBSERVATION_ROW_CAP``) so a high-frequency route cannot let
+    this table grow unbounded between prunes.
+    """
+    if observation_id is None:
+        observation_id = str(uuid.uuid4())
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO route_observations (
+                observation_id, trace_id, surface, route, verb, daemon_path, phase,
+                started_at_ms, duration_ms, status, git_head, archive_epoch, attributes_json, sampled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                observation_id,
+                trace_id,
+                surface,
+                route,
+                verb,
+                daemon_path,
+                phase,
+                started_at_ms,
+                duration_ms,
+                status,
+                git_head,
+                archive_epoch,
+                _json_dumps(attributes or {}),
+                1 if sampled else 0,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM route_observations WHERE started_at_ms < ?",
+            (started_at_ms - ROUTE_OBSERVATION_RETENTION_MS,),
+        )
+        row_count = int(conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0])
+        if row_count > ROUTE_OBSERVATION_ROW_CAP:
+            excess = row_count - ROUTE_OBSERVATION_ROW_CAP
+            conn.execute(
+                """
+                DELETE FROM route_observations WHERE observation_id IN (
+                    SELECT observation_id FROM route_observations
+                    ORDER BY started_at_ms ASC LIMIT ?
+                )
+                """,
+                (excess,),
+            )
+    return observation_id
+
+
+def list_route_observations(
+    conn: sqlite3.Connection,
+    *,
+    surface: str | None = None,
+    route: str | None = None,
+    since_ms: int | None = None,
+    limit: int = 1000,
+) -> tuple[ArchiveRouteObservation, ...]:
+    """Return route observations newest-first, optionally filtered."""
+    query = """
+        SELECT observation_id, trace_id, surface, route, verb, daemon_path, phase,
+               started_at_ms, duration_ms, status, git_head, archive_epoch, attributes_json, sampled
+        FROM route_observations
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if surface is not None:
+        clauses.append("surface = ?")
+        params.append(surface)
+    if route is not None:
+        clauses.append("route = ?")
+        params.append(route)
+    if since_ms is not None:
+        clauses.append("started_at_ms >= ?")
+        params.append(since_ms)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY started_at_ms DESC, observation_id DESC LIMIT ?"
+    params.append(limit)
+    return tuple(_route_observation_from_row(row) for row in conn.execute(query, tuple(params)).fetchall())
+
+
+def _route_observation_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveRouteObservation:
+    return ArchiveRouteObservation(
+        observation_id=str(row[0]),
+        trace_id=str(row[1]),
+        surface=str(row[2]),
+        route=str(row[3]),
+        verb=None if row[4] is None else str(row[4]),
+        daemon_path=None if row[5] is None else str(row[5]),
+        phase=str(row[6]),
+        started_at_ms=_int_value(row[7]),
+        duration_ms=_int_value(row[8]),
+        status=str(row[9]),
+        git_head=None if row[10] is None else str(row[10]),
+        archive_epoch=None if row[11] is None else str(row[11]),
+        attributes=_json_loads(row[12] if isinstance(row[12], str) else None),
+        sampled=bool(row[13]),
+    )
+
+
 def read_compact_state(conn: sqlite3.Connection) -> OpsCompactState:
     """Read a compact status snapshot across OPS-tier state tables."""
     cursor_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
@@ -1149,6 +1298,7 @@ __all__ = [
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
     "ArchiveOtlpSpan",
+    "ArchiveRouteObservation",
     "OpsCompactState",
     "add_convergence_debt",
     "list_cursor_lag_samples",
@@ -1156,6 +1306,7 @@ __all__ = [
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
     "list_otlp_spans",
+    "list_route_observations",
     "read_cursor_lag_sample",
     "read_daemon_stage_event",
     "read_embedding_catchup_run",
@@ -1169,6 +1320,7 @@ __all__ = [
     "record_daemon_stage_event",
     "record_ingest_attempt",
     "record_query_run",
+    "record_route_observation",
     "upsert_embedding_catchup_run",
     "upsert_ingest_cursor",
     "upsert_otlp_span",

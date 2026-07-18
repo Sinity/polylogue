@@ -8,12 +8,14 @@ import pytest
 from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    ROUTE_OBSERVATION_ROW_CAP,
     ArchiveCursorLagSample,
     ArchiveDaemonLifecycle,
     ArchiveDaemonStageEvent,
     ArchiveEmbeddingCatchupRun,
     ArchiveMcpCallLogEntry,
     ArchiveOtlpSpan,
+    ArchiveRouteObservation,
     OpsCompactState,
     add_convergence_debt,
     latest_daemon_lifecycle,
@@ -22,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     list_embedding_catchup_runs,
     list_mcp_calls,
     list_otlp_spans,
+    list_route_observations,
     read_compact_state,
     read_cursor_lag_sample,
     read_daemon_stage_event,
@@ -36,6 +39,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     record_daemon_stage_event,
     record_ingest_attempt,
     record_mcp_call,
+    record_route_observation,
     upsert_embedding_catchup_run,
     upsert_ingest_cursor,
     upsert_otlp_span,
@@ -573,3 +577,133 @@ def test_read_mcp_call_missing_id_raises_key_error(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "ops.db")
     with pytest.raises(KeyError):
         read_mcp_call(conn, "does-not-exist")
+
+
+def test_record_route_observation_writes_reads_and_filters(tmp_path: Path) -> None:
+    """polylogue-jtwu: route-latency evidence round trip, queryable by surface/route."""
+    conn = _connect(tmp_path / "ops.db")
+
+    observation_id = record_route_observation(
+        conn,
+        observation_id="obs-1",
+        trace_id="trace-1",
+        surface="cli",
+        route="cli.status",
+        verb="compact",
+        daemon_path="direct",
+        started_at_ms=1_700_003_000,
+        duration_ms=384,
+        status="ok",
+        git_head="abc123def456",
+        archive_epoch="epoch-1",
+        attributes={"daemon_reachable": False},
+    )
+    record_route_observation(
+        conn,
+        observation_id="obs-2",
+        trace_id="trace-2",
+        surface="mcp",
+        route="mcp.status.coordination",
+        verb="detail",
+        started_at_ms=1_700_003_500,
+        duration_ms=5200,
+        status="degraded",
+        attributes={"archive_evidence_degraded": True},
+    )
+    record_route_observation(
+        conn,
+        observation_id="obs-3",
+        trace_id="trace-3",
+        surface="cli",
+        route="cli.agents.status",
+        started_at_ms=1_700_004_000,
+        duration_ms=645,
+        status="ok",
+    )
+
+    assert observation_id == "obs-1"
+
+    by_surface = list_route_observations(conn, surface="cli")
+    assert [row.observation_id for row in by_surface] == ["obs-3", "obs-1"]
+
+    by_route = list_route_observations(conn, route="mcp.status.coordination")
+    assert by_route == (
+        ArchiveRouteObservation(
+            observation_id="obs-2",
+            trace_id="trace-2",
+            surface="mcp",
+            route="mcp.status.coordination",
+            verb="detail",
+            daemon_path=None,
+            phase="total",
+            started_at_ms=1_700_003_500,
+            duration_ms=5200,
+            status="degraded",
+            git_head=None,
+            archive_epoch=None,
+            attributes={"archive_evidence_degraded": True},
+            sampled=True,
+        ),
+    )
+
+    since = list_route_observations(conn, since_ms=1_700_003_600)
+    assert [row.observation_id for row in since] == ["obs-3"]
+
+    read = list_route_observations(conn, surface="cli", route="cli.status")
+    assert read
+    assert read[0].daemon_path == "direct"
+    assert read[0].git_head == "abc123def456"
+    assert read[0].archive_epoch == "epoch-1"
+    assert read[0].attributes == {"daemon_reachable": False}
+
+
+def test_record_route_observation_prunes_by_retention_window(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "ops.db")
+    from polylogue.storage.sqlite.archive_tiers.ops_write import ROUTE_OBSERVATION_RETENTION_MS
+
+    old_started_ms = 10_000_000_000  # far enough in the past to be pruned by the next write
+    record_route_observation(
+        conn,
+        observation_id="old-1",
+        trace_id="t-old",
+        surface="cli",
+        route="cli.status",
+        started_at_ms=old_started_ms,
+        duration_ms=100,
+        status="ok",
+    )
+    assert conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0] == 1
+
+    record_route_observation(
+        conn,
+        observation_id="new-1",
+        trace_id="t-new",
+        surface="cli",
+        route="cli.status",
+        started_at_ms=old_started_ms + ROUTE_OBSERVATION_RETENTION_MS + 1,
+        duration_ms=100,
+        status="ok",
+    )
+    remaining = list_route_observations(conn)
+    assert [row.observation_id for row in remaining] == ["new-1"]
+
+
+def test_record_route_observation_caps_row_count(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "ops.db")
+    base_ms = 1_700_000_000_000
+    for i in range(ROUTE_OBSERVATION_ROW_CAP + 5):
+        record_route_observation(
+            conn,
+            observation_id=f"obs-{i}",
+            trace_id=f"t-{i}",
+            surface="cli",
+            route="cli.status",
+            started_at_ms=base_ms + i,
+            duration_ms=10,
+            status="ok",
+        )
+    row_count = int(conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0])
+    assert row_count <= ROUTE_OBSERVATION_ROW_CAP
+    # The oldest rows are the ones dropped -- the newest observation always survives.
+    newest = list_route_observations(conn, limit=1)
+    assert newest[0].observation_id == f"obs-{ROUTE_OBSERVATION_ROW_CAP + 4}"

@@ -1376,35 +1376,55 @@ def status_command(
         if strict_source and incomplete:
             raise click.exceptions.Exit(2)
         return
-    candidate_urls = _candidate_daemon_urls(daemon_url)
-    for candidate_url in candidate_urls:
-        try:
-            req = Request(
-                f"{candidate_url}/api/status",
-                headers={"Accept": "application/json"},
-                method="GET",
-            )
-            with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
-                result = json.loads(resp.read())
-        except (OSError, ValueError):
-            # ValueError covers malformed URLs (urllib raises before any I/O).
-            continue
-        if output_format == "json":
-            _show_status_json(env, result, full=full_payload)
-        else:
-            _show_daemon_status(env, result)
-        return
+    from polylogue.operations.route_observation import observe_route
+    from polylogue.paths import archive_root as _resolve_archive_root
 
-    if output_format == "json":
-        if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
-            _show_daemon_status_unavailable_json(env)
+    try:
+        observed_archive_root: Path | None = _resolve_archive_root()
+    except Exception:
+        observed_archive_root = None
+
+    with observe_route(
+        archive_root=observed_archive_root,
+        surface="cli",
+        route="cli.status",
+        verb="full" if full_payload else "compact",
+    ) as obs:
+        candidate_urls = _candidate_daemon_urls(daemon_url)
+        for candidate_url in candidate_urls:
+            try:
+                req = Request(
+                    f"{candidate_url}/api/status",
+                    headers={"Accept": "application/json"},
+                    method="GET",
+                )
+                with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
+                    result = json.loads(resp.read())
+            except (OSError, ValueError):
+                # ValueError covers malformed URLs (urllib raises before any I/O).
+                continue
+            obs.attributes["daemon_reachable"] = True
+            obs.daemon_path = "daemon"
+            if output_format == "json":
+                _show_status_json(env, result, full=full_payload)
+            else:
+                _show_daemon_status(env, result)
+            return
+
+        obs.attributes["daemon_reachable"] = False
+        obs.daemon_path = "direct"
+        if output_format == "json":
+            if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+                obs.status = "degraded"
+                _show_daemon_status_unavailable_json(env)
+            else:
+                _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
         else:
-            _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
-    else:
-        if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
-            _show_daemon_status_unavailable(env)
-        else:
-            _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+            if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+                obs.status = "degraded"
+                _show_daemon_status_unavailable(env)
+            else:
+                _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
     return
 
 

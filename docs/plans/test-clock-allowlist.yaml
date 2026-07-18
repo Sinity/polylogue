@@ -35,6 +35,8 @@ files:
     reason: "Constructs a wall-clock anchor for doctor envelope assertions; production envelope embeds the same now() within the same call."
   - path: tests/unit/cli/test_query_exec_laws.py
     reason: "Single ad-hoc datetime.now() used to label a captured row; not compared to a production timestamp."
+  - path: tests/unit/cli/test_diagnostics.py
+    reason: "analyze latency tests construct route-observation timestamps relative to real now() to exercise the --since-hours lookback window, which the production latency_command computes from the real wall clock by design."
   - path: tests/unit/core/test_sampling.py
     reason: "Reservoir sampling tests measure event clustering against a real epoch; production sampler uses the same wall clock by design."
   - path: tests/unit/core/test_schema_registry_versions.py

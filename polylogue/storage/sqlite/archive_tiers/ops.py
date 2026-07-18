@@ -222,6 +222,41 @@ CREATE TABLE IF NOT EXISTS mcp_call_session_refs (
 
 CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_session_refs_session
 ON mcp_call_session_refs(session_id, call_id);
+
+-- Bounded operational latency evidence (polylogue-jtwu / polylogue-20d.17
+-- AC #4): one row per observed route invocation, independent of
+-- query_runs (query-DSL executions specifically) and mcp_call_log (whole
+-- MCP tool calls specifically) -- this table covers the routes those two
+-- do not: CLI command invocations and MCP sub-route detail (e.g. per-
+-- status-scope timing) that a caller wants to record without going
+-- through the query engine or the durable MCP call-log outbox. A route
+-- can carry more than one observation per invocation via `phase`
+-- (e.g. 'total' plus a named sub-stage), correlated by trace_id.
+CREATE TABLE IF NOT EXISTS route_observations (
+    observation_id   TEXT PRIMARY KEY,
+    trace_id         TEXT NOT NULL,
+    surface          TEXT NOT NULL CHECK(surface IN ('cli', 'mcp', 'daemon-http', 'daemon-internal', 'web')),
+    route            TEXT NOT NULL,
+    verb             TEXT,
+    daemon_path      TEXT CHECK(daemon_path IN ('daemon', 'direct') OR daemon_path IS NULL),
+    phase            TEXT NOT NULL DEFAULT 'total',
+    started_at_ms    INTEGER NOT NULL,
+    duration_ms      INTEGER NOT NULL CHECK(duration_ms >= 0),
+    status           TEXT NOT NULL CHECK(status IN ('ok', 'error', 'degraded', 'timed_out', 'unavailable')),
+    git_head         TEXT,
+    archive_epoch    TEXT,
+    attributes_json  TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(attributes_json)),
+    sampled          INTEGER NOT NULL DEFAULT 1 CHECK(sampled IN (0, 1))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_route_observations_surface_route
+ON route_observations(surface, route, started_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_route_observations_trace
+ON route_observations(trace_id, started_at_ms);
+
+CREATE INDEX IF NOT EXISTS idx_route_observations_started
+ON route_observations(started_at_ms);
 """
 
 __all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]

@@ -803,11 +803,24 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
             if scope == "coordination":
                 from polylogue.coordination import build_coordination_envelope
+                from polylogue.operations.route_observation import observe_route
 
-                if "detail" in include:
-                    envelope = build_coordination_envelope(view="status", detail=True)
-                else:
-                    envelope = _coordination_cache().get_or_build(view="status", cwd=None, limit=10)
+                is_detail = "detail" in include
+                with observe_route(
+                    archive_root=hooks.get_config().archive_root,
+                    surface="mcp",
+                    route="mcp.status.coordination",
+                    verb="detail" if is_detail else "compact",
+                ) as obs:
+                    if is_detail:
+                        envelope = build_coordination_envelope(view="status", detail=True)
+                    else:
+                        envelope = _coordination_cache().get_or_build(view="status", cwd=None, limit=10)
+                    archive_evidence_degraded = any("Archive-evidence" in advisory for advisory in envelope.advisories)
+                    if archive_evidence_degraded:
+                        obs.status = "degraded"
+                    obs.attributes["archive_evidence_degraded"] = archive_evidence_degraded
+                    obs.attributes["advisory_count"] = len(envelope.advisories)
                 root["coordination"] = envelope.model_dump(mode="json", exclude_none=True)
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
