@@ -588,11 +588,11 @@ def _render_message_flow_item(raw: object) -> str:
     )
     entries_raw = message.get("semantic_entries")
     entries = entries_raw if isinstance(entries_raw, list) and entries_raw else None
-    body = (
-        "".join(_render_semantic_entry(entry) for entry in entries)
-        if entries is not None
-        else _render_message_flow_fallback_body(message)
-    )
+    semantic_body = "".join(_render_semantic_entry(entry) for entry in entries) if entries is not None else ""
+    # A nonempty semantic_entries list whose entries are all malformed or of an
+    # unsupported entry_type must still fall back to honest plain text rather
+    # than rendering a blank message.
+    body = semantic_body or _render_message_flow_fallback_body(message)
     return f"""        <li class="message-flow__item" id="msg-{html.escape(message_id, quote=True)}" data-role="{html.escape(role, quote=True)}" data-material-origin="{html.escape(material_origin, quote=True)}">
           <div class="message-flow__meta">
             <span class="message-flow__role">{html.escape(role)}</span>
@@ -782,7 +782,16 @@ _SOURCE_FIELD_ORDER = (
 
 def _render_semantic_source(raw: object) -> str:
     source = raw if isinstance(raw, Mapping) else {}
+    known = set(_SOURCE_FIELD_ORDER)
     bits = [f"{key}={source[key]}" for key in _SOURCE_FIELD_ORDER if source.get(key) is not None]
+    # SemanticCardSource is a loose passthrough (polylogue/rendering/semantic_card_models.py);
+    # a registry-added field not yet in _SOURCE_FIELD_ORDER must still surface as
+    # evidence rather than silently disappearing from the rendered card.
+    bits.extend(
+        f"{key}={value}"
+        for key, value in source.items()
+        if key not in known and value is not None and isinstance(value, str | int | float | bool)
+    )
     if not bits:
         return ""
     return f'<details class="card__source"><summary>evidence</summary><code>{html.escape(chr(10).join(bits))}</code></details>'

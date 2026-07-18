@@ -432,15 +432,15 @@ a:focus-visible {
   background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
 }
 
-.card--shell { border-inline-start-color: SlateBlue; }
+.card--shell { border-inline-start-color: slateblue; }
 .card--file_edit,
-.card--file_read { border-inline-start-color: SeaGreen; }
-.card--search { border-inline-start-color: Teal; }
-.card--web { border-inline-start-color: SteelBlue; }
-.card--task { border-inline-start-color: DarkOrchid; }
-.card--mcp { border-inline-start-color: DarkGoldenRod; }
+.card--file_read { border-inline-start-color: seagreen; }
+.card--search { border-inline-start-color: teal; }
+.card--web { border-inline-start-color: steelblue; }
+.card--task { border-inline-start-color: darkorchid; }
+.card--mcp { border-inline-start-color: darkgoldenrod; }
 .card--lineage { border-inline-start-color: Highlight; }
-.card--attachment { border-inline-start-color: CadetBlue; }
+.card--attachment { border-inline-start-color: cadetblue; }
 .card--fallback { border-inline-start-color: color-mix(in srgb, CanvasText 45%, Canvas 55%); }
 
 .card__header {
@@ -473,8 +473,8 @@ a:focus-visible {
   text-transform: uppercase;
 }
 
-.card__outcome[data-outcome-state="succeeded"] { background: color-mix(in srgb, SeaGreen 30%, Canvas 70%); }
-.card__outcome[data-outcome-state="failed"] { background: color-mix(in srgb, Crimson 30%, Canvas 70%); }
+.card__outcome[data-outcome-state="succeeded"] { background: color-mix(in srgb, seagreen 30%, Canvas 70%); }
+.card__outcome[data-outcome-state="failed"] { background: color-mix(in srgb, crimson 30%, Canvas 70%); }
 .card__outcome[data-outcome-state="unknown"] { background: color-mix(in srgb, CanvasText 15%, Canvas 85%); }
 
 .card__summary {
@@ -521,8 +521,8 @@ a:focus-visible {
   white-space: pre-wrap;
 }
 
-.diff-add { background: color-mix(in srgb, SeaGreen 22%, transparent); }
-.diff-del { background: color-mix(in srgb, Crimson 22%, transparent); }
+.diff-add { background: color-mix(in srgb, seagreen 22%, transparent); }
+.diff-del { background: color-mix(in srgb, crimson 22%, transparent); }
 .diff-hunk { color: color-mix(in srgb, CanvasText 66%, Canvas 34%); }
 
 .card__caveats {

@@ -157,6 +157,22 @@ def test_web_json_and_cli_markdown_agree_on_card_family_and_outcome(tmp_path: Pa
     assert web_kinds == transcript_kinds, "web JSON card kinds must match the shared transcript's card kinds"
     assert len(web_cards) == len(transcript.cards)
 
+    def _web_outcome(card: dict[str, object]) -> tuple[object, object, object]:
+        outcome = card.get("outcome")
+        outcome_map = cast(dict[str, object], outcome) if isinstance(outcome, dict) else {}
+        return cast(str, card["kind"]), outcome_map.get("state"), outcome_map.get("exit_code")
+
+    web_outcomes = sorted(_web_outcome(card) for card in web_cards)
+    transcript_outcomes = sorted(
+        (
+            card.kind.value,
+            card.outcome.state.value if card.outcome else None,
+            card.outcome.exit_code if card.outcome else None,
+        )
+        for card in transcript.cards
+    )
+    assert web_outcomes == transcript_outcomes, "web JSON outcomes (state/exit_code) must match the shared transcript"
+
     assert SemanticCardKind.SHELL.value in web_kinds, "the failed shell result must classify as a shell card"
     assert SemanticCardKind.FALLBACK.value in web_kinds, "the unknown tool must classify as a fallback card, not drop"
     assert SemanticCardKind.LINEAGE.value in web_kinds, "the fork relationship must surface a lineage card"

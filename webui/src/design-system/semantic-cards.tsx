@@ -121,9 +121,18 @@ function CardFieldValue({ value }: { readonly value: string }) {
 }
 
 function CardSource({ source }: { readonly source: SemanticCard['source'] }) {
+  const known = new Set<string>(SOURCE_FIELD_ORDER);
   const bits = SOURCE_FIELD_ORDER.filter((key) => source[key] !== undefined && source[key] !== null).map(
     (key) => `${key}=${String(source[key])}`,
   );
+  // SemanticCardSource is a loose passthrough (polylogue/rendering/semantic_card_models.py);
+  // a registry-added field not yet in SOURCE_FIELD_ORDER must still surface as
+  // evidence rather than silently disappearing from the hydrated card.
+  for (const [key, value] of Object.entries(source)) {
+    if (!known.has(key) && value !== undefined && value !== null) {
+      bits.push(`${key}=${String(value)}`);
+    }
+  }
   if (bits.length === 0) {
     return null;
   }

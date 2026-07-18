@@ -1,49 +1,49 @@
 {
-  "_styles-DdAhyPzf.js": {
-    "file": "styles-DdAhyPzf.js",
+  "_styles-BtCtF3Jg.js": {
+    "file": "styles-BtCtF3Jg.js",
     "name": "styles",
     "css": [
-      "styles-DsdfuXhb.css"
+      "styles-W8fuFL39.css"
     ]
   },
-  "_styles-DsdfuXhb.css": {
-    "file": "styles-DsdfuXhb.css",
-    "src": "_styles-DsdfuXhb.css"
+  "_styles-W8fuFL39.css": {
+    "file": "styles-W8fuFL39.css",
+    "src": "_styles-W8fuFL39.css"
   },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-Dv492mY1.js",
+    "file": "archive-overview-ds3CLT_p.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-DdAhyPzf.js"
+      "_styles-BtCtF3Jg.js"
     ]
   },
   "src/entrypoints/observability.tsx": {
-    "file": "observability-97SO2taD.js",
+    "file": "observability-DKCQybzT.js",
     "name": "observability",
     "src": "src/entrypoints/observability.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-DdAhyPzf.js"
+      "_styles-BtCtF3Jg.js"
     ]
   },
   "src/entrypoints/session-list.tsx": {
-    "file": "session-list-BluQDrFD.js",
+    "file": "session-list-CmKXIoAt.js",
     "name": "session-list",
     "src": "src/entrypoints/session-list.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-DdAhyPzf.js"
+      "_styles-BtCtF3Jg.js"
     ]
   },
   "src/entrypoints/session-read.tsx": {
-    "file": "session-read-DcvY_mZt.js",
+    "file": "session-read-CQVvBUGZ.js",
     "name": "session-read",
     "src": "src/entrypoints/session-read.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-DdAhyPzf.js"
+      "_styles-BtCtF3Jg.js"
     ]
   }
 }
