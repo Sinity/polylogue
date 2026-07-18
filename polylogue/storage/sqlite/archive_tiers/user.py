@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-USER_SCHEMA_VERSION = 9
+USER_SCHEMA_VERSION = 10
 
 USER_DDL = """
+CREATE TABLE IF NOT EXISTS query_unit_frame_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch INTEGER NOT NULL DEFAULT 0 CHECK (epoch >= 0)
+) STRICT;
+
+INSERT OR IGNORE INTO query_unit_frame_state(singleton, epoch) VALUES (1, 0);
+
 -- Unified evidence-linked user assertion. Marks, annotations,
 -- corrections, suppressions, tags, metadata, saved views, recall packs,
 -- workspaces, and blackboard notes are represented here directly. ``kind``
@@ -41,6 +48,19 @@ ON assertions(target_ref, kind, status, visibility);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_scope_kind_status
 ON assertions(scope_ref, kind, status);
+
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_assertions_insert
+AFTER INSERT ON assertions BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_assertions_update
+AFTER UPDATE ON assertions BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_assertions_delete
+AFTER DELETE ON assertions BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
 
 -- Immutable, content-addressed canonical query plans. Names, runs, and
 -- result snapshots intentionally live in separate relations.

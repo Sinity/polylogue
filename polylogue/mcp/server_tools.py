@@ -297,11 +297,11 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             from polylogue.archive.query.execution_control import classify_unit_expression_workload
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
             from polylogue.archive.query.transaction import (
+                QueryArchiveEpochUnreadableError,
                 QueryContinuation,
                 QueryContinuationStaleError,
                 QueryTransaction,
                 query_units_transaction_request,
-                validate_continuation_epoch,
             )
             from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
@@ -322,10 +322,6 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                         code="invalid_continuation",
                         tool="query_units",
                     )
-                try:
-                    validate_continuation_epoch(continuation_request, archive_root=archive_root)
-                except QueryContinuationStaleError as exc:
-                    return hooks.error_json(str(exc), code=exc.code, tool="query_units")
                 effective_expression = str(continuation_request.arguments.get("expression", requested_expression))
                 effective_offset = continuation_request.offset
                 effective_limit = continuation_request.page_size
@@ -387,8 +383,8 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                 }
                 transaction = QueryTransaction(
                     archive_root,
-                    query_units_transaction_request(
-                        archive_root=archive_root,
+                    continuation_request
+                    or query_units_transaction_request(
                         expression=effective_expression,
                         session_filters=unit_request.session_filters or {},
                         page_size=clamped_limit,
@@ -397,16 +393,21 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     workload_class=classify_unit_expression_workload(effective_expression),
                 )
                 with hooks.response_context("query_units", canonical_arguments):
-                    return hooks.json_payload(
-                        await transaction.run(
-                            lambda archive: query_unit_envelope(
-                                archive,
-                                unit_request,
-                                execution_context=transaction.context,
-                                transaction_request=transaction.request,
-                            ),
+                    try:
+                        return hooks.json_payload(
+                            await transaction.run(
+                                lambda archive: query_unit_envelope(
+                                    archive,
+                                    unit_request,
+                                    execution_context=transaction.context,
+                                    transaction_request=transaction.request,
+                                ),
+                            )
                         )
-                    )
+                    except QueryContinuationStaleError as exc:
+                        return hooks.error_json(str(exc), code=exc.code, tool="query_units")
+                    except QueryArchiveEpochUnreadableError as exc:
+                        return hooks.error_json(str(exc), code=exc.code, tool="query_units")
             except ExpressionCompileError as exc:
                 return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
 

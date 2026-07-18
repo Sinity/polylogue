@@ -2993,7 +2993,6 @@ class PolylogueArchiveMixin:
         transaction = QueryTransaction(
             archive_root,
             query_units_transaction_request(
-                archive_root=archive_root,
                 expression=expression,
                 session_filters=request.session_filters or {},
                 page_size=max(1, limit),

@@ -30,7 +30,8 @@ from polylogue.archive.query.spec import (
 from polylogue.archive.query.transaction import (
     QueryContinuation,
     QueryTransactionRequest,
-    archive_index_epoch,
+    query_units_transaction_request,
+    validate_continuation_epoch,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
@@ -517,6 +518,24 @@ def query_unit_envelope(
     optional argument retains the established direct-storage API for callers
     that do not cross a transaction boundary.
     """
+    canonical_request = transaction_request
+    if canonical_request is None:
+        canonical_request = query_units_transaction_request(
+            expression=request.expression,
+            session_filters=request.session_filters or {},
+            page_size=request.limit,
+            offset=request.offset,
+        )
+    if canonical_request.operation != "query_units":
+        raise ValueError("query-unit envelope requires a query_units transaction")
+    if canonical_request.archive_epoch:
+        validate_continuation_epoch(canonical_request, archive=archive)
+    else:
+        # The frame must be captured before the first result statement so
+        # both values are served from this reader's one owned snapshot.
+        from polylogue.archive.query.transaction import archive_snapshot_epoch
+
+        canonical_request = canonical_request.with_archive_epoch(archive_snapshot_epoch(archive))
     envelope = query_unit_rows(
         archive,
         request.source,
@@ -526,21 +545,6 @@ def query_unit_envelope(
         session_filters=request.session_filters,
         execution_context=execution_context,
     )
-    canonical_request = transaction_request
-    if canonical_request is None:
-        archive_root = getattr(archive, "archive_root", None)
-        canonical_request = QueryTransactionRequest(
-            operation="query_units",
-            arguments={
-                "expression": request.expression,
-                "session_filters": dict(request.session_filters or {}),
-            },
-            page_size=request.limit,
-            offset=request.offset,
-            archive_epoch=archive_index_epoch(archive_root / "index.db") if archive_root is not None else "",
-        )
-    if canonical_request.operation != "query_units":
-        raise ValueError("query-unit envelope requires a query_units transaction")
     result_ref = canonical_request.result_ref
     next_offset = getattr(envelope, "next_offset", None)
     continuation = (

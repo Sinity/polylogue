@@ -13,8 +13,8 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
 
@@ -31,7 +31,8 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 T = TypeVar("T")
-_TOKEN_VERSION = 1
+_TOKEN_VERSION = 2
+_LEGACY_TOKEN_VERSION = 1
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -41,41 +42,34 @@ def _canonical_json(value: Mapping[str, object]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
-def archive_index_epoch(index_db: Path) -> str:
-    """Index generation identifier: schema version, session count/rowid, and watermark.
+class QueryArchiveEpochUnreadableError(RuntimeError):
+    """The reader could not establish the archive frame for a page."""
 
-    A continuation is bound to this exact frame (polylogue-z9gh.9 AC #5): if
-    the index tier's schema version changes or the archive admits/mutates
-    sessions between the page that issued a continuation and the page that
-    resumes it, the two epochs differ and the resume is rejected as stale
-    rather than silently replaying a moving relation with offset pagination.
+    code = "archive_read_unavailable"
 
-    Related to, but deliberately stronger than,
-    :func:`polylogue.archive.query.production_evaluator._index_epoch` (the
-    rxdo.3 ``query_runs.archive_epoch``/``corpus_epoch`` convention): that
-    function hashes schema version plus ``MAX(updated_at_ms)`` alone, but
-    ``updated_at_ms``/``created_at_ms`` are NULL immediately after a raw
-    session write and only backfilled by a later materialization stage, so a
-    watermark-only epoch can fail to notice a session admitted between two
-    pages. Row count and ``MAX(rowid)`` are populated unconditionally by
-    every insert, so they catch new-session admission even before
-    materialization runs; the watermark still catches an in-place mutation of
-    an existing session that changes neither.
+
+def archive_snapshot_epoch(archive: ArchiveStore) -> str:
+    """Return the query-unit frame from the reader's active SQLite snapshot.
+
+    The index and user tiers each advance a durable, trigger-maintained epoch
+    only for relations that can change terminal query-unit rows or their
+    session/tag scope.  Reading both components through ``archive._conn``
+    after ``begin_read_snapshot()`` binds the continuation to the exact
+    snapshots that will supply the result rows; it never races a second
+    ``index.db`` probe against the writer.
     """
-    if not index_db.exists():
-        return "index:absent"
     try:
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0)) as conn:
-            version_row = conn.execute("PRAGMA user_version").fetchone()
-            version = int(version_row[0]) if version_row is not None else 0
-            frame_row = conn.execute("SELECT COUNT(*), MAX(rowid), MAX(updated_at_ms) FROM sessions").fetchone()
-            count = int(frame_row[0]) if frame_row is not None and frame_row[0] is not None else 0
-            max_rowid = int(frame_row[1]) if frame_row is not None and frame_row[1] is not None else 0
-            watermark = int(frame_row[2]) if frame_row is not None and frame_row[2] is not None else 0
-            return f"index:v{version}:{count}:{max_rowid}:{watermark}"
-    except sqlite3.Error:
-        logger.warning("query transaction: could not read index epoch for %s", index_db, exc_info=True)
-        return "index:unknown"
+        conn = archive._conn
+        index_version = int(conn.execute("PRAGMA main.user_version").fetchone()[0])
+        index_epoch = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
+        user_version = int(conn.execute("PRAGMA user_tier.user_version").fetchone()[0])
+        user_epoch = int(
+            conn.execute("SELECT epoch FROM user_tier.query_unit_frame_state WHERE singleton = 1").fetchone()[0]
+        )
+    except (AttributeError, IndexError, sqlite3.Error, TypeError) as exc:
+        logger.warning("query transaction: could not read archive snapshot epoch", exc_info=True)
+        raise QueryArchiveEpochUnreadableError("could not establish archive frame for query continuation") from exc
+    return f"archive:v1:index:v{index_version}:{index_epoch}:user:v{user_version}:{user_epoch}"
 
 
 class QueryContinuationStaleError(ValueError):
@@ -108,6 +102,7 @@ class QueryTransactionRequest:
     projection: str = "default"
     stable_order: str = "canonical"
     archive_epoch: str = ""
+    continuation_version: int | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if not self.operation.strip():
@@ -153,23 +148,38 @@ class QueryTransactionRequest:
             projection=self.projection,
             stable_order=self.stable_order,
             archive_epoch=self.archive_epoch,
+            continuation_version=self.continuation_version,
+        )
+
+    def with_archive_epoch(self, archive_epoch: str) -> QueryTransactionRequest:
+        """Bind this canonical request to the snapshot that produced its rows."""
+        return QueryTransactionRequest(
+            operation=self.operation,
+            arguments=self.arguments,
+            page_size=self.page_size,
+            offset=self.offset,
+            projection=self.projection,
+            stable_order=self.stable_order,
+            archive_epoch=archive_epoch,
+            continuation_version=self.continuation_version,
         )
 
 
 def query_units_transaction_request(
     *,
-    archive_root: Path,
     expression: str,
     session_filters: Mapping[str, object],
     page_size: int,
     offset: int = 0,
 ) -> QueryTransactionRequest:
-    """Canonical ``query_units`` transaction request, bound to the live index epoch.
+    """Build the canonical, unframed ``query_units`` transaction request.
 
     The single constructor shared by the API, MCP, and daemon HTTP adapters so
     the three surfaces cannot drift into building the request differently (the
     #2472/#2470 partitioning-bug shape) and so archive-epoch binding lands in
-    one place rather than three independently-maintained call sites.
+    one place rather than three independently-maintained call sites.  The
+    frame is intentionally absent here: :func:`query_unit_envelope` captures
+    it only after the controlled reader has opened its SQLite snapshot.
     """
     return QueryTransactionRequest(
         operation="query_units",
@@ -178,23 +188,19 @@ def query_units_transaction_request(
         offset=max(0, offset),
         projection="terminal-unit-envelope",
         stable_order="canonical",
-        archive_epoch=archive_index_epoch(Path(archive_root) / "index.db"),
     )
 
 
-def validate_continuation_epoch(continuation_request: QueryTransactionRequest, *, archive_root: Path) -> None:
-    """Reject a continuation whose declared archive frame has moved.
-
-    An empty ``archive_epoch`` means the token predates epoch-binding (or was
-    minted by a caller that never framed itself); such tokens are accepted
-    rather than rejected outright so this check can land without breaking
-    continuations issued before it existed.
-    """
+def validate_continuation_epoch(continuation_request: QueryTransactionRequest, *, archive: ArchiveStore) -> str:
+    """Validate one decoded continuation in the same snapshot as its rows."""
     if not continuation_request.archive_epoch:
-        return
-    current = archive_index_epoch(Path(archive_root) / "index.db")
+        if continuation_request.continuation_version == _LEGACY_TOKEN_VERSION:
+            return archive_snapshot_epoch(archive)
+        raise ValueError("query continuation is missing required archive_epoch")
+    current = archive_snapshot_epoch(archive)
     if continuation_request.archive_epoch != current:
         raise QueryContinuationStaleError(issued_epoch=continuation_request.archive_epoch, current_epoch=current)
+    return current
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +212,8 @@ class QueryContinuation:
 
     def encode(self) -> str:
         request = self.request
+        if not request.archive_epoch:
+            raise ValueError("new query continuations require an archive_epoch")
         body = {
             "v": _TOKEN_VERSION,
             "result_ref": self.result_ref,
@@ -220,18 +228,23 @@ class QueryContinuation:
             },
         }
         encoded = base64.urlsafe_b64encode(_canonical_json(body).encode("utf-8")).decode("ascii").rstrip("=")
-        return "q1." + encoded
+        return "q2." + encoded
 
     @classmethod
     def decode(cls, token: str) -> QueryContinuation:
-        if not token.startswith("q1."):
+        if not token.startswith(("q1.", "q2.")):
             raise ValueError("invalid query continuation version")
         try:
             padded = token[3:] + "=" * (-len(token[3:]) % 4)
             body = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
             request_body = body["request"]
-            if body["v"] != _TOKEN_VERSION:
+            version = int(body["v"])
+            expected_prefix = f"q{version}."
+            if version not in {_LEGACY_TOKEN_VERSION, _TOKEN_VERSION} or not token.startswith(expected_prefix):
                 raise ValueError("unsupported query continuation version")
+            archive_epoch = str(request_body.get("archive_epoch") or "")
+            if version == _TOKEN_VERSION and not archive_epoch:
+                raise ValueError("query continuation is missing required archive_epoch")
             request = QueryTransactionRequest(
                 operation=str(request_body["operation"]),
                 arguments=dict(request_body["arguments"]),
@@ -239,7 +252,8 @@ class QueryContinuation:
                 offset=int(request_body["offset"]),
                 projection=str(request_body["projection"]),
                 stable_order=str(request_body["stable_order"]),
-                archive_epoch=str(request_body.get("archive_epoch") or ""),
+                archive_epoch=archive_epoch,
+                continuation_version=version,
             )
             result_ref = str(body["result_ref"])
         except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
@@ -430,11 +444,12 @@ def archive_read_context(
 
 __all__ = [
     "QueryContinuation",
+    "QueryArchiveEpochUnreadableError",
     "QueryContinuationStaleError",
     "QueryResultPage",
     "QueryTransaction",
     "QueryTransactionRequest",
-    "archive_index_epoch",
+    "archive_snapshot_epoch",
     "archive_read_context",
     "query_units_transaction_request",
     "run_archive_read",
