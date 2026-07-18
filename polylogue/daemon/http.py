@@ -185,7 +185,7 @@ def _socket_peer_disconnected(connection: object | None) -> bool:
     if flags is None:
         return False
     try:
-        readable, _, _ = select.select([connection], [], [], 0)
+        readable, _, _ = select.select([cast(socket.socket, connection)], [], [], 0)
     except (OSError, TypeError, ValueError):
         return False
     if not readable:

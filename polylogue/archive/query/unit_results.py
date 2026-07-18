@@ -293,11 +293,12 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
     """Terminal ``count`` action: emit the aggregate group rollup page."""
 
     pipeline = ctx.source.pipeline
-    aggregate_sort = (
-        cast(Literal["count", "key"], pipeline.sort.field)
-        if pipeline.sort is not None and pipeline.sort.field in {"count", "key"}
-        else None
-    )
+    aggregate_sort: Literal["count", "key"] | None = None
+    if pipeline.sort is not None:
+        if pipeline.sort.field == "count":
+            aggregate_sort = "count"
+        elif pipeline.sort.field == "key":
+            aggregate_sort = "key"
     aggregate_sort_direction: Literal["asc", "desc"] = (
         pipeline.sort.direction if aggregate_sort is not None and pipeline.sort is not None else "desc"
     )
