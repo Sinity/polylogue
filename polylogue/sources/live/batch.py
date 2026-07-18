@@ -111,7 +111,7 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import hermes_state
+from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -1288,7 +1288,9 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            if hermes_state.looks_like_state_db_path(path):
+            if hermes_state.looks_like_state_db_path(
+                path
+            ) or hermes_verification.looks_like_verification_evidence_db_path(path):
                 provider = Provider.HERMES
                 source_name = provider.value
                 try:
@@ -1699,6 +1701,13 @@ class LiveBatchProcessor:
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=Path(record.source_path).parent,
+                        )
+                    elif provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_path(
+                        blob_store.blob_path(blob_hash)
+                    ):
+                        sessions = hermes_verification.parse_verification_evidence_db(
+                            blob_store.blob_path(blob_hash),
+                            fallback_id=fallback_id,
                         )
                     elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None:

@@ -12,7 +12,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec
-from .parsers import hermes_state
+from .parsers import hermes_state, hermes_verification
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
@@ -38,7 +38,10 @@ def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
     return (
         provider is Provider.HERMES
         and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS
-        and hermes_state.looks_like_state_db_path(path)
+        and (
+            hermes_state.looks_like_state_db_path(path)
+            or hermes_verification.looks_like_verification_evidence_db_path(path)
+        )
     )
 
 

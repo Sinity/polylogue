@@ -23,6 +23,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
+_HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
 
 
 def classify_artifact_path(
@@ -56,6 +57,13 @@ def classify_artifact_path(
         "verification_evidence.sqlite",
         "verification_evidence.sqlite3",
     }:
+        # Path-only classification (pre-JSON-decode filtering, e.g. schema
+        # sampling) must stay non-session here even though a real parser now
+        # exists (polylogue-wj25): raw bytes at this path are still SQLite
+        # binary, not the JSON marker payload the parser actually consumes.
+        # Same split as state.db: the *positive* session classification
+        # lives on the marker payload below (classify_artifact), never on
+        # the raw path -- see `_HERMES_STATE_DB_MARKER` for the precedent.
         return ArtifactClassification(
             provider=provider_token,
             kind=ArtifactKind.METADATA_DOCUMENT,
@@ -274,6 +282,16 @@ def _classify_dict(
             schema_eligible=True,
             default_priority=120,
             reason="Hermes state.db SQLite archive marker",
+        )
+
+    if provider is Provider.HERMES and payload.get("polylogue_artifact") == _HERMES_VERIFICATION_DB_MARKER:
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="Hermes verification_evidence.db SQLite archive marker",
         )
 
     # Deferred import: `sources.parsers.hermes_spans` sits downstream of
