@@ -1716,7 +1716,7 @@ describe("background receiver diagnostics", () => {
     });
 
     installedListener();
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+    await vi.waitFor(() => expect(stored.polylogueState?.online).toBe(false));
 
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
     expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();

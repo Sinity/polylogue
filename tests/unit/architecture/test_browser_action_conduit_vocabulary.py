@@ -52,11 +52,18 @@ TOKEN_PATTERN = re.compile(r"\b(" + "|".join(re.escape(t) for t in FORBIDDEN_TOK
 
 
 def _iter_source_files() -> list[Path]:
+    for root in (*RECEIVER_ROOTS, EXTENSION_ROOT):
+        if not root.exists():
+            raise FileNotFoundError(
+                f"browser-action conduit vocabulary guard root missing: {root} "
+                "(has it moved? update RECEIVER_ROOTS/EXTENSION_ROOT rather than "
+                "letting this guard silently scan zero files)"
+            )
     files: list[Path] = []
     for root in RECEIVER_ROOTS:
         if root.is_dir():
             files.extend(sorted(p for p in root.rglob("*.py") if "test" not in p.parts))
-        elif root.is_file():
+        else:
             files.append(root)
     files.extend(sorted(EXTENSION_ROOT.rglob("*.js")))
     return files
