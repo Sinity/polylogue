@@ -1,0 +1,76 @@
+{
+  "_api-VIh9cM_e.js": {
+    "file": "api-VIh9cM_e.js",
+    "name": "api"
+  },
+  "_styles-BPJhZ5FR.css": {
+    "file": "styles-BPJhZ5FR.css",
+    "src": "_styles-BPJhZ5FR.css"
+  },
+  "_styles-DdbldGSJ.js": {
+    "file": "styles-DdbldGSJ.js",
+    "name": "styles",
+    "css": [
+      "styles-BPJhZ5FR.css"
+    ]
+  },
+  "src/entrypoints/archive-overview.tsx": {
+    "file": "archive-overview-CfRMZy-j.js",
+    "name": "archive-overview",
+    "src": "src/entrypoints/archive-overview.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-DdbldGSJ.js",
+      "_api-VIh9cM_e.js"
+    ]
+  },
+  "src/entrypoints/cost.tsx": {
+    "file": "cost-DqnTuXlY.js",
+    "name": "cost",
+    "src": "src/entrypoints/cost.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-DdbldGSJ.js"
+    ]
+  },
+  "src/entrypoints/observability.tsx": {
+    "file": "observability-CTCXCK4S.js",
+    "name": "observability",
+    "src": "src/entrypoints/observability.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-DdbldGSJ.js",
+      "_api-VIh9cM_e.js"
+    ]
+  },
+  "src/entrypoints/search.tsx": {
+    "file": "search-Cwzr8a1G.js",
+    "name": "search",
+    "src": "src/entrypoints/search.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-DdbldGSJ.js",
+      "_api-VIh9cM_e.js"
+    ]
+  },
+  "src/entrypoints/session-list.tsx": {
+    "file": "session-list-B8COcg_R.js",
+    "name": "session-list",
+    "src": "src/entrypoints/session-list.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-DdbldGSJ.js",
+      "_api-VIh9cM_e.js"
+    ]
+  },
+  "src/entrypoints/session-read.tsx": {
+    "file": "session-read-CN1Rn4yS.js",
+    "name": "session-read",
+    "src": "src/entrypoints/session-read.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-DdbldGSJ.js",
+      "_api-VIh9cM_e.js"
+    ]
+  }
+}
