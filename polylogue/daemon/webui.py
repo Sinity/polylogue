@@ -333,27 +333,33 @@ async def build_observability_payload(
             panel["state"] = "degraded"
             panel["error"] = str(exc)
         else:
-            rendered_items: list[dict[str, object]] = []
-            for item in items:
-                plain_fields: list[dict[str, str]] = []
-                for field in fields:
-                    try:
-                        value = field.accessor(item)
-                    except (AttributeError, KeyError, TypeError):
-                        value = "-"
-                    plain_fields.append({"label": field.label, "value": str(value)})
-                item_json = item.model_dump(mode="json")
-                provenance = item_json.get("provenance")
-                if provenance is None:
-                    provenance = {
-                        key: item_json[key]
-                        for key in ("materializer_version", "materialized_at", "evidence_refs")
-                        if key in item_json
-                    }
-                rendered_items.append({"fields": plain_fields, "json": item_json, "provenance": provenance})
-            panel["items"] = rendered_items
-            if not rendered_items:
-                panel["state"] = "empty"
+            try:
+                rendered_items: list[dict[str, object]] = []
+                for item in items:
+                    plain_fields: list[dict[str, str]] = []
+                    for field in fields:
+                        try:
+                            value = field.accessor(item)
+                        except (AttributeError, KeyError, TypeError):
+                            value = "-"
+                        plain_fields.append({"label": field.label, "value": str(value)})
+                    item_json = item.model_dump(mode="json")
+                    provenance = item_json.get("provenance")
+                    if provenance is None:
+                        provenance = {
+                            key: item_json[key]
+                            for key in ("materializer_version", "materialized_at", "evidence_refs")
+                            if key in item_json
+                        }
+                    rendered_items.append({"fields": plain_fields, "json": item_json, "provenance": provenance})
+            except Exception as exc:
+                logger.warning("webui insight projection degraded: %s", name, exc_info=exc)
+                panel["state"] = "degraded"
+                panel["error"] = str(exc)
+            else:
+                panel["items"] = rendered_items
+                if not rendered_items:
+                    panel["state"] = "empty"
         panels.append(panel)
     return {"contract_version": 1, "status": _status_panel_payload(status), "insights": panels}
 
@@ -362,7 +368,11 @@ def _insight_readiness(status: Mapping[str, object], exempt: bool) -> dict[str, 
     if exempt:
         return {"state": "not_required", "required": False, "reason": "descriptor is readiness-exempt"}
     components = status.get("component_readiness")
-    component = components.get("insight_freshness") if isinstance(components, Mapping) else None
+    component = (
+        components.get("session_profiles", components.get("insight_freshness"))
+        if isinstance(components, Mapping)
+        else None
+    )
     if isinstance(component, Mapping):
         return {
             "state": str(component.get("state") or "unknown"),
@@ -390,6 +400,7 @@ def _status_panel_payload(status: Mapping[str, object]) -> dict[str, object]:
                 "stale": "stale",
                 "running": "refreshing",
                 "pending": "refreshing",
+                "timed_out": "timed_out",
                 "blocked": "degraded",
                 "degraded": "degraded",
             }.get(legacy_state, "unavailable")
@@ -398,7 +409,7 @@ def _status_panel_payload(status: Mapping[str, object]) -> dict[str, object]:
                     "name": str(name),
                     "state": state,
                     "detail": record.get("reason") or record.get("detail") or record.get("summary"),
-                    "last_good": None,
+                    "last_good": record.get("last_good"),
                     "age_s": snapshot_payload.get("age_s"),
                 }
             )

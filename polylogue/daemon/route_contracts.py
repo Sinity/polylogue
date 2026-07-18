@@ -71,9 +71,9 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/app/observability",
         "browser_shell",
         "shell_supported",
-        "unauthenticated_loopback",
+        "credential_if_configured",
         "semantic observability HTML",
-        "SSR-first registry and status projection; named-source inspection remains an authenticated API call.",
+        "SSR-first registry and status projection; credentials protect embedded insight evidence when configured.",
     ),
     RouteContract(
         "GET",

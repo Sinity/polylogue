@@ -1583,7 +1583,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._serve_webui_archive_overview()
             return
         if path == ["app", "observability"]:
-            if not self._check_shell_bootstrap_access():
+            if not self._check_auth():
                 return
             self._serve_webui_observability()
             return
@@ -2022,7 +2022,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 render_observability_page(
                     bundle,
-                    {"status": {}, "insights": []},
+                    {
+                        "contract_version": 1,
+                        "status": {"adapter": "unavailable", "components": []},
+                        "insights": [],
+                    },
                     notice="Observability data is temporarily unavailable.",
                 ),
             )

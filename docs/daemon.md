@@ -95,7 +95,8 @@ classified with explicit auth and response posture.
 
 | Route class | Auth policy | Examples |
 |-------------|-------------|----------|
-| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /app/observability`, `GET /s/:id`, `GET /p`, `GET /a` |
+| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /s/:id`, `GET /p`, `GET /a` |
+| WebUI observability page | bearer or scoped web credential when configured | `GET /app/observability` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
 | Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
 | User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
@@ -126,8 +127,9 @@ FTS readiness, and insight freshness.
 
 Server-rendered WebUI v2 observability page. It displays descriptor-driven
 insight panels and daemon component status without requiring JavaScript;
-local Preact assets add refresh and exact-source lookup controls. Like the
-other browser shell pages, it is bootstrap-only on loopback.
+local Preact assets add refresh and exact-source lookup controls. Because the
+HTML embeds bounded insight evidence, it requires a bearer or scoped
+first-party credential when the daemon is configured with credentials.
 
 ### GET /api/webui/observability
 

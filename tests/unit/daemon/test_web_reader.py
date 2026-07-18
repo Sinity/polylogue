@@ -130,7 +130,7 @@ def test_observability_payload_projects_a_new_registry_descriptor(monkeypatch: p
     payload = asyncio.run(
         build_observability_payload(
             object(),
-            {"component_readiness": {"insight_freshness": {"state": "ready"}}},
+            {"component_readiness": {"session_profiles": {"state": "ready"}}},
             registry={"fake_descriptor": descriptor},
         )
     )
@@ -139,6 +139,67 @@ def test_observability_payload_projects_a_new_registry_descriptor(monkeypatch: p
     assert panels[0]["display_name"] == "Fake descriptor"
     rows = cast(list[dict[str, object]], panels[0]["items"])
     assert rows[0]["fields"] == [{"label": "proof", "value": "registry generated"}]
+    assert panels[0]["readiness"] == {"state": "ready", "required": True, "reason": None}
+
+
+def test_observability_payload_keeps_projection_errors_panel_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed descriptor row cannot hide healthy registry siblings."""
+    from types import SimpleNamespace
+
+    from polylogue.daemon.webui import build_observability_payload
+
+    good = SimpleNamespace(
+        display_name="Good descriptor",
+        json_key="good",
+        fields=(SimpleNamespace(label="proof", accessor=lambda item: item.proof),),
+        query_model=None,
+        mcp_default_limit=1,
+        readiness_exempt=False,
+    )
+    broken = SimpleNamespace(
+        display_name="Broken descriptor",
+        json_key="broken",
+        fields=(SimpleNamespace(label="proof", accessor=lambda item: item.proof),),
+        query_model=None,
+        mcp_default_limit=1,
+        readiness_exempt=False,
+    )
+    good_item = SimpleNamespace(proof="healthy", model_dump=lambda *, mode: {"proof": "healthy"})
+
+    def broken_model_dump(*, mode: str) -> dict[str, object]:
+        raise ValueError("broken descriptor row")
+
+    broken_item = SimpleNamespace(proof="broken", model_dump=broken_model_dump)
+
+    async def fake_fetch(descriptor: object, _operations: object, **_kwargs: object) -> list[object]:
+        return [good_item] if descriptor is good else [broken_item]
+
+    monkeypatch.setattr("polylogue.insights.registry.fetch_insights_async", fake_fetch)
+    payload = asyncio.run(
+        build_observability_payload(
+            object(),
+            {"component_readiness": {"session_profiles": {"state": "ready"}}},
+            registry={"good": good, "broken": broken},
+        )
+    )
+
+    panels = {panel["name"]: panel for panel in cast(list[dict[str, object]], payload["insights"])}
+    assert panels["good"]["state"] == "available"
+    assert panels["broken"]["state"] == "degraded"
+    assert panels["broken"]["error"] == "broken descriptor row"
+
+
+def test_observability_status_adapter_preserves_timeout_evidence() -> None:
+    """Legacy daemon readiness still carries timeout evidence into the typed UI contract."""
+    from polylogue.daemon.webui import _status_panel_payload
+
+    payload = _status_panel_payload(
+        {"component_readiness": {"session_profiles": {"state": "timed_out", "last_good": {"rows": 12}}}}
+    )
+
+    component = cast(list[dict[str, object]], payload["components"])[0]
+    assert component["state"] == "timed_out"
+    assert component["last_good"] == {"rows": 12}
 
 
 def _materialize_run_projection(index_db: Path) -> None:
@@ -2134,16 +2195,33 @@ class TestWebUIV2:
         workspace_env: dict[str, Path],
     ) -> None:
         """The real /app route consumes the manifest and descriptor projection."""
-        with _running_server(workspace_env) as (_, base_url):
-            with urlopen(f"{base_url}/app/observability", timeout=10) as response:
+        headers = {"Authorization": "Bearer webui-test-token"}
+        with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
+            missing_status, _, _ = _get_text(base_url, "/app/observability")
+            with urlopen(Request(f"{base_url}/app/observability", headers=headers), timeout=10) as response:
                 assert response.status == 200
                 html_body = response.read().decode("utf-8")
 
+        assert missing_status == HTTPStatus.UNAUTHORIZED
         assert "<h1>Archive observability</h1>" in html_body
         assert 'data-island="observability"' in html_body
         assert "Named-source freshness" in html_body
         assert "Insights" in html_body
         assert re.search(r'src="/app/assets/observability-[^"]+\.js"', html_body)
+
+    def test_observability_page_fallback_keeps_island_contract_valid(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """A server-side projection failure still bootstraps the unavailable island safely."""
+        headers = {"Authorization": "Bearer webui-test-token"}
+        with patch("polylogue.daemon.webui.build_observability_payload", side_effect=RuntimeError("offline")):
+            with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
+                status, _, body = _get_text(base_url, "/app/observability", headers=headers)
+
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert '"contract_version":1' in body
+        assert '"adapter":"unavailable"' in body
 
     def test_app_serves_semantic_ssr_and_manifest_hashed_assets(
         self,

@@ -3093,9 +3093,9 @@ x-polylogue-route-contracts:
   pattern: /app/observability
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: semantic observability HTML
-  notes: SSR-first registry and status projection; named-source inspection remains an authenticated API call.
+  notes: SSR-first registry and status projection; credentials protect embedded insight evidence when configured.
 - method: GET
   pattern: /app/assets/:asset
   kind: browser_shell
