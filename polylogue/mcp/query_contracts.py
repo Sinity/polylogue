@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
-import sys
-import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from typing import Annotated, Any, TypeAlias
@@ -184,57 +181,6 @@ class MCPSessionQueryRequest:
         }
 
 
-def session_query_request_signature(
-    *,
-    include_query: bool,
-    query_required: bool = False,
-) -> inspect.Signature:
-    """Build an ``inspect.Signature`` mirroring ``MCPSessionQueryRequest``.
-
-    ``include_query`` controls whether the ``query`` parameter is surfaced —
-    ``search`` exposes it as required, ``facets`` exposes it as optional, and
-    ``list_sessions`` omits it. ``include_affordances`` is likewise search-only
-    because only the search envelope can carry the capability catalog. The resulting signature drives MCP
-    ``inputSchema`` derivation so the JSON schema and the typed request model
-    cannot drift.
-    """
-    type_hints = typing.get_type_hints(
-        MCPSessionQueryRequest,
-        globalns=vars(sys.modules[MCPSessionQueryRequest.__module__]),
-        include_extras=True,
-    )
-    parameters: list[inspect.Parameter] = []
-    for field in fields(MCPSessionQueryRequest):
-        if field.name == "query" and not include_query:
-            continue
-        if field.name == "include_affordances" and not include_query:
-            # ``list_sessions`` returns a paginated session envelope, not a
-            # search envelope, so accepting this would advertise a no-op.
-            continue
-        annotation = type_hints.get(field.name, Any)
-        # ``search`` exposes ``query`` as a required parameter to preserve the
-        # historical MCP tool surface — even though the dataclass default is
-        # ``None`` so other call sites can build empty requests.
-        if field.name == "query" and include_query and query_required:
-            parameters.append(
-                inspect.Parameter(
-                    field.name,
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=str,
-                )
-            )
-            continue
-        parameters.append(
-            inspect.Parameter(
-                field.name,
-                inspect.Parameter.KEYWORD_ONLY,
-                default=field.default,
-                annotation=annotation,
-            )
-        )
-    return inspect.Signature(parameters=parameters, return_annotation=str)
-
-
 def build_session_query_request(**kwargs: Any) -> MCPSessionQueryRequest:
     """Build an ``MCPSessionQueryRequest`` from MCP tool kwargs.
 
@@ -250,7 +196,6 @@ def build_session_query_request(**kwargs: Any) -> MCPSessionQueryRequest:
 __all__ = [
     "build_session_query_request",
     "build_query_spec",
-    "session_query_request_signature",
     "MCPToolLimit",
     "MCPToolOffset",
     "MCPCharacterLimit",
