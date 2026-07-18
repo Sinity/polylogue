@@ -4440,8 +4440,8 @@ class ArchiveStore:
             _archive_profile_rows_debt(self._conn),
             _archive_profile_counts_debt(self._conn),
             _archive_materialization_debt(self._conn),
-            _archive_source_raw_link_debt(self._conn, self.source_db_path),
-            _archive_user_overlay_debt(self._conn, self.user_db_path),
+            _archive_source_raw_link_debt(self.index_db_path, self.source_db_path),
+            _archive_user_overlay_debt(self.index_db_path, self.user_db_path),
         ]
         insights.sort(key=lambda insight: (insight.category, insight.debt_name))
         if category is not None:
@@ -11840,24 +11840,28 @@ def _archive_materialization_debt(conn: sqlite3.Connection) -> ArchiveDebtInsigh
     )
 
 
-def _archive_source_raw_link_debt(conn: sqlite3.Connection, source_db_path: Path) -> ArchiveDebtInsight:
-    raw_links = _count_scalar(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
-    if not source_db_path.exists():
-        issue_count = raw_links
-        detail = (
-            "archive sessions have no source raw links"
-            if raw_links == 0
-            else f"source.db missing while {raw_links:,} sessions carry raw_id links"
-        )
-        return _archive_debt(
-            name="archive_source_raw_links",
-            category="source_ingest",
-            issue_count=issue_count,
-            detail=detail,
-        )
-    source_uri = f"file:{source_db_path}?mode=ro"
-    conn.execute("ATTACH DATABASE ? AS source_debt", (source_uri,))
-    try:
+def _archive_source_raw_link_debt(index_db_path: Path, source_db_path: Path) -> ArchiveDebtInsight:
+    # Cross-tier debt reads use a dedicated connection.  The long-lived
+    # ArchiveStore connection may already own a transaction; attaching and
+    # detaching on that connection can fail with "database ... is locked".
+    # Closing this short-lived connection releases the attached schema and all
+    # statement cursors as one lifetime, so no DETACH race is possible.
+    with closing(open_readonly_connection(index_db_path)) as conn:
+        raw_links = _count_scalar(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
+        if not source_db_path.exists():
+            issue_count = raw_links
+            detail = (
+                "archive sessions have no source raw links"
+                if raw_links == 0
+                else f"source.db missing while {raw_links:,} sessions carry raw_id links"
+            )
+            return _archive_debt(
+                name="archive_source_raw_links",
+                category="source_ingest",
+                issue_count=issue_count,
+                detail=detail,
+            )
+        conn.execute("ATTACH DATABASE ? AS source_debt", (f"file:{source_db_path}?mode=ro",))
         missing = _count_scalar(
             conn,
             """
@@ -11869,8 +11873,6 @@ def _archive_source_raw_link_debt(conn: sqlite3.Connection, source_db_path: Path
               )
             """,
         )
-    finally:
-        conn.execute("DETACH DATABASE source_debt")
     detail = "archive source raw links resolve" if missing == 0 else f"{missing:,} sessions reference missing raw rows"
     return _archive_debt(
         name="archive_source_raw_links",
@@ -11880,7 +11882,7 @@ def _archive_source_raw_link_debt(conn: sqlite3.Connection, source_db_path: Path
     )
 
 
-def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> ArchiveDebtInsight:
+def _archive_user_overlay_debt(index_db_path: Path, user_db_path: Path) -> ArchiveDebtInsight:
     if not user_db_path.exists():
         return _archive_debt(
             name="archive_user_overlay_orphans",
@@ -11888,8 +11890,11 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> 
             issue_count=0,
             detail="archive user tier absent; no overlay orphan check needed",
         )
-    conn.execute("ATTACH DATABASE ? AS user_debt", (f"file:{user_db_path}?mode=ro",))
-    try:
+    # See _archive_source_raw_link_debt: a dedicated short-lived connection
+    # avoids ATTACH/DETACH racing the long-lived ArchiveStore connection's
+    # own transaction.
+    with closing(open_readonly_connection(index_db_path)) as conn:
+        conn.execute("ATTACH DATABASE ? AS user_debt", (f"file:{user_db_path}?mode=ro",))
         checks = (
             "SELECT COUNT(*) FROM user_debt.assertions u "
             "WHERE u.target_ref LIKE 'session:%' "
@@ -11912,8 +11917,6 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> 
             "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = substr(u.target_ref, 9))",
         )
         issue_count = sum(_count_scalar(conn, sql) for sql in checks)
-    finally:
-        conn.execute("DETACH DATABASE user_debt")
     detail = (
         "archive user overlays resolve to index sessions"
         if issue_count == 0
