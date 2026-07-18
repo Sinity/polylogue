@@ -1135,7 +1135,6 @@ def test_spool_pending_check_ignores_terminal_cursor_states(
     spool.mkdir()
     capture = spool / "chatgpt-capture.json"
     capture.write_bytes(b"{}\n")
-    stat = capture.stat()
 
     records: dict[Path, object] = {}
     monkeypatch.setattr("polylogue.paths.browser_capture_spool_root", lambda: spool)
@@ -1144,6 +1143,16 @@ def test_spool_pending_check_ignores_terminal_cursor_states(
         "polylogue.sources.live.cursor.CursorStore",
         lambda _db: SimpleNamespace(get_record=lambda path: records.get(path)),
     )
+
+    # A capture that JUST arrived is in the live route's debounce flow —
+    # it must not park the conveyor even without a cursor.
+    records.clear()
+    assert daemon_cli._browser_capture_spool_has_pending_files() is False
+
+    # Age the file past the grace window: now it is a stalled backlog.
+    stale = capture.stat().st_mtime - daemon_cli._SPOOL_PENDING_GRACE_SECONDS - 60
+    os.utime(capture, (stale, stale))
+    stat = capture.stat()
 
     def cursor_record(*, excluded: bool = False, failure_count: int = 0) -> SimpleNamespace:
         return SimpleNamespace(

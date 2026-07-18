@@ -12,6 +12,7 @@ import os
 import sqlite3
 import sys
 import threading
+import time
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
@@ -84,6 +85,9 @@ _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
 _RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
 _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
+# A spool file younger than this is in the live route's normal debounce/
+# batch flow, not stalled; only older cursor-less files park the conveyor.
+_SPOOL_PENDING_GRACE_SECONDS = 300
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -744,7 +748,7 @@ def _drain_raw_materialization_once(
 
 
 def _browser_capture_spool_has_pending_files() -> bool:
-    """Whether live browser evidence is awaiting its normal ingest route.
+    """Whether live browser evidence is STALLED short of its ingest route.
 
     Only files genuinely waiting on the live route's writer count: a file
     with no cursor yet, or one whose bytes changed since its cursor. Files
@@ -753,6 +757,13 @@ def _browser_capture_spool_has_pending_files() -> bool:
     for, and treating them as pending parked raw materialization forever
     (2026-07-18 restore: the conveyor never ran once while failed spool
     files sat on disk).
+
+    Files younger than the grace window never count either: a capture that
+    arrived seconds ago is in the live watcher's debounce/batch flow — its
+    normal route — and the write coordinator already interleaves that work.
+    The yield exists for a backlog the live route is NOT digesting; without
+    the grace, steady live capture traffic re-parked the conveyor for 60s
+    per fresh file all through the 2026-07-18 restore.
     """
     from polylogue.paths import browser_capture_spool_root
     from polylogue.sources.live.batch import fingerprint_file
@@ -762,11 +773,14 @@ def _browser_capture_spool_has_pending_files() -> bool:
     spool = browser_capture_spool_root()
     if not spool.exists():
         return False
+    now = time.time()
     cursor_store = CursorStore(_active_index_db_path())
     for path in spool.rglob("*.json"):
         try:
             stat = path.stat()
         except FileNotFoundError:
+            continue
+        if now - stat.st_mtime < _SPOOL_PENDING_GRACE_SECONDS:
             continue
         cursor = cursor_store.get_record(path)
         if cursor is None:
