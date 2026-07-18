@@ -14,14 +14,33 @@ minimum of 30. Fourteen apparent `silent-proceed` rows were internal
 ambiguous rather than evidence of a visible silent follow-up. The current frame
 therefore has zero classified rows and no rate.
 
+**Correction to this note's earlier framing:** the n=20, single-origin frame is
+not evidence that the real corpus is small or single-origin. At the time this
+audit ran (and still, as of this writing), the live archive's derived index was
+in a known, actively-tracked degraded state: `readiness_check` reports
+`raw_materialization: poisoned`, with only 4 of 73,295 raw source artifacts
+materialized into `index.db` (`join_gap_count: 73291`). The real corpus behind
+that gap spans `codex-session` (39,638), `claude-code-session` (21,420),
+`chatgpt-export` (7,679), `claude-ai-export` (3,922), `hermes-session` (193),
+and five smaller origins. This is bead `polylogue-hjpx` / `polylogue-hjpx.2`
+(a P0/P1 raw-authority replay fixed-point program, owned by a separate lane,
+explicitly not authorized for live-archive repair yet) — not a Lane A finding
+and not something this lane fixes. Until that backlog clears, **any live-archive
+number this report emits reflects whatever tiny slice happens to be
+materialized at run time, not the archive's real shape.** Treat every
+"current bounded result" below as provisional and re-run after
+`readiness_check.archive_convergence.materialization_ready` is `true`.
+
 Operationally, `silent-proceed` means only: after a structurally failed tool
 result, the next visible assistant message contains no configured explicit
 failure-acknowledgement marker. It does **not** mean recovery was wrong: a
 wordless retry or a successful corrective action may be appropriate. The two
 largest validity threats are hidden/protocol-only content being mistaken for
-visible prose, and a small single-origin frame. The claim would be falsified by
-a representative, sufficiently large calibration frame showing that visible
-marker absence does not track human labels for this narrow observable.
+visible prose, and (independently of the materialization gap above) a
+single-origin frame if one recurs after re-materialization. The claim would be
+falsified by a representative, sufficiently large calibration frame showing
+that visible marker absence does not track human labels for this narrow
+observable.
 
 The generated [findings-page public-claims view](../generated/public-claims/findings-page.md) is the authority for whether this historical number is currently supported, stale, private-held, or unresolved.
 
