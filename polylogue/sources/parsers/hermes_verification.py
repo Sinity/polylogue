@@ -100,6 +100,18 @@ def observer_session_provider_id(hermes_session_id: str) -> str:
     return f"verification:{hermes_session_id}"
 
 
+def hermes_verification_session_id_for(conversational_session_id: str) -> str:
+    """Map a state-db-ingested Hermes session id to its verification-ledger counterpart.
+
+    Mirrors ``hermes_spans.hermes_observer_session_id_for``: strips the
+    ``@profile-<key>`` qualifier (the verification ledger carries no
+    profile-root context of its own) so a reader holding the qualified
+    conversational session id can look up its verification evidence.
+    """
+    raw_id = conversational_session_id.split("@profile-", 1)[0]
+    return observer_session_provider_id(raw_id)
+
+
 def marker_payload(path: Path, *, profile_root: Path | None = None) -> JSONDocument:
     """Return the JSON marker that routes a raw SQLite blob to this parser."""
     payload: JSONDocument = {
@@ -392,6 +404,7 @@ def import_fidelity_declaration(sessions: list[ParsedSession]) -> HermesImportFi
 __all__ = [
     "HERMES_VERIFICATION_DB_MARKER",
     "HermesVerificationEventType",
+    "hermes_verification_session_id_for",
     "import_fidelity_declaration",
     "looks_like_verification_evidence_db_path",
     "looks_like_verification_evidence_db_payload",
