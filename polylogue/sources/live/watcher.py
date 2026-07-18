@@ -1093,13 +1093,20 @@ def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[Candida
     small-source ingestion progress for hours. Bucket by source_name,
     sort each bucket by path for determinism, then round-robin across
     buckets so the first chunk contains some of every present family.
+
+    Exception: browser-capture spool files drain FIRST. The raw
+    materialization conveyor yields the writer while any spool file
+    lacks a cursor (daemon/cli.py), so interleaving them across the
+    whole plan parks source→index self-healing for the entire catch-up
+    (observed live 2026-07-18: conveyor idle for hours behind ~600
+    spooled captures spread over ~700 chunks).
     """
     buckets: dict[str, list[CandidateSourceFile]] = {}
     for candidate in candidates:
         buckets.setdefault(candidate.source_name, []).append(candidate)
     for source_name in buckets:
         buckets[source_name].sort(key=lambda candidate: candidate.path)
-    ordered: list[CandidateSourceFile] = []
+    ordered: list[CandidateSourceFile] = list(buckets.pop("browser-capture", []))
     iterators = [iter(buckets[name]) for name in sorted(buckets)]
     while iterators:
         next_round = []
