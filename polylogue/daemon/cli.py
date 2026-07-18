@@ -518,8 +518,12 @@ async def _periodic_raw_materialization_convergence_after(
                 "maintenance.raw_materialization",
                 _drain_raw_materialization_once,
             )
-            if materialized:
-                logger.info("raw materialization: converged %d session(s)", materialized)
+            if materialized.made_progress:
+                logger.info(
+                    "raw materialization: repaired %d session(s), executed %d frontier plan(s)",
+                    materialized.repaired_sessions,
+                    materialized.executed_plans,
+                )
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 logger.info("raw materialization: archive busy; retrying on next tick: %s", exc)
@@ -607,12 +611,12 @@ async def _reconcile_blob_publications() -> None:
         )
 
 
-def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT) -> int:
+def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT) -> Any:
     """Run one bounded raw source→index convergence pass."""
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
+    from polylogue.product import raw_authority
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
-    from polylogue.storage.repair import repair_raw_materialization
 
     archive = archive_root()
     restored = restore_direct_blob_reference_debt(
@@ -632,11 +636,9 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
         render_root=render_root(),
         sources=[],
     )
-    from polylogue.storage.raw_reconciler import recover_interrupted_raw_authority_frontier
-
-    recover_interrupted_raw_authority_frontier(config)
+    raw_authority.recover_interrupted_frontier(config)
     try:
-        result = repair_raw_materialization(
+        result = raw_authority.repair_materialization(
             config,
             dry_run=False,
             raw_artifact_limit=limit,
@@ -648,7 +650,10 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
     frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
-    return result.repaired_count + frontier_repaired
+    return raw_authority.RawMaterializationCounts(
+        repaired_sessions=result.repaired_count,
+        executed_plans=frontier_repaired,
+    )
 
 
 def _browser_capture_spool_has_pending_files() -> bool:
@@ -694,16 +699,13 @@ def _converge_raw_authority_frontier(config: Any, *, limit: int) -> int:
     bytes, unresolved provenance, and corruption are persisted as obligations;
     only strategies carrying an exact deterministic proof become selectable.
     """
-    from polylogue.storage.raw_reconciler import (
-        apply_raw_authority_frontier,
-        inspect_raw_authority_frontier,
-    )
+    from polylogue.product import raw_authority
 
-    census = inspect_raw_authority_frontier(config)
+    census = raw_authority.inspect_frontier(config)
     executable = tuple(item.plan_id for item in census.items if item.executable)[:limit]
     if not executable:
         return 0
-    report = apply_raw_authority_frontier(
+    report = raw_authority.apply_frontier(
         config,
         preview_census_id=census.census_id,
         selected_plan_ids=executable,
@@ -715,7 +717,7 @@ def _converge_raw_authority_frontier(config: Any, *, limit: int) -> int:
             report.selected_plan_count,
             report.census_id,
         )
-    return report.executed_plan_count
+    return int(report.executed_plan_count)
 
 
 def _emit_raw_materialization_pass(result: Any) -> None:
@@ -1215,14 +1217,12 @@ async def run_daemon_services(
     global _daemon_lifecycle, _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
-    from polylogue.paths import active_index_db_path
     from polylogue.storage.archive_identity import assert_writable_archive_identity
 
     # Identity precedes schema checks, pidfiles, HTTP startup, and every other
     # component: a split-root daemon must not become partially observable as a
     # healthy writer before its first ArchiveStore happens to open.
-    active_root = active_index_db_path().parent
-    assert_writable_archive_identity(configured_root=archive_root_path, active_root=active_root)
+    assert_writable_archive_identity(configured_root=archive_root_path, active_root=archive_root_path)
 
     if (
         enable_api

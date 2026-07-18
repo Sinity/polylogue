@@ -283,6 +283,50 @@ class TestResetCommandDeletion:
         assert all(path.exists() for path in preserved)
         assert "index database" in result.output
 
+    def test_reset_index_refuses_to_delete_managed_active_generation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        archive_root = tmp_path / "archive"
+        _source_db, _rebuildable, _user_db = self._seed_archive_tiers(archive_root)
+        canonical = tmp_path / "canonical"
+        canonical.mkdir()
+        active = canonical / "index.db"
+        active.write_text("active generation", encoding="utf-8")
+        (archive_root / ".index-active-pointer").write_text(str(active), encoding="utf-8")
+
+        with (
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
+            result = CliRunner().invoke(cli, ["ops", "reset", "--index", "--yes"])
+
+        assert result.exit_code == 1
+        assert "unsafe for a managed active generation" in result.output
+        assert active.read_text(encoding="utf-8") == "active generation"
+
+    def test_reset_database_refuses_to_delete_managed_active_generation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        archive_root = tmp_path / "archive"
+        _source_db, _rebuildable, _user_db = self._seed_archive_tiers(archive_root)
+        canonical = tmp_path / "canonical"
+        canonical.mkdir()
+        active = canonical / "index.db"
+        active.write_text("active generation", encoding="utf-8")
+        (archive_root / ".index-active-pointer").write_text(str(active), encoding="utf-8")
+
+        with (
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
+            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
+
+        assert result.exit_code == 1
+        assert "unsafe for a managed active generation" in result.output
+        assert active.read_text(encoding="utf-8") == "active generation"
+
     def test_reset_database_preserves_source_and_irreplaceable_user_db(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

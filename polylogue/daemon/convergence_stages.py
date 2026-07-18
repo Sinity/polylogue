@@ -687,9 +687,11 @@ def make_default_convergence_stages(
 ) -> tuple[ConvergenceStage, ...]:
     """Build daemon stages, failing explicitly when backed mode lacks transport."""
     from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+    from polylogue.paths import archive_root
     from polylogue.sinex.models import PublicationMode
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import resolve_configured_transport
+    from polylogue.storage.archive_identity import ArchiveLocation
 
     mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
     stages: list[ConvergenceStage] = []
@@ -699,7 +701,7 @@ def make_default_convergence_stages(
             make_sinex_publication_stage(
                 db_path,
                 PublicationService(
-                    source_db_path=db_path.parent / "source.db",
+                    source_db_path=ArchiveLocation.resolve(archive_root()).configured_tier("source").configured_path,
                     mode=mode,
                     transport=transport,
                 ),

@@ -7,7 +7,56 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from polylogue.config import get_config
+from polylogue.paths import active_index_db_path, resolve_active_index_db_path
 from polylogue.paths.sanitize import is_within_root, safe_path_component
+
+
+def test_active_index_path_follows_managed_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    canonical = tmp_path / "canonical" / "index.db"
+    canonical.parent.mkdir()
+    canonical.touch()
+    (root / ".index-active-pointer").write_text(str(canonical), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    assert active_index_db_path() == canonical
+
+
+def test_external_active_pointer_changes_only_the_index_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    canonical = tmp_path / "canonical" / "index.db"
+    canonical.parent.mkdir()
+    canonical.touch()
+    (root / ".index-active-pointer").write_text(str(canonical), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    config = get_config()
+
+    assert config.archive_root == root
+    assert config.db_path == canonical
+    assert config.archive_root / "source.db" == root / "source.db"
+    assert config.archive_root / "user.db" == root / "user.db"
+    assert config.archive_root / "ops.db" == root / "ops.db"
+
+
+@pytest.mark.parametrize("pointer_value", ("relative/index.db", "/tmp/not-index.db"))
+def test_all_active_index_resolvers_reject_malformed_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pointer_value: str
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / ".index-active-pointer").write_text(pointer_value, encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    with pytest.raises(RuntimeError, match="invalid active index pointer"):
+        active_index_db_path()
+    with pytest.raises(RuntimeError, match="invalid active index pointer"):
+        resolve_active_index_db_path(db_anchor=root / "source.db", index_db=root / "index.db")
 
 
 class TestSafePathComponent:

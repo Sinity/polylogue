@@ -7,8 +7,7 @@ import json
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.config import Config
-from polylogue.paths import archive_root, render_root
+from polylogue.product import raw_authority
 
 
 @click.command("raw-authority-frontier")
@@ -30,21 +29,14 @@ def raw_authority_frontier_command(
     output_format: str,
 ) -> None:
     """Inspect the complete frontier or apply exact plans as break-glass work."""
-    del env
-    from polylogue.storage.raw_reconciler import (
-        apply_raw_authority_frontier,
-        inspect_raw_authority_frontier,
-    )
-
-    root = archive_root()
-    config = Config(archive_root=root, render_root=render_root(), sources=[])
+    config = env.config
     try:
         if plan_ids:
             if not confirmed:
                 raise click.ClickException("refusing raw-authority application without --yes")
             if preview_census is None:
                 raise click.ClickException("--apply-plan requires --preview-census")
-            payload = apply_raw_authority_frontier(
+            payload = raw_authority.apply_frontier(
                 config,
                 preview_census_id=preview_census,
                 selected_plan_ids=plan_ids,
@@ -52,7 +44,7 @@ def raw_authority_frontier_command(
         else:
             if preview_census is not None or confirmed:
                 raise click.ClickException("apply options require at least one --apply-plan")
-            payload = inspect_raw_authority_frontier(config).to_dict()
+            payload = raw_authority.inspect_frontier(config).to_dict()
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
         if isinstance(exc, click.ClickException):
             raise
@@ -94,11 +86,8 @@ def raw_authority_census_command(
     output_format: str,
 ) -> None:
     """Read a bounded page from a durable raw-authority census ledger."""
-    del env
-    from polylogue.storage.raw_authority import read_raw_authority_census
-
     try:
-        payload = read_raw_authority_census(archive_root(), query_handle, limit=limit, offset=offset)
+        payload = raw_authority.read_census(env.config.archive_root, query_handle, limit=limit, offset=offset)
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     if output_format == "json":
@@ -142,12 +131,9 @@ def raw_authority_detail_command(
     output_format: str,
 ) -> None:
     """Read one bounded chunk of a complete census or plan document."""
-    del env
-    from polylogue.storage.raw_authority import read_raw_authority_detail
-
     try:
-        payload = read_raw_authority_detail(
-            archive_root(),
+        payload = raw_authority.read_detail(
+            env.config.archive_root,
             query_handle,
             chunk_chars=chunk_chars,
             offset=offset,
@@ -196,14 +182,11 @@ def raw_authority_blocker_resolve_command(
     output_format: str,
 ) -> None:
     """Resolve one stale-plan blocker after replanning current evidence."""
-    del env
     if not confirmed:
         raise click.ClickException("refusing to resolve a durable blocker without --yes")
-    from polylogue.storage.raw_authority import resolve_raw_authority_blocker
-
     try:
-        receipt = resolve_raw_authority_blocker(
-            archive_root(),
+        receipt = raw_authority.resolve_blocker(
+            env.config.archive_root,
             blocker_id,
             resolution=reason,
             assertion_id=assertion_id,

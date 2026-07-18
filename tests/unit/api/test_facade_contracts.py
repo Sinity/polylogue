@@ -228,8 +228,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "cost_outlook",
         "archive_count_sessions",
         "archive_get_session",
-        "archive_list_sessions",
-        "archive_search_sessions",
         # Topology read methods exposed in tests/unit/api/test_topology_api.py.
         "get_ancestors",
         "get_descendants",
@@ -444,8 +442,8 @@ async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path
     archive = Polylogue(archive_root=configured_root, db_path=active_root / "index.db")
 
     assert await archive.archive_count_sessions() == 1
-    hits = await archive.archive_search_sessions("needle")
-    assert [hit.session_id for hit in hits] == ["codex-session:override-root"]
+    hits = await archive.search("needle")
+    assert [hit.session_id for hit in hits.hits] == ["codex-session:override-root"]
 
 
 async def _seed_two_sessions(db_path: Path) -> None:
@@ -3347,11 +3345,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.archive import (
-        ArchiveSessionSearchHit,
-        ArchiveSessionSummary,
-        ArchiveStore,
-    )
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 
     archive = _archive(tmp_path)
@@ -3409,50 +3403,6 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             title="API",
             max_words=10,
         )
-        summaries = await archive.archive_list_sessions(
-            origin="codex-session",
-            excluded_origins=("chatgpt-export",),
-            tags=("api-v1",),
-            excluded_tags=("archived",),
-            repo_names=("polylogue",),
-            has_types=("tool_use",),
-            has_tool_use=True,
-            tool_terms=("read",),
-            excluded_tool_terms=("write",),
-            action_terms=("file_read",),
-            excluded_action_terms=("file_write",),
-            action_sequence=("file_read", "shell"),
-            action_text_terms=("README.md",),
-            referenced_paths=("README.md",),
-            cwd_prefix="/realm/project",
-            typed_only=True,
-            message_type="tool-use",
-            title="API",
-            max_words=10,
-            limit=5,
-        )
-        hits = await archive.archive_search_sessions(
-            "needle",
-            origin="codex-session",
-            excluded_origins=("chatgpt-export",),
-            tags=("api-v1",),
-            excluded_tags=("archived",),
-            repo_names=("polylogue",),
-            has_types=("tool_use",),
-            has_tool_use=True,
-            tool_terms=("read",),
-            excluded_tool_terms=("write",),
-            action_terms=("file_read",),
-            excluded_action_terms=("file_write",),
-            action_sequence=("file_read", "shell"),
-            action_text_terms=("README.md",),
-            referenced_paths=("README.md",),
-            cwd_prefix="/realm/project",
-            typed_only=True,
-            message_type="tool-use",
-            title="API",
-            limit=5,
-        )
         envelope = await archive.archive_get_session("codex-session:api-v1")
         normal_rows = await archive.list_sessions(origin="codex-session")
         query_rows = await archive.query_sessions(
@@ -3503,10 +3453,6 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         bulk_messages = await archive.bulk_get_messages(("codex-session:api-v1", "missing-session"))
 
         assert count == 1
-        assert isinstance(summaries[0], ArchiveSessionSummary)
-        assert summaries[0].session_id == session_id
-        assert isinstance(hits[0], ArchiveSessionSearchHit)
-        assert hits[0].session_id == session_id
         assert isinstance(envelope, ArchiveSessionEnvelope)
         assert envelope.session_id == session_id
         assert [str(row.id) for row in normal_rows] == [session_id]

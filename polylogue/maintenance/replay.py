@@ -144,7 +144,12 @@ async def rebuild_index_from_source(
     replay expands to complete logical cohorts so a partial selection cannot
     make an older snapshot look newest.
     """
-    del raw_batch_size, ingest_workers, materialize
+    if raw_batch_size <= 0:
+        raise ValueError("raw_batch_size must be positive")
+    # The caller owns page selection.  Do not widen its bounded page here:
+    # revision backfill may still expand that page to a complete authority
+    # cohort, which is required for correct newest-revision selection.
+    del ingest_workers, materialize
     import asyncio
 
     from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
@@ -166,6 +171,8 @@ async def rebuild_index_from_source(
         "quarantined_raw_count": result.quarantined,
         "adoption_deferred_raw_count": result.adoption_deferred,
         "authority_selection_expanded": True,
+        "scheduled_raw_count": len(raw_ids) if raw_ids is not None else None,
+        "raw_batch_size": raw_batch_size,
     }
 
 

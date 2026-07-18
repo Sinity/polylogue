@@ -258,6 +258,9 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
     if not isinstance(raw_items, (tuple, list)):
         item_field = "messages"
         raw_items = getattr(payload, item_field, None)
+    if not isinstance(raw_items, (tuple, list)):
+        item_field = "hits"
+        raw_items = getattr(payload, item_field, None)
     if not isinstance(raw_items, (tuple, list)) or not raw_items:
         return None
     items = tuple(raw_items)
@@ -269,6 +272,11 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
         if hasattr(payload, "next_offset"):
             offset = getattr(payload, "offset", 0)
             updates["next_offset"] = offset + count
+        if item_field == "hits":
+            # The original cursor may point after hits removed by the budget
+            # trim. The budget envelope supplies an offset continuation for
+            # the retained prefix instead, so never expose a stale cursor.
+            updates["next_cursor"] = None
         candidate = payload.model_copy(update=updates)
         size = len(_serialize_payload(candidate, exclude_none=exclude_none).encode("utf-8"))
         if size <= MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES:

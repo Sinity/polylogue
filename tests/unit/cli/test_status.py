@@ -249,7 +249,7 @@ def test_archive_facade_route_catalog_covers_public_async_facade() -> None:
     assert routing["routes"]["get_logical_session"]["route"] == "archive_routed"
     assert routing["routes"]["health_check"]["route"] == "archive_routed"
     assert routing["routes"]["get_session"]["route"] == "archive_routed"
-    assert routing["routes"]["archive_search_sessions"]["route"] == "archive_direct"
+    assert routing["routes"]["search"]["route"] == "archive_routed"
     assert routing["unsupported_methods"] == []
 
 

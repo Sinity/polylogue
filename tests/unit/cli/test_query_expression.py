@@ -6340,7 +6340,7 @@ class TestJsonSpecStrictMode:
 
 
 class TestDaemonContainsParamNotCompiled:
-    """_do_archive_list_sessions must not route ?contains= through compile_expression."""
+    """The archive session-list route must not route ?contains= through compile_expression."""
 
     def test_contains_param_not_compiled_as_dsl(self, workspace_env: dict[str, Path]) -> None:
         """Bug 7: a ?contains= value rejected as DSL must still be treated as
@@ -6365,7 +6365,7 @@ class TestDaemonContainsParamNotCompiled:
         handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
 
         # Would raise ExpressionCompileError if compiled; must not here.
-        payload = handler._do_archive_list_sessions(
+        payload = handler._do_archive_session_list(
             workspace_env["archive_root"], {"contains": ["action:badaction"]}, 50, 0
         )
         assert isinstance(payload, dict)
@@ -6381,7 +6381,7 @@ class TestDaemonSessionIdFilter:
     """Behavioral coverage of /api/sessions id: scoping and contains filtering.
 
     Replaces the earlier source-grep regression (#1873 Bug 7/8) with real calls
-    into ``_do_archive_list_sessions`` over a seeded archive.
+    into the archive session-list route over a seeded archive.
     """
 
     def _handler(self) -> Any:
@@ -6419,7 +6419,7 @@ class TestDaemonSessionIdFilter:
         ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
         assert len(ids) == 2
 
-        payload = self._handler()._do_archive_list_sessions(
+        payload = self._handler()._do_archive_session_list(
             workspace_env["archive_root"], {"query": [f"id:{ids[0]}"]}, 50, 0
         )
         assert isinstance(payload, dict)
@@ -6433,7 +6433,7 @@ class TestDaemonSessionIdFilter:
         ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
         assert len(ids) == 2
 
-        payload = self._handler()._do_archive_list_sessions(
+        payload = self._handler()._do_archive_session_list(
             workspace_env["archive_root"], {"query": [f"session:{ids[0]}"]}, 50, 0
         )
         assert isinstance(payload, dict)
@@ -6445,7 +6445,7 @@ class TestDaemonSessionIdFilter:
         index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db, [("alpha", "alpha body")])
 
-        payload = self._handler()._do_archive_list_sessions(
+        payload = self._handler()._do_archive_session_list(
             workspace_env["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
         )
         # A missing id is a typed-empty page, not a 500 propagated from resolve.
@@ -6459,7 +6459,7 @@ class TestDaemonSessionIdFilter:
         index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db, [("alpha", "alpha body")])
 
-        payload = self._handler()._do_archive_list_sessions(
+        payload = self._handler()._do_archive_session_list(
             workspace_env["archive_root"], {"query": ["session:nonexistentnope"]}, 50, 0
         )
         assert payload["items"] == []
@@ -6479,7 +6479,7 @@ class TestDaemonSessionIdFilter:
         assert prefix and prefix not in ids, "need a shared, non-exact prefix"
 
         with pytest.raises(QuerySpecError):
-            self._handler()._do_archive_list_sessions(workspace_env["archive_root"], {"query": [f"id:{prefix}"]}, 50, 0)
+            self._handler()._do_archive_session_list(workspace_env["archive_root"], {"query": [f"id:{prefix}"]}, 50, 0)
 
     def test_contains_filters_without_query(self, workspace_env: dict[str, Path]) -> None:
         index_db = workspace_env["archive_root"] / "index.db"
@@ -6487,7 +6487,7 @@ class TestDaemonSessionIdFilter:
 
         # ?contains=foo with no ?query= must still filter (Bug 7): it routes to the
         # FTS branch as a literal term rather than returning the unfiltered page.
-        payload = self._handler()._do_archive_list_sessions(
+        payload = self._handler()._do_archive_session_list(
             workspace_env["archive_root"], {"contains": ["findmetoken"]}, 50, 0
         )
         assert isinstance(payload, dict)

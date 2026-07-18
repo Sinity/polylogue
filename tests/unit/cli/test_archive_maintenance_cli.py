@@ -1722,6 +1722,218 @@ def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
     ]
 
 
+def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotion(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """A bounded pass retains its generation; only the terminal resume promotes it."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = cli_workspace["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for native_id, acquired_at_ms in (("first", 1), ("second", 2)):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\\n'
+                    f'{{"type":"response_item","payload":{{"type":"message","role":"user",'
+                    f'"content":[{{"type":"input_text","text":"{native_id}"}}]}}}}\\n'
+                ).encode(),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=acquired_at_ms,
+            )
+
+    first = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--raw-batch-size", "1", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    assert first.exit_code == 0
+    first_payload = json.loads(first.output)
+    operation_id = first_payload["transaction"]["operation_id"]
+    generation_path = Path(first_payload["generation"]["index_path"])
+    assert first_payload["status"] == "paused"
+    assert first_payload["transaction"]["processed_raw_count"] == 1
+    assert generation_path.exists()
+    assert root.joinpath("index.db").resolve() != generation_path.resolve()
+
+    terminal = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--operation-id",
+            operation_id,
+            "--raw-batch-size",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert terminal.exit_code == 0
+    terminal_payload = json.loads(terminal.output)
+    assert terminal_payload["status"] == "replayed"
+    assert terminal_payload["transaction"]["status"] == "promoted"
+    assert root.joinpath("index.db").resolve() == generation_path.resolve()
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+
+
+def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """The real CLI replays every raw over passes; byte budgeting never filters archive data."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = cli_workspace["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for native_id, acquired_at_ms, padding in (("large", 1, "x" * 1_024), ("later", 2, "y")):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\\n'
+                    f'{{"type":"response_item","payload":{{"type":"message","role":"user",'
+                    f'"content":[{{"type":"input_text","text":"{padding}"}}]}}}}\\n'
+                ).encode(),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=acquired_at_ms,
+            )
+    first = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--pass-byte-budget-mb",
+            "0.0001",
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert first.exit_code == 0
+    first_payload = json.loads(first.output)
+    assert first_payload["status"] == "deferred"
+    operation_id = first_payload["transaction"]["operation_id"]
+    terminal = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--operation-id",
+            operation_id,
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert terminal.exit_code == 0
+    payload = json.loads(terminal.output)
+    assert payload["transaction"]["status"] == "ready"
+    assert payload["generation"]["state"] == "inactive"
+    with sqlite3.connect(Path(payload["generation"]["index_path"])) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+
+
+def test_rebuild_index_source_snapshot_drift_marks_candidate_stale_before_promotion(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed source vector is terminal evidence, never a ready/promoted candidate."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = cli_workspace["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"drift"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"drift"}]}}\n'
+            ),
+            source_path="drift.jsonl",
+            acquired_at_ms=1,
+        )
+    snapshots = iter(("source-v1", "source-v1", "source-v2"))
+    monkeypatch.setattr("polylogue.storage.index_generation.source_revision_snapshot", lambda _root: next(snapshots))
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 1
+    assert "stale because source evidence changed" in result.output
+    transaction = next((root / ".index-rebuild-transactions").glob("*.json"))
+    assert json.loads(transaction.read_text())["status"] == "stale"
+    assert not root.joinpath("index.db").is_symlink()
+
+
+def test_rebuild_index_deadline_defers_postflight_until_resume(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deadline expiry preserves the replayed candidate instead of permitting early promotion."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = cli_workspace["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"deadline"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"deadline"}]}}\n'
+            ),
+            source_path="deadline.jsonl",
+            acquired_at_ms=1,
+        )
+    clock = [100.0, 102.0]
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._rebuild_index.time.time",
+        lambda: clock.pop(0) if clock else 102.0,
+    )
+    first = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--pass-deadline-seconds",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert first.exit_code == 0
+    payload = json.loads(first.output)
+    assert payload["status"] == "deferred"
+    assert payload["transaction"]["status"] == "deferred"
+    assert not root.joinpath("index.db").is_symlink()
+    resumed = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--operation-id",
+            payload["transaction"]["operation_id"],
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert resumed.exit_code == 0
+    assert json.loads(resumed.output)["transaction"]["status"] == "promoted"
+
+
 def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path) -> None:
     config = Config(
         archive_root=tmp_path,
@@ -1748,6 +1960,8 @@ def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path)
         "quarantined_raw_count": 0,
         "adoption_deferred_raw_count": 0,
         "authority_selection_expanded": True,
+        "scheduled_raw_count": 2,
+        "raw_batch_size": 7,
     }
 
 

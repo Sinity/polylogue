@@ -18,6 +18,7 @@ def test_continuity_catalog_contains_all_operator_jobs_and_incident_variant() ->
         "postmortem",
         "cost",
         "self-inspection",
+        "mcp-query-transaction",
         "parallel-claude-incident",
     }
     assert all(scenario.required_facts for scenario in CONTINUITY_SCENARIOS)
