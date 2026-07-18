@@ -21,10 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.core.enums import BlockType, PasteBoundary, SessionKind
+from polylogue.core.enums import BlockType, PasteBoundary, Provider, SessionKind
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -70,6 +71,7 @@ from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_f
 logger = get_logger(__name__)
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD = 0.90
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,13 +258,41 @@ def write_parsed_session_to_archive(
     inherited_source_message_ids: dict[str, str] = {}
     if not merge_append:
         parent_session_id = _existing_parent_session_id(conn, session, origin.value)
+        acompact = _is_claude_code_acompact_session(session)
+        force_spawned_fresh = False
         if parent_session_id is not None and messages:
-            (
-                branch_point_message_id,
-                lineage_inheritance,
-                messages,
-                inherited_source_message_ids,
-            ) = _extract_prefix_tail(conn, parent_session_id, messages, cache=signature_cache)
+            parent_composed: list[tuple[str, str]] | None = None
+            if acompact:
+                parent_composed = _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
+                membership = _acompact_content_membership_ratio(
+                    parent_composed,
+                    _parsed_acompact_prefix_signatures(messages),
+                )
+                if membership is not None:
+                    if membership < _ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD:
+                        session = session.model_copy(update={"branch_type": BranchType.SIDECHAIN})
+                        lineage_inheritance = "spawned-fresh"
+                        force_spawned_fresh = True
+                    elif session.branch_type is BranchType.SIDECHAIN:
+                        # Parent content is authoritative over a conservative
+                        # fresh-head parser hint when both are available.
+                        session = session.model_copy(update={"branch_type": BranchType.CONTINUATION})
+                elif session.branch_type is BranchType.SIDECHAIN:
+                    lineage_inheritance = "spawned-fresh"
+                    force_spawned_fresh = True
+            if not force_spawned_fresh:
+                (
+                    branch_point_message_id,
+                    lineage_inheritance,
+                    messages,
+                    inherited_source_message_ids,
+                ) = _extract_prefix_tail(
+                    conn,
+                    parent_session_id,
+                    messages,
+                    cache=signature_cache,
+                    parent_composed=parent_composed,
+                )
     duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     active_leaf_message_id = _active_leaf_message_id(
         session_id,
@@ -3255,6 +3285,88 @@ def _parsed_message_signature(message: ParsedMessage) -> str:
     return _message_signature_from_blocks(role, fields)
 
 
+def _is_acompact_native_id(native_id: str) -> bool:
+    return native_id.rsplit(":", 1)[-1].startswith("agent-acompact-")
+
+
+def _is_claude_code_acompact_session(session: ParsedSession) -> bool:
+    return session.source_name is Provider.CLAUDE_CODE and _is_acompact_native_id(session.provider_session_id)
+
+
+def _parsed_acompact_prefix_signatures(messages: Sequence[ParsedMessage]) -> list[str]:
+    """Return content signatures before the compaction summary boundary.
+
+    The summary is expected to be unique output even for a true main-session
+    compactor, so it cannot count against parent membership.  Later records are
+    outside the copied prefix and are likewise excluded once a summary appears.
+    """
+    signatures: list[str] = []
+    for message in messages:
+        if message.message_type is MessageType.SUMMARY:
+            break
+        signatures.append(_parsed_message_signature(message))
+    return signatures
+
+
+def _acompact_content_membership_ratio(
+    parent_composed: Sequence[tuple[str, str]],
+    child_prefix_signatures: Sequence[str],
+) -> float | None:
+    """Return multiset content membership of an acompact prefix in its parent.
+
+    Classification uses membership rather than contiguous alignment: the former
+    answers whether this artifact belongs to the asserted parent at all, while
+    `_extract_prefix_tail` remains the stricter loss-prevention gate for deleting
+    inherited rows.  Duplicate signatures are bounded by parent multiplicity so
+    repeated boilerplate cannot manufacture overlap.
+    """
+    if not child_prefix_signatures:
+        return None
+    if not parent_composed:
+        return 0.0
+    parent_counts = Counter(signature for _message_id, signature in parent_composed)
+    matching_count = 0
+    for signature in child_prefix_signatures:
+        if parent_counts[signature] <= 0:
+            continue
+        parent_counts[signature] -= 1
+        matching_count += 1
+    return matching_count / len(child_prefix_signatures)
+
+
+def _db_acompact_prefix_signatures(
+    conn: sqlite3.Connection,
+    session_id: str,
+    child_composed: Sequence[tuple[str, str]],
+) -> list[str]:
+    summary_message_ids = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? AND message_type = 'summary'",
+            (session_id,),
+        ).fetchall()
+    }
+    signatures: list[str] = []
+    for message_id, signature in child_composed:
+        if message_id in summary_message_ids:
+            break
+        signatures.append(signature)
+    return signatures
+
+
+def _db_claude_acompact_branch_type(conn: sqlite3.Connection, session_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT origin, native_id, branch_type FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    origin, native_id, branch_type = row
+    if origin != origin_from_provider(Provider.CLAUDE_CODE).value or not _is_acompact_native_id(str(native_id)):
+        return None
+    return str(branch_type) if branch_type is not None else ""
+
+
 def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[str, str]]:
     """Return ``[(message_id, signature), ...]`` for ``session_id``'s OWN stored
     message rows (no inherited prefix). This is the expensive SQL+SHA-256 leg of
@@ -3454,6 +3566,76 @@ def _reextract_prefix_tail_db(
         composed_cache=composed_cache,
     )
     record_substage("child_composed", t0)
+
+    def _set_edge(
+        branch_point_message_id: str | None,
+        inheritance: str,
+        *,
+        next_link_type: str | None = None,
+    ) -> None:
+        current_link_type = str(link_type)
+        target_link_type = next_link_type or current_link_type
+        if target_link_type != current_link_type:
+            # One parsed parent assertion should yield one edge. Remove a stale
+            # duplicate of the target natural key before changing the PK lane so
+            # a rebuild remains convergent even after interrupted older repairs.
+            conn.execute(
+                """
+                DELETE FROM session_links
+                WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+                """,
+                (child_session_id, dst_origin, dst_native_id, target_link_type),
+            )
+        conn.execute(
+            """
+            UPDATE session_links
+            SET link_type = ?, branch_point_message_id = ?, inheritance = ?
+            WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+            """,
+            (
+                target_link_type,
+                branch_point_message_id,
+                inheritance,
+                child_session_id,
+                dst_origin,
+                dst_native_id,
+                current_link_type,
+            ),
+        )
+
+    t0 = time.perf_counter()
+    acompact_branch_type = _db_claude_acompact_branch_type(conn, child_session_id)
+    force_spawned_fresh = False
+    resolved_link_type: str | None = None
+    if acompact_branch_type is not None:
+        membership = _acompact_content_membership_ratio(
+            parent_composed,
+            _db_acompact_prefix_signatures(conn, child_session_id, child_composed),
+        )
+        if membership is not None:
+            if membership < _ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD:
+                force_spawned_fresh = True
+            else:
+                # The parser's fresh-head signal is intentionally conservative.
+                # Once the parent exists, content membership is authoritative.
+                resolved_link_type = TopologyEdgeType.CONTINUATION.value
+                conn.execute(
+                    "UPDATE sessions SET branch_type = ? WHERE session_id = ?",
+                    (BranchType.CONTINUATION.value, child_session_id),
+                )
+        elif acompact_branch_type == BranchType.SIDECHAIN.value:
+            force_spawned_fresh = True
+    record_substage("acompact_membership", t0)
+    if force_spawned_fresh:
+        t0 = time.perf_counter()
+        _set_edge(None, "spawned-fresh", next_link_type=TopologyEdgeType.SIDECHAIN.value)
+        conn.execute(
+            "UPDATE sessions SET branch_type = ? WHERE session_id = ?",
+            (BranchType.SIDECHAIN.value, child_session_id),
+        )
+        record_substage("acompact_reclassify", t0)
+        return
+
     t0 = time.perf_counter()
     k = 0
     limit = min(len(parent_composed), len(child_composed))
@@ -3461,19 +3643,9 @@ def _reextract_prefix_tail_db(
         k += 1
     record_substage("signature_compare", t0)
 
-    def _set_edge(branch_point_message_id: str | None, inheritance: str) -> None:
-        conn.execute(
-            """
-            UPDATE session_links
-            SET branch_point_message_id = ?, inheritance = ?
-            WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
-            """,
-            (branch_point_message_id, inheritance, child_session_id, dst_origin, dst_native_id, link_type),
-        )
-
     if k == 0:
         t0 = time.perf_counter()
-        _set_edge(None, "spawned-fresh")
+        _set_edge(None, "spawned-fresh", next_link_type=resolved_link_type)
         record_substage("edge_update", t0)
         return
     prefix_message_ids = [child_composed[i][0] for i in range(k)]
@@ -3514,7 +3686,11 @@ def _reextract_prefix_tail_db(
         cache.pop(child_session_id, None)
     if composed_cache is not None:
         composed_cache.pop(child_session_id, None)
-    _set_edge(parent_composed[k - 1][0], "prefix-sharing")
+    _set_edge(
+        parent_composed[k - 1][0],
+        "prefix-sharing",
+        next_link_type=resolved_link_type,
+    )
     record_substage("edge_update", t0)
     t0 = time.perf_counter()
     _refresh_session_counts(conn, child_session_id)
@@ -3868,6 +4044,7 @@ def _extract_prefix_tail(
     messages: list[ParsedMessage],
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
+    parent_composed: list[tuple[str, str]] | None = None,
 ) -> tuple[str | None, str | None, list[ParsedMessage], dict[str, str]]:
     """Align ``messages`` (the child's full parsed messages, which replay the
     parent's prefix) against the parent's composed transcript. Returns
@@ -3875,7 +4052,8 @@ def _extract_prefix_tail(
     ``inherited_refs`` maps unambiguous provider-local child message ids to the
     canonical parent message rows that physically own the replayed prefix.
     """
-    parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
+    if parent_composed is None:
+        parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
     if not parent_composed:
         return (None, "spawned-fresh", messages, {})
     child_sigs = [_parsed_message_signature(m) for m in messages]

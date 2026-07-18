@@ -158,9 +158,7 @@ class TestClaudeCodeRecordCompaction:
 
 
 class TestClaudeCodeAcompactClassification:
-    """`agent-acompact-*` is auto-compaction (a copy of the parent + summary),
-    not distinct subagent work. It must link to the parent but classify as a
-    continuation rather than a subagent."""
+    """The overloaded ``agent-acompact-*`` marker needs structural evidence."""
 
     def _payload(self) -> list[object]:
         return [
@@ -179,6 +177,27 @@ class TestClaudeCodeAcompactClassification:
         assert result.branch_type == BranchType.CONTINUATION
         # Identity preserved as a distinct artifact composed under the parent.
         assert result.provider_session_id == "parent-sess:agent-acompact-0fdce0d10b47bcc9"
+
+    def test_fresh_task_prompt_head_classifies_acompact_as_sidechain(self) -> None:
+        payload = [
+            {
+                "type": "user",
+                "uuid": "task-u1",
+                "parentUuid": None,
+                "sessionId": "parent-sess",
+                "timestamp": "2024-01-01T10:00:00Z",
+                "isSidechain": True,
+                "agentId": "task-agent-proof",
+                "promptId": "task-prompt-proof",
+                "message": {"role": "user", "content": "Perform task-local verification."},
+            }
+        ]
+
+        result = parse_code(payload, "agent-acompact-task-proof")
+
+        assert result.parent_session_provider_id == "parent-sess"
+        assert result.branch_type == BranchType.SIDECHAIN
+        assert result.provider_session_id == "parent-sess:agent-acompact-task-proof"
 
     def test_real_subagent_still_classified_as_subagent(self) -> None:
         result = parse_code(self._payload(), "agent-a1b2c3d4e5f6")

@@ -252,6 +252,33 @@ def _string_field(item: dict[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _is_fresh_task_prompt_head(item: dict[str, object]) -> bool:
+    """Return whether ``item`` is a structurally fresh Task-agent prompt.
+
+    Claude Code can emit ``agent-acompact-*`` artifacts for two different
+    shapes: a main-session compactor replaying the parent transcript, and a
+    Task subagent compacting its own fresh transcript.  The parser normally
+    sees only this one sidecar, not the main-session file, so it cannot always
+    perform the authoritative content-membership comparison here.  A root
+    sidechain user prompt with explicit Task prompt/agent identifiers is the
+    provider's positive fresh-spawn marker.  Keep the predicate deliberately
+    narrow; ambiguous artifacts remain continuations until the archive writer
+    can compare them against the resolved parent content.
+    """
+    if item.get("type") != "user":
+        return False
+    if item.get("parentUuid") is not None or item.get("isSidechain") is not True:
+        return False
+    if item.get("isMeta") or item.get("isCompactSummary") or item.get("toolUseResult") is not None:
+        return False
+    if _record_origin_kind(item) == "human":
+        return False
+    message = item.get("message")
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    return _string_field(item, "agentId") is not None and _string_field(item, "promptId") is not None
+
+
 def _background_task_id(item: dict[str, object]) -> str | None:
     tool_result = item.get("toolUseResult")
     if not isinstance(tool_result, dict):
@@ -434,6 +461,8 @@ def _parse_code_records(
     saw_cost_field = False
     saw_duration_field = False
     has_sidechain = False
+    fresh_task_prompt_head = False
+    saw_plain_user_head = False
     cwds: set[str] = set()
     models: set[str] = set()
     message_position = 0
@@ -522,6 +551,9 @@ def _parse_code_records(
         message_type = _message_type_from_code_record(item, text)
         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
             message_type = MessageType.CONTEXT
+        if not saw_plain_user_head and envelope_role is Role.USER and message_type is MessageType.MESSAGE:
+            saw_plain_user_head = True
+            fresh_task_prompt_head = _is_fresh_task_prompt_head(item)
         # Claude Code records carry per-message token usage at
         # ``record.message.usage``; propagate so MaterializedMessage and the
         # downstream cost estimator see real numbers instead of zeros.
@@ -655,13 +687,12 @@ def _parse_code_records(
             first_duplicate_uuid,
         )
 
-    # `agent-acompact-*` is Claude Code's auto-compaction agent: it re-reads the
-    # whole conversation to emit a summary, so its transcript is a 100% copy of
-    # the parent plus the summary. It is a compaction continuation of the parent,
-    # NOT distinct subagent work. It still carries the same `agent-` prefix and
-    # parent linkage as a real subagent, so keep the composed id / parent link but
-    # classify the relationship as a continuation. Slice C folds it into a typed
-    # compaction boundary; here we at least stop counting it as a subagent.
+    # `agent-acompact-*` is overloaded by Claude Code. A main-session compactor
+    # replays the parent transcript and is a continuation; a Task subagent can
+    # also self-compact under the same filename prefix. A structurally fresh Task
+    # prompt is positive evidence for sidechain topology. Ambiguous cases stay
+    # continuations here and are reclassified by the archive writer after its
+    # bounded content-membership check against the resolved parent transcript.
     parent_session_id: str | None = None
     if is_agent and session_id:
         composed_session_id = f"{session_id}:{fallback_id}"
@@ -669,8 +700,10 @@ def _parse_code_records(
     else:
         composed_session_id = session_id or fallback_id
 
-    if is_acompact:
-        branch_type: BranchType | None = BranchType.CONTINUATION
+    if is_acompact and fresh_task_prompt_head:
+        branch_type: BranchType | None = BranchType.SIDECHAIN
+    elif is_acompact:
+        branch_type = BranchType.CONTINUATION
     elif is_agent:
         branch_type = BranchType.SUBAGENT
     elif has_sidechain:

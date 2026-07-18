@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload, parse_stream_payload
@@ -159,6 +160,52 @@ def test_parse_stream_payload_splits_claude_code_aggregate_by_session_id() -> No
 
     assert [session.provider_session_id for session in sessions] == ["first-session", "second-session"]
     assert [len(session.messages) for session in sessions] == [2, 1]
+
+
+def test_claude_acompact_classifier_matches_eager_and_memory_bounded_routes() -> None:
+    """Production dependencies: first-group fallback identity and shared parser.
+
+    Mutation: let eager grouping replace the first fallback with ``sessionId`` or
+    duplicate the classifier in only one route. The model equality and acompact
+    identity/topology assertions fail.
+    """
+    payload = [
+        {
+            "type": "user",
+            "uuid": "task-u",
+            "parentUuid": None,
+            "sessionId": "parent-session",
+            "isSidechain": True,
+            "agentId": "task-agent",
+            "promptId": "task-prompt",
+            "message": {"role": "user", "content": "Task-local head."},
+        },
+        {
+            "type": "assistant",
+            "uuid": "task-a",
+            "parentUuid": "task-u",
+            "sessionId": "parent-session",
+            "isSidechain": True,
+            "message": {"role": "assistant", "content": "Task-local answer."},
+        },
+        {
+            "type": "user",
+            "uuid": "other-u",
+            "sessionId": "other-session",
+            "message": {"role": "user", "content": "Other session."},
+        },
+    ]
+    fallback_id = "agent-acompact-route-parity"
+
+    eager = parse_payload(Provider.CLAUDE_CODE, payload, fallback_id)
+    streamed = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), fallback_id)
+
+    assert [session.model_dump(mode="json") for session in streamed] == [
+        session.model_dump(mode="json") for session in eager
+    ]
+    assert eager[0].provider_session_id == "parent-session:agent-acompact-route-parity"
+    assert eager[0].parent_session_provider_id == "parent-session"
+    assert eager[0].branch_type is BranchType.SIDECHAIN
 
 
 def test_parse_one_source_path_treats_jsonl_text_json_wrappers_as_jsonl(tmp_path: Path) -> None:

@@ -31,11 +31,13 @@ _FAMILY_FIXTURE = _FIXTURE_ROOT / "normalization-family.jsonl"
 _AGENT_FIXTURE = _FIXTURE_ROOT / "normalization-agent.jsonl"
 _PARENT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-parent.jsonl"
 _ACOMPACT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-acompact.jsonl"
+_SUBAGENT_ACOMPACT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-subagent-acompact.jsonl"
 
 _MAIN_SESSION_ID = "claude-normalization-main"
 _PARENT_SESSION_ID = "claude-lineage-parent"
 _AGENT_FALLBACK_ID = "agent-normalization-proof"
 _ACOMPACT_FALLBACK_ID = "agent-acompact-normalization-proof"
+_SUBAGENT_ACOMPACT_FALLBACK_ID = "agent-acompact-task-normalization-proof"
 _ARCHIVE_SESSION_ID = "claude-code-session:claude-normalization-main"
 _EXPECTED_ARCHIVE_MESSAGE_IDS = (
     "claude-code-session:claude-normalization-main:main-u1",
@@ -367,6 +369,225 @@ def test_acompact_resume_replayed_prefix_is_stored_once_and_composed(
         "human_authored",
         "assistant_authored",
         "generated_context_pack",
+    ]
+
+
+@pytest.mark.parametrize("write_parent_first", [True, False])
+def test_parent_membership_overrides_conservative_fresh_head_hint(
+    tmp_path: Path,
+    write_parent_first: bool,
+) -> None:
+    """Production dependency: resolved-parent membership outranks parser hints.
+
+    The copied transcript is structurally decorated like a fresh Task head, so
+    the one-file parser conservatively says sidechain. Parent content proves a
+    true continuation. Removing the parent-known correction or its delayed twin
+    leaves the wrong sidechain edge, whole replayed rows, or an uncomposed read.
+    """
+    parent = parse_payload(Provider.CLAUDE_CODE, _records(_PARENT_FIXTURE), "lineage-parent")[0]
+    hinted_records = _records(_ACOMPACT_FIXTURE)
+    head = hinted_records[0]
+    assert isinstance(head, dict)
+    head.update(
+        {
+            "isSidechain": True,
+            "agentId": "conservative-hint-agent",
+            "promptId": "conservative-hint-prompt",
+        }
+    )
+    child = parse_payload(
+        Provider.CLAUDE_CODE,
+        hinted_records,
+        "agent-acompact-conservative-hint-proof",
+    )[0]
+    assert child.branch_type is BranchType.SIDECHAIN
+
+    with ArchiveStore(tmp_path / ("hint-parent-first" if write_parent_first else "hint-child-first")) as archive:
+        if write_parent_first:
+            archive.write_parsed(parent)
+            child_id = archive.write_parsed(child)
+        else:
+            child_id = archive.write_parsed(child)
+            archive.write_parsed(parent)
+        positions = archive._conn.execute(
+            "SELECT position FROM messages WHERE session_id = ? ORDER BY position",
+            (child_id,),
+        ).fetchall()
+        link = archive._conn.execute(
+            """
+            SELECT link_type, inheritance, branch_point_message_id
+            FROM session_links WHERE src_session_id = ?
+            """,
+            (child_id,),
+        ).fetchone()
+        envelope = read_archive_session_envelope(archive._conn, child_id)
+
+    assert [row[0] for row in positions] == [2]
+    assert tuple(link[:2]) == ("continuation", "prefix-sharing")
+    assert link[2] is not None
+    assert envelope.branch_type == "continuation"
+    assert _wire_texts(envelope) == [
+        "Plan the release.",
+        "I will inspect the checks.",
+        "Compressed release context.",
+    ]
+
+
+@pytest.mark.parametrize("write_parent_first", [True, False])
+def test_subagent_self_compaction_stays_whole_and_never_composes_main_prefix(
+    tmp_path: Path,
+    write_parent_first: bool,
+) -> None:
+    """Production dependencies: fresh-head parser classification and lineage reads.
+
+    Mutation: make every ``agent-acompact-*`` a continuation, ignore the
+    sidechain inheritance guard, or compose every resolved parent edge. The
+    topology, physical rows, or explicit no-main-prefix assertion fails.
+    """
+    parent = parse_payload(Provider.CLAUDE_CODE, _records(_PARENT_FIXTURE), "lineage-parent")[0]
+    child = parse_payload(
+        Provider.CLAUDE_CODE,
+        _records(_SUBAGENT_ACOMPACT_FIXTURE),
+        _SUBAGENT_ACOMPACT_FALLBACK_ID,
+    )[0]
+
+    assert child.parent_session_provider_id == _PARENT_SESSION_ID
+    assert child.branch_type is BranchType.SIDECHAIN
+
+    with ArchiveStore(tmp_path / ("task-parent-first" if write_parent_first else "task-child-first")) as archive:
+        if write_parent_first:
+            archive.write_parsed(parent)
+            child_id = archive.write_parsed(child)
+        else:
+            child_id = archive.write_parsed(child)
+            archive.write_parsed(parent)
+
+        stored_count = archive._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (child_id,),
+        ).fetchone()[0]
+        link = archive._conn.execute(
+            """
+            SELECT link_type, inheritance, branch_point_message_id, resolved_dst_session_id
+            FROM session_links WHERE src_session_id = ?
+            """,
+            (child_id,),
+        ).fetchone()
+        envelope = read_archive_session_envelope(archive._conn, child_id)
+
+    assert stored_count == 3
+    assert tuple(link[:3]) == ("sidechain", "spawned-fresh", None)
+    assert link[3] is not None
+    assert envelope.branch_type == "sidechain"
+    assert _wire_texts(envelope) == [
+        "Validate the synthetic twelve-change overhaul and report only task-local evidence.",
+        "The task-local verification matrix is complete.",
+        "Compressed task-local verification context.",
+    ]
+    assert [message.role for message in envelope.messages] == ["user", "assistant", "system"]
+    assert [message.material_origin for message in envelope.messages] == [
+        "generated_context_pack",
+        "assistant_authored",
+        "generated_context_pack",
+    ]
+    assert "Plan the release." not in _wire_texts(envelope)
+    assert "I will inspect the checks." not in _wire_texts(envelope)
+
+
+@pytest.mark.parametrize("write_parent_first", [True, False])
+def test_ambiguous_acompact_is_reclassified_by_parent_content_membership(
+    tmp_path: Path,
+    write_parent_first: bool,
+) -> None:
+    """Production dependency: writer membership gate, including late resolution.
+
+    This shape deliberately omits the fresh Task-head marker, so the parser is
+    conservatively a continuation. One accidental main-session match followed
+    by task-local content is below the 90% membership threshold. Removing the
+    writer gate, changing it to filename-only classification, or skipping the
+    delayed child-before-parent path makes the edge prefix-sharing and deletes
+    the first physical child row.
+    """
+    parent = parse_payload(Provider.CLAUDE_CODE, _records(_PARENT_FIXTURE), "lineage-parent")[0]
+    child_records: list[object] = [
+        {
+            "type": "user",
+            "uuid": "ambiguous-u1",
+            "sessionId": _PARENT_SESSION_ID,
+            "timestamp": "2026-07-01T12:20:00Z",
+            "message": {"role": "user", "content": "Plan the release."},
+        },
+        {
+            "type": "assistant",
+            "uuid": "ambiguous-a1",
+            "parentUuid": "ambiguous-u1",
+            "sessionId": _PARENT_SESSION_ID,
+            "timestamp": "2026-07-01T12:20:01Z",
+            "message": {"role": "assistant", "content": "Inspect only the task-local shard."},
+        },
+        {
+            "type": "user",
+            "uuid": "ambiguous-u2",
+            "parentUuid": "ambiguous-a1",
+            "sessionId": _PARENT_SESSION_ID,
+            "timestamp": "2026-07-01T12:20:02Z",
+            "message": {"role": "user", "content": "Verify the isolated mutation matrix."},
+        },
+        {
+            "type": "assistant",
+            "uuid": "ambiguous-a2",
+            "parentUuid": "ambiguous-u2",
+            "sessionId": _PARENT_SESSION_ID,
+            "timestamp": "2026-07-01T12:20:03Z",
+            "message": {"role": "assistant", "content": "The isolated matrix passes."},
+        },
+        {
+            "type": "summary",
+            "uuid": "ambiguous-summary",
+            "parentUuid": "ambiguous-a2",
+            "sessionId": _PARENT_SESSION_ID,
+            "timestamp": "2026-07-01T12:20:04Z",
+            "message": {"role": "system", "content": "Compressed isolated task context."},
+        },
+    ]
+    child = parse_payload(
+        Provider.CLAUDE_CODE,
+        child_records,
+        "agent-acompact-ambiguous-membership-proof",
+    )[0]
+    assert child.branch_type is BranchType.CONTINUATION
+
+    with ArchiveStore(
+        tmp_path / ("membership-parent-first" if write_parent_first else "membership-child-first")
+    ) as archive:
+        if write_parent_first:
+            archive.write_parsed(parent)
+            child_id = archive.write_parsed(child)
+        else:
+            child_id = archive.write_parsed(child)
+            archive.write_parsed(parent)
+        stored_count = archive._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (child_id,),
+        ).fetchone()[0]
+        link = archive._conn.execute(
+            """
+            SELECT link_type, inheritance, branch_point_message_id
+            FROM session_links WHERE src_session_id = ?
+            """,
+            (child_id,),
+        ).fetchone()
+        envelope = read_archive_session_envelope(archive._conn, child_id)
+
+    assert stored_count == 5
+    assert tuple(link) == ("sidechain", "spawned-fresh", None)
+    assert envelope.branch_type == "sidechain"
+    assert _wire_texts(envelope) == [
+        "Plan the release.",
+        "Inspect only the task-local shard.",
+        "Verify the isolated mutation matrix.",
+        "The isolated matrix passes.",
+        "Compressed isolated task context.",
     ]
 
 
