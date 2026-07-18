@@ -55,6 +55,7 @@ AGENTS.override.md
 # Browser extension deps (installed per-developer)
 browser-extension/node_modules/
 browser-extension/package-lock.json
+browser-extension/.cache/
 webui/node_modules/
 webui/.cache/
 webui/playwright-report/
