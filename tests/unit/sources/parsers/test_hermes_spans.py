@@ -76,13 +76,23 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
 
     session = parse_payload(Provider.HERMES, payload, "fallback-id")[0]
     assert session.provider_session_id == "observer:real-nemo-relay-session-redacted"
+    assert len(payload["steps"]) == 6
     llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
-    assert len(llm_events) == len(payload["steps"]) == 5
+    assert len(llm_events) == 5
     assert all(event.payload["message_char_len"] == len("<redacted>") for event in llm_events)
+
+    # Step 6 (real evidence: 4 parallel tool_calls plus observation.results,
+    # drawn from a separate live trajectory -- see fixtures/hermes/atif/README.md)
+    # proves the tool_calls step shape without copying arguments/observation content.
+    tool_events = [event for event in session.session_events if event.event_type == "hermes_tool_execution_span"]
+    assert len(tool_events) == 4
+    assert {event.payload["function_name"] for event in tool_events} == {"process", "terminal", "search_files"}
+    assert all(event.payload["has_arguments"] is True for event in tool_events)
+    assert all(event.payload["has_observation"] is True for event in tool_events)
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.capabilities["llm_request_spans"].status == "exact"
-    assert fidelity.capabilities["tool_execution_spans"].status == "absent"
+    assert fidelity.capabilities["tool_execution_spans"].status == "exact"
 
 
 def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_content() -> None:
@@ -363,8 +373,14 @@ def test_decision_points_and_error_taxonomy_are_honestly_absent_not_fabricated()
     assert fidelity.capabilities["decision_points"].status == "absent"
     assert fidelity.capabilities["error_taxonomy"].status == "absent"
     assert "raw ATOF event stream" in fidelity.capabilities["decision_points"].detail
+    # llm_request_spans and tool_execution_spans are the two capabilities whose
+    # field mapping has been independently confirmed against real ATIF bytes
+    # (see fixtures/hermes/atif/README.md) -- "exact" here means the mapping
+    # itself is proven, not that this particular (synthetic) session is real.
     assert fidelity.capabilities["llm_request_spans"].status == "exact"
-    assert all(cap.status != "exact" for name, cap in fidelity.capabilities.items() if name != "llm_request_spans")
+    assert fidelity.capabilities["tool_execution_spans"].status == "exact"
+    exempt = {"llm_request_spans", "tool_execution_spans"}
+    assert all(cap.status != "exact" for name, cap in fidelity.capabilities.items() if name not in exempt)
 
 
 def test_observer_session_id_correlates_with_qualified_state_db_session_id() -> None:
