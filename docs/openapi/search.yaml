@@ -3233,6 +3233,13 @@ x-polylogue-route-contracts:
   auth_policy: credential_if_configured
   response_contract: SearchEnvelope / SessionListResponse with route_state
   notes: Local UDS-only root-request parameter envelope; daemon owns query compilation.
+- method: POST
+  pattern: /api/maintenance/rebuild-index
+  kind: maintenance
+  stability: operational
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: RebuildIndexReceipt
+  notes: Runs exactly one source snapshot replay through the daemon write coordinator.
 - method: GET
   pattern: /api/facets
   kind: read_query

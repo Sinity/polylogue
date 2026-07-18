@@ -76,6 +76,12 @@ class TestMaintenanceAPIRoutes:
             handler.do_POST()
             mock.assert_called_once()
 
+    def test_rebuild_index_route_dispatched(self) -> None:
+        handler = _make_handler("/api/maintenance/rebuild-index", body={})
+        with patch.object(handler, "_handle_rebuild_index") as mock:
+            handler.do_POST()
+            mock.assert_called_once()
+
     def test_unknown_maintenance_post_route_404(self) -> None:
         """POST /api/maintenance/status returns 404 — status is GET-only."""
         handler = _make_handler("/api/maintenance/status/x")
@@ -149,6 +155,38 @@ class TestMaintenanceAPIRoutes:
             with patch.object(handler, "_send_json"):
                 handler._handle_maintenance_run()
                 mock.assert_called_once_with(HTTPStatus.BAD_REQUEST, "invalid_request")
+
+    def test_rebuild_index_runs_the_typed_service_inside_the_route_executor(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
+
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+        handler = _make_handler("/api/maintenance/rebuild-index", body={"promote": False, "raw_ids": ["raw-1"]})
+        receipt = RebuildIndexReceipt(
+            archive_root=str(tmp_path),
+            raw_session_count=1,
+            selected_raw_count=1,
+            skipped_by_blob_limit_count=0,
+            status="replayed",
+            materialized=True,
+            materialization={},
+            generation={"generation_id": "candidate-1", "active": False},
+            readiness={"checked": True, "blocked_surface_count": 0},
+            replay={"classified_full_count": 1, "replayed_logical_source_count": 1, "quarantined_raw_count": 0},
+        )
+        handler.server.write_bridge = type(
+            "Bridge",
+            (),
+            {"run_sync": lambda _self, _actor, function, *args: function(*args)},
+        )()
+        with patch(
+            "polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", return_value=receipt
+        ) as rebuild:
+            with patch.object(handler, "_send_json") as send:
+                handler._handle_rebuild_index()
+        request = rebuild.call_args.args[0]
+        assert request.raw_ids == ("raw-1",)
+        assert request.promote is False
+        assert send.call_args.args == (HTTPStatus.OK, receipt.to_dict())
 
 
 class TestMaintenanceRegistryEndpoints:

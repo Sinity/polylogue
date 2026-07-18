@@ -400,6 +400,18 @@ class DaemonWriteThreadBridge:
                 future.cancel()
                 logger.warning("timed out releasing daemon write gate actor=%s", actor)
 
+    def run_sync(self, actor: str, function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
+        """Run a blocking request operation through the daemon's sole writer.
+
+        Unlike :meth:`hold`, this is for a complete bounded request operation:
+        the coordinator owns the worker thread until the function has really
+        returned, so a timed-out HTTP caller never admits a second writer.
+        """
+        future = asyncio.run_coroutine_threadsafe(
+            self._coordinator.run_sync(actor, function, *args, **kwargs), self._loop
+        )
+        return future.result(timeout=self._timeout)
+
 
 def daemon_write_telemetry_payload() -> dict[str, object]:
     """Return the bounded process-global writer state for status surfaces."""

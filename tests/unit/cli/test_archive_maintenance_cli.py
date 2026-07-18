@@ -1634,13 +1634,13 @@ def test_rebuild_index_source_replay_expands_every_execution_selection_to_author
     monkeypatch: pytest.MonkeyPatch,
     selection_args: list[str],
 ) -> None:
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index._count_source_raw_sessions", lambda _root: 4)
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.count_source_raw_sessions", lambda _root: 4)
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance._rebuild_index._all_index_rebuild_raw_ids",
+        "polylogue.maintenance.rebuild_index.all_index_rebuild_raw_ids",
         lambda _root: ["raw-parent", "raw-child"],
     )
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance._rebuild_index._missing_index_raw_ids",
+        "polylogue.maintenance.rebuild_index.missing_index_raw_ids",
         lambda _root: ["raw-parent", "raw-child"],
     )
 
@@ -1673,6 +1673,73 @@ def test_rebuild_index_force_write_option_is_retired(cli_runner: CliRunner) -> N
     assert result.exit_code == 2
     assert "No such option" in result.output
     assert "--force-write" in result.output
+
+
+def test_rebuild_index_daemon_path_posts_the_real_selection_request(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "archive_root": str(cli_workspace["archive_root"]),
+                    "classified_full_count": 2,
+                    "replayed_logical_source_count": 1,
+                    "quarantined_raw_count": 0,
+                }
+            ).encode()
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_urlopen(request: object, *, timeout: int) -> Response:
+        captured["url"] = request.full_url  # type: ignore[attr-defined]
+        captured["body"] = json.loads(request.data)  # type: ignore[attr-defined]
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(maintenance_rebuild_index, "urlopen", fake_urlopen)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--daemon",
+            "--daemon-url",
+            "http://127.0.0.1:9876",
+            "--raw-batch-size",
+            "17",
+            "--pass-byte-budget-mb",
+            "12.5",
+            "--pass-deadline-seconds",
+            "45",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "url": "http://127.0.0.1:9876/api/maintenance/rebuild-index",
+        "body": {
+            "only_missing": False,
+            "raw_ids": [],
+            "max_blob_mb": None,
+            "promote": True,
+            "operation_id": None,
+            "raw_batch_size": 17,
+            "pass_byte_budget_mb": 12.5,
+            "pass_deadline_seconds": 45.0,
+        },
+        "timeout": 600,
+    }
+    assert "Classified:" in result.output
 
 
 @pytest.mark.parametrize("selection_args", [["--only-missing"], ["--raw-id", "raw-a"]])
@@ -1894,7 +1961,7 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
         )
     clock = [100.0, 102.0]
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance._rebuild_index.time.time",
+        "polylogue.maintenance.rebuild_index.time.time",
         lambda: clock.pop(0) if clock else 102.0,
     )
     first = cli_runner.invoke(

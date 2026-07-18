@@ -229,6 +229,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "Local UDS-only root-request parameter envelope; daemon owns query compilation.",
     ),
     RouteContract(
+        "POST",
+        "/api/maintenance/rebuild-index",
+        "maintenance",
+        "operational",
+        "bearer_if_configured_and_same_origin",
+        "RebuildIndexReceipt",
+        "Runs exactly one source snapshot replay through the daemon write coordinator.",
+    ),
+    RouteContract(
         "GET",
         "/api/facets",
         "read_query",
