@@ -72,9 +72,17 @@ _SESSION_CAPABILITIES: dict[str, frozenset[str]] = {
         }
     ),
     "repository": frozenset({"cwd", "git_branch", "git_repo_root"}),
-    "lifecycle": frozenset({"ended_at", "end_reason", "rewind_count", "archived"}),
+    "lifecycle": frozenset({"ended_at", "end_reason", "rewind_count", "archived", "expiry_finalized"}),
     "handoff": frozenset({"handoff_state", "handoff_platform", "handoff_error"}),
     "source_identity": frozenset({"source", "user_id"}),
+    # Schema v18+ (Hermes #9006 gateway metadata consolidation): multi-channel
+    # chat-platform routing identity for sessions bridged through a gateway
+    # (Slack/Discord/etc.), absent for plain-CLI sessions.
+    "gateway_identity": frozenset({"session_key", "chat_id", "chat_type", "thread_id", "display_name", "origin_json"}),
+    # Schema v19: compression-retry cooldown/error state, distinct from the
+    # end_reason="compression"/"compaction" continuation lineage already
+    # captured under "lifecycle".
+    "compression_recovery": frozenset({"compression_failure_cooldown_until", "compression_failure_error"}),
 }
 _MESSAGE_CAPABILITIES: dict[str, frozenset[str]] = {
     "tooling": frozenset({"tool_call_id", "tool_calls", "tool_name", "finish_reason"}),
@@ -109,6 +117,15 @@ _SESSION_METADATA_FIELDS = (
     "handoff_platform",
     "handoff_error",
     "archived",
+    "expiry_finalized",
+    "session_key",
+    "chat_id",
+    "chat_type",
+    "thread_id",
+    "display_name",
+    "origin_json",
+    "compression_failure_cooldown_until",
+    "compression_failure_error",
 )
 
 HermesFidelityStatus: TypeAlias = Literal["exact", "absent", "redacted", "degraded", "inferred"]
@@ -306,6 +323,8 @@ def _sqlite_backup_fidelity(sessions: list[ParsedSession]) -> HermesImportFideli
         "lifecycle": source_capability("lifecycle"),
         "relationship": source_capability("lineage"),
         "repository": source_capability("repository"),
+        "gateway_identity": source_capability("gateway_identity"),
+        "compression_recovery": source_capability("compression_recovery"),
         "runtime_spans": HermesFidelityCapability(
             status="absent",
             observed=0,

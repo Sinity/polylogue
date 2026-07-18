@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.sources.import_explain import explain_import_path
+from polylogue.sources.parsers.hermes_state import parse_state_db
 
 
 def _write_state_db(path: Path, *, include_cost_provenance: bool = True) -> None:
@@ -127,6 +128,65 @@ def test_hermes_state_db_explain_reports_later_schema_capability(tmp_path: Path)
     assert entry.fidelity is not None
     assert entry.fidelity.schema_version == 17
     assert entry.fidelity.capabilities["repository"].status == "exact"
+
+
+def test_hermes_state_db_v19_gateway_and_compression_recovery_fields_round_trip(tmp_path: Path) -> None:
+    """Schema v19 (live-verified 2026-07-18 against ~/.hermes/state.db) adds
+    gateway-routing identity (#9006 chat-platform bridging) and compression
+    retry state columns not present in the v16/v17 fixtures above. Both must
+    be admitted as typed capabilities and surfaced as metadata, not silently
+    dropped -- this repo's CLI-only live install carries no gateway data, so
+    this fixture proves the mapping the same way v16-vs-v17 already does."""
+
+    path = tmp_path / "state.db"
+    _write_state_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN chat_id TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN chat_type TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN thread_id TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN display_name TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN origin_json TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN expiry_finalized INTEGER DEFAULT 0")
+        conn.execute("ALTER TABLE sessions ADD COLUMN compression_failure_cooldown_until REAL")
+        conn.execute("ALTER TABLE sessions ADD COLUMN compression_failure_error TEXT")
+        conn.execute(
+            "UPDATE sessions SET session_key = ?, chat_id = ?, chat_type = ?, thread_id = ?, "
+            "display_name = ?, origin_json = ?, expiry_finalized = 1, "
+            "compression_failure_cooldown_until = ?, compression_failure_error = ? WHERE id = 'root'",
+            (
+                "gw-session-1",
+                "chat-1",
+                "slack",
+                "thread-1",
+                "Ops Room",
+                json.dumps({"platform": "slack"}),
+                123.0,
+                "rate_limited",
+            ),
+        )
+        conn.execute("UPDATE schema_version SET version = 19")
+
+    [entry] = explain_import_path(path, source_name="hermes").entries
+    assert entry.fidelity is not None
+    assert entry.fidelity.schema_version == 19
+    assert entry.fidelity.capabilities["gateway_identity"].status == "exact"
+    assert entry.fidelity.capabilities["compression_recovery"].status == "exact"
+
+    sessions = parse_state_db(path)
+    root = next(session for session in sessions if session.provider_session_id.startswith("root@profile-"))
+    metadata_events = [event for event in root.session_events if event.event_type == "hermes_session_metadata"]
+    assert len(metadata_events) == 1
+    payload = metadata_events[0].payload
+    assert payload["session_key"] == "gw-session-1"
+    assert payload["chat_id"] == "chat-1"
+    assert payload["chat_type"] == "slack"
+    assert payload["thread_id"] == "thread-1"
+    assert payload["display_name"] == "Ops Room"
+    assert payload["origin_json"] == json.dumps({"platform": "slack"})
+    assert payload["expiry_finalized"] == 1
+    assert payload["compression_failure_cooldown_until"] == 123.0
+    assert payload["compression_failure_error"] == "rate_limited"
 
 
 def test_hermes_json_fallback_explain_declares_missing_state_evidence(tmp_path: Path) -> None:
