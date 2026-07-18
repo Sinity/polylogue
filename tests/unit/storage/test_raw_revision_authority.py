@@ -240,19 +240,19 @@ def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
     bind_source_raw_revision(conn, raw_id, first)
 
     bind_source_raw_revision(conn, raw_id, first)
-    with pytest.raises(ValueError, match="already authoritative"):
+    with pytest.raises(ValueError, match="acquisition_generation: stored=0 proposed=99"):
         bind_source_raw_revision(
             conn,
             raw_id,
             RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 99),
         )
-    with pytest.raises(ValueError, match="already authoritative"):
+    with pytest.raises(ValueError, match="source_revision: stored='revision-1' proposed='different'"):
         bind_source_raw_revision(
             conn,
             raw_id,
             RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "different", 1),
         )
-    with pytest.raises(ValueError, match="already authoritative or missing"):
+    with pytest.raises(ValueError, match="found no raw row"):
         bind_source_raw_revision(conn, "missing", first)
 
 
