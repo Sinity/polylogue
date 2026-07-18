@@ -11,6 +11,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
 
 @dataclass(frozen=True, slots=True)
 class PreflightReport:
@@ -67,6 +69,7 @@ def read_pending_message_count(
     max_sessions: int | None = None,
     max_messages: int | None = None,
     min_messages: int | None = None,
+    recipe: EmbeddingRecipe | None = None,
 ) -> tuple[int, int, int]:
     """Return ``(total_convs, pending_convs, pending_messages)``.
 
@@ -84,6 +87,7 @@ def read_pending_message_count(
             max_sessions=max_sessions,
             max_messages=max_messages,
             min_messages=min_messages,
+            recipe=recipe,
         )
 
     if not db_path.exists():
@@ -154,6 +158,7 @@ def _read_archive_pending_message_count(
     max_sessions: int | None = None,
     max_messages: int | None = None,
     min_messages: int | None = None,
+    recipe: EmbeddingRecipe | None = None,
 ) -> tuple[int, int, int]:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -175,6 +180,7 @@ def _read_archive_pending_message_count(
             max_sessions=max_sessions,
             max_messages=max_messages,
             min_messages=min_messages or 1,
+            recipe=recipe,
         )
         pending_convs = len(pending)
         pending_messages = sum(item[1] for item in pending)
@@ -204,6 +210,7 @@ def _select_archive_pending_window(
     max_sessions: int | None,
     max_messages: int | None,
     min_messages: int | None = None,
+    recipe: EmbeddingRecipe | None = None,
 ) -> list[tuple[str, int]]:
     # Delegate to the canonical selector so the preflight window matches the
     # window the backfill actually embeds — same newest-first ordering, same
@@ -219,7 +226,7 @@ def _select_archive_pending_window(
         max_sessions=max_sessions,
         max_messages=max_messages,
         min_messages=min_messages,
-        include_stale_checks=False,
+        recipe=recipe,
     )
     return [(item.session_id, item.message_count) for item in pending]
 
@@ -249,6 +256,10 @@ def build_preflight_report(
     )
 
     cfg = load_polylogue_config()
+    recipe = EmbeddingRecipe.current(
+        model=str(cfg.embedding_model),
+        dimensions=int(cfg.embedding_dimension),
+    )
     effective_max_messages = effective_message_window(max_messages, max_cost_usd)
     total, pending, pending_messages = read_pending_message_count(
         db_path,
@@ -256,6 +267,7 @@ def build_preflight_report(
         max_sessions=max_sessions,
         max_messages=effective_max_messages,
         min_messages=min_messages,
+        recipe=recipe,
     )
     estimated_tokens = pending_messages * ESTIMATED_TOKENS_PER_MESSAGE
     estimated_cost = estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000

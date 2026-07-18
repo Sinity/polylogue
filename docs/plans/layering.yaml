@@ -75,8 +75,9 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints:
-        [mark_session_embedding_error, record_embedding_failure, resolve_embedding_failure,
-        resolve_open_embedding_failures_for_session, upsert_message_embedding, upsert_message_embeddings]
+        [begin_embedding_attempt, complete_embedding_attempt_success, mark_session_embedding_error,
+        record_embedding_failure, resolve_embedding_failure, resolve_open_embedding_failures_for_session,
+        supersede_embedding_attempt, upsert_message_embedding, upsert_message_embeddings]
     - path: polylogue/storage/sqlite/archive_tiers/user_write.py
       surfaces:
         - tier: user

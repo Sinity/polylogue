@@ -345,6 +345,14 @@ entries:
   reason: Narrow schema probe; an empty column set is the fail-safe direction (callers treat missing columns
     as "feature unavailable").
 - path: polylogue/storage/embeddings/materialization.py
+  function: <module>._qualified_table_columns
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Attached-schema sibling of _table_columns; same narrow schema probe over a cross-database qualified
+    table name. An empty column set is the fail-safe direction -- callers (the v3 freshness-predicate column
+    check) treat missing columns as "legacy/pre-v3 fixture" and fall back to the content-aware selector.
+- path: polylogue/storage/embeddings/materialization.py
   function: <module>.embed_archive_session_sync
   exceptions:
   - Exception

@@ -115,6 +115,7 @@ STORAGE_ROOT_KEEP = frozenset(
         "index.py",
         "hydrators.py",
         "cursor_state.py",
+        "derivation_identity.py",
         "run_state.py",
         "session_replacement.py",
         "archive_views.py",

@@ -669,6 +669,8 @@ def _run_archive_backfill(
             status_table = "embeddings.embedding_status"
         else:
             status_table = ""
+        from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
         pending = select_pending_archive_session_window(
             conn,
             status_table=status_table,
@@ -676,7 +678,7 @@ def _run_archive_backfill(
             max_sessions=max_sessions,
             max_messages=report.max_messages,
             min_messages=min_messages,
-            include_stale_checks=False,
+            recipe=EmbeddingRecipe.current(model=report.model, dimensions=report.dimension),
         )
     finally:
         conn.close()

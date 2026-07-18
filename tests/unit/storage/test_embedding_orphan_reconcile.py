@@ -212,7 +212,6 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
         pending = select_pending_archive_session_window(
             selector_conn,
             status_table="embeddings.embedding_status",
-            include_stale_checks=False,
         )
     assert [item.session_id for item in pending] == [session_id]
 
