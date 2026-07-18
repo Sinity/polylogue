@@ -3,15 +3,15 @@
   "root": ".agent/demos",
   "input_closure": {
     "mode": "git-tracked",
-    "included_count": 75,
+    "included_count": 86,
     "excluded_count": 0,
     "exclusion_reason_counts": {},
     "exclusion_samples": "bounded samples are emitted in the command JSON payload"
   },
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 75,
-  "readable_count": 65,
+  "file_count": 86,
+  "readable_count": 76,
   "files": [
     {
       "path": "_packet-contract-stub/NON-CLAIMS.md",
@@ -237,6 +237,61 @@
       "path": "attachment-acquisition-census/regenerate.sh",
       "bytes": 7687,
       "readable": false
+    },
+    {
+      "path": "basic-usage/01-find-query.txt",
+      "bytes": 1197,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/02-read.txt",
+      "bytes": 723,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/03-search.txt",
+      "bytes": 657,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/04-resume.txt",
+      "bytes": 89,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/05-cost-usage.json",
+      "bytes": 45406,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/06-lineage.txt",
+      "bytes": 794,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/07-mcp-roundtrip.json",
+      "bytes": 2092,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/08-status-health.debt.json",
+      "bytes": 9292,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/08-status-health.txt",
+      "bytes": 1237,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/COLD_READER_GATE.md",
+      "bytes": 2114,
+      "readable": true
+    },
+    {
+      "path": "basic-usage/README.md",
+      "bytes": 10109,
+      "readable": true
     },
     {
       "path": "d4-behavioral-archaeology/NON-CLAIMS.md",

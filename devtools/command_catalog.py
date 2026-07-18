@@ -826,6 +826,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace basic-usage-demo-check",
+        "workspace",
+        "Re-run the basic-usage demo suite's commands and assert output shape.",
+        "devtools.basic_usage_demo_check",
+        use_when=(
+            "Guard .agent/demos/basic-usage/ against silent regressions: re-executes each of the eight "
+            "documented walkthroughs (find, read, search, resume, cost, lineage, MCP, status/health) against "
+            "a freshly seeded demo archive and asserts non-empty/expected-shape output, not exact counts."
+        ),
+        examples=(
+            "polylogue demo seed --root /tmp/polylogue-basic-usage-demo --force --with-overlays",
+            "devtools workspace basic-usage-demo-check --archive-root /tmp/polylogue-basic-usage-demo",
+        ),
+    ),
+    CommandSpec(
         "workspace read-package",
         "workspace",
         "Render a declarative package of Polylogue read artifacts.",

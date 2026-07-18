@@ -1,0 +1,21 @@
+$ polylogue status --daemon-url http://127.0.0.1:1   # forces the direct-archive fallback path a reader without a running daemon would see
+
+Archive (daemon not running)
+  Database: index.db
+  Schema tiers: present=source, index, embeddings, user, ops
+  Archive tier detail: source v13/13 ok, raw_sessions=18; index v40/40 ok, sessions=16; embeddings v3/3 ok, embedding_status=1; user v10/10 ok; ops v1/1 ok, ingest_attempts=0
+  SQLite maintenance: WAL 0 KB, planner stats=source,index,embeddings,user
+  Archive readiness: unchecked (direct_status_default_skips_exact_archive_readiness)
+  Raw materialization: 2 debt row(s), 0 critical, 0 warning, 0 blocked
+  Raw frontier: healthy
+  Facade routes: 138/139 archive-ready, 0 unsupported
+  CLI routes: 5/5 archive-ready, 0 unsupported
+  Archive routing paths: ingest=archive -> source.db,index.db, rebuild_index=index_db; 0 blockers, tiers=source.db,index.db,embeddings.db,user.db,ops.db
+  Archive route ownership: facade=index:87,none:1,source:5,user:46; cli=source:2,user:3
+  Sessions: 16
+  Messages: 62
+  Raw records: 18
+  FTS indexed: daemon status unavailable
+  Embeddings: partial/partial, ready; 2 msgs, 1/16 convs (6.7%), 14 pending convs
+
+  Run polylogued run to start the daemon.

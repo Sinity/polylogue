@@ -1,0 +1,70 @@
+{
+  "search_call": {
+    "arguments": {
+      "limit": 3,
+      "query": "clock"
+    },
+    "tool": "search"
+  },
+  "search_first_hit_session_id": "chatgpt-export:cross-material-duplicate-01",
+  "search_first_hit_snippet": "The fixture used a shared [clock] instance; switching to an isolated clock fixed it.",
+  "search_result_hit_count": 3,
+  "summary_call": {
+    "arguments": {
+      "id": "chatgpt-export:cross-material-duplicate-01"
+    },
+    "tool": "get_session_summary"
+  },
+  "summary_result": {
+    "actions": {
+      "annotate": {
+        "disabled_reason": null,
+        "enabled": true,
+        "inspect_path": null,
+        "repair_path": null,
+        "state": "enabled"
+      },
+      "copy_link": {
+        "disabled_reason": null,
+        "enabled": true,
+        "inspect_path": null,
+        "repair_path": null,
+        "state": "enabled"
+      },
+      "open": {
+        "disabled_reason": null,
+        "enabled": true,
+        "inspect_path": null,
+        "repair_path": null,
+        "state": "enabled"
+      }
+    },
+    "anchor": "session-chatgpt-export-cross-material-duplicate-01",
+    "content_summary": {
+      "counts": {
+        "authored_user_messages": 1,
+        "authored_user_words": 9,
+        "messages": 2,
+        "tool_uses": 0
+      },
+      "first_authored_user_excerpt": "Summarize the one-sentence fix for the flaky clock test.",
+      "last_authored_user_excerpt": "Summarize the one-sentence fix for the flaky clock test.",
+      "phase_count": 1,
+      "top_tools": []
+    },
+    "created_at": "2026-07-04T09:55:00Z",
+    "id": "chatgpt-export:cross-material-duplicate-01",
+    "message_count": 2,
+    "origin": "chatgpt-export",
+    "target_ref": {
+      "block_index": null,
+      "identity_key": "session:chatgpt-export:cross-material-duplicate-01",
+      "message_id": null,
+      "session_id": "chatgpt-export:cross-material-duplicate-01",
+      "target_id": "chatgpt-export:cross-material-duplicate-01",
+      "target_type": "session"
+    },
+    "title": "Flaky clock test fix summary",
+    "updated_at": "2026-07-04T09:55:03Z"
+  }
+}

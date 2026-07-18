@@ -1,0 +1,245 @@
+{
+  "mode": "archive-debt-list",
+  "generated_at": "2026-07-18T13:21:51.704665+00:00",
+  "archive_root": "/tmp/polylogue-basic-usage-demo",
+  "rows": [
+    {
+      "debt_ref": "debt:embedding:catchup:backlog",
+      "kind": "embedding",
+      "stage": "catchup",
+      "subject_ref": "embedding:pending",
+      "severity": "warning",
+      "status": "actionable",
+      "owner": "daemon",
+      "summary": "14 session(s) pending embedding catch-up",
+      "details": "Pending messages: 34; stale messages: 0.",
+      "evidence_refs": [
+        "archive-tier:/tmp/polylogue-basic-usage-demo/embeddings.db"
+      ],
+      "caveats": [],
+      "actions": [
+        {
+          "label": "Run embedding backfill",
+          "command": [
+            "polylogue",
+            "ops",
+            "embed",
+            "backfill"
+          ]
+        }
+      ]
+    },
+    {
+      "debt_ref": "debt:fts:messages_fts",
+      "kind": "fts",
+      "stage": "index-freshness",
+      "subject_ref": "fts:messages_fts",
+      "severity": "warning",
+      "status": "actionable",
+      "owner": "ops",
+      "summary": "messages_fts is not query-ready",
+      "details": "freshness not ready",
+      "evidence_refs": [
+        "archive-tier:/tmp/polylogue-basic-usage-demo/index.db"
+      ],
+      "caveats": [],
+      "actions": [
+        {
+          "label": "Run daemon convergence",
+          "command": [
+            "polylogued",
+            "run"
+          ]
+        }
+      ]
+    },
+    {
+      "debt_ref": "debt:assertion-candidate:assertion-finding:adb1c19ac49d5b835056e68eb12b9389656b83c6eb01d5f09eb7ad6dd5cf7edd",
+      "kind": "assertion-candidate",
+      "stage": "candidate-judgment",
+      "subject_ref": "assertion:assertion-finding:adb1c19ac49d5b835056e68eb12b9389656b83c6eb01d5f09eb7ad6dd5cf7edd",
+      "severity": "info",
+      "status": "actionable",
+      "owner": "user",
+      "summary": "Candidate assertion awaits judgment for analysis:claim-vs-evidence-2026-07-04",
+      "details": "The bounded origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven Claude AI structured failures.",
+      "observed_at": "2023-11-14T22:16:45+00:00",
+      "evidence_refs": [
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#totals",
+        "file:.agent/demos/claim-vs-evidence/public-summary.json",
+        "file:docs/findings/claim-vs-evidence.md",
+        "assertion:assertion-finding:adb1c19ac49d5b835056e68eb12b9389656b83c6eb01d5f09eb7ad6dd5cf7edd"
+      ],
+      "caveats": [],
+      "actions": [
+        {
+          "label": "Review candidate assertions",
+          "command": [
+            "polylogue",
+            "mark",
+            "candidates",
+            "list",
+            "--format",
+            "json"
+          ]
+        }
+      ]
+    },
+    {
+      "debt_ref": "debt:assertion-candidate:assertion-finding:cbb4967fc2d33ce231978b76949205856a68d8306da46a610f478cb4244d2ad8",
+      "kind": "assertion-candidate",
+      "stage": "candidate-judgment",
+      "subject_ref": "assertion:assertion-finding:cbb4967fc2d33ce231978b76949205856a68d8306da46a610f478cb4244d2ad8",
+      "severity": "info",
+      "status": "actionable",
+      "owner": "user",
+      "summary": "Candidate assertion awaits judgment for analysis:claim-vs-evidence-2026-07-04",
+      "details": "The same sample's silent-continuation lower bounds were 22.3% for consequential handlers, 27.1% for benign-recovery handlers, and 53.9% for other handlers.",
+      "observed_at": "2023-11-14T22:16:45+00:00",
+      "evidence_refs": [
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#totals",
+        "file:.agent/demos/claim-vs-evidence/public-summary.json",
+        "file:docs/findings/claim-vs-evidence.md",
+        "assertion:assertion-finding:cbb4967fc2d33ce231978b76949205856a68d8306da46a610f478cb4244d2ad8"
+      ],
+      "caveats": [],
+      "actions": [
+        {
+          "label": "Review candidate assertions",
+          "command": [
+            "polylogue",
+            "mark",
+            "candidates",
+            "list",
+            "--format",
+            "json"
+          ]
+        }
+      ]
+    },
+    {
+      "debt_ref": "debt:assertion-candidate:assertion-finding:e5da9c88d1c236d15648fc52ad7898d8a6f7018277e84c624bdc9e7c7d037689",
+      "kind": "assertion-candidate",
+      "stage": "candidate-judgment",
+      "subject_ref": "assertion:assertion-finding:e5da9c88d1c236d15648fc52ad7898d8a6f7018277e84c624bdc9e7c7d037689",
+      "severity": "info",
+      "status": "actionable",
+      "owner": "user",
+      "summary": "Candidate assertion awaits judgment for analysis:claim-vs-evidence-2026-07-04",
+      "details": "In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures were followed by silent continuation on the next assistant turn, a 24.1% lower bound.",
+      "observed_at": "2023-11-14T22:16:45+00:00",
+      "evidence_refs": [
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#totals",
+        "file:.agent/demos/claim-vs-evidence/public-summary.json",
+        "file:docs/findings/claim-vs-evidence.md",
+        "assertion:assertion-finding:e5da9c88d1c236d15648fc52ad7898d8a6f7018277e84c624bdc9e7c7d037689"
+      ],
+      "caveats": [],
+      "actions": [
+        {
+          "label": "Review candidate assertions",
+          "command": [
+            "polylogue",
+            "mark",
+            "candidates",
+            "list",
+            "--format",
+            "json"
+          ]
+        }
+      ]
+    },
+    {
+      "debt_ref": "debt:assertion-candidate:assertion-note:3be837fd2faa70afd6139351ee2868b033179a1aa6fbd01daed8711f7a5ea72c",
+      "kind": "assertion-candidate",
+      "stage": "candidate-judgment",
+      "subject_ref": "assertion:assertion-note:3be837fd2faa70afd6139351ee2868b033179a1aa6fbd01daed8711f7a5ea72c",
+      "severity": "info",
+      "status": "actionable",
+      "owner": "user",
+      "summary": "Candidate assertion awaits judgment for session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
+      "details": "The demo pytest session is the approved fixture for search, read, and assertion overlays.",
+      "observed_at": "2023-11-14T22:16:41+00:00",
+      "evidence_refs": [
+        "session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
+        "assertion:assertion-note:3be837fd2faa70afd6139351ee2868b033179a1aa6fbd01daed8711f7a5ea72c"
+      ],
+      "caveats": [],
+      "actions": [
+        {
+          "label": "Review candidate assertions",
+          "command": [
+            "polylogue",
+            "mark",
+            "candidates",
+            "list",
+            "--format",
+            "json"
+          ]
+        }
+      ]
+    },
+    {
+      "debt_ref": "debt:assertion-candidate:demo-assertion:decision:pytest-triage",
+      "kind": "assertion-candidate",
+      "stage": "candidate-judgment",
+      "subject_ref": "assertion:demo-assertion:decision:pytest-triage",
+      "severity": "info",
+      "status": "actionable",
+      "owner": "user",
+      "summary": "Candidate assertion awaits judgment for session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
+      "details": "Use the Claude Code demo session as the stable pytest triage example.",
+      "observed_at": "2023-11-14T22:16:44+00:00",
+      "evidence_refs": [
+        "session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
+        "assertion:demo-assertion:decision:pytest-triage"
+      ],
+      "caveats": [],
+      "actions": [
+        {
+          "label": "Review candidate assertions",
+          "command": [
+            "polylogue",
+            "mark",
+            "candidates",
+            "list",
+            "--format",
+            "json"
+          ]
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "total": 7,
+    "critical": 0,
+    "warning": 2,
+    "info": 5,
+    "actionable": 7,
+    "blocked": 0,
+    "classified": 0,
+    "affected_total": 0,
+    "affected_critical": 0,
+    "affected_warning": 0,
+    "affected_info": 0,
+    "affected_actionable": 0,
+    "affected_blocked": 0,
+    "affected_open": 0,
+    "affected_classified": 0
+  },
+  "caveats": [
+    "Rows are composed from existing readiness projections; exact FTS reconciliation requires --exact-fts."
+  ]
+}

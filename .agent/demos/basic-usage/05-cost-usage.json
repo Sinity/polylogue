@@ -1,0 +1,1167 @@
+$ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
+{
+  "archive_root": "/tmp/polylogue-basic-usage-demo",
+  "detail_level": "full",
+  "coverage_matrix": [
+    {
+      "origin": "claude-code-session",
+      "provider": "claude-code",
+      "status": "exact",
+      "evidence_stream": "provider_reported_usage",
+      "event_types": [
+        "message_usage"
+      ],
+      "request_semantics": "Claude Code message.usage rows are per message/request observations.",
+      "cumulative_semantics": "Session rollups are derived by summing message usage rows; Claude Code does not supply a separate cumulative session high-water event.",
+      "cache_semantics": "cache_read_input_tokens and cache_creation_input_tokens are preserved as cached_input and cache_write lanes and are not folded into generic input/output.",
+      "notes": [
+        "Exact token telemetry is available only where exported records include message.usage."
+      ],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "codex-session",
+      "provider": "codex",
+      "status": "exact",
+      "evidence_stream": "provider_reported_usage",
+      "event_types": [
+        "token_count"
+      ],
+      "request_semantics": "Codex last_token_usage is request/current-window telemetry and can be summed by request when present.",
+      "cumulative_semantics": "Codex total_token_usage is cumulative and session-global; rollups take the latest total per session to avoid double-counting.",
+      "cache_semantics": "cached_input_tokens and cache write/cache creation aliases are preserved as separate lanes and are not folded into generic input/output.",
+      "notes": [
+        "model_context_window is carried on token_count events when the provider supplies it."
+      ],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "chatgpt-export",
+      "provider": "chatgpt",
+      "status": "estimate_only",
+      "evidence_stream": "transcript_text_estimate",
+      "event_types": [],
+      "request_semantics": "ChatGPT exports do not carry reliable per-request token counters.",
+      "cumulative_semantics": "Provider/account UI totals are external summaries and are not reconstructed from transcript text.",
+      "cache_semantics": "No cache read/write token lanes are available in ChatGPT export rows.",
+      "notes": [
+        "Cost-looking metadata is not treated as exact token telemetry."
+      ],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "claude-ai-export",
+      "provider": "claude-ai",
+      "status": "estimate_only",
+      "evidence_stream": "transcript_text_estimate",
+      "event_types": [],
+      "request_semantics": "Claude.ai exports preserve transcript content, not provider usage counters.",
+      "cumulative_semantics": "No cumulative provider usage window is present in the export shape.",
+      "cache_semantics": "No cache read/write token lanes are available in Claude.ai export rows.",
+      "notes": [],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "aistudio-drive",
+      "provider": "gemini",
+      "status": "partial",
+      "evidence_stream": "message_token_fields",
+      "event_types": [],
+      "request_semantics": "AI Studio/Gemini exports may carry message-level tokenCount output counters on some records.",
+      "cumulative_semantics": "No provider cumulative session usage window is available from Drive prompt exports.",
+      "cache_semantics": "No cache read/write token lanes are available from Drive prompt exports.",
+      "notes": [
+        "Input tokens and cache semantics are missing unless a future export shape supplies them explicitly."
+      ],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "gemini-cli-session",
+      "provider": "gemini-cli",
+      "status": "partial",
+      "evidence_stream": "message_token_fields",
+      "event_types": [],
+      "request_semantics": "Local Gemini CLI documents may carry generic usage/tokens dictionaries per message.",
+      "cumulative_semantics": "No provider cumulative session usage window is available.",
+      "cache_semantics": "Generic cache_read/cache_write keys are preserved when present, but their provider semantics are not independently verified.",
+      "notes": [],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "hermes-session",
+      "provider": "hermes",
+      "status": "partial",
+      "evidence_stream": "message_token_fields",
+      "event_types": [],
+      "request_semantics": "Hermes local-agent documents may carry generic usage/tokens dictionaries per message.",
+      "cumulative_semantics": "No provider cumulative session usage window is available.",
+      "cache_semantics": "Generic cache_read/cache_write keys are preserved when present, but their provider semantics are not independently verified.",
+      "notes": [],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "antigravity-session",
+      "provider": "antigravity",
+      "status": "unsupported",
+      "evidence_stream": "transcript_text_only",
+      "event_types": [],
+      "request_semantics": "No provider usage telemetry parser is implemented for this origin.",
+      "cumulative_semantics": "No cumulative provider usage window is available.",
+      "cache_semantics": "No cache read/write token lanes are available.",
+      "notes": [],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    },
+    {
+      "origin": "unknown-export",
+      "provider": "unknown",
+      "status": "unsupported",
+      "evidence_stream": "transcript_text_only",
+      "event_types": [],
+      "request_semantics": "Unknown exports are parsed for transcript content only.",
+      "cumulative_semantics": "No cumulative provider usage window is available.",
+      "cache_semantics": "No cache read/write token lanes are available.",
+      "notes": [],
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    }
+  ],
+  "model_rollup_grain": "physical_session",
+  "model_rollup_usage": {
+    "input_tokens": 56000,
+    "output_tokens": 10500,
+    "cached_input_tokens": 280000,
+    "cache_write_tokens": 42000,
+    "reasoning_output_tokens": 0,
+    "total_tokens": 388500
+  },
+  "logical_model_rollup_grain": "logical_session_model_high_water",
+  "logical_model_rollup_usage": {
+    "input_tokens": 56000,
+    "output_tokens": 10500,
+    "cached_input_tokens": 280000,
+    "cache_write_tokens": 42000,
+    "reasoning_output_tokens": 0,
+    "total_tokens": 388500
+  },
+  "pricing_catalog_provenance": "litellm-model-prices-vendored+polylogue-curated-overrides",
+  "pricing_catalog_effective_date": "2026-06-27",
+  "pricing_lanes": [
+    {
+      "provenance": "priced",
+      "row_count": 4,
+      "session_count": 4,
+      "matched_model_row_count": 3,
+      "unmatched_model_row_count": 1,
+      "usage": {
+        "input_tokens": 56000,
+        "output_tokens": 10500,
+        "cached_input_tokens": 280000,
+        "cache_write_tokens": 42000,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 388500
+      },
+      "stored_cost_usd": 2.835,
+      "catalog_api_equivalent_usd": null,
+      "catalog_priced_subtotal_usd": 2.835,
+      "subscription_credit_usd": 0.0,
+      "grain": "physical_session",
+      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "exact_total_tokens_evidence": {
+        "family": "usage.pricing_lane_exact_total_tokens",
+        "fact_ref": "insight:session-model-usage:physical_session:priced:exact-total-tokens",
+        "value_state": "known",
+        "value": 388500,
+        "measurement_authority": [
+          "provider-reported"
+        ],
+        "weakest_measurement_authority": "provider-reported",
+        "evidence_refs": [
+          "insight:session-model-usage:physical_session:priced"
+        ],
+        "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "physical_session session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 4,
+          "complete": true,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": []
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        },
+        "calibrated_confidence": null,
+        "contributions": [],
+        "conflicts": []
+      },
+      "catalog_api_equivalent_evidence": {
+        "family": "usage.pricing_lane_catalog_api_equivalent_cost",
+        "fact_ref": "insight:session-model-usage:physical_session:priced:catalog-api-equivalent-cost",
+        "value_state": "unknown",
+        "value": null,
+        "measurement_authority": [
+          "catalog-derived"
+        ],
+        "weakest_measurement_authority": "catalog-derived",
+        "evidence_refs": [
+          "insight:pricing-catalog:2026-06-27",
+          "insight:session-model-usage:physical_session:priced"
+        ],
+        "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "physical_session session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 3,
+          "complete": false,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": [
+            {
+              "subject_ref": "insight:session-model-usage:physical_session:priced",
+              "reason": "unpriced-model-rows:1"
+            }
+          ]
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        },
+        "calibrated_confidence": null,
+        "contributions": [],
+        "conflicts": []
+      },
+      "caveats": [
+        "missing_price"
+      ]
+    }
+  ],
+  "pricing_grain": "physical_session",
+  "logical_pricing_lanes": [
+    {
+      "provenance": "priced",
+      "row_count": 4,
+      "session_count": 4,
+      "matched_model_row_count": 3,
+      "unmatched_model_row_count": 1,
+      "usage": {
+        "input_tokens": 56000,
+        "output_tokens": 10500,
+        "cached_input_tokens": 280000,
+        "cache_write_tokens": 42000,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 388500
+      },
+      "stored_cost_usd": 0.0,
+      "catalog_api_equivalent_usd": null,
+      "catalog_priced_subtotal_usd": 2.835,
+      "subscription_credit_usd": 0.0,
+      "grain": "logical_session_model_high_water",
+      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "exact_total_tokens_evidence": {
+        "family": "usage.pricing_lane_exact_total_tokens",
+        "fact_ref": "insight:session-model-usage:logical_session_model_high_water:priced:exact-total-tokens",
+        "value_state": "known",
+        "value": 388500,
+        "measurement_authority": [
+          "provider-reported"
+        ],
+        "weakest_measurement_authority": "provider-reported",
+        "evidence_refs": [
+          "insight:session-model-usage:logical_session_model_high_water:priced"
+        ],
+        "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 4,
+          "complete": true,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": []
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        },
+        "calibrated_confidence": null,
+        "contributions": [],
+        "conflicts": []
+      },
+      "catalog_api_equivalent_evidence": {
+        "family": "usage.pricing_lane_catalog_api_equivalent_cost",
+        "fact_ref": "insight:session-model-usage:logical_session_model_high_water:priced:catalog-api-equivalent-cost",
+        "value_state": "unknown",
+        "value": null,
+        "measurement_authority": [
+          "catalog-derived"
+        ],
+        "weakest_measurement_authority": "catalog-derived",
+        "evidence_refs": [
+          "insight:pricing-catalog:2026-06-27",
+          "insight:session-model-usage:logical_session_model_high_water:priced"
+        ],
+        "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 3,
+          "complete": false,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": [
+            {
+              "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced",
+              "reason": "unpriced-model-rows:1"
+            }
+          ]
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        },
+        "calibrated_confidence": null,
+        "contributions": [],
+        "conflicts": []
+      },
+      "caveats": [
+        "missing_price"
+      ]
+    }
+  ],
+  "logical_pricing_grain": "logical_session_model_high_water",
+  "stored_provider_priced_usd": 2.835,
+  "catalog_api_equivalent_usd": null,
+  "catalog_priced_subtotal_usd": 2.835,
+  "logical_catalog_api_equivalent_usd": null,
+  "logical_catalog_priced_subtotal_usd": 2.835,
+  "subscription_credit_catalog_provenance": "polylogue-curated-claude-code-subscription-v1",
+  "subscription_credit_catalog_effective_date": "2026-05-07",
+  "subscription_credit_usd": 0.0,
+  "logical_subscription_credit_usd": 0.0,
+  "observed_at": "2026-07-18T13:22:28.873594+00:00",
+  "exact_total_tokens_evidence": {
+    "family": "usage.pricing_lane_exact_total_tokens",
+    "fact_ref": "insight:provider-usage:physical-exact-total-tokens:total",
+    "value_state": "known",
+    "value": 388500,
+    "measurement_authority": [
+      "provider-reported"
+    ],
+    "weakest_measurement_authority": "provider-reported",
+    "evidence_refs": [
+      "insight:session-model-usage:physical_session:priced"
+    ],
+    "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
+    "temporal": {
+      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "time_source": "materialization_ts",
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "census",
+    "coverage": {
+      "intended_frame": "physical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 1,
+      "observed_count": 1,
+      "supported_count": 1,
+      "complete": true,
+      "coverage_ratio": 1.0,
+      "intended_refs": [
+        "insight:session-model-usage:physical_session:priced:exact-total-tokens"
+      ],
+      "observed_refs": [
+        "insight:session-model-usage:physical_session:priced:exact-total-tokens"
+      ],
+      "exclusions": []
+    },
+    "freshness": {
+      "state": "fresh",
+      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "cause": null,
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [
+      {
+        "fact_ref": "insight:session-model-usage:physical_session:priced:exact-total-tokens",
+        "value_state": "known",
+        "value": 388500,
+        "measurement_authority": [
+          "provider-reported"
+        ],
+        "evidence_refs": [
+          "insight:session-model-usage:physical_session:priced"
+        ],
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "physical_session session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 4,
+          "complete": true,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": []
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        }
+      }
+    ],
+    "conflicts": []
+  },
+  "catalog_api_equivalent_evidence": {
+    "family": "usage.pricing_lane_catalog_api_equivalent_cost",
+    "fact_ref": "insight:provider-usage:physical-catalog-api-equivalent-cost:total",
+    "value_state": "unknown",
+    "value": null,
+    "measurement_authority": [
+      "catalog-derived"
+    ],
+    "weakest_measurement_authority": "catalog-derived",
+    "evidence_refs": [
+      "insight:pricing-catalog:2026-06-27",
+      "insight:session-model-usage:physical_session:priced"
+    ],
+    "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
+    "temporal": {
+      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "time_source": "materialization_ts",
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "census",
+    "coverage": {
+      "intended_frame": "physical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 1,
+      "observed_count": 1,
+      "supported_count": 0,
+      "complete": false,
+      "coverage_ratio": 1.0,
+      "intended_refs": [
+        "insight:session-model-usage:physical_session:priced:catalog-api-equivalent-cost"
+      ],
+      "observed_refs": [
+        "insight:session-model-usage:physical_session:priced:catalog-api-equivalent-cost"
+      ],
+      "exclusions": [
+        {
+          "subject_ref": "insight:session-model-usage:physical_session:priced",
+          "reason": "unpriced-model-rows:1"
+        },
+        {
+          "subject_ref": "insight:session-model-usage:physical_session:priced:catalog-api-equivalent-cost",
+          "reason": "contribution-coverage-incomplete"
+        },
+        {
+          "subject_ref": "insight:session-model-usage:physical_session:priced:catalog-api-equivalent-cost",
+          "reason": "unsupported-contribution:unknown"
+        }
+      ]
+    },
+    "freshness": {
+      "state": "fresh",
+      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "cause": null,
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [
+      {
+        "fact_ref": "insight:session-model-usage:physical_session:priced:catalog-api-equivalent-cost",
+        "value_state": "unknown",
+        "value": null,
+        "measurement_authority": [
+          "catalog-derived"
+        ],
+        "evidence_refs": [
+          "insight:pricing-catalog:2026-06-27",
+          "insight:session-model-usage:physical_session:priced"
+        ],
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "physical_session session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 3,
+          "complete": false,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": [
+            {
+              "subject_ref": "insight:session-model-usage:physical_session:priced",
+              "reason": "unpriced-model-rows:1"
+            }
+          ]
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        }
+      }
+    ],
+    "conflicts": []
+  },
+  "logical_exact_total_tokens_evidence": {
+    "family": "usage.pricing_lane_exact_total_tokens",
+    "fact_ref": "insight:provider-usage:logical-exact-total-tokens:total",
+    "value_state": "known",
+    "value": 388500,
+    "measurement_authority": [
+      "provider-reported"
+    ],
+    "weakest_measurement_authority": "provider-reported",
+    "evidence_refs": [
+      "insight:session-model-usage:logical_session_model_high_water:priced"
+    ],
+    "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
+    "temporal": {
+      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "time_source": "materialization_ts",
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "census",
+    "coverage": {
+      "intended_frame": "logical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 1,
+      "observed_count": 1,
+      "supported_count": 1,
+      "complete": true,
+      "coverage_ratio": 1.0,
+      "intended_refs": [
+        "insight:session-model-usage:logical_session_model_high_water:priced:exact-total-tokens"
+      ],
+      "observed_refs": [
+        "insight:session-model-usage:logical_session_model_high_water:priced:exact-total-tokens"
+      ],
+      "exclusions": []
+    },
+    "freshness": {
+      "state": "fresh",
+      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "cause": null,
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [
+      {
+        "fact_ref": "insight:session-model-usage:logical_session_model_high_water:priced:exact-total-tokens",
+        "value_state": "known",
+        "value": 388500,
+        "measurement_authority": [
+          "provider-reported"
+        ],
+        "evidence_refs": [
+          "insight:session-model-usage:logical_session_model_high_water:priced"
+        ],
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 4,
+          "complete": true,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": []
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        }
+      }
+    ],
+    "conflicts": []
+  },
+  "logical_catalog_api_equivalent_evidence": {
+    "family": "usage.pricing_lane_catalog_api_equivalent_cost",
+    "fact_ref": "insight:provider-usage:logical-catalog-api-equivalent-cost:total",
+    "value_state": "unknown",
+    "value": null,
+    "measurement_authority": [
+      "catalog-derived"
+    ],
+    "weakest_measurement_authority": "catalog-derived",
+    "evidence_refs": [
+      "insight:pricing-catalog:2026-06-27",
+      "insight:session-model-usage:logical_session_model_high_water:priced"
+    ],
+    "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
+    "temporal": {
+      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "time_source": "materialization_ts",
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "census",
+    "coverage": {
+      "intended_frame": "logical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 1,
+      "observed_count": 1,
+      "supported_count": 0,
+      "complete": false,
+      "coverage_ratio": 1.0,
+      "intended_refs": [
+        "insight:session-model-usage:logical_session_model_high_water:priced:catalog-api-equivalent-cost"
+      ],
+      "observed_refs": [
+        "insight:session-model-usage:logical_session_model_high_water:priced:catalog-api-equivalent-cost"
+      ],
+      "exclusions": [
+        {
+          "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced",
+          "reason": "unpriced-model-rows:1"
+        },
+        {
+          "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced:catalog-api-equivalent-cost",
+          "reason": "contribution-coverage-incomplete"
+        },
+        {
+          "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced:catalog-api-equivalent-cost",
+          "reason": "unsupported-contribution:unknown"
+        }
+      ]
+    },
+    "freshness": {
+      "state": "fresh",
+      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "cause": null,
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [
+      {
+        "fact_ref": "insight:session-model-usage:logical_session_model_high_water:priced:catalog-api-equivalent-cost",
+        "value_state": "unknown",
+        "value": null,
+        "measurement_authority": [
+          "catalog-derived"
+        ],
+        "evidence_refs": [
+          "insight:pricing-catalog:2026-06-27",
+          "insight:session-model-usage:logical_session_model_high_water:priced"
+        ],
+        "temporal": {
+          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "time_source": "materialization_ts",
+          "time_confidence": "unknown",
+          "frame_start": null,
+          "frame_end": null
+        },
+        "enumeration": "census",
+        "coverage": {
+          "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
+          "grain": "pricing_lane",
+          "denominator": "session_model_usage rows in the declared lane",
+          "intended_count": 4,
+          "observed_count": 4,
+          "supported_count": 3,
+          "complete": false,
+          "coverage_ratio": 1.0,
+          "intended_refs": [],
+          "observed_refs": [],
+          "exclusions": [
+            {
+              "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced",
+              "reason": "unpriced-model-rows:1"
+            }
+          ]
+        },
+        "freshness": {
+          "state": "fresh",
+          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "cause": null,
+          "last_good_at": null,
+          "last_good_evidence_refs": []
+        }
+      }
+    ],
+    "conflicts": []
+  },
+  "origins": [
+    {
+      "origin": "aistudio-drive",
+      "detail_level": "full",
+      "provider": "gemini",
+      "declared_coverage": "partial",
+      "coverage_state": "partial_telemetry_unobserved",
+      "coverage_basis": "this origin can carry partial message token fields, but none are materialized in model rollups",
+      "evidence_stream": "message_token_fields",
+      "request_semantics": "AI Studio/Gemini exports may carry message-level tokenCount output counters on some records.",
+      "cumulative_semantics": "No provider cumulative session usage window is available from Drive prompt exports.",
+      "cache_semantics": "No cache read/write token lanes are available from Drive prompt exports.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 1,
+      "message_count": 4,
+      "transcript_word_count": 25,
+      "raw_session_count": 1,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
+      "provider_event_session_count": 0,
+      "provider_event_count": 0,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 0,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 1,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "provider usage telemetry is partial; request, cumulative, and cache semantics are incomplete"
+      ]
+    },
+    {
+      "origin": "chatgpt-export",
+      "detail_level": "full",
+      "provider": "chatgpt",
+      "declared_coverage": "estimate_only",
+      "coverage_state": "acquired_not_materialized",
+      "coverage_basis": "source.db has raw rows without parse errors that are not represented in index.db sessions",
+      "evidence_stream": "transcript_text_estimate",
+      "request_semantics": "ChatGPT exports do not carry reliable per-request token counters.",
+      "cumulative_semantics": "Provider/account UI totals are external summaries and are not reconstructed from transcript text.",
+      "cache_semantics": "No cache read/write token lanes are available in ChatGPT export rows.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 3,
+      "message_count": 7,
+      "transcript_word_count": 222,
+      "raw_session_count": 5,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 2,
+      "provider_event_session_count": 0,
+      "provider_event_count": 0,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 0,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 2,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [
+        "e0dbd23201249caeabc286e0f8da7c152a9cb399ff2b693a8c63f3e1cc330588",
+        "fb0151b0cb130e0634ef263bdf7f6a98bd54d24ab36b3409e99be3b997f1a91d"
+      ],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "exact provider telemetry unavailable; transcript text counts are estimate-only",
+        "raw rows without parse errors are acquired but not materialized; usage coverage is incomplete until index.db is rebuilt"
+      ]
+    },
+    {
+      "origin": "claude-ai-export",
+      "detail_level": "full",
+      "provider": "claude-ai",
+      "declared_coverage": "estimate_only",
+      "coverage_state": "estimate_only",
+      "coverage_basis": "exact provider token telemetry is unavailable; transcript text counts remain estimate-only evidence",
+      "evidence_stream": "transcript_text_estimate",
+      "request_semantics": "Claude.ai exports preserve transcript content, not provider usage counters.",
+      "cumulative_semantics": "No cumulative provider usage window is present in the export shape.",
+      "cache_semantics": "No cache read/write token lanes are available in Claude.ai export rows.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 1,
+      "message_count": 2,
+      "transcript_word_count": 17,
+      "raw_session_count": 1,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
+      "provider_event_session_count": 0,
+      "provider_event_count": 0,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 0,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 0,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "exact provider telemetry unavailable; transcript text counts are estimate-only"
+      ]
+    },
+    {
+      "origin": "claude-code-session",
+      "detail_level": "full",
+      "provider": "claude-code",
+      "declared_coverage": "exact",
+      "coverage_state": "missing_provider_telemetry",
+      "coverage_basis": "this origin supports exact provider telemetry, but no provider usage event rows are materialized",
+      "evidence_stream": "provider_reported_usage",
+      "request_semantics": "Claude Code message.usage rows are per message/request observations.",
+      "cumulative_semantics": "Session rollups are derived by summing message usage rows; Claude Code does not supply a separate cumulative session high-water event.",
+      "cache_semantics": "cache_read_input_tokens and cache_creation_input_tokens are preserved as cached_input and cache_write lanes and are not folded into generic input/output.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 4,
+      "message_count": 19,
+      "transcript_word_count": 398,
+      "raw_session_count": 4,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
+      "provider_event_session_count": 0,
+      "provider_event_count": 0,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 0,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 1,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 56000,
+        "output_tokens": 10500,
+        "cached_input_tokens": 280000,
+        "cache_write_tokens": 42000,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 388500
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 56000,
+        "output_tokens": 10500,
+        "cached_input_tokens": 280000,
+        "cache_write_tokens": 42000,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 388500
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "exact provider telemetry is supported for this origin but no usage events are materialized",
+        "some sessions have no provider usage event rows; transcript words and model rollups cover different evidence"
+      ]
+    },
+    {
+      "origin": "codex-session",
+      "detail_level": "full",
+      "provider": "codex",
+      "declared_coverage": "exact",
+      "coverage_state": "missing_provider_telemetry",
+      "coverage_basis": "this origin supports exact provider telemetry, but no provider usage event rows are materialized",
+      "evidence_stream": "provider_reported_usage",
+      "request_semantics": "Codex last_token_usage is request/current-window telemetry and can be summed by request when present.",
+      "cumulative_semantics": "Codex total_token_usage is cumulative and session-global; rollups take the latest total per session to avoid double-counting.",
+      "cache_semantics": "cached_input_tokens and cache write/cache creation aliases are preserved as separate lanes and are not folded into generic input/output.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 7,
+      "message_count": 30,
+      "transcript_word_count": 229,
+      "raw_session_count": 7,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
+      "provider_event_session_count": 0,
+      "provider_event_count": 0,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 0,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 0,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "exact provider telemetry is supported for this origin but no usage events are materialized",
+        "some sessions have no provider usage event rows; transcript words and model rollups cover different evidence"
+      ]
+    }
+  ],
+  "caveats": [
+    "provider usage events, transcript text volume, and model rollups are separate evidence streams",
+    "this report does not query provider billing and is not a precise cost report",
+    "catalog_api_equivalent_usd is unknown because at least one model row has no catalog price; catalog_priced_subtotal_usd preserves the known priced subset"
+  ]
+}
