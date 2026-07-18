@@ -28,7 +28,7 @@ commands:
             - uv-v1-
       - run:
           name: Sync environment (frozen)
-          command: ~/.local/bin/uv sync --extra dev --frozen
+          command: ~/.local/bin/uv sync --extra dev --extra sqlite-compat --frozen
       - save_cache:
           key: uv-v1-{{ checksum "uv.lock" }}
           paths:

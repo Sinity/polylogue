@@ -84,6 +84,13 @@ fuzz = [
   "atheris>=2.3.0",  # Google's Python fuzzer
   "mutmut>=3.6.0",  # Mutation testing
 ]
+sqlite-compat = [
+  # Self-contained modern SQLite (FTS5 contentless_delete needs 3.43+) for
+  # runtimes whose system libsqlite3 predates it (e.g. cimg/python Docker
+  # images on Debian bookworm ship 3.40.1). Optional: polylogue/_sqlite_compat.py
+  # only swaps it in when the stdlib sqlite3 is actually too old.
+  "pysqlite3-binary>=0.5.0; platform_system == 'Linux'",
+]
 tree-sitter = [
   "tree-sitter>=0.26.0",
   "tree-sitter-python>=0.21.0",

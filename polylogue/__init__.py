@@ -14,6 +14,8 @@ than being implied as part of the same root-level insight surface.
 
 from __future__ import annotations
 
+from polylogue import _sqlite_compat  # noqa: F401  # isort:skip -- must run before any sqlite3 import
+
 import importlib
 from typing import TYPE_CHECKING
 

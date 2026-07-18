@@ -2,13 +2,18 @@
 
 files:
   - path: polylogue/__init__.py
-    loc: 75
+    loc: 77
     target: polylogue/__init__.py
     owner: kernel
     reason: kernel root rule
   - path: polylogue/__main__.py
     loc: 12
     target: polylogue/__main__.py
+    owner: kernel
+    reason: kernel root rule
+  - path: polylogue/_sqlite_compat.py
+    loc: 31
+    target: polylogue/_sqlite_compat.py
     owner: kernel
     reason: kernel root rule
   - path: polylogue/annotations/__init__.py
