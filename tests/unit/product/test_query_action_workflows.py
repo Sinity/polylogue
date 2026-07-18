@@ -144,9 +144,8 @@ def test_product_workflow_doc_is_registry_backed() -> None:
     for workflow in QUERY_ACTION_WORKFLOWS:
         assert f"`{workflow.id}`" in document
         assert workflow.title in document
-    required_verbs = {"select", "read", "continue", "analyze", "mark", "mark candidates", "delete"}
-    extra_verbs = {row.action_id for row in PRODUCT_VERB_MATRIX_EXTRA_ROWS}
-    assert "mark candidates" in extra_verbs
+    required_verbs = {"select", "read", "continue", "analyze", "mark", "judge", "delete"}
+    assert PRODUCT_VERB_MATRIX_EXTRA_ROWS == ()
     for action_id in required_verbs:
         assert f"| `{action_id}` |" in document
     for golden in EXECUTABLE_WORKFLOW_GOLDEN_PATHS:

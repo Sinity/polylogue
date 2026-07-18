@@ -47,6 +47,11 @@ def _stdin_note() -> str:
 @click.option("--repo", default=None, help="Attach repository scope (accepts repo:NAME or NAME).")
 @click.option("--topic", default=None, help="Attach topic scope (accepts insight:NAME or NAME).")
 @click.option("--kind", "kind_name", type=click.Choice(_KIND_NAMES), default="note", show_default=True)
+@click.option(
+    "--idempotency-key",
+    default=None,
+    help="Caller-scoped retry key; exact replays return the original lifecycle row.",
+)
 @click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
 def note_command(
     text: str | None,
@@ -55,6 +60,7 @@ def note_command(
     repo: str | None,
     topic: str | None,
     kind_name: str,
+    idempotency_key: str | None,
     output_format: str,
 ) -> None:
     """Capture one terminal memory candidate; judgment remains a separate step."""
@@ -72,6 +78,7 @@ def note_command(
                 refs=refs,
                 scope_refs=_scope_refs(repo, topic),
                 cwd=Path.cwd(),
+                idempotency_key=idempotency_key,
             )
 
     try:

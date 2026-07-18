@@ -2459,6 +2459,30 @@ def daemon_status_payload(
         )
     else:
         archive_debt = _excluded_archive_debt_status_summary()
+    # Same bounding discipline as archive_debt above: a queue-health lookup
+    # is an archive scan, not a cheap fact, and must not be able to stall
+    # this endpoint past its own deadline (polylogue-2o3d/polylogue-20d.17).
+    queue_snapshot = StatusComponentRegistry(
+        [
+            StatusComponentSpec(
+                name="assertion_candidate_queue",
+                scope="archive",
+                collector=assertion_candidate_queue_status_summary,
+                deadline_s=3.0,
+                cost_class="moderate",
+            )
+        ]
+    ).collect()["assertion_candidate_queue"]
+    assertion_candidate_queue = (
+        queue_snapshot.value
+        if queue_snapshot.value is not None
+        else {
+            "mode": "assertion-candidate-queue-health",
+            "state": "unavailable",
+            "pending_count": 0,
+            "caveats": [f"queue health collection {queue_snapshot.state}"],
+        }
+    )
 
     return json_document(
         {
@@ -2482,6 +2506,7 @@ def daemon_status_payload(
             "disk_free_bytes": status.disk_free_bytes,
             "archive_storage": status.archive_storage.model_dump(),
             "archive_debt": archive_debt,
+            "assertion_candidate_queue": assertion_candidate_queue,
             "quick_check_result": "unknown",
             "quick_check_age_s": None,
             "watcher_roots": [str(s.root) for s in watch_sources],
@@ -2517,6 +2542,28 @@ def daemon_status_payload(
             "raw_failure_samples": [s.model_dump() for s in status.raw_failure_samples],
         }
     )
+
+
+def assertion_candidate_queue_status_summary() -> dict[str, object]:
+    """Return the shared judgment-queue health product for status surfaces."""
+
+    try:
+        from polylogue.api.archive import _archive_assertion_candidate_queue_health
+        from polylogue.config import Config
+        from polylogue.paths import render_root
+
+        payload = _archive_assertion_candidate_queue_health(
+            Config(archive_root=archive_root(), render_root=render_root(), sources=[])
+        )
+        return cast(dict[str, object], payload.model_dump(mode="json"))
+    except Exception as exc:
+        logger.warning("assertion candidate queue health collection failed: %s", exc, exc_info=True)
+        return {
+            "mode": "assertion-candidate-queue-health",
+            "state": "unavailable",
+            "pending_count": 0,
+            "caveats": [f"queue health unavailable: {exc}"],
+        }
 
 
 def _archive_debt_status_summary() -> dict[str, object]:
@@ -2580,6 +2627,20 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         if storage.get("archive_root_matches_configured") is False:
             line += f"; active root {storage.get('archive_root', 'unknown')}"
         lines.append(line)
+    queue = payload.get("assertion_candidate_queue")
+    if isinstance(queue, dict):
+        lines.append(
+            f"Assertion candidate queue: {queue.get('state', 'unavailable')}, {queue.get('pending_count', 0)} pending"
+        )
+        oldest_age = queue.get("oldest_pending_age_ms")
+        if isinstance(oldest_age, int | float):
+            lines.append(f"  oldest candidate: {float(oldest_age) / (24 * 60 * 60 * 1000):.1f}d")
+        lines.append(
+            "  producer: "
+            f"{queue.get('producer_status') or 'unobserved'}; "
+            f"scheduler: {queue.get('scheduler_state', 'unknown')}; "
+            f"debt: {queue.get('producer_debt_count', 0)}"
+        )
     live = payload.get("live")
     if isinstance(live, dict):
         lines.append(f"Live sources: {live.get('existing_source_count', 0)}/{live.get('source_count', 0)} available")

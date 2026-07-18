@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -14,7 +15,7 @@ from polylogue.api import Polylogue
 from polylogue.cli import cli
 from polylogue.cli.commands.note import MAX_NOTE_STDIN_BYTES
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
+from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload, PublicRefResolutionPayload
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -172,3 +173,135 @@ def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(cli_works
     assert reviews.items[0].candidate.status is AssertionStatus.CANDIDATE
     assert blackboard_before_judgment == []
     assert blackboard_after_judgment == [payload["assertion_id"]]
+
+
+def test_terminal_note_idempotency_survives_root_judgment_canary_route(
+    cli_workspace: dict[str, Path],
+) -> None:
+    """Production CLI capture -> root judge -> replay preserves one lifecycle.
+
+    Anti-vacuity: random capture ids, overwriting a terminal candidate on
+    replay, bypassing root ``judge``, or omitting the promotion evidence and
+    context policy makes this test fail.
+    """
+
+    session = SessionBuilder(cli_workspace["db_path"], "terminal-note-canary").provider("codex")
+    session.save()
+    session_ref = f"session:{session.native_session_id()}"
+    key = "mrxt-operator-canary"
+    capture_args = [
+        "Operator observed WAL reservation preserving judgment state",
+        "--kind",
+        "lesson",
+        "--ref",
+        session_ref,
+        "--idempotency-key",
+        key,
+    ]
+
+    first = _capture(cli_workspace, capture_args)
+    before_judgment_retry = _capture(cli_workspace, capture_args)
+    assert before_judgment_retry["assertion_id"] == first["assertion_id"]
+    candidate_ref = f"assertion:{first['assertion_id']}"
+
+    judged = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "judge",
+            "--accept",
+            candidate_ref,
+            "--reason",
+            "genuine operator canary acceptance",
+            "--actor-ref",
+            "user:operator",
+            "--format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert judged.exit_code == 0, judged.output
+    judgment_payload = json.loads(judged.output)
+    assert judgment_payload["applied_count"] == 1
+    item = judgment_payload["items"][0]
+    assert item["outcome"] == "applied"
+    resulting_ref = item["result"]["judgment"]["resulting_assertion_ref"]
+    assert resulting_ref.startswith("assertion:")
+
+    after_judgment_retry = _capture(cli_workspace, capture_args)
+    assert after_judgment_retry["assertion_id"] == first["assertion_id"]
+    assert after_judgment_retry["status"] == "accepted"
+
+    changed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "note",
+            "Changed content must conflict",
+            "--kind",
+            "lesson",
+            "--ref",
+            session_ref,
+            "--idempotency-key",
+            key,
+            "--format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert changed.exit_code == 1
+    assert "idempotency_key conflicts" in changed.output
+
+    async def verify_surfaces() -> tuple[
+        AssertionCandidateReviewListPayload, PublicRefResolutionPayload, PublicRefResolutionPayload
+    ]:
+        async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
+            reviews = await poly.list_assertion_candidate_reviews(
+                target_ref=session_ref,
+                statuses=("accepted",),
+            )
+            candidate_resolution = await poly.resolve_ref(candidate_ref)
+            result_resolution = await poly.resolve_ref(resulting_ref)
+            return reviews, candidate_resolution, result_resolution
+
+    reviews, candidate_resolution, result_resolution = asyncio.run(verify_surfaces())
+    assert [review.candidate_ref for review in reviews.items] == [candidate_ref]
+    review = reviews.items[0]
+    assert review.latest_judgment is not None
+    assert review.latest_judgment.decision == "accept"
+    assert review.latest_judgment.resulting_assertion_ref == resulting_ref
+    assert candidate_resolution.resolved is True
+    assert result_resolution.resolved is True
+
+    with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT assertion_id, kind, status, evidence_refs_json,
+                   context_policy_json, supersedes_json, value_json
+            FROM assertions
+            WHERE assertion_id = ?
+               OR target_ref = ?
+               OR assertion_id = ?
+            ORDER BY kind, assertion_id
+            """,
+            (first["assertion_id"], candidate_ref, resulting_ref.removeprefix("assertion:")),
+        ).fetchall()
+
+    candidate_rows = [row for row in rows if row["assertion_id"] == first["assertion_id"]]
+    judgment_rows = [row for row in rows if row["kind"] == "judgment"]
+    result_rows = [row for row in rows if row["assertion_id"] == resulting_ref.removeprefix("assertion:")]
+    assert len(candidate_rows) == 1
+    assert candidate_rows[0]["status"] == "accepted"
+    assert len(judgment_rows) == 1
+    assert len(result_rows) == 1
+    result = result_rows[0]
+    assert result["kind"] == "lesson"
+    assert result["status"] == "active"
+    assert json.loads(result["context_policy_json"]) == {"inject": False}
+    assert json.loads(result["supersedes_json"]) == [candidate_ref]
+    assert json.loads(result["evidence_refs_json"]) == [session_ref, candidate_ref]
+    judgment_value = json.loads(judgment_rows[0]["value_json"])
+    assert judgment_value["candidate_ref"] == candidate_ref
+    assert judgment_value["resulting_assertion_ref"] == resulting_ref
+    assert judgment_value["inject_authorized"] is False

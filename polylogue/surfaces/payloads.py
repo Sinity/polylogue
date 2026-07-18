@@ -1812,6 +1812,32 @@ AssertionCandidateReviewStatus: TypeAlias = Literal[
     "blocked",
 ]
 
+AssertionEvidenceResolutionState: TypeAlias = Literal[
+    "resolved",
+    "missing",
+    "unsupported",
+    "pending",
+    "error",
+]
+
+
+class AssertionEvidencePreviewPayload(SurfacePayloadModel):
+    """Bounded resolution preview for one ref presented during judgment."""
+
+    ref: str
+    state: AssertionEvidenceResolutionState
+    kind: str | None = None
+    title: str | None = None
+    excerpt: str | None = None
+    reason: str | None = None
+    open_commands: tuple[str, ...] = ()
+    open_hrefs: tuple[str, ...] = ()
+
+    @field_validator("ref")
+    @classmethod
+    def _validate_evidence_ref(cls, value: str) -> str:
+        return normalize_public_ref_text(value)
+
 
 class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
     """One candidate assertion row with explicit review action state."""
@@ -1820,6 +1846,14 @@ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
     review_status: AssertionCandidateReviewStatus
     candidate: AssertionClaimPayload
     latest_judgment: AssertionJudgmentPayload | None = None
+    claim_summary: str = ""
+    source_ref: str | None = None
+    source_kind: str | None = None
+    age_ms: int = 0
+    evidence_previews: tuple[AssertionEvidencePreviewPayload, ...] = ()
+    evidence_total_count: int = 0
+    evidence_omitted_count: int = 0
+    evidence_resolution: Literal["none", "resolved", "partial", "unresolved"] = "none"
     action_affordances: tuple[ActionAffordancePayload, ...]
 
     @field_validator("candidate_ref")
@@ -1831,6 +1865,9 @@ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
     def from_envelope(
         cls,
         envelope: ArchiveAssertionCandidateReviewEnvelope,
+        *,
+        evidence_previews: Sequence[AssertionEvidencePreviewPayload] = (),
+        now_ms: int | None = None,
     ) -> AssertionCandidateReviewItemPayload:
         candidate = AssertionClaimPayload.from_envelope(envelope.candidate)
         latest_judgment = (
@@ -1840,11 +1877,31 @@ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
         )
         candidate_ref = f"assertion:{envelope.candidate.assertion_id}"
         review_status = _candidate_review_status(envelope.candidate.status)
+        timestamp = int(datetime.now(UTC).timestamp() * 1000) if now_ms is None else now_ms
+        previews = tuple(evidence_previews[:5])
+        total_evidence = len(envelope.candidate.evidence_refs)
+        resolved_count = sum(preview.state == "resolved" for preview in previews)
+        if total_evidence == 0:
+            evidence_resolution: Literal["none", "resolved", "partial", "unresolved"] = "none"
+        elif resolved_count == total_evidence and len(previews) == total_evidence:
+            evidence_resolution = "resolved"
+        elif resolved_count:
+            evidence_resolution = "partial"
+        else:
+            evidence_resolution = "unresolved"
         return cls(
             candidate_ref=candidate_ref,
             review_status=review_status,
             candidate=candidate,
             latest_judgment=latest_judgment,
+            claim_summary=_assertion_claim_summary(envelope.candidate),
+            source_ref=envelope.candidate.author_ref,
+            source_kind=envelope.candidate.author_kind,
+            age_ms=max(0, timestamp - envelope.candidate.created_at_ms),
+            evidence_previews=previews,
+            evidence_total_count=total_evidence,
+            evidence_omitted_count=max(0, total_evidence - len(previews)),
+            evidence_resolution=evidence_resolution,
             action_affordances=assertion_candidate_review_affordances(
                 candidate_ref=candidate_ref,
                 disabled_reasons=_candidate_review_disabled_reasons(envelope.candidate.status),
@@ -1876,8 +1933,18 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
         limit: int,
         target_ref: str | None = None,
         candidate_statuses: Sequence[str | AssertionStatus] | None = None,
+        evidence_previews: Mapping[str, Sequence[AssertionEvidencePreviewPayload]] | None = None,
+        now_ms: int | None = None,
     ) -> AssertionCandidateReviewListPayload:
-        items = tuple(AssertionCandidateReviewItemPayload.from_envelope(envelope) for envelope in envelopes)
+        preview_map = evidence_previews or {}
+        items = tuple(
+            AssertionCandidateReviewItemPayload.from_envelope(
+                envelope,
+                evidence_previews=preview_map.get(envelope.candidate.assertion_id, ()),
+                now_ms=now_ms,
+            )
+            for envelope in envelopes
+        )
         return cls(
             items=items,
             total=len(items),
@@ -1887,6 +1954,55 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
             if candidate_statuses is None
             else tuple(AssertionStatus.from_string(status) for status in candidate_statuses),
         )
+
+
+AssertionCandidateQueueState: TypeAlias = Literal[
+    "healthy-empty",
+    "empty-unverified",
+    "pending",
+    "stale-pending",
+    "producer-stalled",
+    "unavailable",
+]
+
+
+class AssertionCandidateQueueHealthPayload(SurfacePayloadModel):
+    """Read-only health projection for the durable judgment queue."""
+
+    mode: Literal["assertion-candidate-queue-health"] = "assertion-candidate-queue-health"
+    state: AssertionCandidateQueueState
+    observed_at_ms: int
+    pending_count: int
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    kind_counts: dict[str, int] = Field(default_factory=dict)
+    source_counts: dict[str, int] = Field(default_factory=dict)
+    oldest_pending_at_ms: int | None = None
+    newest_pending_at_ms: int | None = None
+    oldest_pending_age_ms: int | None = None
+    stale_pending_count: int = 0
+    retention_outcome: Literal["none", "retained-visible"] = "none"
+    producer_stage: str = "standing-queries"
+    producer_status: str | None = None
+    producer_observed_at_ms: int | None = None
+    producer_age_ms: int | None = None
+    scheduler_state: Literal["fresh", "stale", "stopped", "unknown"] = "unknown"
+    scheduler_heartbeat_at_ms: int | None = None
+    scheduler_heartbeat_age_ms: int | None = None
+    producer_debt_count: int = 0
+    caveats: tuple[str, ...] = ()
+
+
+def _assertion_claim_summary(envelope: ArchiveAssertionEnvelope) -> str:
+    """Return a deterministic one-line claim summary bounded for review UIs."""
+
+    if envelope.body_text:
+        raw = envelope.body_text
+    elif envelope.value is not None:
+        raw = json.dumps(envelope.value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    else:
+        raw = envelope.key or envelope.kind.value
+    collapsed = " ".join(raw.split())
+    return collapsed if len(collapsed) <= 480 else f"{collapsed[:477].rstrip()}..."
 
 
 def _candidate_review_status(status: AssertionStatus) -> AssertionCandidateReviewStatus:
@@ -3560,6 +3676,10 @@ __all__ = [
     "AssertionCandidateReviewItemPayload",
     "AssertionCandidateReviewListPayload",
     "AssertionCandidateReviewStatus",
+    "AssertionCandidateQueueHealthPayload",
+    "AssertionCandidateQueueState",
+    "AssertionEvidencePreviewPayload",
+    "AssertionEvidenceResolutionState",
     "AssertionClaimListPayload",
     "AssertionClaimPayload",
     "AssertionJudgmentPayload",

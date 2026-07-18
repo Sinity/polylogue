@@ -31,8 +31,10 @@ from tests.infra.app_env import make_app_env
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
 GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
+    "authenticated_injection_opt_in": "test_judge_injection_requires_explicit_flag",
     "daemon_accepts_schedule": "test_import_contract_guard_requires_daemon_acceptance",
     "dry_run_or_yes_required": "test_delete_contract_guard_refuses_plain_forceless_delete",
+    "explicit_candidate_ref_for_mutation": "test_judge_mutation_requires_candidate_ref",
     "explicit_query_intent": "test_virtual_find_counterpart_is_query_parser_keyword",
     "file_destination_requires_out": "test_read_contract_guard_requires_out_for_file_destination",
     "path_exists_or_demo": "test_import_contract_guard_rejects_missing_source_path",
@@ -513,8 +515,8 @@ def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[
     assert payload["session_ids"] == ["session-1"]
 
 
-def test_explicit_mark_candidates_terms_remain_query_text() -> None:
-    """`find mark candidates` searches those words instead of dispatching `mark candidates`."""
+def test_retired_mark_candidates_terms_remain_query_text() -> None:
+    """The retired phrase remains searchable when explicitly introduced by `find`."""
     click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
         cli,
         ["find", "mark", "candidates"],

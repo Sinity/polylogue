@@ -708,7 +708,7 @@ def test_query_action_mutating_guard_completion_per_shell(
         ["find", "id:abc", "then", "continue"],
         ["find", "id:abc", "then", "delete"],
         ["find", "id:abc", "then", "mark"],
-        ["find", "id:abc", "then", "mark", "candidates", "list"],
+        ["judge"],
         ["analyze", "usage"],
         ["analyze", "insights", "profiles"],
     ],
@@ -733,21 +733,31 @@ def test_query_action_json_alias_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
-def test_query_action_mark_candidates_completion_per_shell(
+def test_root_judge_completion_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``mark candidates`` subcommands complete inside the query-action grammar."""
+    """The canonical root judge exposes review, health, and decision options."""
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    items = dict(_run_completion(shell, comp_cls, ["find", "id:abc", "then", "mark", "candidates"]))
+    items = dict(_run_completion_for_partial(shell, comp_cls, ["judge"], "--"))
 
-    assert {"list", "accept", "reject", "defer", "supersede"}.issubset(items)
+    assert {
+        "--list",
+        "--review",
+        "--status",
+        "--accept",
+        "--reject",
+        "--defer",
+        "--supersede",
+        "--format",
+        "--json",
+    }.issubset(items)
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

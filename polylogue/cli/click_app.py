@@ -545,7 +545,7 @@ def find_help() -> None:
         explicit selection, `--first`, or an action-specific multi flag.
 
         Action ownership: `mark` changes selected session overlays;
-        `mark candidates` reviews assertion candidates; `analyze --facets`
+        root `polylogue judge` reviews assertion candidates; `analyze --facets`
         reports named aggregate families and marks deferred families honestly.
     """
 
@@ -557,7 +557,7 @@ _QUERY_VERB_HELP: dict[str, str] = {
     "analyze": "Analyze matched sessions and named facet families.",
     "continue": "Resume a session or compile successor context as JSON.",
     "delete": "Delete matched sessions.",
-    "mark": "Mark selected sessions; review candidates under mark candidates.",
+    "mark": "Mark selected sessions with tags, notes, and durable marks.",
     "read": "Read matched sessions (route to view/destination).",
     "select": "Select one matched session or print candidate identities.",
 }

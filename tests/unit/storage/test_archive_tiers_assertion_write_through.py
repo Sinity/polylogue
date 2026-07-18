@@ -144,6 +144,24 @@ def test_annotation_write_through_mirrors_assertion(tmp_path: Path) -> None:
     assert again[0].assertion_id == mirrored[0].assertion_id
 
 
+def test_annotation_without_explicit_id_is_retry_safe_but_append_on_change(tmp_path: Path) -> None:
+    """Content-addressed annotation identity converges exact retries only."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        first = upsert_annotation(conn, "message", "msg-identity", "first body", now_ms=1_000)
+        retry = upsert_annotation(conn, "message", "msg-identity", "first body", now_ms=2_000)
+        changed = upsert_annotation(conn, "message", "msg-identity", "changed body", now_ms=3_000)
+
+        rows = list_assertions_for_target(conn, "message:msg-identity", kind=AssertionKind.ANNOTATION)
+        assert retry.annotation_id == first.annotation_id
+        assert changed.annotation_id != first.annotation_id
+        assert {row.body_text for row in rows} == {"first body", "changed body"}
+        assert len(rows) == 2
+    finally:
+        conn.close()
+
+
 def test_block_target_overlays_mirror_to_block_assertions(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
 
@@ -404,6 +422,28 @@ def test_user_overlay_reads_project_assertion_envelopes(tmp_path: Path) -> None:
     assert recall_pack_read.payload == {"sessions": ["asserted"]}
     assert workspace_read.settings == {"repo": "asserted"}
     assert workspace_read.updated_at_ms == 1_700_000_035_000
+
+
+def test_recall_pack_without_explicit_id_updates_stable_name_identity(tmp_path: Path) -> None:
+    """A named recall pack updates rather than appending a payload-hash sibling."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        first = upsert_recall_pack(conn, "handoff", {"sessions": ["a"]}, now_ms=1_000)
+        updated = upsert_recall_pack(conn, "handoff", {"sessions": ["a", "b"]}, now_ms=2_000)
+
+        assert updated.recall_pack_id == first.recall_pack_id
+        assert updated.created_at_ms == 1_000
+        assert updated.updated_at_ms == 2_000
+        assert updated.payload == {"sessions": ["a", "b"]}
+        rows = list_assertions_for_target(
+            conn,
+            f"recall_pack:{first.recall_pack_id}",
+            kind=AssertionKind.RECALL_PACK,
+        )
+        assert len(rows) == 1
+    finally:
+        conn.close()
 
 
 def test_blackboard_note_read_projects_assertion(tmp_path: Path) -> None:

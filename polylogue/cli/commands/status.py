@@ -375,6 +375,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "user",
         "reads candidate assertion review rows through user.db",
     ),
+    "assertion_candidate_queue_health": (
+        "archive_routed",
+        "user",
+        "reads candidate queue health from durable user.db and operations telemetry",
+    ),
     "list_assertion_claims": ("archive_routed", "user", "reads assertion claims through user.db"),
     "list_assertion_claim_payloads": ("archive_routed", "user", "reads assertion claim payload DTOs through user.db"),
     "list_blackboard_notes": ("archive_routed", "user", "reads blackboard notes through user.db"),
@@ -2382,6 +2387,9 @@ def _show_direct_status(
             _render_archive_facade_routes(env, _archive_facade_route_status())
             _render_archive_cli_routes(env, _archive_cli_route_status())
             _render_archive_runtime_paths(env, _archive_runtime_path_status())
+            from polylogue.daemon.status import assertion_candidate_queue_status_summary
+
+            _render_assertion_candidate_queue(env, assertion_candidate_queue_status_summary())
         env.ui.console.print(f"  Sessions: {convs:,}")
         env.ui.console.print(f"  Messages: {msgs:,}")
         env.ui.console.print(f"  Raw records: {raw:,}")
@@ -2440,6 +2448,21 @@ def _render_archive_readiness(env: AppEnv, readiness: dict[str, Any]) -> None:
         env.ui.console.print(f"    {name}: {blockers}")
     if len(blocked_surfaces) > 5:
         env.ui.console.print(f"    +{len(blocked_surfaces) - 5} more blocked surfaces")
+
+
+def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> None:
+    """Render the same queue-health product used by root judge and daemon JSON."""
+
+    state = str(queue.get("state") or "unavailable")
+    pending = _safe_int(queue.get("pending_count"))
+    color = "green" if state == "healthy-empty" else "yellow"
+    if state in {"producer-stalled", "stale-pending", "unavailable"}:
+        color = "red"
+    line = f"  Assertion candidate queue: [{color}]{state}, {pending} pending[/{color}]"
+    oldest_age = queue.get("oldest_pending_age_ms")
+    if isinstance(oldest_age, int | float):
+        line += f", oldest={float(oldest_age) / (24 * 60 * 60 * 1000):.1f}d"
+    env.ui.console.print(line)
 
 
 def _render_sqlite_maintenance(env: AppEnv, status: dict[str, Any]) -> None:

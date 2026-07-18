@@ -246,6 +246,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "correlate_hermes_context_deliveries",
         "reconcile_hermes_session_lifecycle",
         "list_assertion_candidate_reviews",
+        "assertion_candidate_queue_health",
         "judge_assertion_candidate",
         "judge_assertion_candidates",
         "capture_assertion_candidate",

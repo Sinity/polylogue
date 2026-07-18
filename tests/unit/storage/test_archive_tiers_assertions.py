@@ -1909,3 +1909,49 @@ def test_upsert_findings_rejects_incomplete_delta_and_unresolved_ref_shapes(tmp_
             upsert_findings_as_assertions(conn, [malformed_ref])
     finally:
         conn.close()
+
+
+def test_upsert_assertion_owned_transaction_rolls_back_on_write_failure(tmp_path: Path) -> None:
+    """A failed standalone upsert cannot leave an owned transaction or partial row."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-rollback-41ow",
+            target_ref="session:rollback-41ow",
+            kind=AssertionKind.FINDING,
+            body_text="before",
+            author_kind="agent",
+            now_ms=1_000,
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER fail_candidate_rollback_41ow
+            BEFORE UPDATE ON assertions
+            WHEN NEW.assertion_id = 'candidate-rollback-41ow'
+            BEGIN
+                SELECT RAISE(ABORT, 'forced 41ow rollback');
+            END
+            """
+        )
+        conn.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="forced 41ow rollback"):
+            upsert_assertion(
+                conn,
+                assertion_id="candidate-rollback-41ow",
+                target_ref="session:rollback-41ow",
+                kind=AssertionKind.FINDING,
+                body_text="after",
+                author_kind="agent",
+                now_ms=2_000,
+            )
+
+        assert not conn.in_transaction
+        preserved = read_assertion_envelope(conn, "candidate-rollback-41ow")
+        assert preserved is not None
+        assert preserved.body_text == "before"
+        assert preserved.updated_at_ms == 1_000
+    finally:
+        conn.close()

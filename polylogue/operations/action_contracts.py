@@ -112,6 +112,7 @@ PUBLIC_ACTION_FLOOR: tuple[tuple[str, ...], ...] = (
     ("read",),
     ("continue",),
     ("mark",),
+    ("judge",),
     ("analyze",),
     ("delete",),
     ("import",),
@@ -195,6 +196,25 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         selection_command="polylogue find QUERY then select",
         destination_support=("terminal", "stdout", "api", "mcp"),
         next_actions=("read", "analyze"),
+    ),
+    CliActionContract(
+        path=("judge",),
+        effect="write",
+        input_unit="assertion_candidate",
+        cardinality="explicit_multi",
+        formats=frozenset({"human", "json"}),
+        default_format="human",
+        # ``judge`` has list, review, status, and bulk-decision JSON products.
+        # It therefore cannot truthfully claim the generic MutationResultPayload
+        # envelope used by query-first mark/delete/import.
+        machine_envelope="item",
+        requires_daemon=False,
+        guards=("explicit_candidate_ref_for_mutation", "authenticated_injection_opt_in"),
+        target="candidate",
+        safety_level="mutating",
+        selection_command="polylogue judge --review",
+        destination_support=("terminal", "stdout", "api", "mcp"),
+        next_actions=("read", "judge"),
     ),
     CliActionContract(
         path=("analyze",),
