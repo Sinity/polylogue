@@ -64,6 +64,8 @@ class ScenarioContentBlock:
     media_type: str | None = None
     metadata: JSONDocument | None = None
     semantic_type: str | None = None
+    tool_result_is_error: int | None = None
+    tool_result_exit_code: int | None = None
 
     @classmethod
     def text_block(cls, text: str, *, semantic_type: str | None = None) -> ScenarioContentBlock:
@@ -80,8 +82,23 @@ class ScenarioContentBlock:
         return cls(block_type="tool_use", tool_name=tool_name, tool_id=tool_id, tool_input=tool_input)
 
     @classmethod
-    def tool_result(cls, text: str, *, tool_name: str | None = None) -> ScenarioContentBlock:
-        return cls(block_type="tool_result", text=text, tool_name=tool_name)
+    def tool_result(
+        cls,
+        text: str,
+        *,
+        tool_name: str | None = None,
+        tool_id: str | None = None,
+        is_error: bool | None = None,
+        exit_code: int | None = None,
+    ) -> ScenarioContentBlock:
+        return cls(
+            block_type="tool_result",
+            text=text,
+            tool_name=tool_name,
+            tool_id=tool_id,
+            tool_result_is_error=None if is_error is None else int(is_error),
+            tool_result_exit_code=exit_code,
+        )
 
     @classmethod
     def thinking(cls, text: str) -> ScenarioContentBlock:
@@ -103,6 +120,10 @@ class ScenarioContentBlock:
             payload["metadata"] = dict(require_json_document(self.metadata, context="scenario content block metadata"))
         if self.semantic_type is not None:
             payload["semantic_type"] = self.semantic_type
+        if self.tool_result_is_error is not None:
+            payload["tool_result_is_error"] = self.tool_result_is_error
+        if self.tool_result_exit_code is not None:
+            payload["tool_result_exit_code"] = self.tool_result_exit_code
         return payload
 
 

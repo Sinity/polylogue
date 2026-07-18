@@ -1,0 +1,283 @@
+{
+  "corpus": {
+    "cost": {
+      "cache_write_tokens": 50,
+      "cached_input_tokens": 400,
+      "input_tokens": 1200,
+      "model": "gpt-5.2-codex",
+      "output_tokens": 300,
+      "session_key": "continuity-cost",
+      "total_tokens": 1950
+    },
+    "decision": {
+      "assertion_id": "continuity-decision-cursor-pages",
+      "body": "Use cursor-bound-pages and reject offset-only replay for archive continuations.",
+      "marker": "cursor-bound-pages",
+      "message_key": "decision-evidence",
+      "session_key": "continuity-decision"
+    },
+    "forensic_debug": {
+      "exit_code": 17,
+      "message_key": "forensic-action",
+      "output": "FORENSIC_SENTINEL NameError: continuity_fixture_value",
+      "path": "src/continuity_target.py",
+      "session_key": "continuity-forensic",
+      "tool": "Edit"
+    },
+    "origin": "codex-session",
+    "parallel_incident": {
+      "attempt_curriculum": [
+        {
+          "case": "candidate-list",
+          "corpus_match": "true",
+          "outcome": "rejected",
+          "physical_size": "oversized",
+          "query_shape": "candidate-list",
+          "shipped_instruction": "absent",
+          "structure_discovery": "present"
+        },
+        {
+          "case": "exact-operator-phrase",
+          "corpus_match": "false",
+          "outcome": "empty",
+          "physical_size": "bounded",
+          "query_shape": "exact-operator-phrase",
+          "shipped_instruction": "absent",
+          "structure_discovery": "present"
+        },
+        {
+          "case": "sonnet-lexical-proxy",
+          "corpus_match": "true",
+          "outcome": "empty",
+          "physical_size": "bounded",
+          "query_shape": "sonnet-lexical-proxy",
+          "shipped_instruction": "absent",
+          "structure_discovery": "absent"
+        },
+        {
+          "case": "sessions-only-query",
+          "corpus_match": "true",
+          "outcome": "rejected",
+          "physical_size": "bounded",
+          "query_shape": "sessions-only-query",
+          "shipped_instruction": "advertised",
+          "structure_discovery": "absent"
+        },
+        {
+          "case": "correct-topology",
+          "corpus_match": "true",
+          "outcome": "transport-failure",
+          "physical_size": "bounded",
+          "query_shape": "correct-topology",
+          "shipped_instruction": "absent",
+          "structure_discovery": "present"
+        },
+        {
+          "case": "correct-delegation",
+          "corpus_match": "true",
+          "outcome": "timeout",
+          "physical_size": "bounded",
+          "query_shape": "correct-delegation",
+          "shipped_instruction": "absent",
+          "structure_discovery": "present"
+        }
+      ],
+      "call_keys": 50,
+      "completed_call_keys": 49,
+      "coordinator_key": "continuity-incident-coordinator",
+      "coordinator_session_id": "codex-session:ext-continuity-incident-coordinator",
+      "member_children": 91,
+      "other_children": 38,
+      "result_records": 65,
+      "run_ref": "wf_synthetic_841",
+      "unresolved_call_keys": 1,
+      "workflow_invocations": 4
+    },
+    "postmortem": {
+      "exit_code": 2,
+      "marker": "POSTMORTEM_SENTINEL",
+      "message_key": "postmortem-action",
+      "output": "POSTMORTEM_SENTINEL pytest collection failed because the fixture root was stale",
+      "session_key": "continuity-postmortem",
+      "tool": "Bash"
+    },
+    "prior_art": {
+      "marker": "prior-art-zebra-417",
+      "message_key": "prior-answer",
+      "session_key": "continuity-prior-art",
+      "text": "prior-art-zebra-417 We previously fixed this by binding every page to the retained query request."
+    },
+    "provider": "codex",
+    "resume": {
+      "marker": "continuity-resume-marker",
+      "message_key": "resume-answer",
+      "session_key": "continuity-resume",
+      "text": "continuity-resume-marker Next step: add the cancellation regression test before changing the parser."
+    },
+    "timestamp": "2026-01-15T12:00:00+00:00"
+  },
+  "fixture_id": "continuity-synthetic-v2",
+  "oracles": {
+    "cost": {
+      "facts": {
+        "cached_input_tokens": 400,
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "pricing_grain": "physical_session",
+        "total_tokens": 1950
+      },
+      "required_evidence_refs": [],
+      "source_refs": [
+        "fixture:corpus.cost",
+        "storage:session_model_usage"
+      ]
+    },
+    "decision": {
+      "facts": {
+        "decision_body": "Use cursor-bound-pages and reject offset-only replay for archive continuations.",
+        "decision_count": 1,
+        "decision_ids": [
+          "continuity-decision-cursor-pages"
+        ],
+        "decision_status": "active"
+      },
+      "required_evidence_refs": [
+        "assertion:continuity-decision-cursor-pages",
+        "message:codex-session:ext-continuity-decision:decision-evidence"
+      ],
+      "source_refs": [
+        "fixture:corpus.decision"
+      ]
+    },
+    "forensic-debug": {
+      "facts": {
+        "exit_code": 17,
+        "failed_actions": 1,
+        "failure_path": "src/continuity_target.py",
+        "file_path": "src/continuity_target.py",
+        "file_rows": 1
+      },
+      "required_evidence_refs": [
+        "message:codex-session:ext-continuity-forensic:forensic-action"
+      ],
+      "source_refs": [
+        "fixture:corpus.forensic_debug"
+      ]
+    },
+    "parallel-claude-incident": {
+      "attempt_grades": {
+        "candidate-list": "reasonable_oversized",
+        "correct-delegation": "execution_failure",
+        "correct-topology": "execution_failure",
+        "exact-operator-phrase": "wrong_corpus_assumption",
+        "sessions-only-query": "product_induced_hidden_grammar",
+        "sonnet-lexical-proxy": "weak_lexical_proxy"
+      },
+      "facts": {
+        "attempt_transcripts": 91,
+        "call_keys": 50,
+        "completed_call_keys": 49,
+        "coordinator_children": 129,
+        "final_result_count": 1,
+        "incident_curriculum_cases": 6,
+        "non_workflow_children": 38,
+        "result_records": 65,
+        "unresolved_call_keys": 1,
+        "workflow_invocations": 4
+      },
+      "required_evidence_refs": [
+        "message:codex-session:ext-continuity-incident-coordinator:workflow-invocation-01",
+        "message:codex-session:ext-continuity-incident-coordinator:final-result",
+        "message:codex-session:ext-continuity-incident-member-001:attempt",
+        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-candidate-list",
+        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-exact-operator-phrase",
+        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-sonnet-lexical-proxy",
+        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-sessions-only-query",
+        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-correct-topology",
+        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-correct-delegation"
+      ],
+      "source_refs": [
+        "fixture:corpus.parallel_incident",
+        "bead:polylogue-z9gh.7",
+        "bead:polylogue-t8t"
+      ]
+    },
+    "postmortem": {
+      "facts": {
+        "exit_code": 2,
+        "failed_action_count": 1,
+        "failed_tool": "Bash",
+        "failure_output": "POSTMORTEM_SENTINEL pytest collection failed because the fixture root was stale"
+      },
+      "required_evidence_refs": [
+        "message:codex-session:ext-continuity-postmortem:postmortem-action"
+      ],
+      "source_refs": [
+        "fixture:corpus.postmortem"
+      ]
+    },
+    "prior-art": {
+      "facts": {
+        "prior_art_text": "prior-art-zebra-417 We previously fixed this by binding every page to the retained query request.",
+        "prior_hits": 1,
+        "session_ids": [
+          "codex-session:ext-continuity-prior-art"
+        ]
+      },
+      "required_evidence_refs": [
+        "message:codex-session:ext-continuity-prior-art:prior-answer"
+      ],
+      "source_refs": [
+        "fixture:corpus.prior_art"
+      ]
+    },
+    "resume": {
+      "facts": {
+        "continuation_text": "continuity-resume-marker Next step: add the cancellation regression test before changing the parser.",
+        "matching_messages": 1,
+        "session_ids": [
+          "codex-session:ext-continuity-resume"
+        ]
+      },
+      "required_evidence_refs": [
+        "message:codex-session:ext-continuity-resume:resume-answer"
+      ],
+      "source_refs": [
+        "fixture:corpus.resume"
+      ]
+    },
+    "self-inspection": {
+      "facts": {
+        "read_view_count": 11,
+        "read_view_ids": [
+          "chronicle",
+          "context",
+          "context-image",
+          "correlation",
+          "dialogue",
+          "messages",
+          "neighbors",
+          "raw",
+          "summary",
+          "temporal",
+          "transcript"
+        ],
+        "selected_units": [
+          "assertion"
+        ],
+        "unsupported_nodes": 0
+      },
+      "required_evidence_refs": [],
+      "source_refs": [
+        "source:polylogue/archive/query/expression.py",
+        "source:polylogue/read_views.py"
+      ]
+    }
+  },
+  "schema_version": 2,
+  "source_evidence": {
+    "authority": "Synthetic constants and incident-attempt features below are planted before any MCP route executes.",
+    "construction": "tests/infra/continuity.py",
+    "declarations": "polylogue/product/continuity_scenarios.py"
+  }
+}

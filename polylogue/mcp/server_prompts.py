@@ -506,7 +506,7 @@ Rules:
         return f"""Surface failures in '{repo_name}' since {since} that were never acknowledged.
 
 Call sequence:
-1. query_units(expression='actions where session.repo:{repo_name} since:{since} AND output:failed', limit=20) — action rows for sessions containing failed tool outcomes.
+1. query_units(expression='actions where session.repo:{repo_name} AND output:failed', since='{since}', limit=20) — action rows for sessions containing failed tool outcomes.
 2. find_stuck_sessions(since="{since}") — sessions whose provider tool calls are bounded as stuck.
 3. For each hit: list_marks(session_id=<session_id>) and list_annotations for that session — an existing mark/annotation means acknowledged.
 
@@ -517,7 +517,7 @@ Report only sessions with failures and no acknowledgment; cite the failing actio
     async def sessions_touching_file(path: str, repo: str = "") -> str:
         """Find sessions that edited or referenced a file path."""
         repo_name, _cwd = _repo_context(repo)
-        repo_clause = f"repo:{repo_name} AND " if repo_name else ""
+        repo_clause = f"session.repo:{repo_name} AND " if repo_name else ""
         return f"""Find sessions that touched file path '{path}'.
 
 Call sequence:
