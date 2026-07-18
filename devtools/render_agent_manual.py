@@ -68,6 +68,7 @@ def continuation_example_token() -> str:
         offset=20,
         projection="action-evidence",
         stable_order="time-desc",
+        archive_epoch="archive:v1:index:v24:1:user:v9:1",
     )
     return QueryContinuation(request=request, result_ref="result:0123456789abcdef01234567").encode()
 

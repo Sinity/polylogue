@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6101
+    loc: 6097
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -476,12 +476,12 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/transaction.py
-    loc: 349
+    loc: 495
     target: polylogue/archive/query/transaction.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 565
+    loc: 577
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1560,7 +1560,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 5017
+    loc: 5028
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
@@ -2211,7 +2211,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1203
+    loc: 1214
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3056,11 +3056,11 @@ files:
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
-    loc: 276
+    loc: 289
     target: polylogue/sources/drive/__init__.py
     owner: stable
   - path: polylogue/sources/drive/attachment_fetch.py
-    loc: 183
+    loc: 191
     target: polylogue/sources/drive/attachment_fetch.py
     owner: stable
   - path: polylogue/sources/drive/auth.py
@@ -3328,7 +3328,7 @@ files:
     target: polylogue/sources/providers/gemini.py
     owner: stable
   - path: polylogue/sources/providers/gemini_message.py
-    loc: 360
+    loc: 369
     target: polylogue/sources/providers/gemini_message.py
     owner: stable
   - path: polylogue/sources/providers/gemini_models.py
@@ -3941,7 +3941,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 1514
+    loc: 1620
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
@@ -3985,7 +3985,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/types.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user.py
-    loc: 323
+    loc: 343
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_annotations.py

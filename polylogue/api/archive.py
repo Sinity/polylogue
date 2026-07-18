@@ -2951,7 +2951,7 @@ class PolylogueArchiveMixin:
     ) -> QueryUnitResultEnvelope:
         """Execute a terminal unit-source query."""
         from polylogue.archive.query.execution_control import classify_unit_expression_workload
-        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+        from polylogue.archive.query.transaction import QueryTransaction, query_units_transaction_request
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
         request = query_unit_request(
@@ -2989,18 +2989,14 @@ class PolylogueArchiveMixin:
             max_words=max_words,
             message_type=message_type,
         )
+        archive_root = _active_archive_root(self.config)
         transaction = QueryTransaction(
-            _active_archive_root(self.config),
-            QueryTransactionRequest(
-                operation="query_units",
-                arguments={
-                    "expression": expression,
-                    "session_filters": dict(request.session_filters or {}),
-                },
+            archive_root,
+            query_units_transaction_request(
+                expression=expression,
+                session_filters=request.session_filters or {},
                 page_size=max(1, limit),
                 offset=offset,
-                projection="terminal-unit-envelope",
-                stable_order="canonical",
             ),
             workload_class=classify_unit_expression_workload(expression),
         )

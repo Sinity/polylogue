@@ -860,6 +860,134 @@ class TestArchiveGenericToolSurfaces:
         assert [item["session_id"] for item in payload["items"]] == [kept_id]
 
     @pytest.mark.asyncio
+    async def test_query_units_tool_rejects_continuation_after_archive_epoch_drift(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        """A continuation is bound to the archive frame that issued it (polylogue-z9gh.9).
+
+        If a session is written between the page that hands out a continuation
+        and the page that resumes it, resuming must fail with a typed, honest
+        ``query_continuation_stale`` error instead of silently replaying a
+        moving relation over the stale offset (which could duplicate or skip
+        rows).
+        """
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            _write_archive_session(archive, native_id="tool-query-units-epoch-1", text="epoch drift needle")
+            _write_archive_session(archive, native_id="tool-query-units-epoch-2", text="epoch drift needle")
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+
+            first_result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="messages where text:needle",
+                limit=1,
+            )
+            first_payload = json.loads(first_result)
+            continuation = first_payload["continuation"]
+            assert continuation, "expected a continuation because two rows match and limit=1"
+
+            # The archive admits a new session between the two pages.
+            with ArchiveStore(archive_root) as archive:
+                _write_archive_session(archive, native_id="tool-query-units-epoch-3", text="epoch drift needle")
+
+            resumed_result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="",
+                continuation=continuation,
+            )
+
+        resumed_payload = json.loads(resumed_result)
+        assert resumed_payload.get("code") == "query_continuation_stale"
+
+    @pytest.mark.asyncio
+    async def test_query_units_tool_rejects_continuation_after_user_tag_mutation(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        """A user-tier tag can move the query relation between MCP pages.
+
+        Production dependencies: registered MCP query_units, user.db assertion
+        writes, and the snapshot frame. Removing the user component allows a
+        stale continuation to resume after a tag-filtered result set moved.
+        """
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            first_session = _write_archive_session(archive, native_id="user-epoch-1", text="tag epoch needle")
+            _write_archive_session(archive, native_id="user-epoch-2", text="tag epoch needle")
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(archive_root=archive_root, db_path=archive_root / "index.db")
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            first = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["query_units"].fn,
+                    expression="messages where text:needle",
+                    limit=1,
+                )
+            )
+            with ArchiveStore(archive_root) as archive:
+                assert archive.add_user_tags((first_session,), ("review",)) == 1
+            resumed = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["query_units"].fn,
+                    expression="",
+                    continuation=first["continuation"],
+                )
+            )
+
+        assert resumed["code"] == "query_continuation_stale"
+
+    @pytest.mark.asyncio
+    async def test_query_units_tool_reports_unreadable_snapshot_epoch_as_archive_read_error(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        """Unreadable frame evidence is retryable, never mislabeled stale."""
+        from polylogue.archive.query.transaction import QueryArchiveEpochUnreadableError
+
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            _write_archive_session(archive, native_id="epoch-unreadable-1", text="unreadable epoch needle")
+            _write_archive_session(archive, native_id="epoch-unreadable-2", text="unreadable epoch needle")
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(archive_root=archive_root, db_path=archive_root / "index.db")
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            first = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["query_units"].fn,
+                    expression="messages where text:needle",
+                    limit=1,
+                )
+            )
+            with patch(
+                "polylogue.archive.query.transaction.archive_snapshot_epoch",
+                side_effect=QueryArchiveEpochUnreadableError("index frame unavailable"),
+            ):
+                resumed = json.loads(
+                    await invoke_surface_async(
+                        mcp_server._tool_manager._tools["query_units"].fn,
+                        expression="",
+                        continuation=first["continuation"],
+                    )
+                )
+
+        assert resumed["code"] == "archive_read_unavailable"
+
+    @pytest.mark.asyncio
     async def test_query_units_tool_returns_bounded_delegation_rows(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:

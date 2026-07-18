@@ -3661,11 +3661,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         from polylogue.archive.query.expression import ExpressionCompileError
         from polylogue.archive.query.spec import clamp_query_limit
-        from polylogue.archive.query.transaction import QueryContinuation
+        from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
         continuation_token = self._get_param(params, "continuation")
         session_filters: Mapping[str, object] | None = None
+        continuation_request: QueryTransactionRequest | None = None
         if continuation_token is not None:
             if set(params) != {"continuation"}:
                 self._send_error(
@@ -3680,7 +3681,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 arguments = continuation_request.arguments
                 expression_value = arguments.get("expression")
                 filters_value = arguments.get("session_filters", {})
-                expected_result_ref = "result:" + continuation_request.query_ref.removeprefix("query:")
+                expected_result_ref = continuation_request.result_ref
                 if (
                     continuation_request.operation != "query_units"
                     or continuation_request.projection != "terminal-unit-envelope"
@@ -3753,23 +3754,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         from polylogue.archive.query.execution_control import QueryTimeoutError, classify_unit_expression_workload
-        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+        from polylogue.archive.query.transaction import (
+            QueryArchiveEpochUnreadableError,
+            QueryContinuationStaleError,
+            QueryTransaction,
+            query_units_transaction_request,
+        )
 
         # The handler thread is dedicated, so the read runs in place; the
         # execution context supplies the deadline and shares the process-wide
         # admission controller with the async surfaces (polylogue-z9gh.1).
+        # A continuation is checked in query_unit_envelope before its result
+        # query, from this reader's same SQLite snapshot.
         transaction = QueryTransaction(
             archive_root,
-            QueryTransactionRequest(
-                operation="query_units",
-                arguments={
-                    "expression": expression,
-                    "session_filters": dict(request.session_filters or {}),
-                },
+            continuation_request
+            if continuation_request is not None
+            else query_units_transaction_request(
+                expression=expression,
+                session_filters=request.session_filters or {},
                 page_size=limit,
                 offset=offset,
-                projection="terminal-unit-envelope",
-                stable_order="canonical",
             ),
             workload_class=classify_unit_expression_workload(expression),
             read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
@@ -3785,6 +3790,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
         except QueryTimeoutError:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "query_deadline_exceeded")
+            return
+        except QueryContinuationStaleError as exc:
+            self._send_error(HTTPStatus.CONFLICT, exc.code, str(exc))
+            return
+        except QueryArchiveEpochUnreadableError as exc:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, exc.code, str(exc))
             return
 
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
