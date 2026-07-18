@@ -460,8 +460,8 @@ Session summaries:
         return f"""Rebuild working context for repo '{repo_name}' from the Polylogue archive.
 
 Call sequence:
-1. find_resume_candidates(repo_path="{cwd}", limit={limit}) — ranked resumable logical sessions for this checkout.
-2. get_resume_brief(session_id=<top candidate>) — typed brief: goals, open threads, next actions, provenance refs.
+1. find_resume_candidates(repo_path="{cwd}", cwd=<current cwd>, recent_files=<recent files>, limit={limit}) — ranked resumable logical sessions for this checkout.
+2. get_resume_brief(session_id=<top candidate>, repo_path="{cwd}", recent_files=<same recent files>) — typed brief: goals, open threads, next actions, provenance refs, and overlap_basis.
 3. agent_coordination_brief(view="self") — check concurrent agents/worktrees before claiming work.
 4. blackboard_list(scope_repo="{repo_name}", unresolved=True) — unresolved notes/handoffs addressed to agents here.
 

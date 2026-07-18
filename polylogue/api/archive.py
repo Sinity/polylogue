@@ -4408,11 +4408,19 @@ class PolylogueArchiveMixin:
         session_id: str,
         *,
         related_limit: int = 6,
+        repo_path: str | None = None,
+        recent_files: Sequence[str] = (),
     ) -> ResumeBrief | None:
         """Build a compact handoff brief for an archived session."""
         from polylogue.insights.resume import ResumeOperations, build_resume_brief
 
-        return await build_resume_brief(cast(ResumeOperations, self), session_id, related_limit=related_limit)
+        return await build_resume_brief(
+            cast(ResumeOperations, self),
+            session_id,
+            related_limit=related_limit,
+            repo_path=repo_path,
+            recent_files=recent_files,
+        )
 
     async def find_resume_candidates(
         self, *, repo_path: str, cwd: str | None = None, recent_files: Sequence[str] = (), limit: int = 10

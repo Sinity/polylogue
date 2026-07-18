@@ -1476,6 +1476,26 @@
           "default": 6,
           "title": "Related Limit",
           "type": "integer"
+        },
+        "repo_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo Path"
+        },
+        "recent_files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Recent Files",
+          "type": "array"
         }
       },
       "required": [

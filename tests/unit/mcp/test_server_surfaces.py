@@ -1624,6 +1624,9 @@ class TestPromptSurfaces:
         assert cwd.name in resume
         assert "POLYLOGUE_ARCHIVE_ROOT" in resume
         assert "refs" in resume.lower()
+        assert "recent_files=<recent files>" in resume
+        assert "recent_files=<same recent files>" in resume
+        assert "overlap_basis" in resume
 
         override = await invoke_surface_async(prompts["resume_context"].fn, repo="sinex")
         assert "'sinex'" in override

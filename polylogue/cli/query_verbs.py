@@ -484,7 +484,12 @@ def _emit_continue_candidates(
         emit_success(payload)
         return
     for candidate in candidates:
-        click.echo(f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title}")
+        basis = candidate.overlap_basis
+        click.echo(
+            f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title} "
+            f"[overlap exact={len(basis.exact)} dir={len(basis.dir)} "
+            f"dead-excluded={len(basis.dead_excluded)}]"
+        )
 
 
 def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:

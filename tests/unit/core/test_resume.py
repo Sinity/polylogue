@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.insights.archive import ArchiveInsightProvenance, SessionProfileInsight
+from polylogue.insights.archive_models import SessionEvidencePayload
+from polylogue.insights.resume import ResumeOperations
 from tests.infra.storage_records import SessionBuilder
 
 # Archive session ids derived from the builder's provider_session_id
@@ -282,3 +287,228 @@ async def test_resume_candidates_empty_context_prefers_unfinished_sessions(
 
     assert candidates
     assert all(candidate.terminal_state != "clean_finish" for candidate in candidates)
+
+
+def _synthetic_ranking_profile(
+    session_id: str,
+    *,
+    logical_session_id: str,
+    repo_root: Path,
+    file_paths: tuple[str, ...],
+    last_message_at: str = "2026-07-17T10:00:00+00:00",
+) -> SessionProfileInsight:
+    return SessionProfileInsight(
+        session_id=session_id,
+        logical_session_id=logical_session_id,
+        origin="claude-code",
+        title=session_id,
+        provenance=ArchiveInsightProvenance(
+            materializer_version=1,
+            materialized_at=last_message_at,
+            source_updated_at=last_message_at,
+        ),
+        evidence=SessionEvidencePayload(
+            last_message_at=last_message_at,
+            repo_paths=(str(repo_root),),
+            file_paths_touched=file_paths,
+        ),
+    )
+
+
+def _ranking_operations(profiles: list[SessionProfileInsight]) -> ResumeOperations:
+    return cast(
+        ResumeOperations,
+        SimpleNamespace(list_session_profile_insights=AsyncMock(return_value=profiles)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_candidates_recover_100_percent_dead_session_by_directory(tmp_path: Path) -> None:
+    """Directory recovery must exercise the production scorer, not a test-only matcher."""
+    from polylogue.insights.resume import find_resume_candidates
+
+    repo_root = tmp_path / "repo"
+    current = repo_root / "polylogue" / "pipeline" / "service.py"
+    current.parent.mkdir(parents=True)
+    current.write_text("# current pipeline service\n", encoding="utf-8")
+    profile = _synthetic_ranking_profile(
+        "parent-session",
+        logical_session_id="fork-family",
+        repo_root=repo_root,
+        file_paths=("polylogue/pipeline/runner.py",),
+    )
+
+    candidates = await find_resume_candidates(
+        _ranking_operations([profile]),
+        repo_path=str(repo_root),
+        recent_files=("polylogue/pipeline/service.py",),
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.score_breakdown["file_overlap"] > 0
+    assert candidate.file_overlap == ("polylogue/pipeline/service.py",)
+    assert candidate.overlap_basis.exact == ()
+    assert [(match.candidate_path, match.recent_file) for match in candidate.overlap_basis.dir] == [
+        ("polylogue/pipeline/runner.py", "polylogue/pipeline/service.py")
+    ]
+    assert candidate.overlap_basis.dead_excluded == ()
+
+
+@pytest.mark.asyncio
+async def test_resume_candidates_do_not_recover_repo_root_only_directory_prefix(tmp_path: Path) -> None:
+    """Directory fallback must not turn every top-level file into a match."""
+    from polylogue.insights.resume import find_resume_candidates
+
+    repo_root = tmp_path / "repo"
+    current = repo_root / "README.md"
+    current.parent.mkdir(parents=True)
+    current.write_text("# current root file\n", encoding="utf-8")
+    profile = _synthetic_ranking_profile(
+        "parent-session",
+        logical_session_id="fork-family",
+        repo_root=repo_root,
+        file_paths=("src/retired.py",),
+    )
+
+    candidate = (
+        await find_resume_candidates(
+            _ranking_operations([profile]),
+            repo_path=str(repo_root),
+            recent_files=("README.md",),
+        )
+    )[0]
+
+    assert candidate.score_breakdown["file_overlap"] == 0
+    assert candidate.overlap_basis.dir == ()
+    assert candidate.overlap_basis.dead_excluded == ("src/retired.py",)
+
+
+@pytest.mark.asyncio
+async def test_resume_candidates_exclude_unmatched_dead_paths_from_jaccard_union(tmp_path: Path) -> None:
+    """Removing dead-path exclusion should make the two production-route scores diverge."""
+    from polylogue.insights.resume import find_resume_candidates
+
+    repo_root = tmp_path / "repo"
+    current = repo_root / "polylogue" / "insights" / "resume.py"
+    current.parent.mkdir(parents=True)
+    current.write_text("# scorer\n", encoding="utf-8")
+    shared = ("polylogue/insights/resume.py",)
+    profiles = [
+        _synthetic_ranking_profile(
+            "candidate-a",
+            logical_session_id="candidate-a",
+            repo_root=repo_root,
+            file_paths=shared,
+        ),
+        _synthetic_ranking_profile(
+            "candidate-b",
+            logical_session_id="candidate-b",
+            repo_root=repo_root,
+            file_paths=(*shared, "retired/unrelated/ghost.py"),
+        ),
+    ]
+
+    candidates = await find_resume_candidates(
+        _ranking_operations(profiles),
+        repo_path=str(repo_root),
+        recent_files=shared,
+    )
+    by_id = {candidate.logical_session_id: candidate for candidate in candidates}
+
+    assert by_id["candidate-a"].score_breakdown["file_overlap"] == by_id["candidate-b"].score_breakdown["file_overlap"]
+    assert by_id["candidate-a"].score == by_id["candidate-b"].score
+    assert by_id["candidate-b"].overlap_basis.dead_excluded == ("retired/unrelated/ghost.py",)
+
+
+def test_resume_candidates_preserve_resolvable_exact_jaccard(tmp_path: Path) -> None:
+    """Replacing the fixed scorer with legacy mode must not change an all-live exact case."""
+    from polylogue.insights.resume import _rank_resume_profiles
+
+    repo_root = tmp_path / "repo"
+    current = repo_root / "polylogue" / "insights" / "resume.py"
+    current.parent.mkdir(parents=True)
+    current.write_text("# scorer\n", encoding="utf-8")
+    profile = _synthetic_ranking_profile(
+        "candidate",
+        logical_session_id="candidate",
+        repo_root=repo_root,
+        file_paths=("polylogue/insights/resume.py",),
+    )
+
+    legacy = _rank_resume_profiles(
+        [profile],
+        repo_path=str(repo_root),
+        recent_files=("polylogue/insights/resume.py",),
+        overlap_mode="legacy",
+    )[0]
+    fixed = _rank_resume_profiles(
+        [profile],
+        repo_path=str(repo_root),
+        recent_files=("polylogue/insights/resume.py",),
+    )[0]
+
+    assert fixed.score_breakdown["file_overlap"] == legacy.score_breakdown["file_overlap"]
+    assert fixed.file_overlap == legacy.file_overlap == ("polylogue/insights/resume.py",)
+    assert [(match.candidate_path, match.recent_file) for match in fixed.overlap_basis.exact] == [
+        ("polylogue/insights/resume.py", "polylogue/insights/resume.py")
+    ]
+
+
+def test_resume_candidates_credit_file_to_package_correction(tmp_path: Path) -> None:
+    """The scorer must resolve the repository.py -> repository/__init__.py history shape."""
+    from polylogue.insights.resume import _rank_resume_profiles
+
+    repo_root = tmp_path / "repo"
+    current = repo_root / "polylogue" / "storage" / "repository" / "__init__.py"
+    current.parent.mkdir(parents=True)
+    current.write_text("# package replacement\n", encoding="utf-8")
+    historical_root = Path("/historic/worktree/polylogue")
+    profile = _synthetic_ranking_profile(
+        "refactor-parent",
+        logical_session_id="refactor-family",
+        repo_root=historical_root,
+        file_paths=(str(historical_root / "polylogue/storage/repository.py"),),
+    )
+
+    candidate = _rank_resume_profiles(
+        [profile],
+        repo_path=str(repo_root),
+        recent_files=("polylogue/storage/repository/__init__.py",),
+    )[0]
+
+    assert candidate.score_breakdown["file_overlap"] > 0
+    assert [(match.candidate_path, match.recent_file) for match in candidate.overlap_basis.exact] == [
+        (
+            "/historic/worktree/polylogue/polylogue/storage/repository.py",
+            "polylogue/storage/repository/__init__.py",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_brief_projects_overlap_basis_for_current_work(
+    cli_workspace: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The facade brief route must project the same scorer explanation used by ranking."""
+    db_path = cli_workspace["db_path"]
+    _seed_resume_sessions(db_path)
+    repo_root = tmp_path / "repo"
+    current = repo_root / "polylogue" / "cli" / "click_app.py"
+    current.parent.mkdir(parents=True)
+    current.write_text("# current CLI\n", encoding="utf-8")
+
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    await archive.rebuild_insights()
+    brief = await archive.resume_brief(
+        ROOT_ID,
+        repo_path=str(repo_root),
+        recent_files=("polylogue/cli/click_app.py",),
+    )
+
+    assert brief is not None
+    assert brief.overlap_basis is not None
+    assert [(match.candidate_path, match.recent_file) for match in brief.overlap_basis.exact] == [
+        ("/workspace/polylogue/polylogue/cli/click_app.py", "polylogue/cli/click_app.py")
+    ]

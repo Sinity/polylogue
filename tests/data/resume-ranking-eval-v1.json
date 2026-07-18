@@ -1,0 +1,327 @@
+{
+  "version": 1,
+  "description": "Offline resume-ranking fixtures with lineage-derived ground truth and refactor paths sampled from the 2026-07-17 Polylogue snapshot history.",
+  "scenarios": [
+    {
+      "id": "synthetic-dead-shared-directory",
+      "source": "synthetic",
+      "present_paths": [
+        "src/feature/current.py",
+        "other/a.py",
+        "other/b.py",
+        "other/c.py"
+      ],
+      "current": {
+        "session_id": "current-synthetic-dir",
+        "logical_session_id": "z-family-synthetic-dir",
+        "parent_session_id": "parent-synthetic-dir",
+        "recent_files": [
+          "src/feature/current.py"
+        ]
+      },
+      "candidates": [
+        {
+          "session_id": "parent-synthetic-dir",
+          "logical_session_id": "z-family-synthetic-dir",
+          "title": "Refactor the feature implementation",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "src/feature/retired.py"
+          ]
+        },
+        {
+          "session_id": "distractor-a-dir",
+          "logical_session_id": "a-distractor-synthetic-dir",
+          "title": "Unrelated A",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "other/a.py"
+          ]
+        },
+        {
+          "session_id": "distractor-b-dir",
+          "logical_session_id": "b-distractor-synthetic-dir",
+          "title": "Unrelated B",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "other/b.py"
+          ]
+        },
+        {
+          "session_id": "distractor-c-dir",
+          "logical_session_id": "c-distractor-synthetic-dir",
+          "title": "Unrelated C",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "other/c.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "synthetic-dead-union-deflation",
+      "source": "synthetic",
+      "present_paths": [
+        "src/alpha/current_one.py",
+        "src/alpha/current_two.py"
+      ],
+      "current": {
+        "session_id": "current-synthetic-union",
+        "logical_session_id": "z-family-synthetic-union",
+        "parent_session_id": "parent-synthetic-union",
+        "recent_files": [
+          "src/alpha/current_one.py",
+          "src/alpha/current_two.py"
+        ]
+      },
+      "candidates": [
+        {
+          "session_id": "parent-synthetic-union",
+          "logical_session_id": "z-family-synthetic-union",
+          "title": "Correct ancestor with dead baggage",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "src/alpha/current_one.py",
+            "src/alpha/current_two.py",
+            "retired/one/ghost.py",
+            "retired/two/ghost.py",
+            "retired/three/ghost.py",
+            "retired/four/ghost.py",
+            "retired/five/ghost.py",
+            "retired/six/ghost.py"
+          ]
+        },
+        {
+          "session_id": "distractor-a-union",
+          "logical_session_id": "a-distractor-synthetic-union",
+          "title": "Partial overlap A",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "src/alpha/current_one.py"
+          ]
+        },
+        {
+          "session_id": "distractor-b-union",
+          "logical_session_id": "b-distractor-synthetic-union",
+          "title": "Partial overlap B",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "src/alpha/current_one.py"
+          ]
+        },
+        {
+          "session_id": "distractor-c-union",
+          "logical_session_id": "c-distractor-synthetic-union",
+          "title": "Partial overlap C",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "src/alpha/current_one.py"
+          ]
+        },
+        {
+          "session_id": "distractor-d-union",
+          "logical_session_id": "d-distractor-synthetic-union",
+          "title": "Partial overlap D",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "src/alpha/current_one.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "synthetic-live-exact-control",
+      "source": "synthetic",
+      "present_paths": [
+        "src/control/live.py",
+        "other/control_a.py",
+        "other/control_b.py",
+        "other/control_c.py"
+      ],
+      "current": {
+        "session_id": "current-exact-control",
+        "logical_session_id": "z-family-exact-control",
+        "parent_session_id": "parent-exact-control",
+        "recent_files": [
+          "src/control/live.py"
+        ]
+      },
+      "candidates": [
+        {
+          "session_id": "parent-exact-control",
+          "logical_session_id": "z-family-exact-control",
+          "title": "Exact live ancestor",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "src/control/live.py"
+          ]
+        },
+        {
+          "session_id": "distractor-a-control",
+          "logical_session_id": "a-distractor-exact-control",
+          "title": "Control distractor A",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "other/control_a.py"
+          ]
+        },
+        {
+          "session_id": "distractor-b-control",
+          "logical_session_id": "b-distractor-exact-control",
+          "title": "Control distractor B",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "other/control_b.py"
+          ]
+        },
+        {
+          "session_id": "distractor-c-control",
+          "logical_session_id": "c-distractor-exact-control",
+          "title": "Control distractor C",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "file_paths_touched": [
+            "other/control_c.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "snapshot-storage-repository-file-to-package",
+      "source": "snapshot-derived",
+      "present_paths": [
+        "polylogue/storage/repository/__init__.py",
+        "other/snapshot_a.py",
+        "other/snapshot_b.py",
+        "other/snapshot_c.py"
+      ],
+      "current": {
+        "session_id": "current-snapshot-repository",
+        "logical_session_id": "z-family-snapshot-repository",
+        "parent_session_id": "parent-snapshot-repository",
+        "recent_files": [
+          "polylogue/storage/repository/__init__.py"
+        ]
+      },
+      "candidates": [
+        {
+          "session_id": "parent-snapshot-repository",
+          "logical_session_id": "z-family-snapshot-repository",
+          "title": "Repository split ancestor",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
+          "file_paths_touched": [
+            "/snapshot/polylogue-before-fa56862b/polylogue/storage/repository.py"
+          ]
+        },
+        {
+          "session_id": "distractor-a-repository",
+          "logical_session_id": "a-distractor-snapshot-repository",
+          "title": "Snapshot distractor A",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
+          "file_paths_touched": [
+            "other/snapshot_a.py"
+          ]
+        },
+        {
+          "session_id": "distractor-b-repository",
+          "logical_session_id": "b-distractor-snapshot-repository",
+          "title": "Snapshot distractor B",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
+          "file_paths_touched": [
+            "other/snapshot_b.py"
+          ]
+        },
+        {
+          "session_id": "distractor-c-repository",
+          "logical_session_id": "c-distractor-snapshot-repository",
+          "title": "Snapshot distractor C",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
+          "file_paths_touched": [
+            "other/snapshot_c.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "snapshot-pipeline-runner-directory-recovery",
+      "source": "snapshot-derived",
+      "present_paths": [
+        "polylogue/pipeline/service.py",
+        "other/pipeline_a.py",
+        "other/pipeline_b.py",
+        "other/pipeline_c.py"
+      ],
+      "current": {
+        "session_id": "current-snapshot-pipeline",
+        "logical_session_id": "z-family-snapshot-pipeline",
+        "parent_session_id": "parent-snapshot-pipeline",
+        "recent_files": [
+          "polylogue/pipeline/service.py"
+        ]
+      },
+      "candidates": [
+        {
+          "session_id": "parent-snapshot-pipeline",
+          "logical_session_id": "z-family-snapshot-pipeline",
+          "title": "Pipeline runner ancestor",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
+          "file_paths_touched": [
+            "/snapshot/polylogue-before-be1fc005/polylogue/pipeline/runner.py"
+          ]
+        },
+        {
+          "session_id": "sibling-snapshot-pipeline",
+          "logical_session_id": "z-family-snapshot-pipeline",
+          "parent_session_id": "parent-snapshot-pipeline",
+          "title": "Sibling pipeline exploration",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
+          "file_paths_touched": []
+        },
+        {
+          "session_id": "distractor-a-pipeline",
+          "logical_session_id": "a-distractor-snapshot-pipeline",
+          "title": "Pipeline distractor A",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
+          "file_paths_touched": [
+            "other/pipeline_a.py"
+          ]
+        },
+        {
+          "session_id": "distractor-b-pipeline",
+          "logical_session_id": "b-distractor-snapshot-pipeline",
+          "title": "Pipeline distractor B",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
+          "file_paths_touched": [
+            "other/pipeline_b.py"
+          ]
+        },
+        {
+          "session_id": "distractor-c-pipeline",
+          "logical_session_id": "c-distractor-snapshot-pipeline",
+          "title": "Pipeline distractor C",
+          "last_message_at": "2026-07-17T10:00:00+00:00",
+          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
+          "file_paths_touched": [
+            "other/pipeline_c.py"
+          ]
+        }
+      ]
+    }
+  ],
+  "evidence_samples": [
+    {
+      "id": "seeded-live-mass-equivalent",
+      "source": "synthetic",
+      "resolvable_count": 570,
+      "recoverable_dead_count": 254,
+      "unrecoverable_dead_count": 176
+    }
+  ]
+}

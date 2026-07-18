@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import PurePath
-from typing import TYPE_CHECKING, Protocol
+from pathlib import Path, PurePath
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import Field, field_validator
 
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
 
 
-RESUME_BRIEF_MATERIALIZER_VERSION = 1
+RESUME_BRIEF_MATERIALIZER_VERSION = 2
 """Bumped whenever the resume-brief composition contract changes shape.
 
 Owned by ``polylogue/insights/resume.py``. The brief is composed on read
@@ -136,6 +138,17 @@ class ResumeProvenance(ArchiveInsightModel):
     cited_thread_id: str | None = None
 
 
+class ResumePathOverlap(ArchiveInsightModel):
+    candidate_path: str
+    recent_file: str
+
+
+class ResumeOverlapBasis(ArchiveInsightModel):
+    exact: tuple[ResumePathOverlap, ...] = ()
+    dir: tuple[ResumePathOverlap, ...] = ()
+    dead_excluded: tuple[str, ...] = ()
+
+
 class ResumeBrief(ArchiveInsightModel):
     session_id: str
     facts: ResumeFacts
@@ -143,6 +156,7 @@ class ResumeBrief(ArchiveInsightModel):
     related_sessions: tuple[ResumeRelatedSession, ...] = ()
     uncertainties: tuple[ResumeUncertainty, ...] = ()
     next_steps: tuple[str, ...] = ()
+    overlap_basis: ResumeOverlapBasis | None = None
     provenance: ResumeProvenance = Field(
         default_factory=lambda: ResumeProvenance(
             materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
@@ -159,6 +173,7 @@ class ResumeCandidate(ArchiveInsightModel):
     terminal_state: str = "unknown"
     workflow_shape: str = "unknown"
     file_overlap: tuple[str, ...] = ()
+    overlap_basis: ResumeOverlapBasis = Field(default_factory=ResumeOverlapBasis)
     score: float
     score_breakdown: dict[str, float]
     brief_url: str
@@ -214,10 +229,334 @@ def _normalize_path(value: str) -> str:
     return text
 
 
+@dataclass(frozen=True)
+class _PathEvidence:
+    display: str
+    local_path: Path | None
+
+
+@dataclass(frozen=True)
+class _ResolvedCandidatePath:
+    evidence: _PathEvidence
+    local_path: Path
+
+
+@dataclass(frozen=True)
+class _FileOverlapScore:
+    score: float
+    file_overlap: tuple[str, ...]
+    basis: ResumeOverlapBasis
+    resolvable_paths: tuple[str, ...] = ()
+    dead_paths: tuple[str, ...] = ()
+    resolution_available: bool = False
+
+
+@dataclass
+class _PathResolutionContext:
+    repo_root: Path | None
+    exists_cache: dict[Path, bool] = field(default_factory=dict)
+
+    @classmethod
+    def from_repo_path(cls, repo_path: str) -> _PathResolutionContext:
+        return cls(repo_root=_resume_repo_root(repo_path))
+
+    def exists(self, path: Path) -> bool:
+        cached = self.exists_cache.get(path)
+        if cached is not None:
+            return cached
+        try:
+            exists = os.path.exists(path)
+        except OSError:
+            exists = False
+        self.exists_cache[path] = exists
+        return exists
+
+
+_ResumeOverlapMode = Literal["legacy", "refactor-aware"]
+
+
 def _path_matches_prefix(path: str, prefix: str) -> bool:
     if not path or not prefix:
         return False
     return path == prefix or path.startswith(f"{prefix}/")
+
+
+def _resume_repo_root(repo_path: str) -> Path | None:
+    normalized = _normalize_path(repo_path)
+    if not normalized:
+        return None
+    try:
+        root = Path(normalized).expanduser().resolve(strict=False)
+        return root if os.path.isdir(root) else None
+    except OSError:
+        return None
+
+
+def _absolute_root(value: str) -> Path | None:
+    normalized = _normalize_path(value)
+    if not normalized:
+        return None
+    path = Path(normalized).expanduser()
+    if not path.is_absolute():
+        return None
+    try:
+        return path.resolve(strict=False)
+    except OSError:
+        return None
+
+
+def _inferred_candidate_repo_roots(
+    candidate_paths: set[str],
+    recent_files: set[str],
+) -> tuple[str, ...]:
+    """Infer captured checkout roots from an exact repo-relative suffix.
+
+    Some older profiles have absolute file touches but no ``repo_paths`` evidence.
+    A current relative path is sufficient to recover the old checkout root only when
+    the complete relative path is an exact suffix of the captured absolute path.
+    """
+    recent_parts = {
+        tuple(path.parts)
+        for display in recent_files
+        if (path := Path(display)).parts and not path.is_absolute() and ".." not in path.parts
+    }
+    roots: set[str] = set()
+    for display in candidate_paths:
+        absolute = _absolute_root(display)
+        if absolute is None:
+            continue
+        for parts in recent_parts:
+            if len(absolute.parts) <= len(parts) or tuple(absolute.parts[-len(parts) :]) != parts:
+                continue
+            root = absolute
+            for _ in parts:
+                root = root.parent
+            roots.add(root.as_posix())
+    return tuple(sorted(roots))
+
+
+def _repo_local_path(
+    repo_root: Path,
+    display: str,
+    *,
+    candidate_repo_roots: Sequence[str] = (),
+) -> Path | None:
+    path = Path(display).expanduser()
+    try:
+        if not path.is_absolute():
+            local = (repo_root / path).resolve(strict=False)
+            local.relative_to(repo_root)
+            return local
+
+        absolute = path.resolve(strict=False)
+        try:
+            absolute.relative_to(repo_root)
+        except ValueError:
+            historical_roots = sorted(
+                (root for value in candidate_repo_roots if (root := _absolute_root(value)) is not None),
+                key=lambda root: len(root.parts),
+                reverse=True,
+            )
+            for historical_root in historical_roots:
+                try:
+                    relative = absolute.relative_to(historical_root)
+                except ValueError:
+                    continue
+                local = (repo_root / relative).resolve(strict=False)
+                local.relative_to(repo_root)
+                return local
+            return None
+        return absolute
+    except (OSError, ValueError):
+        return None
+
+
+def _partition_candidate_paths(
+    context: _PathResolutionContext,
+    candidate_paths: set[str],
+    *,
+    candidate_repo_roots: Sequence[str],
+) -> tuple[tuple[_ResolvedCandidatePath, ...], tuple[_PathEvidence, ...]]:
+    repo_root = context.repo_root
+    if repo_root is None:
+        return (), ()
+
+    resolved: list[_ResolvedCandidatePath] = []
+    dead: list[_PathEvidence] = []
+    for display in sorted(candidate_paths):
+        evidence = _PathEvidence(
+            display=display,
+            local_path=_repo_local_path(
+                repo_root,
+                display,
+                candidate_repo_roots=candidate_repo_roots,
+            ),
+        )
+        local_path = evidence.local_path
+        if local_path is None:
+            dead.append(evidence)
+            continue
+        if context.exists(local_path):
+            resolved.append(_ResolvedCandidatePath(evidence=evidence, local_path=local_path))
+            continue
+        if local_path.suffix == ".py" and local_path.name != "__init__.py":
+            package_init = local_path.with_suffix("") / "__init__.py"
+            if context.exists(package_init):
+                resolved.append(_ResolvedCandidatePath(evidence=evidence, local_path=package_init))
+                continue
+        dead.append(evidence)
+    return tuple(resolved), tuple(dead)
+
+
+def _path_identity(evidence: _PathEvidence) -> str:
+    if evidence.local_path is None:
+        return f"raw:{evidence.display}"
+    return evidence.local_path.as_posix()
+
+
+def _is_path_prefix(prefix: Path, path: Path) -> bool:
+    return prefix == path or prefix in path.parents
+
+
+def _directory_overlap_pairs(
+    repo_root: Path,
+    dead_paths: Sequence[_PathEvidence],
+    recent_paths: Sequence[_PathEvidence],
+) -> tuple[ResumePathOverlap, ...]:
+    scored_pairs: list[tuple[int, int, str, str]] = []
+    for dead in dead_paths:
+        if dead.local_path is None:
+            continue
+        dead_parent = dead.local_path.parent
+        if dead_parent == repo_root:
+            continue
+        for recent in recent_paths:
+            if recent.local_path is None:
+                continue
+            recent_parent = recent.local_path.parent
+            try:
+                dead_parent.relative_to(repo_root)
+                recent_parent.relative_to(repo_root)
+            except ValueError:
+                continue
+            if not (_is_path_prefix(dead_parent, recent_parent) or _is_path_prefix(recent_parent, dead_parent)):
+                continue
+            shorter = dead_parent if len(dead_parent.parts) <= len(recent_parent.parts) else recent_parent
+            if shorter == repo_root:
+                continue
+            common_depth = len(shorter.relative_to(repo_root).parts)
+            distance = abs(len(dead_parent.parts) - len(recent_parent.parts))
+            scored_pairs.append((-common_depth, distance, dead.display, recent.display))
+
+    matched_dead: set[str] = set()
+    matched_recent: set[str] = set()
+    matches: list[ResumePathOverlap] = []
+    for _, _, dead_display, recent_display in sorted(scored_pairs):
+        if dead_display in matched_dead or recent_display in matched_recent:
+            continue
+        matched_dead.add(dead_display)
+        matched_recent.add(recent_display)
+        matches.append(
+            ResumePathOverlap(
+                candidate_path=dead_display,
+                recent_file=recent_display,
+            )
+        )
+    return tuple(matches)
+
+
+def _legacy_file_overlap(*, recent_files: set[str], candidate_paths: set[str]) -> _FileOverlapScore:
+    exact_paths = tuple(sorted(recent_files & candidate_paths))
+    union = recent_files | candidate_paths
+    score = len(exact_paths) / len(union) if recent_files and union else 0.0
+    return _FileOverlapScore(
+        score=score,
+        file_overlap=exact_paths,
+        basis=ResumeOverlapBasis(
+            exact=tuple(ResumePathOverlap(candidate_path=path, recent_file=path) for path in exact_paths)
+        ),
+    )
+
+
+def _score_file_overlap(
+    *,
+    context: _PathResolutionContext,
+    recent_files: set[str],
+    candidate_paths: set[str],
+    candidate_repo_roots: Sequence[str] = (),
+    mode: _ResumeOverlapMode = "refactor-aware",
+) -> _FileOverlapScore:
+    legacy = _legacy_file_overlap(recent_files=recent_files, candidate_paths=candidate_paths)
+    if mode == "legacy" or context.repo_root is None:
+        return legacy
+
+    repo_root = context.repo_root
+    recent_evidence = tuple(
+        _PathEvidence(
+            display=display,
+            local_path=_repo_local_path(repo_root, display),
+        )
+        for display in sorted(recent_files)
+    )
+    recent_by_identity = {_path_identity(evidence): evidence for evidence in recent_evidence}
+    effective_repo_roots = tuple(
+        sorted(
+            {
+                *candidate_repo_roots,
+                *_inferred_candidate_repo_roots(candidate_paths, recent_files),
+            }
+        )
+    )
+    resolved, dead = _partition_candidate_paths(
+        context,
+        candidate_paths,
+        candidate_repo_roots=effective_repo_roots,
+    )
+
+    resolved_by_identity: dict[str, _ResolvedCandidatePath] = {}
+    for resolved_candidate in resolved:
+        resolved_by_identity.setdefault(resolved_candidate.local_path.as_posix(), resolved_candidate)
+
+    exact_matches: list[ResumePathOverlap] = []
+    exact_recent_identities: set[str] = set()
+    for identity, recent in sorted(recent_by_identity.items()):
+        matched_candidate = resolved_by_identity.get(identity)
+        if matched_candidate is None:
+            continue
+        exact_recent_identities.add(identity)
+        exact_matches.append(
+            ResumePathOverlap(
+                candidate_path=matched_candidate.evidence.display,
+                recent_file=recent.display,
+            )
+        )
+
+    available_recent = tuple(
+        evidence for identity, evidence in sorted(recent_by_identity.items()) if identity not in exact_recent_identities
+    )
+    directory_matches = _directory_overlap_pairs(repo_root, dead, available_recent)
+    recent_identity_by_display = {evidence.display: identity for identity, evidence in recent_by_identity.items()}
+    directory_recent_identities = {recent_identity_by_display[match.recent_file] for match in directory_matches}
+    matched_dead = {match.candidate_path for match in directory_matches}
+
+    candidate_identities = set(resolved_by_identity) | directory_recent_identities
+    overlap_identities = exact_recent_identities | directory_recent_identities
+    union = set(recent_by_identity) | candidate_identities
+    score = len(overlap_identities) / len(union) if recent_by_identity and union else 0.0
+    file_overlap = tuple(sorted(recent_by_identity[identity].display for identity in overlap_identities))
+    basis = ResumeOverlapBasis(
+        exact=tuple(exact_matches),
+        dir=directory_matches,
+        dead_excluded=tuple(sorted(path.display for path in dead if path.display not in matched_dead)),
+    )
+    return _FileOverlapScore(
+        score=score,
+        file_overlap=file_overlap,
+        basis=basis,
+        resolvable_paths=tuple(sorted(candidate.evidence.display for candidate in resolved)),
+        dead_paths=tuple(sorted(path.display for path in dead)),
+        resolution_available=True,
+    )
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -308,6 +647,13 @@ def _profile_cwds(profile: SessionProfileInsight) -> set[str]:
     if evidence is None:
         return set()
     return {_normalize_path(path) for path in evidence.cwd_paths if _normalize_path(path)}
+
+
+def _profile_repo_roots(profile: SessionProfileInsight) -> set[str]:
+    evidence = profile.evidence
+    if evidence is None:
+        return set()
+    return {_normalize_path(path) for path in evidence.repo_paths if _normalize_path(path)}
 
 
 def _profile_repo_matches(profile: SessionProfileInsight, repo_path: str) -> bool:
@@ -559,8 +905,13 @@ async def build_resume_brief(
     session_id: str,
     *,
     related_limit: int = 6,
+    repo_path: str | None = None,
+    recent_files: Sequence[str] = (),
 ) -> ResumeBrief | None:
     """Build a compact handoff brief for one archived session."""
+    if repo_path is None and recent_files:
+        raise ValueError("repo_path is required when recent_files are supplied")
+
     session = await operations.get_session(session_id)
     if session is None:
         return None
@@ -638,6 +989,44 @@ async def build_resume_brief(
         cited_thread_id=thread.thread_id if thread is not None else None,
     )
 
+    overlap_basis: ResumeOverlapBasis | None = None
+    if repo_path is not None:
+        try:
+            ranking_profiles = await operations.list_session_profile_insights(
+                SessionProfileInsightQuery(
+                    sort="last-message",
+                    tier="merged",
+                    limit=None,
+                )
+            )
+            logical_session_id = (
+                str(profile.logical_session_id or profile.session_id) if profile is not None else session_id
+            )
+            members = [
+                candidate
+                for candidate in ranking_profiles
+                if str(candidate.logical_session_id or candidate.session_id) == logical_session_id
+            ]
+            if members:
+                normalized_recent = {_normalize_path(path) for path in recent_files if _normalize_path(path)}
+                all_paths = set().union(*(_profile_paths(member) for member in members))
+                candidate_repo_roots = set().union(*(_profile_repo_roots(member) for member in members))
+                overlap_basis = _score_file_overlap(
+                    context=_PathResolutionContext.from_repo_path(repo_path),
+                    recent_files=normalized_recent,
+                    candidate_paths=all_paths,
+                    candidate_repo_roots=tuple(sorted(candidate_repo_roots)),
+                ).basis
+            else:
+                uncertainties.append(
+                    ResumeUncertainty(
+                        source="resume_overlap",
+                        detail="no merged session profile was available for overlap explanation",
+                    )
+                )
+        except ArchiveInsightUnavailableError as exc:
+            uncertainties.append(ResumeUncertainty(source="resume_overlap", detail=str(exc)))
+
     return ResumeBrief(
         session_id=session_id,
         facts=_facts_from_session(session, profile),
@@ -645,30 +1034,24 @@ async def build_resume_brief(
         related_sessions=related_sessions,
         uncertainties=tuple(uncertainties),
         next_steps=_next_steps(session, inferences),
+        overlap_basis=overlap_basis,
         provenance=provenance,
     )
 
 
-async def find_resume_candidates(
-    operations: ResumeOperations,
+def _rank_resume_profiles(
+    profiles: Sequence[SessionProfileInsight],
     *,
     repo_path: str,
     cwd: str | None = None,
     recent_files: Sequence[str] = (),
     limit: int = 10,
+    overlap_mode: _ResumeOverlapMode = "refactor-aware",
 ) -> tuple[ResumeCandidate, ...]:
-    """Rank logical sessions likely to match the operator's current context."""
-
     normalized_repo = _normalize_path(repo_path)
     normalized_cwd = _normalize_path(cwd or "")
     normalized_recent = {_normalize_path(path) for path in recent_files if _normalize_path(path)}
-    profiles = await operations.list_session_profile_insights(
-        SessionProfileInsightQuery(
-            sort="last-message",
-            tier="merged",
-            limit=None,
-        )
-    )
+    path_context = _PathResolutionContext.from_repo_path(normalized_repo)
     grouped: dict[str, list[SessionProfileInsight]] = {}
     for profile in profiles:
         logical_id = str(profile.logical_session_id or profile.session_id)
@@ -705,11 +1088,13 @@ async def find_resume_candidates(
         last_dt = _parse_timestamp(last_message_at)
         all_paths = set().union(*(_profile_paths(member) for member in members))
         all_cwds = set().union(*(_profile_cwds(member) for member in members))
-        file_overlap = tuple(sorted(normalized_recent & all_paths))
-        file_overlap_score = (
-            len(file_overlap) / len(normalized_recent | all_paths)
-            if normalized_recent and (normalized_recent | all_paths)
-            else 0.0
+        candidate_repo_roots = set().union(*(_profile_repo_roots(member) for member in members))
+        overlap_score = _score_file_overlap(
+            context=path_context,
+            recent_files=normalized_recent,
+            candidate_paths=all_paths,
+            candidate_repo_roots=tuple(sorted(candidate_repo_roots)),
+            mode=overlap_mode,
         )
         cwd_score = (
             1.0
@@ -729,7 +1114,7 @@ async def find_resume_candidates(
         workflow_shape = _strongest_workflow_shape(members)
         breakdown = {
             "recency": round(recency_score, 4),
-            "file_overlap": round(file_overlap_score, 4),
+            "file_overlap": round(overlap_score.score, 4),
             "cwd_match": round(cwd_score, 4),
             "terminal_state": round(_terminal_weight(terminal_state), 4),
             "workflow_shape": round(_workflow_weight(workflow_shape), 4),
@@ -750,7 +1135,8 @@ async def find_resume_candidates(
                 title=_candidate_title(representative),
                 terminal_state=terminal_state,
                 workflow_shape=workflow_shape,
-                file_overlap=file_overlap,
+                file_overlap=overlap_score.file_overlap,
+                overlap_basis=overlap_score.basis,
                 score=score,
                 score_breakdown=breakdown,
                 brief_url=f"polylogue://resume/{logical_id}",
@@ -769,6 +1155,32 @@ async def find_resume_candidates(
     return tuple(candidates[: max(0, int(limit))])
 
 
+async def find_resume_candidates(
+    operations: ResumeOperations,
+    *,
+    repo_path: str,
+    cwd: str | None = None,
+    recent_files: Sequence[str] = (),
+    limit: int = 10,
+) -> tuple[ResumeCandidate, ...]:
+    """Rank logical sessions likely to match the operator's current context."""
+
+    profiles = await operations.list_session_profile_insights(
+        SessionProfileInsightQuery(
+            sort="last-message",
+            tier="merged",
+            limit=None,
+        )
+    )
+    return _rank_resume_profiles(
+        profiles,
+        repo_path=repo_path,
+        cwd=cwd,
+        recent_files=recent_files,
+        limit=limit,
+    )
+
+
 __all__ = [
     "RESUME_BRIEF_MATERIALIZER_VERSION",
     "ResumeBrief",
@@ -777,6 +1189,8 @@ __all__ = [
     "ResumeInferences",
     "ResumeLastMessage",
     "ResumeOperations",
+    "ResumeOverlapBasis",
+    "ResumePathOverlap",
     "ResumePhase",
     "ResumeProvenance",
     "ResumeRelatedSession",
