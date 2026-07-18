@@ -312,6 +312,68 @@ def test_lease_owner_receipt_and_explicit_uncertainty_reconciliation(tmp_path: P
     assert retried == reconciled
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    ["provider_warning", "rate_limited", "safety_locked", "auth_challenge", "capability_mismatch", "provider_drift"],
+)
+def test_typed_provider_failures_block_and_release_the_lease(outcome: str, tmp_path: Path) -> None:
+    action = enqueue_action(_request(), receiver_id=_RECEIVER_ID, spool_path=tmp_path)
+    claimed = claim_action("extension-one", spool_path=tmp_path) or pytest.fail("action was not claimed")
+
+    blocked = update_action(
+        action.action_id,
+        BrowserActionUpdateRequest(
+            owner_instance_id=claimed.lease_owner or "",
+            outcome=outcome,  # type: ignore[arg-type]
+            phase="provider_action_failed",
+            detail=f"typed {outcome} fixture",
+            retry_after_seconds=120 if outcome == "rate_limited" else None,
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing blocked action")
+
+    assert blocked.status == "blocked"
+    assert blocked.failure_kind == outcome
+    assert blocked.last_error == f"typed {outcome} fixture"
+    assert blocked.lease_owner is None
+    assert blocked.lease_expires_at is None
+    assert blocked.retry_after_seconds == (120 if outcome == "rate_limited" else None)
+
+    # A blocked action is a terminal disposition, not silently revivable by a
+    # different owner racing in — this is AC2's "a terminal job cannot revive
+    # it" applied to the action ledger, not just the extension's capture path.
+    assert claim_action("extension-two", spool_path=tmp_path) is None
+
+    # Idempotent resubmit of the identical outcome/detail is safe (the client
+    # may retry its own POST after a network blip) and returns the same
+    # terminal record without raising or mutating state.
+    replayed = update_action(
+        action.action_id,
+        BrowserActionUpdateRequest(
+            owner_instance_id="extension-two",
+            outcome=outcome,  # type: ignore[arg-type]
+            phase="provider_action_failed",
+            detail=f"typed {outcome} fixture",
+        ),
+        spool_path=tmp_path,
+    )
+    assert replayed == blocked
+
+    # A conflicting outcome/detail on the same terminal action is rejected,
+    # not silently overwritten.
+    with pytest.raises(BrowserActionConflictError):
+        update_action(
+            action.action_id,
+            BrowserActionUpdateRequest(
+                owner_instance_id="extension-two",
+                outcome=outcome,  # type: ignore[arg-type]
+                phase="provider_action_failed",
+                detail="a different failure detail",
+            ),
+            spool_path=tmp_path,
+        )
+
+
 def test_reply_receipt_must_match_the_requested_conversation(tmp_path: Path) -> None:
     action = enqueue_action(
         _request(operation="conversation.reply", conversation_id="conversation-target"),

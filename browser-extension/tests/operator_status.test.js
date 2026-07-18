@@ -233,4 +233,62 @@ describe("shared operator status vocabulary", () => {
       headline: "Receiver identity changed",
     });
   });
+
+  it("surfaces at most one attention item, in strict priority order", () => {
+    expect(api.computeAttention({})).toBeNull();
+    expect(api.computeAttention({ conversationState: { online: true, archive_state: { state: "archived" } } }))
+      .toBeNull();
+
+    const pairingMismatch = api.computeAttention({
+      pairing: { state: "mismatch" },
+      health: { status: "pairing_mismatch" },
+      browserActions: [{ status: "outcome_unknown" }],
+    });
+    expect(pairingMismatch).toMatchObject({ kind: "auth_pairing_mismatch", actionId: "reset-pairing" });
+
+    const unauthorized = api.computeAttention({ health: { status: "unauthorized" } });
+    expect(unauthorized).toMatchObject({ kind: "auth_pairing_mismatch", actionId: "receiver-token" });
+
+    const unknownOutcome = api.computeAttention({
+      browserActions: [
+        { status: "submitted" },
+        { status: "outcome_unknown", last_error: "submit channel ended without a receipt" },
+      ],
+      workItems: [{ title: "ChatGPT reply", raw: { cooldown_reason: "capability_mismatch" } }],
+    });
+    expect(unknownOutcome).toMatchObject({
+      kind: "action_outcome_unknown",
+      detail: "submit channel ended without a receipt",
+    });
+
+    const capabilityMismatch = api.computeAttention({
+      workItems: [{ title: "ChatGPT reply", cooldown: "model unavailable", raw: { cooldown_reason: "capability_mismatch" } }],
+    });
+    expect(capabilityMismatch).toMatchObject({
+      kind: "capability_mismatch",
+      headline: "ChatGPT reply needs a compatible provider selection",
+      detail: "model unavailable",
+    });
+
+    const archiveFailed = api.computeAttention({
+      conversationState: { archive_state: { state: "failed", latest_failure: "index rejected" } },
+    });
+    expect(archiveFailed).toMatchObject({ kind: "archive_failed", detail: "index rejected" });
+  });
+
+  it("counts only browser actions still awaiting a receipt as pending", () => {
+    expect(api.pendingBrowserActionCount()).toBe(0);
+    expect(api.pendingBrowserActionCount([
+      { status: "queued" },
+      { status: "leased" },
+      { status: "preparing" },
+      { status: "submit_intent" },
+      { status: "outcome_unknown" },
+      { status: "submitted" },
+      { status: "blocked" },
+      { status: "failed" },
+      { status: "cancelled" },
+      { status: "drafted" },
+    ])).toBe(4);
+  });
 });
