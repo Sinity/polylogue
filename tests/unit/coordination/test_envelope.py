@@ -10,7 +10,12 @@ from time import sleep
 
 import pytest
 
-from polylogue.coordination.envelope import CommandResult, _session_ref, build_coordination_envelope
+from polylogue.coordination.envelope import (
+    CommandResult,
+    CoordinationEnvelopeCache,
+    _session_ref,
+    build_coordination_envelope,
+)
 
 
 def _seed_coordination_archive(index: Path) -> None:
@@ -959,3 +964,58 @@ def test_handoff_projection_uses_supported_live_sources_or_empty_list(
         )
     with_assertion = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), detail=True)
     assert {item.kind for item in with_assertion.handoff} == {"scratch-handoff", "assertion-handoff"}
+
+
+def test_coordination_envelope_cache_reuses_within_ttl_and_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+
+    calls: list[tuple[str, int]] = []
+
+    def fake_build(*, view: str, cwd: Path | None, limit: int, detail: bool) -> object:
+        calls.append((view, limit))
+        return object()
+
+    monkeypatch.setattr("polylogue.coordination.envelope.build_coordination_envelope", fake_build)
+    cache = CoordinationEnvelopeCache()
+
+    first = cache.get_or_build(view="status", cwd=root, limit=5)
+    second = cache.get_or_build(view="status", cwd=root, limit=5)
+    assert first is second
+    assert calls == [("status", 5)]
+
+    # A distinct key (different limit) is not served from the same entry.
+    cache.get_or_build(view="status", cwd=root, limit=10)
+    assert calls == [("status", 5), ("status", 10)]
+
+
+def test_coordination_envelope_cache_invalidates_on_fingerprint_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed git HEAD forces a refresh even inside the TTL window (AC #5).
+
+    This is exactly the gap the prior TTL-only cache had: a changed source
+    could hide behind an unexpired TTL. Here the fingerprint is checked on
+    every call, independent of TTL age.
+    """
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+
+    calls: list[int] = []
+
+    def fake_build(*, view: str, cwd: Path | None, limit: int, detail: bool) -> object:
+        calls.append(len(calls))
+        return object()
+
+    monkeypatch.setattr("polylogue.coordination.envelope.build_coordination_envelope", fake_build)
+    cache = CoordinationEnvelopeCache()
+
+    cache.get_or_build(view="status", cwd=root, limit=5)
+    cache.get_or_build(view="status", cwd=root, limit=5)
+    assert len(calls) == 1  # second call reused the cached value
+
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/other-branch\n")
+    cache.get_or_build(view="status", cwd=root, limit=5)
+    assert len(calls) == 2  # fingerprint changed -> forced refresh despite unexpired TTL
