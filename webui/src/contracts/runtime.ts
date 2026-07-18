@@ -45,3 +45,19 @@ export function nullableNumber(
   }
   return value;
 }
+
+export function requiredBoolean(record: Record<string, unknown>, key: string): boolean {
+  const value = record[key];
+  if (typeof value !== 'boolean') {
+    throw new TypeError(`response field ${key} must be a boolean`);
+  }
+  return value;
+}
+
+export function optionalBoolean(record: Record<string, unknown>, key: string): boolean {
+  const value = record[key];
+  if (value === undefined || value === null) {
+    return false;
+  }
+  return requiredBoolean(record, key);
+}

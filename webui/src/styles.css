@@ -289,6 +289,106 @@ a:focus-visible {
   border-style: solid;
 }
 
+.session-facets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)) auto;
+  align-items: end;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+}
+
+.session-facets__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.session-facets__field label {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.session-facets__field input {
+  min-width: 0;
+  padding: 0.55rem;
+  font: inherit;
+}
+
+.session-facets button {
+  padding: 0.6rem 1rem;
+  font: inherit;
+  font-weight: 700;
+}
+
+.lineage-banner {
+  margin: 0 0 1.5rem;
+  padding: 0.75rem 1rem;
+  border-inline-start: 0.3rem solid Highlight;
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+}
+
+.message-flow-panel {
+  border-top: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  padding-top: 1.5rem;
+}
+
+.message-flow,
+.message-flow--continued {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.message-flow--continued:not(:empty) {
+  margin-top: 1rem;
+}
+
+.message-flow__item {
+  padding: 1rem 0;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, Canvas 86%);
+}
+
+.message-flow__item:target {
+  outline: 0.2rem solid Highlight;
+  outline-offset: 0.3rem;
+}
+
+.message-flow__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: 0.78rem;
+}
+
+.message-flow__role {
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.message-flow__text {
+  overflow-wrap: anywhere;
+  margin-bottom: 0.5rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.message-flow__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.message-flag {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
 @media (max-width: 42rem) {
   .site-header,
   .activity-panel__heading {
@@ -298,5 +398,10 @@ a:focus-visible {
 
   .site-header {
     flex-direction: column;
+  }
+
+  .session-facets {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 }

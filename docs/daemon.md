@@ -95,7 +95,7 @@ classified with explicit auth and response posture.
 
 | Route class | Auth policy | Examples |
 |-------------|-------------|----------|
-| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /s/:id`, `GET /p`, `GET /a` |
+| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /app/sessions`, `GET /app/sessions/:session_id`, `GET /s/:id`, `GET /p`, `GET /a` |
 | WebUI observability page | bearer or scoped web credential when configured | `GET /app/observability` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
 | Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
@@ -130,6 +130,25 @@ insight panels and daemon component status without requiring JavaScript;
 local Preact assets add refresh and exact-source lookup controls. Because the
 HTML embeds bounded insight evidence, it requires a bearer or scoped
 first-party credential when the daemon is configured with credentials.
+
+### GET /app/sessions
+
+Server-rendered WebUI v2 session list. Facets (`origin`, `since`, `repo`) and
+paging (`limit`, `offset`) are the same query parameters `GET /api/sessions`
+accepts; the first page is readable without JavaScript, and local Preact
+assets add a bounded "load more" control. Shares `/app`'s unauthenticated
+loopback bootstrap posture.
+
+### GET /app/sessions/:session_id
+
+Server-rendered WebUI v2 session shell: header metadata, a lineage banner when
+the session composes a parent prefix (fork/resume/subagent/sidechain), and a
+simple message-flow placeholder (role, material origin, bounded text, and
+tool-use/thinking/paste-evidence flags). The message body projection is
+deliberately simple — a richer semantic-card transcript renderer is a separate
+vertical. Local Preact assets add bounded message paging through the existing
+`GET /api/sessions/:id/read?view=messages` endpoint. Shares `/app`'s
+unauthenticated loopback bootstrap posture.
 
 ### GET /api/webui/observability
 

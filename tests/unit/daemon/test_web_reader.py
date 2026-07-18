@@ -25,6 +25,7 @@ import pytest
 
 pytestmark = pytest.mark.xdist_group("web-reader")
 
+import html as html_module
 import json
 import re
 import socket
@@ -2279,6 +2280,120 @@ class TestWebUIV2:
             with pytest.raises(HTTPError) as manifest_not_public:
                 urlopen(f"{base_url}/app/assets/manifest.json", timeout=10)
             assert manifest_not_public.value.code == HTTPStatus.NOT_FOUND
+
+    def test_session_list_page_serves_semantic_facets_and_paged_sessions(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """``/app/sessions`` renders the faceted session list without JS."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, "/app/sessions")
+
+        assert status == HTTPStatus.OK
+        assert "<h1>Sessions</h1>" in html_body
+        assert 'class="session-facets"' in html_body
+        assert 'name="origin"' in html_body
+        assert 'name="since"' in html_body
+        assert 'name="repo"' in html_body
+        assert f'href="/app/sessions/{quote(C1, safe="")}"' in html_body
+        assert f'href="/app/sessions/{quote(C2, safe="")}"' in html_body
+        assert f'href="/app/sessions/{quote(C3, safe="")}"' in html_body
+        assert 'data-island="session-list"' in html_body
+        assert re.search(r'src="/app/assets/session-list-[^"]+\.js"', html_body)
+
+    def test_session_list_page_applies_origin_facet_filter(self, workspace_env: dict[str, Path]) -> None:
+        """The facet form's ``origin`` query param scopes the SSR page, matching /api/sessions."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            origin = _origin_for("claude-code")
+            status, _, html_body = _get_text(base_url, f"/app/sessions?origin={quote(origin)}")
+
+        assert status == HTTPStatus.OK
+        assert f'href="/app/sessions/{quote(C1, safe="")}"' in html_body
+        assert f'href="/app/sessions/{quote(C2, safe="")}"' not in html_body
+        assert f'href="/app/sessions/{quote(C3, safe="")}"' not in html_body
+        assert f'value="{html_module.escape(origin)}"' in html_body
+
+    def test_session_list_page_rejects_an_invalid_since_facet_with_400(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """An unparseable ``since`` value is a client error, not an internal 500."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/sessions?since={quote('not-a-date')}")
+
+        assert status == HTTPStatus.BAD_REQUEST
+        assert "invalid since" in html_body
+
+    def test_session_read_page_renders_message_flow_with_deep_link_anchor(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """``/app/sessions/:id`` renders the shell, message flow, and a stable message anchor."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(C1, safe='')}")
+
+        assert status == HTTPStatus.OK
+        assert f'id="msg-{M_C1}"' in html_body
+        assert 'data-role="user"' in html_body
+        assert "Hello reader" in html_body
+        assert 'data-island="session-read"' in html_body
+        assert re.search(r'src="/app/assets/session-read-[^"]+\.js"', html_body)
+
+    def test_session_read_page_renders_lineage_banner_for_fork_family(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """A forked child session gets an explicit lineage banner linking its parent."""
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BranchType, Provider
+        from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            parent_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="lineage-parent",
+                    title="Lineage parent",
+                    messages=[ParsedMessage(provider_message_id="p0", role=Role.USER, text="start")],
+                )
+            )
+            child_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="lineage-child",
+                    title="Lineage child",
+                    parent_session_provider_id="lineage-parent",
+                    branch_type=BranchType.FORK,
+                    messages=[
+                        ParsedMessage(provider_message_id="p0", role=Role.USER, text="start"),
+                        ParsedMessage(provider_message_id="c0", role=Role.USER, text="child tail"),
+                    ],
+                )
+            )
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(child_id, safe='')}")
+
+        assert status == HTTPStatus.OK
+        assert 'class="lineage-banner"' in html_body
+        assert 'data-branch-type="fork"' in html_body
+        assert f'href="/app/sessions/{quote(parent_id, safe="")}"' in html_body
+
+    def test_session_read_page_returns_semantic_not_found_for_missing_session(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, "/app/sessions/codex-session:does-not-exist")
+
+        assert status == HTTPStatus.NOT_FOUND
+        assert "<h1>Session unavailable</h1>" in html_body
+        assert "could not be found" in html_body
 
 
 class TestReaderQueryUnits:

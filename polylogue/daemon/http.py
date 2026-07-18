@@ -427,6 +427,8 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/"),
         ("GET", "/app"),
         ("GET", "/app/observability"),
+        ("GET", "/app/sessions"),
+        ("GET", "/app/sessions/:session_id"),
         ("GET", "/app/assets/:asset"),
         ("GET", "/s/:session_id"),
         ("GET", "/w/:mode"),
@@ -1587,6 +1589,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return
             self._serve_webui_observability()
             return
+        if path == ["app", "sessions"]:
+            if not self._check_shell_bootstrap_access():
+                return
+            self._serve_webui_session_list(params)
+            return
+        if len(path) == 3 and path[:2] == ["app", "sessions"] and bool(path[2]):
+            if not self._check_shell_bootstrap_access():
+                return
+            self._serve_webui_session_read(path[2])
+            return
         if len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2]):
             if not self._check_shell_bootstrap_access():
                 return
@@ -1989,6 +2001,131 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
         self._send_webui_html(HTTPStatus.OK, render_archive_overview_page(bundle, page))
+
+    def _serve_webui_session_list(self, params: dict[str, list[str]]) -> None:
+        from polylogue.archive.query.spec import QuerySpecError, clamp_query_limit
+        from polylogue.daemon.webui import (
+            SESSION_LIST_LIMIT,
+            WebUIAssetBundle,
+            WebUIAssetError,
+            render_session_list_page,
+            render_webui_asset_error,
+        )
+
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+        except WebUIAssetError as exc:
+            logger.error("webui asset discovery failed: %s", exc)
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+
+        filters = {
+            "origin": self._get_param(params, "origin") or "",
+            "since": self._get_param(params, "since") or "",
+            "repo": self._get_param(params, "repo") or "",
+        }
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            body = render_session_list_page(
+                bundle,
+                None,
+                filters,
+                notice="The archive is unavailable or requires a schema rebuild.",
+            )
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
+            return
+        limit = clamp_query_limit(self._get_int(params, "limit", SESSION_LIST_LIMIT), default=SESSION_LIST_LIMIT)
+        offset = max(0, self._get_int(params, "offset", 0))
+        try:
+            page = self._do_archive_session_list(archive_root, params, limit, offset, "/app/sessions")
+        except QuerySpecError as exc:
+            self._send_webui_html(
+                HTTPStatus.BAD_REQUEST,
+                render_session_list_page(bundle, None, filters, notice=str(exc)),
+            )
+            return
+        except sqlite3.OperationalError as exc:
+            logger.exception("webui session list read failed")
+            status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            notice = (
+                "The archive is temporarily busy; retry the session list shortly."
+                if status is HTTPStatus.SERVICE_UNAVAILABLE
+                else "The session list could not be rendered."
+            )
+            self._send_webui_html(status, render_session_list_page(bundle, None, filters, notice=notice))
+            return
+        except Exception:
+            logger.exception("webui session list render failed")
+            self._send_webui_html(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                render_session_list_page(bundle, None, filters, notice="The session list could not be rendered."),
+            )
+            return
+        if not isinstance(page, Mapping):
+            self._send_webui_html(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                render_session_list_page(bundle, None, filters, notice="The session list could not be rendered."),
+            )
+            return
+        self._send_webui_html(HTTPStatus.OK, render_session_list_page(bundle, page, filters))
+
+    def _serve_webui_session_read(self, session_id: str) -> None:
+        from polylogue.daemon.webui import (
+            WebUIAssetBundle,
+            WebUIAssetError,
+            render_session_read_page,
+            render_webui_asset_error,
+        )
+
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+        except WebUIAssetError as exc:
+            logger.error("webui asset discovery failed: %s", exc)
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            body = render_session_read_page(
+                bundle,
+                session_id,
+                None,
+                notice="The archive is unavailable or requires a schema rebuild.",
+            )
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
+            return
+        try:
+            session = self._do_archive_get_session(archive_root, session_id)
+        except sqlite3.OperationalError as exc:
+            logger.exception("webui session read failed")
+            status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            notice = (
+                "The archive is temporarily busy; retry this session shortly."
+                if status is HTTPStatus.SERVICE_UNAVAILABLE
+                else "This session could not be rendered."
+            )
+            self._send_webui_html(status, render_session_read_page(bundle, session_id, None, notice=notice))
+            return
+        except Exception:
+            logger.exception("webui session read render failed")
+            self._send_webui_html(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                render_session_read_page(bundle, session_id, None, notice="This session could not be rendered."),
+            )
+            return
+        if session is None:
+            self._send_webui_html(
+                HTTPStatus.NOT_FOUND,
+                render_session_read_page(bundle, session_id, None, notice="This session could not be found."),
+            )
+            return
+        if not isinstance(session, Mapping):
+            self._send_webui_html(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                render_session_read_page(bundle, session_id, None, notice="This session could not be rendered."),
+            )
+            return
+        self._send_webui_html(HTTPStatus.OK, render_session_read_page(bundle, session_id, session))
 
     def _serve_webui_observability(self) -> None:
         """Serve the registry-driven observability SSR page."""
