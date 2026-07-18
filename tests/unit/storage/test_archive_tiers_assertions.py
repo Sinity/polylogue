@@ -154,6 +154,28 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_overlay_writers_enable_foreign_keys_before_first_transaction(tmp_path: Path) -> None:
+    """Every user-tier overlay writer must enable FK enforcement pre-transaction.
+
+    Previously only 4 of 10 overlay-write functions (upsert_suppression,
+    upsert_mark, upsert_annotation, upsert_correction) set PRAGMA
+    foreign_keys themselves, and upsert_assertion's own internal call ran
+    after BEGIN IMMEDIATE -- a guaranteed no-op, since SQLite silently
+    ignores this pragma once a transaction is active. upsert_saved_view was
+    one of the six callers that never enabled it at all. Now the single
+    upsert_assertion chokepoint applies it before any transaction begins,
+    covering every caller (direct or through a wrapper) uniformly.
+    """
+    conn = _connect(tmp_path / "user.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+        user_write.upsert_saved_view(conn, "test-view", {"query": "x"})
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:

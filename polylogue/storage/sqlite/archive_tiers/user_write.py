@@ -66,6 +66,23 @@ _ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"injec
 _ASSERTION_WRITE_SAVEPOINTS = itertools.count()
 
 
+def _ensure_foreign_keys_pragma(conn: sqlite3.Connection) -> None:
+    """Enable FK enforcement before any transaction begins.
+
+    SQLite silently no-ops this pragma once a transaction is active, so it
+    only takes effect when called on an idle connection. Centralized here so
+    every user-tier overlay writer applies it consistently through the single
+    ``upsert_assertion`` chokepoint instead of a handful of independently
+    inconsistent inline calls (some callers had it, most didn't, and the one
+    formerly inside ``upsert_assertion`` itself ran after ``BEGIN IMMEDIATE``
+    and was therefore always a no-op). Low-impact today since ``assertions``
+    declares no FK constraint, but keeps future FK adoption safe without
+    re-auditing every write call site.
+    """
+    if not conn.in_transaction:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 @contextmanager
 def _immediate_user_write_transaction(conn: sqlite3.Connection) -> Iterator[None]:
     """Start the outer user-tier write scope before observing mutable state.
@@ -578,7 +595,6 @@ def upsert_suppression(
     now_ms: int | None = None,
 ) -> ArchiveSuppressionEnvelope:
     """Upsert one suppression assertion by ``session_id``."""
-    conn.execute("PRAGMA foreign_keys = ON")
     timestamp = now_ms if now_ms is not None else _now_ms()
     upsert_assertion(
         conn,
@@ -604,7 +620,6 @@ def upsert_mark(
     now_ms: int | None = None,
 ) -> ArchiveMarkEnvelope:
     """Insert-or-update one mark assertion with deterministic ``mark_id``."""
-    conn.execute("PRAGMA foreign_keys = ON")
     timestamp = now_ms if now_ms is not None else _now_ms()
     mark_id = _deterministic_id("mark", target_type, target_id, mark_type)
     upsert_assertion(
@@ -704,7 +719,6 @@ def upsert_annotation(
     now_ms: int | None = None,
 ) -> ArchiveAnnotationEnvelope:
     """Insert-or-update one annotation assertion with deterministic identity."""
-    conn.execute("PRAGMA foreign_keys = ON")
     timestamp = now_ms if now_ms is not None else _now_ms()
     resolved_id = annotation_id or _deterministic_id("annotation", target_type, target_id, body)
     upsert_assertion(
@@ -732,7 +746,6 @@ def upsert_correction(
     now_ms: int | None = None,
 ) -> ArchiveCorrectionEnvelope:
     """Insert-or-update one correction assertion with deterministic id."""
-    conn.execute("PRAGMA foreign_keys = ON")
     timestamp = now_ms if now_ms is not None else _now_ms()
     correction_id = correction_id_for(target_type, target_id, correction_type)
     upsert_assertion(
@@ -1130,8 +1143,8 @@ def upsert_assertion(
     per-call-site deliberately; it is never inferred from ``kind``/
     ``author_kind`` inside this function.
     """
+    _ensure_foreign_keys_pragma(conn)
     with _immediate_user_write_transaction(conn):
-        conn.execute("PRAGMA foreign_keys = ON")
         timestamp = now_ms if now_ms is not None else _now_ms()
         existing = conn.execute(
             "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
