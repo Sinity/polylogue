@@ -60,6 +60,21 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "explain": "single_object",
     "context": "single_object",
     "status": "single_object",
+    # ------- privileged transactions (t46.8.3) -------
+    # write/maintenance are declared MCPResultSemantics.MUTATION/MAINTENANCE;
+    # their primary shape is one structured mutation/operation result (some
+    # maintenance operations, e.g. "list", return an items/total envelope
+    # instead -- see "primary/declared contract" note above for read/get).
+    "write": "operation_result",
+    "maintenance": "operation_result",
+    # judge always returns the bulk-judgment envelope (single candidate_ref
+    # judgments are lowered into a one-item bulk call internally).
+    "judge": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
+    # run executes a saved-query ref through the same session-search path as
+    # query(projection="sessions"), so its shape is either the ranked "hits"
+    # envelope or the exhaustive "items" envelope depending on whether the
+    # saved query carries free text -- "total" is the one field common to both.
+    "run": ("envelope", frozenset({"total"})),
 }
 
 

@@ -11,22 +11,26 @@
     }
   },
   "compatibility_surface": {
-    "governed_python_absence_count": 1,
+    "governed_python_absence_count": 4,
     "minimum_role_counts": {
-      "admin": 0,
+      "admin": 1,
       "read": 6,
-      "review": 0,
-      "write": 0
+      "review": 1,
+      "write": 2
     },
-    "python_binding_count": 5,
-    "tool_count": 6,
+    "python_binding_count": 6,
+    "tool_count": 10,
     "tool_names": [
       "query",
       "read",
       "get",
       "explain",
       "context",
-      "status"
+      "status",
+      "write",
+      "judge",
+      "run",
+      "maintenance"
     ]
   },
   "generated_by": "devtools render mcp-equivalence",
@@ -39,18 +43,27 @@
       "read",
       "status"
     ],
-    "polylogue-t46.8.3": []
+    "polylogue-t46.8.3": [
+      "judge",
+      "maintenance",
+      "run",
+      "write"
+    ]
   },
   "python_parity": {
     "bound_tools": [
       "context",
       "explain",
       "get",
+      "judge",
       "query",
       "read"
     ],
     "governed_absences": [
-      "status"
+      "maintenance",
+      "run",
+      "status",
+      "write"
     ]
   },
   "schema_version": 1,
@@ -1107,6 +1120,480 @@
       "workflow_coverage": [
         "t8t-continuity",
         "z9gh-workflow-incident"
+      ]
+    },
+    {
+      "canonical_plan": "mutate-write",
+      "canonical_projection": "operation_result:root",
+      "capability": "write:write",
+      "compatibility_route": "write",
+      "continuation": {
+        "continuation_ref": null,
+        "exhaustive_route": "query",
+        "mode": "none",
+        "notes": "Continuation is opaque and must be the only resume input."
+      },
+      "deprecation_state": "retained",
+      "description": "Apply a declared mutation operation after shared authorization.",
+      "field_discovery": [],
+      "grammar_discovery": [],
+      "incident_coverage": [],
+      "input_contract": {
+        "required_arguments": [
+          "operation"
+        ],
+        "schema_mode": "FastMCP derives inputSchema from the cutover handler signature",
+        "schema_source": "polylogue.mcp.server_cutover.write:inspect.signature"
+      },
+      "kernel": {
+        "compatibility": {
+          "access_result_shape": "write:mutation:operation_result",
+          "authority": "mcp-role:write",
+          "durability": "transport-adapter; domain-owner-controls-durability",
+          "identity": "mcp-tool:object-ref,assertion",
+          "lifecycle": "registered-handler-retained"
+        },
+        "completeness_edges": [
+          {
+            "consumer": "tests.infra.mcp.EXPECTED_TOOL_NAMES",
+            "kind": "discovery-name-equivalence",
+            "owner_path": "tests/infra/mcp.py",
+            "producer": "mcp.tool.write"
+          }
+        ],
+        "declaration_id": "mcp.tool.write",
+        "discovery_text": "Apply a declared mutation operation after shared authorization.",
+        "examples": [
+          {
+            "arguments": [
+              [
+                "operation",
+                "add_tag"
+              ],
+              [
+                "session_id",
+                "test:conv-mutation"
+              ],
+              [
+                "tag",
+                "review"
+              ]
+            ],
+            "name": "minimal-valid-call",
+            "summary": "Minimal cutover invocation for write."
+          }
+        ],
+        "family_id": "mcp.tool.write",
+        "handlers": [
+          {
+            "binding_key": "polylogue.mcp.server_cutover:write",
+            "owner_path": "polylogue/mcp/server_cutover.py",
+            "surface": "mcp",
+            "symbol": "write"
+          }
+        ],
+        "outputs": [
+          {
+            "kind": "operation_result",
+            "name": "runtime-contract",
+            "schema_ref": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT",
+            "target_path": "mcp://tool/write"
+          }
+        ],
+        "owner_path": "polylogue/mcp/declarations/registry.py",
+        "producer": "mutate-write",
+        "public_name": "write",
+        "repair_command": "devtools render mcp-equivalence",
+        "role_gate": "mcp.role:write",
+        "schema_ref": "polylogue.mcp.server_cutover.write:inspect.signature"
+      },
+      "minimal_arguments": {
+        "operation": "add_tag",
+        "session_id": "test:conv-mutation",
+        "tag": "review"
+      },
+      "minimum_role": "write",
+      "name": "write",
+      "object_kinds": [
+        "object-ref",
+        "assertion"
+      ],
+      "observed_use": "observed",
+      "operation_owner": "mutate-write",
+      "output_contract": {
+        "envelope_fields": [],
+        "kind": "operation_result",
+        "schema_source": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT"
+      },
+      "prompt_alternatives": [],
+      "python_parity": {
+        "binding": null,
+        "intentional_absence_authority": "polylogue-s1kr",
+        "reason": "The current MCP compatibility handler binds a lower-level owner or transport-only projection; polylogue-s1kr owns any public Python facade addition and docs parity."
+      },
+      "registration": {
+        "module": "polylogue.mcp.server_cutover",
+        "registrar": "register_cutover_privileged_tools",
+        "symbol": "write"
+      },
+      "resource_alternatives": [],
+      "result_semantics": "mutation",
+      "retirement_owner": "polylogue-t46.8.3",
+      "telemetry_key": "write",
+      "value_discovery": [],
+      "verb": "write",
+      "workflow_coverage": [
+        "t46.8.3-privileged-contract"
+      ]
+    },
+    {
+      "canonical_plan": "polylogue.api.Polylogue.judge_assertion_candidates",
+      "canonical_projection": "envelope:root",
+      "capability": "review:judge",
+      "compatibility_route": "judge",
+      "continuation": {
+        "continuation_ref": null,
+        "exhaustive_route": "query",
+        "mode": "none",
+        "notes": "Continuation is opaque and must be the only resume input."
+      },
+      "deprecation_state": "retained",
+      "description": "Accept, reject, defer, or supersede assertion candidates without collapsing candidate state.",
+      "field_discovery": [],
+      "grammar_discovery": [],
+      "incident_coverage": [],
+      "input_contract": {
+        "required_arguments": [],
+        "schema_mode": "FastMCP derives inputSchema from the cutover handler signature",
+        "schema_source": "polylogue.mcp.server_cutover.judge:inspect.signature"
+      },
+      "kernel": {
+        "compatibility": {
+          "access_result_shape": "judge:mutation:envelope",
+          "authority": "mcp-role:review",
+          "durability": "transport-adapter; domain-owner-controls-durability",
+          "identity": "mcp-tool:assertion-candidate,judgment",
+          "lifecycle": "registered-handler-retained"
+        },
+        "completeness_edges": [
+          {
+            "consumer": "tests.infra.mcp.EXPECTED_TOOL_NAMES",
+            "kind": "discovery-name-equivalence",
+            "owner_path": "tests/infra/mcp.py",
+            "producer": "mcp.tool.judge"
+          }
+        ],
+        "declaration_id": "mcp.tool.judge",
+        "discovery_text": "Accept, reject, defer, or supersede assertion candidates without collapsing candidate state.",
+        "examples": [
+          {
+            "arguments": [
+              [
+                "candidate_ref",
+                "assertion:contract-candidate"
+              ],
+              [
+                "decision",
+                "accept"
+              ]
+            ],
+            "name": "minimal-valid-call",
+            "summary": "Minimal cutover invocation for judge."
+          }
+        ],
+        "family_id": "mcp.tool.judge",
+        "handlers": [
+          {
+            "binding_key": "polylogue.mcp.server_cutover:judge",
+            "owner_path": "polylogue/mcp/server_cutover.py",
+            "surface": "mcp",
+            "symbol": "judge"
+          }
+        ],
+        "outputs": [
+          {
+            "kind": "envelope",
+            "name": "runtime-contract",
+            "schema_ref": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT",
+            "target_path": "mcp://tool/judge"
+          }
+        ],
+        "owner_path": "polylogue/mcp/declarations/registry.py",
+        "producer": "polylogue.api.Polylogue.judge_assertion_candidates",
+        "public_name": "judge",
+        "repair_command": "devtools render mcp-equivalence",
+        "role_gate": "mcp.role:review",
+        "schema_ref": "polylogue.mcp.server_cutover.judge:inspect.signature"
+      },
+      "minimal_arguments": {
+        "candidate_ref": "assertion:contract-candidate",
+        "decision": "accept"
+      },
+      "minimum_role": "review",
+      "name": "judge",
+      "object_kinds": [
+        "assertion-candidate",
+        "judgment"
+      ],
+      "observed_use": "observed",
+      "operation_owner": "polylogue.api.Polylogue.judge_assertion_candidates",
+      "output_contract": {
+        "envelope_fields": [
+          "items",
+          "applied_count",
+          "failed_count"
+        ],
+        "kind": "envelope",
+        "schema_source": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT"
+      },
+      "prompt_alternatives": [],
+      "python_parity": {
+        "binding": "polylogue.api.Polylogue.judge_assertion_candidates",
+        "intentional_absence_authority": null,
+        "reason": null
+      },
+      "registration": {
+        "module": "polylogue.mcp.server_cutover",
+        "registrar": "register_cutover_privileged_tools",
+        "symbol": "judge"
+      },
+      "resource_alternatives": [],
+      "result_semantics": "mutation",
+      "retirement_owner": "polylogue-t46.8.3",
+      "telemetry_key": "judge",
+      "value_discovery": [],
+      "verb": "judge",
+      "workflow_coverage": [
+        "t46.8.3-privileged-contract"
+      ]
+    },
+    {
+      "canonical_plan": "mutate-run",
+      "canonical_projection": "envelope:root",
+      "capability": "write:run",
+      "compatibility_route": "run",
+      "continuation": {
+        "continuation_ref": null,
+        "exhaustive_route": "query",
+        "mode": "none",
+        "notes": "Continuation is opaque and must be the only resume input."
+      },
+      "deprecation_state": "retained",
+      "description": "Execute a saved query or governed recipe ref.",
+      "field_discovery": [],
+      "grammar_discovery": [],
+      "incident_coverage": [],
+      "input_contract": {
+        "required_arguments": [
+          "ref"
+        ],
+        "schema_mode": "FastMCP derives inputSchema from the cutover handler signature",
+        "schema_source": "polylogue.mcp.server_cutover.run:inspect.signature"
+      },
+      "kernel": {
+        "compatibility": {
+          "access_result_shape": "run:exhaustive_page:envelope",
+          "authority": "mcp-role:write",
+          "durability": "transport-adapter; domain-owner-controls-durability",
+          "identity": "mcp-tool:saved-query,recipe,result-set",
+          "lifecycle": "registered-handler-retained"
+        },
+        "completeness_edges": [
+          {
+            "consumer": "tests.infra.mcp.EXPECTED_TOOL_NAMES",
+            "kind": "discovery-name-equivalence",
+            "owner_path": "tests/infra/mcp.py",
+            "producer": "mcp.tool.run"
+          }
+        ],
+        "declaration_id": "mcp.tool.run",
+        "discovery_text": "Execute a saved query or governed recipe ref.",
+        "examples": [
+          {
+            "arguments": [
+              [
+                "ref",
+                "saved-view:contract-view"
+              ]
+            ],
+            "name": "minimal-valid-call",
+            "summary": "Minimal cutover invocation for run."
+          }
+        ],
+        "family_id": "mcp.tool.run",
+        "handlers": [
+          {
+            "binding_key": "polylogue.mcp.server_cutover:run",
+            "owner_path": "polylogue/mcp/server_cutover.py",
+            "surface": "mcp",
+            "symbol": "run"
+          }
+        ],
+        "outputs": [
+          {
+            "kind": "envelope",
+            "name": "runtime-contract",
+            "schema_ref": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT",
+            "target_path": "mcp://tool/run"
+          }
+        ],
+        "owner_path": "polylogue/mcp/declarations/registry.py",
+        "producer": "mutate-run",
+        "public_name": "run",
+        "repair_command": "devtools render mcp-equivalence",
+        "role_gate": "mcp.role:write",
+        "schema_ref": "polylogue.mcp.server_cutover.run:inspect.signature"
+      },
+      "minimal_arguments": {
+        "ref": "saved-view:contract-view"
+      },
+      "minimum_role": "write",
+      "name": "run",
+      "object_kinds": [
+        "saved-query",
+        "recipe",
+        "result-set"
+      ],
+      "observed_use": "observed",
+      "operation_owner": "mutate-run",
+      "output_contract": {
+        "envelope_fields": [],
+        "kind": "envelope",
+        "schema_source": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT"
+      },
+      "prompt_alternatives": [],
+      "python_parity": {
+        "binding": null,
+        "intentional_absence_authority": "polylogue-s1kr",
+        "reason": "The current MCP compatibility handler binds a lower-level owner or transport-only projection; polylogue-s1kr owns any public Python facade addition and docs parity."
+      },
+      "registration": {
+        "module": "polylogue.mcp.server_cutover",
+        "registrar": "register_cutover_privileged_tools",
+        "symbol": "run"
+      },
+      "resource_alternatives": [],
+      "result_semantics": "exhaustive_page",
+      "retirement_owner": "polylogue-t46.8.3",
+      "telemetry_key": "run",
+      "value_discovery": [],
+      "verb": "run",
+      "workflow_coverage": [
+        "t46.8.3-privileged-contract"
+      ]
+    },
+    {
+      "canonical_plan": "polylogue.maintenance.planner.preview_backfill",
+      "canonical_projection": "operation_result:root",
+      "capability": "admin:maintenance",
+      "compatibility_route": "maintenance",
+      "continuation": {
+        "continuation_ref": null,
+        "exhaustive_route": "query",
+        "mode": "none",
+        "notes": "Continuation is opaque and must be the only resume input."
+      },
+      "deprecation_state": "retained",
+      "description": "Preview, execute, list, and inspect maintenance operations.",
+      "field_discovery": [],
+      "grammar_discovery": [],
+      "incident_coverage": [],
+      "input_contract": {
+        "required_arguments": [
+          "operation"
+        ],
+        "schema_mode": "FastMCP derives inputSchema from the cutover handler signature",
+        "schema_source": "polylogue.mcp.server_cutover.maintenance:inspect.signature"
+      },
+      "kernel": {
+        "compatibility": {
+          "access_result_shape": "maintenance:maintenance:operation_result",
+          "authority": "mcp-role:admin",
+          "durability": "transport-adapter; domain-owner-controls-durability",
+          "identity": "mcp-tool:maintenance-plan,maintenance-operation",
+          "lifecycle": "registered-handler-retained"
+        },
+        "completeness_edges": [
+          {
+            "consumer": "tests.infra.mcp.EXPECTED_TOOL_NAMES",
+            "kind": "discovery-name-equivalence",
+            "owner_path": "tests/infra/mcp.py",
+            "producer": "mcp.tool.maintenance"
+          }
+        ],
+        "declaration_id": "mcp.tool.maintenance",
+        "discovery_text": "Preview, execute, list, and inspect maintenance operations.",
+        "examples": [
+          {
+            "arguments": [
+              [
+                "operation",
+                "list"
+              ]
+            ],
+            "name": "minimal-valid-call",
+            "summary": "Minimal cutover invocation for maintenance."
+          }
+        ],
+        "family_id": "mcp.tool.maintenance",
+        "handlers": [
+          {
+            "binding_key": "polylogue.mcp.server_cutover:maintenance",
+            "owner_path": "polylogue/mcp/server_cutover.py",
+            "surface": "mcp",
+            "symbol": "maintenance"
+          }
+        ],
+        "outputs": [
+          {
+            "kind": "operation_result",
+            "name": "runtime-contract",
+            "schema_ref": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT",
+            "target_path": "mcp://tool/maintenance"
+          }
+        ],
+        "owner_path": "polylogue/mcp/declarations/registry.py",
+        "producer": "polylogue.maintenance.planner.preview_backfill",
+        "public_name": "maintenance",
+        "repair_command": "devtools render mcp-equivalence",
+        "role_gate": "mcp.role:admin",
+        "schema_ref": "polylogue.mcp.server_cutover.maintenance:inspect.signature"
+      },
+      "minimal_arguments": {
+        "operation": "list"
+      },
+      "minimum_role": "admin",
+      "name": "maintenance",
+      "object_kinds": [
+        "maintenance-plan",
+        "maintenance-operation"
+      ],
+      "observed_use": "observed",
+      "operation_owner": "polylogue.maintenance.planner.preview_backfill",
+      "output_contract": {
+        "envelope_fields": [],
+        "kind": "operation_result",
+        "schema_source": "tests/unit/mcp/test_envelope_contracts.py::TOOL_CONTRACT"
+      },
+      "prompt_alternatives": [],
+      "python_parity": {
+        "binding": null,
+        "intentional_absence_authority": "polylogue-s1kr",
+        "reason": "The current MCP compatibility handler binds a lower-level owner or transport-only projection; polylogue-s1kr owns any public Python facade addition and docs parity."
+      },
+      "registration": {
+        "module": "polylogue.mcp.server_cutover",
+        "registrar": "register_cutover_privileged_tools",
+        "symbol": "maintenance"
+      },
+      "resource_alternatives": [],
+      "result_semantics": "maintenance",
+      "retirement_owner": "polylogue-t46.8.3",
+      "telemetry_key": "maintenance",
+      "value_discovery": [],
+      "verb": "maintenance",
+      "workflow_coverage": [
+        "t46.8.3-privileged-contract"
       ]
     }
   ]

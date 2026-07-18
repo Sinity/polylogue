@@ -1,15 +1,18 @@
-"""Protocol-native MCP read algebra.
+"""Protocol-native MCP read and privileged algebra.
 
-The compatibility registrars remain internal implementation substrate.  This
-module is the only public read registration surface: six explicit verbs with
-one terminal-query transaction, stable refs, and parser-owned explanations.
+The compatibility registrars remain internal implementation substrate. This
+module is the public cutover registration surface: the six default read
+transactions (query/read/get/explain/context/status), plus the role-gated
+privileged transactions (write/judge/run/maintenance) registered only for
+roles whose ladder includes them.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.mcp.declarations.adapter import register_declared_handler
+from polylogue.mcp.declarations.models import mcp_role_allows
 from polylogue.mcp.payloads import MCPArchiveStatsPayload, MCPRootPayload, session_topology_payload
 
 if TYPE_CHECKING:
@@ -26,6 +29,100 @@ def _object_ref(ref: str) -> str:
     if not separator or not object_id:
         raise ValueError("stable Polylogue URIs require an object kind and id")
     return f"{prefix}:{object_id}"
+
+
+async def _query_sessions(
+    hooks: ServerCallbacks,
+    *,
+    expression: str | None,
+    limit: int | None,
+    origin: str | None,
+    tag: str | None,
+    repo: str | None,
+    since: str | None,
+    until: str | None,
+    sort: str | None,
+) -> str:
+    """Session-level rows for ``query(projection="sessions", ...)``.
+
+    Ranked (top-k) search when ``expression`` is given as free text;
+    otherwise an exhaustive session listing filtered by the other
+    parameters. Reuses the same ``archive_search_payload`` /
+    ``archive_session_list_payload`` machinery the retired ``search`` /
+    ``list_sessions`` tools used, since ``query_units`` (the DSL path)
+    explicitly rejects ``sessions`` as a terminal unit source.
+    """
+    from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+    from polylogue.mcp.archive_support import archive_search_payload, archive_session_list_payload, mcp_archive_root
+    from polylogue.mcp.query_contracts import build_session_query_request
+
+    request = build_session_query_request(
+        query=expression,
+        origin=origin,
+        tag=tag,
+        repo=repo,
+        since=since,
+        until=until,
+        sort=sort,
+        limit=limit,
+    )
+    clamped_limit = hooks.clamp_limit(request.limit)
+    spec = request.build_spec(hooks.clamp_limit)
+    effective_offset = max(0, spec.offset)
+    config = hooks.get_config()
+    archive_root = mcp_archive_root(config)
+
+    if request.query:
+        from polylogue.surfaces.payloads import search_cursor_request_identity
+
+        transaction = QueryTransaction(
+            archive_root,
+            QueryTransactionRequest(
+                operation="query",
+                arguments=request.response_arguments(),
+                page_size=clamped_limit,
+                offset=effective_offset,
+                projection="search-envelope",
+                stable_order=request.sort or "date",
+            ),
+        )
+        with hooks.response_context("query", request.response_arguments()):
+            return hooks.json_payload(
+                await transaction.run(
+                    lambda archive: archive_search_payload(
+                        archive,
+                        spec,
+                        query=request.query or "",
+                        limit=clamped_limit,
+                        offset=effective_offset,
+                        retrieval_lane=request.retrieval_lane or "dialogue",
+                        sort=request.sort,
+                        config=config,
+                        archive_root=archive_root,
+                        include_affordances=False,
+                        cursor=None,
+                        request_identity=search_cursor_request_identity(request.response_arguments()),
+                    )
+                )
+            )
+
+    transaction = QueryTransaction(
+        archive_root,
+        QueryTransactionRequest(
+            operation="query",
+            arguments=request.response_arguments(),
+            page_size=clamped_limit,
+            offset=effective_offset,
+            projection="session-summary",
+            stable_order=request.sort or "date",
+        ),
+    )
+    with hooks.response_context("query", request.response_arguments()):
+        return hooks.json_payload(
+            await transaction.run(
+                lambda archive: archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
+            )
+        )
 
 
 def _git_project_state(cwd: str | None) -> ContextPreambleProjectState | None:
@@ -108,11 +205,42 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         limit: int | None = None,
         projection: str = "default",
         continuation: str | None = None,
+        origin: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        sort: str | None = None,
     ) -> str:
-        """Execute a terminal DSL page, or resume it using only its q2 token."""
-        del projection  # Terminal projections remain parser-owned for this first cutover slice.
+        """Execute a terminal DSL page, or resume it using only its q2 token.
+
+        ``projection="sessions"`` switches to session-level rows instead of
+        unit-source rows: ``expression`` becomes a free-text ranked search
+        (top-k) when given, or an exhaustive listing filtered by
+        origin/tag/repo/since/until/sort when omitted. Continuation is not
+        yet implemented for this projection.
+        """
 
         async def run() -> str:
+            if projection == "sessions":
+                if continuation is not None:
+                    return hooks.error_json(
+                        "query(projection='sessions') does not support continuation yet",
+                        code="invalid_continuation",
+                        tool="query",
+                    )
+                return await _query_sessions(
+                    hooks,
+                    expression=expression,
+                    limit=limit,
+                    origin=origin,
+                    tag=tag,
+                    repo=repo,
+                    since=since,
+                    until=until,
+                    sort=sort,
+                )
+
             from polylogue.archive.query.transaction import (
                 QueryArchiveEpochUnreadableError,
                 QueryContinuationInvalidError,
@@ -326,4 +454,990 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         register_declared_handler(mcp, handler, name=handler.__name__)
 
 
-__all__ = ["register_cutover_read_tools"]
+def _field(fields: dict[str, object] | None, name: str) -> object | None:
+    return None if fields is None else fields.get(name)
+
+
+def _require_field(hooks: ServerCallbacks, fields: dict[str, object] | None, name: str, *, operation: str) -> str:
+    value = _field(fields, name)
+    if value is None:
+        raise _WriteFieldError(
+            hooks.error_json(
+                f"write(operation={operation!r}) requires fields[{name!r}]",
+                code="invalid_argument",
+                tool="write",
+            )
+        )
+    if not isinstance(value, str):
+        raise _WriteFieldError(
+            hooks.error_json(
+                f"write(operation={operation!r}) requires fields[{name!r}] to be a string",
+                code="invalid_argument",
+                tool="write",
+            )
+        )
+    return value
+
+
+class _WriteFieldError(Exception):
+    """Carries a pre-built error payload out of field validation."""
+
+    def __init__(self, payload: str) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+
+async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dict[str, Any]) -> str:
+    """Apply one declared mutation operation, delegating to its existing typed owner.
+
+    This is a thin adapter over the same ``Polylogue`` facade methods the
+    retired per-operation MCP tools called -- it does not invent a new
+    mutation policy (that is polylogue-t46.9's job).
+    """
+    from polylogue.mcp.mutation_support import resolve_session_or_error
+    from polylogue.mcp.payloads import MutationResultPayload
+
+    poly = hooks.get_polylogue()
+    fields = kwargs.get("fields")
+    fields = fields if isinstance(fields, dict) else None
+    session_id = kwargs.get("session_id")
+    session_ids = kwargs.get("session_ids")
+    tag = kwargs.get("tag")
+    tags = kwargs.get("tags")
+    key = kwargs.get("key")
+    value = kwargs.get("value")
+    confirm = bool(kwargs.get("confirm") or False)
+
+    try:
+        if operation == "add_tag":
+            if session_id is None or tag is None:
+                return hooks.error_json(
+                    "write(operation='add_tag') requires session_id and tag", code="invalid_argument"
+                )
+            resolved, err = await resolve_session_or_error(hooks, session_id)
+            if err:
+                return err
+            assert resolved is not None
+            author_ref = _field(fields, "author_ref")
+            author_kind = _field(fields, "author_kind")
+            add_tag_result = await poly.add_tag(
+                resolved,
+                tag,
+                author_ref=author_ref if isinstance(author_ref, str) else None,
+                author_kind=author_kind if isinstance(author_kind, str) else None,
+            )
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if add_tag_result.outcome == "added" else "unchanged",
+                    session_id=resolved,
+                    tag=tag,
+                    detail=add_tag_result.detail,
+                    outcome=add_tag_result.outcome,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "remove_tag":
+            if session_id is None or tag is None:
+                return hooks.error_json(
+                    "write(operation='remove_tag') requires session_id and tag", code="invalid_argument"
+                )
+            resolved, err = await resolve_session_or_error(hooks, session_id)
+            if err:
+                return err
+            assert resolved is not None
+            remove_tag_result = await poly.remove_tag(resolved, tag)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if remove_tag_result.outcome == "removed" else "not_found",
+                    session_id=resolved,
+                    tag=tag,
+                    detail=remove_tag_result.detail,
+                    outcome=remove_tag_result.outcome,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "bulk_tag_sessions":
+            if not session_ids or not tags:
+                return hooks.error_json(
+                    "write(operation='bulk_tag_sessions') requires session_ids and tags", code="invalid_argument"
+                )
+            try:
+                bulk_result = await poly.bulk_tag_sessions(list(session_ids), list(tags))
+            except ValueError as exc:
+                return hooks.error_json(str(exc))
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status=bulk_result.outcome,
+                    session_count=bulk_result.session_count,
+                    tag_count=bulk_result.tag_count,
+                    affected_count=bulk_result.affected_count,
+                    skipped_count=bulk_result.skipped_count,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "set_metadata":
+            if session_id is None or key is None or value is None:
+                return hooks.error_json(
+                    "write(operation='set_metadata') requires session_id, key, and value", code="invalid_argument"
+                )
+            from polylogue.api.archive import SessionNotFoundError
+            from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
+
+            key_error = validate_metadata_key(key)
+            if key_error is not None:
+                return hooks.error_json(key_error, session_id=session_id, code="invalid_key")
+            import contextlib
+            import json as _json
+
+            parsed_value: object = value
+            with contextlib.suppress(ValueError, TypeError):
+                parsed_value = _json.loads(value)
+            try:
+                set_metadata_result = await poly.set_metadata(session_id, key, str(parsed_value))
+            except MetadataKeyValidationError as exc:
+                return hooks.error_json(str(exc), session_id=session_id, code="invalid_key")
+            except SessionNotFoundError:
+                return hooks.error_json("Session not found", code="not_found", session_id=session_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if set_metadata_result.outcome == "set" else "unchanged",
+                    session_id=set_metadata_result.session_id,
+                    key=set_metadata_result.key,
+                    detail=set_metadata_result.detail,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "delete_metadata":
+            if session_id is None or key is None:
+                return hooks.error_json(
+                    "write(operation='delete_metadata') requires session_id and key", code="invalid_argument"
+                )
+            from polylogue.api.archive import SessionNotFoundError
+            from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
+
+            key_error = validate_metadata_key(key)
+            if key_error is not None:
+                return hooks.error_json(key_error, session_id=session_id, code="invalid_key")
+            try:
+                delete_metadata_result = await poly.delete_metadata(session_id, key)
+            except MetadataKeyValidationError as exc:
+                return hooks.error_json(str(exc), session_id=session_id, code="invalid_key")
+            except SessionNotFoundError:
+                return hooks.error_json("Session not found", code="not_found", session_id=session_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if delete_metadata_result.outcome == "deleted" else "not_found",
+                    session_id=delete_metadata_result.session_id,
+                    key=delete_metadata_result.key,
+                    detail=delete_metadata_result.detail,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "delete_session":
+            if session_id is None:
+                return hooks.error_json(
+                    "write(operation='delete_session') requires session_id", code="invalid_argument"
+                )
+            if not confirm:
+                return hooks.error_json("Safety guard: set confirm=true to delete", session_id=session_id)
+            delete_session_result = await poly.delete_session_safe(session_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if delete_session_result.outcome == "deleted" else "not_found",
+                    session_id=delete_session_result.session_id,
+                    detail=delete_session_result.detail,
+                ),
+                exclude_none=True,
+            )
+
+        if operation in ("add_mark", "remove_mark"):
+            from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_SESSION, is_mark_type_supported
+
+            if session_id is None:
+                return hooks.error_json(f"write(operation={operation!r}) requires session_id", code="invalid_argument")
+            mark_type = _require_field(hooks, fields, "mark_type", operation=operation)
+            if not is_mark_type_supported(mark_type):
+                return hooks.error_json(f"mark_type must be one of: {', '.join(MARK_TYPE_NAMES)}", detail=mark_type)
+            resolved, err = await resolve_session_or_error(hooks, session_id)
+            if err:
+                return err
+            assert resolved is not None
+            target_type = _field(fields, "target_type")
+            target_type = target_type if isinstance(target_type, str) else TARGET_SESSION
+            target_id = _field(fields, "target_id")
+            message_id = _field(fields, "message_id")
+            if operation == "add_mark":
+                created = await poly.add_mark(
+                    resolved,
+                    mark_type,
+                    target_type=target_type,
+                    target_id=target_id if isinstance(target_id, str) else None,
+                    message_id=message_id if isinstance(message_id, str) else None,
+                )
+                return hooks.json_payload(
+                    MutationResultPayload(
+                        status="ok" if created else "unchanged",
+                        session_id=resolved,
+                        detail=None if created else "already_present",
+                        key=mark_type,
+                        outcome="added" if created else "no_op",
+                    ),
+                    exclude_none=True,
+                )
+            deleted = await poly.remove_mark(
+                resolved,
+                mark_type,
+                target_type=target_type,
+                target_id=target_id if isinstance(target_id, str) else None,
+                message_id=message_id if isinstance(message_id, str) else None,
+            )
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if deleted else "not_found",
+                    session_id=resolved,
+                    detail=None if deleted else "mark_not_present",
+                    key=mark_type,
+                    outcome="removed" if deleted else "not_present",
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "save_annotation":
+            from polylogue.core.user_state_targets import TARGET_SESSION
+
+            if session_id is None:
+                return hooks.error_json(
+                    "write(operation='save_annotation') requires session_id", code="invalid_argument"
+                )
+            annotation_id = _require_field(hooks, fields, "annotation_id", operation=operation)
+            note_text = _require_field(hooks, fields, "note_text", operation=operation)
+            resolved, err = await resolve_session_or_error(hooks, session_id)
+            if err:
+                return err
+            assert resolved is not None
+            target_type = _field(fields, "target_type")
+            target_id = _field(fields, "target_id")
+            message_id = _field(fields, "message_id")
+            created = await poly.save_annotation(
+                annotation_id,
+                resolved,
+                note_text,
+                target_type=target_type if isinstance(target_type, str) else TARGET_SESSION,
+                target_id=target_id if isinstance(target_id, str) else None,
+                message_id=message_id if isinstance(message_id, str) else None,
+            )
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok", session_id=resolved, key=annotation_id, outcome="added" if created else "updated"
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "delete_annotation":
+            annotation_id = _require_field(hooks, fields, "annotation_id", operation=operation)
+            deleted = await poly.delete_annotation(annotation_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "annotation_not_found",
+                    key=annotation_id,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "capture_assertion_candidate":
+            from pathlib import Path
+
+            from polylogue.api.archive import candidate_capture_kind
+
+            body_text = _require_field(hooks, fields, "body_text", operation=operation)
+            author_ref = _require_field(hooks, fields, "author_ref", operation=operation)
+            if not author_ref.startswith("agent:") or author_ref == "agent:":
+                return hooks.error_json("author_ref must be an agent:<session> ref", code="invalid_candidate_capture")
+            kind = _field(fields, "kind")
+            refs = _field(fields, "refs")
+            scope_refs = _field(fields, "scope_refs")
+            cwd = _field(fields, "cwd")
+            candidate_result = await poly.capture_assertion_candidate(
+                body_text=body_text,
+                kind=candidate_capture_kind(kind if isinstance(kind, str) else "note"),
+                refs=tuple(refs) if isinstance(refs, list) else (),
+                scope_refs=tuple(scope_refs) if isinstance(scope_refs, list) else (),
+                cwd=Path(cwd) if isinstance(cwd, str) else None,
+                author_ref=author_ref,
+                author_kind="agent",
+            )
+            return hooks.json_payload(candidate_result, exclude_none=False)
+
+        if operation == "blackboard_post":
+            from polylogue.mcp.archive_support import blackboard_note_payload
+
+            kind = _require_field(hooks, fields, "kind", operation=operation)
+            title = _require_field(hooks, fields, "title", operation=operation)
+            content = _require_field(hooks, fields, "content", operation=operation)
+            scope_repo = _field(fields, "scope_repo")
+            scope_issue = _field(fields, "scope_issue")
+            scope_path = _field(fields, "scope_path")
+            related_sessions = _field(fields, "related_sessions")
+            author_ref = _field(fields, "author_ref")
+            author_kind = _field(fields, "author_kind")
+            evidence_refs = _field(fields, "evidence_refs")
+            staleness = _field(fields, "staleness")
+            context_policy = _field(fields, "context_policy")
+            try:
+                note = await poly.post_blackboard_note(
+                    kind=kind,
+                    title=title,
+                    content=content,
+                    scope_repo=scope_repo if isinstance(scope_repo, str) else None,
+                    scope_session=session_id,
+                    scope_issue=scope_issue if isinstance(scope_issue, int) else None,
+                    scope_path=scope_path if isinstance(scope_path, str) else None,
+                    related_sessions=tuple(related_sessions) if isinstance(related_sessions, list) else (),
+                    author_ref=author_ref if isinstance(author_ref, str) else None,
+                    author_kind=author_kind if isinstance(author_kind, str) else "agent",
+                    evidence_refs=tuple(evidence_refs) if isinstance(evidence_refs, list) else (),
+                    staleness=staleness if isinstance(staleness, dict) else None,
+                    context_policy=context_policy if isinstance(context_policy, dict) else None,
+                )
+            except ValueError as exc:
+                return hooks.error_json(str(exc))
+            return hooks.json_payload(blackboard_note_payload(note))
+
+        if operation == "import_annotation_batch":
+            from polylogue.annotations.importer import (
+                AnnotationBatchImportError,
+                AnnotationBatchImportRequest,
+            )
+            from polylogue.annotations.importer import import_annotation_batch as run_annotation_batch_import
+
+            required = (
+                "jsonl",
+                "batch_id",
+                "schema_id",
+                "schema_version",
+                "target_ref",
+                "source_result_ref",
+                "actor_ref",
+                "model_ref",
+                "prompt_ref",
+            )
+            values = {name: _field(fields, name) for name in required}
+            missing = [name for name in required if values[name] is None]
+            if missing:
+                return hooks.error_json(
+                    f"write(operation='import_annotation_batch') requires fields{sorted(missing)}",
+                    code="invalid_argument",
+                )
+            schema_version_value = values["schema_version"]
+            if not isinstance(schema_version_value, int):
+                return hooks.error_json(
+                    "write(operation='import_annotation_batch') requires fields['schema_version'] to be an integer",
+                    code="invalid_argument",
+                )
+            metadata = _field(fields, "metadata")
+            try:
+                request = AnnotationBatchImportRequest(
+                    jsonl=str(values["jsonl"]),
+                    batch_id=str(values["batch_id"]),
+                    schema_id=str(values["schema_id"]),
+                    schema_version=schema_version_value,
+                    target_ref=str(values["target_ref"]),
+                    source_result_ref=str(values["source_result_ref"]),
+                    actor_ref=str(values["actor_ref"]),
+                    model_ref=str(values["model_ref"]),
+                    prompt_ref=str(values["prompt_ref"]),
+                    metadata=metadata if isinstance(metadata, dict) else {},
+                )
+                import_result = await run_annotation_batch_import(poly, request)
+            except (AnnotationBatchImportError, ValueError) as exc:
+                return hooks.error_json(str(exc), code="invalid_annotation_batch")
+            return hooks.json_payload(import_result)
+
+        if operation == "save_saved_view":
+            import json as _json
+
+            from polylogue.archive.query.spec import SessionQuerySpec
+
+            name = _require_field(hooks, fields, "name", operation=operation)
+            query_json = _require_field(hooks, fields, "query_json", operation=operation)
+            view_id = _field(fields, "view_id")
+            if not name.strip():
+                return hooks.error_json("saved view name must not be empty")
+            try:
+                query = _json.loads(query_json)
+            except _json.JSONDecodeError:
+                return hooks.error_json("query_json must be valid JSON")
+            if not isinstance(query, dict):
+                return hooks.error_json("query_json must encode an object")
+            try:
+                SessionQuerySpec.from_params(query, strict=True)
+            except Exception as exc:
+                return hooks.error_json(
+                    "query_json is not a valid SessionQuerySpec", detail=f"{type(exc).__name__}: {exc}"
+                )
+            canonical_query_json = _json.dumps(query, sort_keys=True, separators=(",", ":"))
+            from hashlib import sha256
+
+            if isinstance(view_id, str) and view_id:
+                saved_id = view_id
+            else:
+                digest_input = f"{name.strip()}\0{canonical_query_json}"
+                saved_id = f"saved-view-{sha256(digest_input.encode()).hexdigest()[:16]}"
+            created = await poly.save_view(saved_id, name.strip(), canonical_query_json)
+            return hooks.json_payload(
+                MutationResultPayload(status="ok", key=saved_id, outcome="added" if created else "updated"),
+                exclude_none=True,
+            )
+
+        if operation == "delete_saved_view":
+            view_id = _require_field(hooks, fields, "view_id", operation=operation)
+            deleted = await poly.delete_view(view_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "saved_view_not_found",
+                    key=view_id,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "save_recall_pack":
+            import json as _json
+
+            pack_id = _require_field(hooks, fields, "pack_id", operation=operation)
+            label = _require_field(hooks, fields, "label", operation=operation)
+            payload_json = _field(fields, "payload_json")
+            payload_json = payload_json if isinstance(payload_json, str) else "{}"
+            if not pack_id.strip() or not label.strip():
+                return hooks.error_json("pack_id and label must not be empty")
+            try:
+                payload = _json.loads(payload_json)
+            except _json.JSONDecodeError:
+                return hooks.error_json("payload_json must be valid JSON")
+            if not isinstance(payload, dict):
+                return hooks.error_json("payload_json must encode an object")
+            items = payload.get("items")
+            if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+                return hooks.error_json("payload_json must include an items list of objects")
+            created = await poly.create_recall_pack(
+                pack_id.strip(), label.strip(), _json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            )
+            return hooks.json_payload(
+                MutationResultPayload(status="ok", key=pack_id.strip(), outcome="added" if created else "updated"),
+                exclude_none=True,
+            )
+
+        if operation == "delete_recall_pack":
+            pack_id = _require_field(hooks, fields, "pack_id", operation=operation)
+            deleted = await poly.delete_recall_pack(pack_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "recall_pack_not_found",
+                    key=pack_id,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "save_workspace":
+            import json as _json
+
+            workspace_id = _require_field(hooks, fields, "workspace_id", operation=operation)
+            name = _require_field(hooks, fields, "name", operation=operation)
+            mode = _field(fields, "mode")
+            mode = mode if isinstance(mode, str) else "tabs"
+            if mode not in {"tabs", "stack", "compare", "timeline"}:
+                return hooks.error_json("mode must be one of: tabs, stack, compare, timeline")
+            if not workspace_id.strip() or not name.strip():
+                return hooks.error_json("workspace_id and name must not be empty")
+            open_targets_json = _field(fields, "open_targets_json")
+            layout_json = _field(fields, "layout_json")
+            active_target_json = _field(fields, "active_target_json")
+            try:
+                open_targets = _json.loads(open_targets_json) if isinstance(open_targets_json, str) else []
+                layout = _json.loads(layout_json) if isinstance(layout_json, str) else {}
+                active_target = _json.loads(active_target_json) if isinstance(active_target_json, str) else {}
+            except _json.JSONDecodeError:
+                return hooks.error_json("open_targets_json/layout_json/active_target_json must be valid JSON")
+            if not isinstance(open_targets, list) or not all(isinstance(item, dict) for item in open_targets):
+                return hooks.error_json("open_targets_json must encode a list of objects")
+            if not isinstance(layout, dict) or not isinstance(active_target, dict):
+                return hooks.error_json("layout_json/active_target_json must encode objects")
+            created = await poly.save_workspace(
+                workspace_id.strip(),
+                name.strip(),
+                mode,
+                _json.dumps(open_targets, sort_keys=True, separators=(",", ":")),
+                _json.dumps(layout, sort_keys=True, separators=(",", ":")),
+                _json.dumps(active_target, sort_keys=True, separators=(",", ":")),
+            )
+            return hooks.json_payload(
+                MutationResultPayload(status="ok", key=workspace_id.strip(), outcome="added" if created else "updated"),
+                exclude_none=True,
+            )
+
+        if operation == "delete_workspace":
+            workspace_id = _require_field(hooks, fields, "workspace_id", operation=operation)
+            deleted = await poly.delete_workspace(workspace_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "workspace_not_found",
+                    key=workspace_id,
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "record_correction":
+            from polylogue.insights.feedback import UnknownCorrectionKindError
+
+            if session_id is None:
+                return hooks.error_json(
+                    "write(operation='record_correction') requires session_id", code="invalid_argument"
+                )
+            kind = _require_field(hooks, fields, "kind", operation=operation)
+            payload = _field(fields, "payload")
+            if not isinstance(payload, dict):
+                return hooks.error_json(
+                    "write(operation='record_correction') requires fields['payload'] to be an object"
+                )
+            correction_note = _field(fields, "note")
+            author_ref = _field(fields, "author_ref")
+            author_kind = _field(fields, "author_kind")
+            resolved, err = await resolve_session_or_error(hooks, session_id)
+            if err:
+                return err
+            assert resolved is not None
+            try:
+                correction = await poly.record_correction(
+                    resolved,
+                    kind,
+                    payload,
+                    note=correction_note if isinstance(correction_note, str) else None,
+                    author_ref=author_ref if isinstance(author_ref, str) else None,
+                    author_kind=author_kind if isinstance(author_kind, str) else None,
+                )
+            except UnknownCorrectionKindError as exc:
+                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok", session_id=correction.session_id, outcome=correction.kind.value, detail=correction.note
+                ),
+                exclude_none=True,
+            )
+
+        if operation == "clear_corrections":
+            from polylogue.insights.feedback import UnknownCorrectionKindError
+
+            if session_id is None:
+                return hooks.error_json(
+                    "write(operation='clear_corrections') requires session_id", code="invalid_argument"
+                )
+            kind = _field(fields, "kind")
+            kind = kind if isinstance(kind, str) else None
+            resolved, err = await resolve_session_or_error(hooks, session_id)
+            if err:
+                return err
+            assert resolved is not None
+            try:
+                if kind is None:
+                    count = await poly.clear_corrections(resolved)
+                    return hooks.json_payload(
+                        MutationResultPayload(
+                            status="ok", session_id=resolved, affected_count=count, outcome="cleared"
+                        ),
+                        exclude_none=True,
+                    )
+                removed = await poly.delete_correction(resolved, kind)
+            except UnknownCorrectionKindError as exc:
+                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if removed else "not_found",
+                    session_id=resolved,
+                    outcome="deleted" if removed else "not_found",
+                ),
+                exclude_none=True,
+            )
+
+        return hooks.error_json(f"unknown write operation: {operation!r}", code="invalid_argument")
+    except _WriteFieldError as exc:
+        return exc.payload
+
+
+async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) -> str:
+    """Execute a saved-query ref through the same session-search machinery as ``query(projection="sessions")``."""
+    import json as _json
+
+    if not ref.startswith("saved-query:") and not ref.startswith("saved-view:"):
+        return hooks.error_json(
+            f"run() only supports saved-query/saved-view refs, got {ref!r}", code="invalid_argument", tool="run"
+        )
+    view_id = ref.split(":", 1)[1]
+    poly = hooks.get_polylogue()
+    rows = await poly.list_views()
+    row = next((r for r in rows if r.get("view_id") == view_id), None)
+    if row is None:
+        return hooks.error_json(f"saved view not found: {view_id}", code="not_found", tool="run")
+    try:
+        query = _json.loads(row["query_json"])
+    except (_json.JSONDecodeError, TypeError):
+        query = {}
+    if not isinstance(query, dict):
+        query = {}
+    return await _query_sessions(
+        hooks,
+        expression=query.get("query"),
+        limit=limit,
+        origin=query.get("origin"),
+        tag=query.get("tag"),
+        repo=query.get("repo"),
+        since=query.get("since"),
+        until=query.get("until"),
+        sort=query.get("sort"),
+    )
+
+
+async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwargs: dict[str, Any]) -> str:
+    """Preview/execute/inspect maintenance operations, delegating to the existing planner/registry."""
+    from polylogue.config import Config
+    from polylogue.maintenance.envelope import envelope_from_operation
+    from polylogue.paths import archive_root, render_root
+
+    config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
+
+    if operation in ("preview", "execute"):
+        from polylogue.maintenance.planner import execute_backfill, preview_backfill
+        from polylogue.mcp.server_maintenance_tools import _build_mcp_scope_filter
+
+        targets = kwargs.get("targets")
+        session_ids = kwargs.get("session_ids")
+        try:
+            scope_filter = _build_mcp_scope_filter(
+                session_ids=list(session_ids) if session_ids else None,
+                origin=kwargs.get("origin"),
+                source_family=kwargs.get("source_family"),
+                source_root=kwargs.get("source_root"),
+                since=kwargs.get("since"),
+                until=kwargs.get("until"),
+                failure_kind=kwargs.get("failure_kind"),
+                parser_version=kwargs.get("parser_version"),
+            )
+        except ValueError as exc:
+            return hooks.error_json(str(exc), code="invalid_argument")
+        resolved_targets = tuple(targets) if targets else ()
+        if operation == "preview":
+            result = preview_backfill(config, targets=resolved_targets, scope_filter=scope_filter)
+            envelope = envelope_from_operation(result, origin="mcp", mode="preview")
+        else:
+            dry_run = bool(kwargs.get("dry_run") or False)
+            result = execute_backfill(config, targets=resolved_targets, dry_run=dry_run, scope_filter=scope_filter)
+            envelope = envelope_from_operation(result, origin="mcp", mode="execute")
+        return hooks.json_payload(envelope)
+
+    if operation == "status":
+        from polylogue.maintenance.registry import MaintenanceOperationRegistry
+
+        operation_id = kwargs.get("operation_id")
+        if not isinstance(operation_id, str) or not operation_id:
+            return hooks.error_json("maintenance(operation='status') requires operation_id", code="invalid_argument")
+        registry = MaintenanceOperationRegistry(config=config)
+        record = registry.get_operation(operation_id)
+        if record is None:
+            return hooks.error_json(f"Operation not found: {operation_id}", code="not_found")
+        envelope = envelope_from_operation(record.operation, origin="mcp", mode="execute")
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={
+                    "envelope": envelope.to_dict(),
+                    "updated_at": record.updated_at,
+                    "state_path": str(record.state_path),
+                }
+            )
+        )
+
+    if operation == "list":
+        from polylogue.maintenance.registry import MaintenanceOperationRegistry
+
+        registry = MaintenanceOperationRegistry(config=config)
+        records = registry.list_operations()
+        items = [
+            {
+                "envelope": envelope_from_operation(r.operation, origin="mcp", mode="execute").to_dict(),
+                "updated_at": r.updated_at,
+                "state_path": str(r.state_path),
+            }
+            for r in records
+        ]
+        return hooks.json_payload(MCPRootPayload(root={"items": items, "total": len(items)}))
+
+    if operation == "rebuild_index":
+        from polylogue.mcp.payloads import MCPMutationStatusPayload
+
+        poly = hooks.get_polylogue()
+        success = await poly.rebuild_index()
+        status_info = await poly.get_index_status()
+        return hooks.json_payload(
+            MCPMutationStatusPayload(
+                status="ok" if success else "failed",
+                index_exists=bool(status_info.get("exists", False)),
+                indexed_messages=int(status_info.get("count", 0)),
+            ),
+            exclude_none=True,
+        )
+
+    if operation == "update_index":
+        from polylogue.mcp.payloads import MCPMutationStatusPayload
+
+        session_ids = kwargs.get("session_ids")
+        if not session_ids:
+            return hooks.error_json(
+                "maintenance(operation='update_index') requires session_ids", code="invalid_argument"
+            )
+        success = await hooks.get_polylogue().update_index(list(session_ids))
+        return hooks.json_payload(
+            MCPMutationStatusPayload(status="ok" if success else "failed", session_count=len(session_ids)),
+            exclude_none=True,
+        )
+
+    if operation == "rebuild_insights":
+        session_ids = kwargs.get("session_ids")
+        counts = await hooks.get_polylogue().rebuild_insights(session_ids=list(session_ids) if session_ids else None)
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={
+                    "status": "ok",
+                    "session_count": len(session_ids) if session_ids else None,
+                    "counts": counts.to_dict(),
+                    "total": counts.total(),
+                }
+            ),
+            exclude_none=True,
+        )
+
+    return hooks.error_json(f"unknown maintenance operation: {operation!r}", code="invalid_argument")
+
+
+def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+    """Register write/judge/run/maintenance for roles whose ladder includes them.
+
+    Thin adapters over the same typed owners the retired per-operation MCP
+    tools used (write, run, maintenance) or already used (judge). No new
+    mutation policy is invented here -- that is polylogue-t46.9's job.
+    """
+    role = mcp.role  # type: ignore[attr-defined]
+
+    if mcp_role_allows(role, "write"):
+
+        async def write(
+            operation: Literal[
+                "add_tag",
+                "remove_tag",
+                "bulk_tag_sessions",
+                "set_metadata",
+                "delete_metadata",
+                "delete_session",
+                "add_mark",
+                "remove_mark",
+                "save_annotation",
+                "delete_annotation",
+                "capture_assertion_candidate",
+                "blackboard_post",
+                "import_annotation_batch",
+                "save_saved_view",
+                "delete_saved_view",
+                "save_recall_pack",
+                "delete_recall_pack",
+                "save_workspace",
+                "delete_workspace",
+                "record_correction",
+                "clear_corrections",
+            ],
+            session_id: str | None = None,
+            session_ids: list[str] | None = None,
+            tag: str | None = None,
+            tags: list[str] | None = None,
+            key: str | None = None,
+            value: str | None = None,
+            confirm: bool = False,
+            fields: dict[str, object] | None = None,
+        ) -> str:
+            """Apply a declared mutation operation after shared authorization.
+
+            ``session_id``/``session_ids``/``tag``/``tags``/``key``/``value``/
+            ``confirm`` cover the common cases; ``fields`` carries every
+            operation-specific value beyond those (see each operation's
+            retired single-purpose tool for the exact field names, e.g.
+            ``fields={"mark_type": "star"}`` for ``add_mark``).
+            """
+
+            async def run() -> str:
+                return await _dispatch_write(
+                    hooks,
+                    operation=operation,
+                    kwargs={
+                        "session_id": session_id,
+                        "session_ids": session_ids,
+                        "tag": tag,
+                        "tags": tags,
+                        "key": key,
+                        "value": value,
+                        "confirm": confirm,
+                        "fields": fields,
+                    },
+                )
+
+            return await hooks.async_safe_call(
+                "write", run, session_id=session_id, session_ids=tuple(session_ids or ())
+            )
+
+        register_declared_handler(mcp, write, name="write")
+
+        async def run(
+            ref: str,
+            limit: int | None = None,
+        ) -> str:
+            """Execute a saved query or governed recipe ref."""
+
+            async def _run() -> str:
+                return await _dispatch_run(hooks, ref=ref, limit=limit)
+
+            return await hooks.async_safe_call("run", _run)
+
+        register_declared_handler(mcp, run, name="run")
+
+    if mcp_role_allows(role, "review"):
+
+        async def judge(
+            items: list[dict[str, object]] | None = None,
+            candidate_ref: str | None = None,
+            decision: Literal["accept", "reject", "defer", "supersede"] | None = None,
+            reason: str | None = None,
+            inject: bool = False,
+            actor_ref: str = "user:local",
+            replacement_kind: str | None = None,
+            replacement_body_text: str | None = None,
+            replacement_value: object | None = None,
+        ) -> str:
+            """Accept, reject, defer, or supersede assertion candidates.
+
+            Pass ``items`` for bulk judgment (independently reported partial
+            success), or ``candidate_ref``+``decision`` for a single one.
+            """
+
+            async def _judge() -> str:
+                from polylogue.storage.sqlite.archive_tiers.user_write import (
+                    ArchiveAssertionBulkJudgmentItemEnvelope,
+                )
+
+                if items is not None:
+
+                    def make_item(item: dict[str, object]) -> ArchiveAssertionBulkJudgmentItemEnvelope:
+                        item_candidate_ref = item.get("candidate_ref")
+                        item_decision = item.get("decision")
+                        if not isinstance(item_candidate_ref, str) or not isinstance(item_decision, str):
+                            raise ValueError("each judgment requires string candidate_ref and decision")
+                        item_inject = item.get("inject", False)
+                        if type(item_inject) is not bool:
+                            raise ValueError("each judgment requires boolean inject")
+                        item_reason = item.get("reason")
+                        item_replacement_kind = item.get("replacement_kind")
+                        item_replacement_body_text = item.get("replacement_body_text")
+                        return ArchiveAssertionBulkJudgmentItemEnvelope(
+                            candidate_ref=item_candidate_ref,
+                            decision=item_decision,
+                            reason=item_reason if isinstance(item_reason, str) else None,
+                            inject=item_inject,
+                            actor_ref=actor_ref,
+                            replacement_kind=item_replacement_kind if isinstance(item_replacement_kind, str) else None,
+                            replacement_body_text=item_replacement_body_text
+                            if isinstance(item_replacement_body_text, str)
+                            else None,
+                            replacement_value=item.get("replacement_value"),
+                        )
+
+                    try:
+                        judgments = tuple(make_item(item) for item in items)
+                    except ValueError as exc:
+                        return hooks.error_json(str(exc), code="invalid_assertion_judgment")
+                elif candidate_ref is not None and decision is not None:
+                    judgments = (
+                        ArchiveAssertionBulkJudgmentItemEnvelope(
+                            candidate_ref=candidate_ref,
+                            decision=decision,
+                            reason=reason,
+                            inject=inject,
+                            actor_ref=actor_ref,
+                            replacement_kind=replacement_kind,
+                            replacement_body_text=replacement_body_text,
+                            replacement_value=replacement_value,
+                        ),
+                    )
+                else:
+                    return hooks.error_json(
+                        "judge() requires items, or candidate_ref and decision", code="invalid_argument"
+                    )
+                payload = await hooks.get_polylogue().judge_assertion_candidates(items=judgments)
+                return hooks.json_payload(payload, exclude_none=True)
+
+            return await hooks.async_safe_call("judge", _judge)
+
+        register_declared_handler(mcp, judge, name="judge")
+
+    if mcp_role_allows(role, "admin"):
+
+        async def maintenance(
+            operation: Literal[
+                "preview",
+                "execute",
+                "status",
+                "list",
+                "rebuild_index",
+                "update_index",
+                "rebuild_insights",
+            ],
+            targets: list[str] | None = None,
+            dry_run: bool = False,
+            session_ids: list[str] | None = None,
+            origin: str | None = None,
+            source_family: str | None = None,
+            source_root: str | None = None,
+            since: str | None = None,
+            until: str | None = None,
+            failure_kind: str | None = None,
+            parser_version: str | None = None,
+            operation_id: str | None = None,
+        ) -> str:
+            """Preview, execute, list, and inspect maintenance operations."""
+
+            async def run() -> str:
+                return await _dispatch_maintenance(
+                    hooks,
+                    operation=operation,
+                    kwargs={
+                        "targets": targets,
+                        "dry_run": dry_run,
+                        "session_ids": session_ids,
+                        "origin": origin,
+                        "source_family": source_family,
+                        "source_root": source_root,
+                        "since": since,
+                        "until": until,
+                        "failure_kind": failure_kind,
+                        "parser_version": parser_version,
+                        "operation_id": operation_id,
+                    },
+                )
+
+            return await hooks.async_safe_call("maintenance", run, session_ids=tuple(session_ids or ()))
+
+        register_declared_handler(mcp, maintenance, name="maintenance")
+
+
+__all__ = ["register_cutover_privileged_tools", "register_cutover_read_tools"]

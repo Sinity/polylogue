@@ -23,10 +23,12 @@ def test_frozen_public_inventory_matches_exactly_six_read_transactions() -> None
     assert len(MCP_TOOL_NAME_BASELINE) == 6
 
 
-def test_all_roles_expose_the_same_read_floor_until_privileged_cutover_lands() -> None:
-    """No compatibility tool leaks into a broader role during read migration."""
-    for role in ("read", "write", "review", "admin"):
-        assert declared_tool_names(role) == MCP_TOOL_NAME_BASELINE
+def test_role_ladder_adds_exactly_the_privileged_verbs_each_tier_owns() -> None:
+    """Every role includes the six-tool read floor plus its own privileged verbs, and no more."""
+    assert declared_tool_names("read") == MCP_TOOL_NAME_BASELINE
+    assert declared_tool_names("write") == MCP_TOOL_NAME_BASELINE | {"write", "run"}
+    assert declared_tool_names("review") == MCP_TOOL_NAME_BASELINE | {"write", "run", "judge"}
+    assert declared_tool_names("admin") == MCP_TOOL_NAME_BASELINE | {"write", "run", "judge", "maintenance"}
 
 
 def test_target_algebra_has_no_separate_graph_transaction() -> None:
@@ -41,14 +43,17 @@ def test_live_registration_matches_frozen_public_inventory() -> None:
 
 
 def test_live_handlers_match_their_declaration_modules_and_public_names() -> None:
-    server = build_server(role="read")
+    server = build_server(role="admin")
     declarations = {declaration.name: declaration for declaration in MCP_TOOL_DECLARATIONS}
-    assert set(declarations) == MCP_TOOL_NAME_BASELINE
+    assert set(declarations) == MCP_TOOL_NAME_BASELINE | {"write", "run", "judge", "maintenance"}
     for name, declaration in declarations.items():
         handler = server._tool_manager._tools[name].fn
         assert handler.__name__ == name
         assert handler.__module__ == declaration.registration.module
-        assert declaration.registration.registrar == "register_cutover_read_tools"
+        expected_registrar = (
+            "register_cutover_read_tools" if name in MCP_TOOL_NAME_BASELINE else "register_cutover_privileged_tools"
+        )
+        assert declaration.registration.registrar == expected_registrar
 
 
 def test_discovery_signatures_expose_real_resume_and_reference_inputs() -> None:
@@ -67,5 +72,5 @@ def test_generated_equivalence_map_tracks_the_cutover_declarations() -> None:
 
     payload = json.loads(Path("docs/generated/mcp-equivalence.json").read_text())
     surface = payload["compatibility_surface"]
-    assert surface["tool_count"] == 6
-    assert set(surface["tool_names"]) == MCP_TOOL_NAME_BASELINE
+    assert surface["tool_count"] == 10
+    assert set(surface["tool_names"]) == MCP_TOOL_NAME_BASELINE | {"write", "run", "judge", "maintenance"}

@@ -1228,9 +1228,10 @@ def register_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
 
 
 def register_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
-    from polylogue.mcp.server_cutover import register_cutover_read_tools
+    from polylogue.mcp.server_cutover import register_cutover_privileged_tools, register_cutover_read_tools
 
     register_cutover_read_tools(mcp, hooks)
+    register_cutover_privileged_tools(mcp, hooks)
 
 
 __all__ = ["register_query_tools", "register_read_tools", "register_tools"]
