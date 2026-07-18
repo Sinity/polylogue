@@ -3546,3 +3546,40 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
     assert server.shutdown_called is False
     assert server.close_called is True
     assert lifecycle_tick_started is True
+
+
+def test_periodic_schema_preflight_recheck_exits_on_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A schema-blocked daemon must not stay watcher-less after tiers heal:
+    when the preflight turns non-critical the recheck loop raises so the
+    supervisor restarts the daemon into a healthy boot."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
+
+    def alert(severity: HealthSeverity) -> HealthAlert:
+        return HealthAlert(
+            check_name="schema_version",
+            tier=HealthTier.FAST,
+            severity=severity,
+            message="probe",
+            checked_at="now",
+        )
+
+    schedule = [alert(HealthSeverity.CRITICAL), alert(HealthSeverity.OK)]
+    sleeps = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        assert seconds == daemon_cli._SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS
+
+    monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", lambda: schedule.pop(0))
+    with (
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        pytest.raises(RuntimeError, match="schema preflight recovered"),
+    ):
+        asyncio.run(daemon_cli._periodic_schema_preflight_recheck())
+
+    assert schedule == []
+    assert sleeps == 2
