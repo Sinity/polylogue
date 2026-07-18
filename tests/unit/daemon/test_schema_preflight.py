@@ -411,3 +411,27 @@ async def test_live_batch_marks_structural_database_error_degraded(
     assert second.source_payload_read_bytes == 0
     assert second.full_file_count == 0
     assert second.skipped_file_count == 1
+
+
+def test_schema_version_health_tolerates_missing_disposable_tier(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing ops.db (disposable) self-heals via bootstrap and must not
+    block the watcher; a missing durable tier stays CRITICAL."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = workspace_env["archive_root"]
+    initialize_active_archive_root(root)
+    monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: root / "index.db")
+
+    (root / "ops.db").unlink()
+    alert = _check_schema_version_fast()
+    assert alert.severity == HealthSeverity.OK
+    assert "pending bootstrap" in alert.message
+    assert "ops.db" in alert.message
+
+    (root / "user.db").unlink()
+    alert = _check_schema_version_fast()
+    assert alert.severity == HealthSeverity.CRITICAL
+    assert "user.db" in alert.message
+    assert "ops.db" not in alert.message

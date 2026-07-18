@@ -297,9 +297,18 @@ def _check_schema_version_fast() -> HealthAlert:
         archive_dir = dbf.parent
         mismatches: list[str] = []
         missing: list[str] = []
+        missing_disposable: list[str] = []
         for spec in ARCHIVE_TIER_SPECS.values():
             path = archive_dir / spec.filename
             if not path.exists():
+                if spec.durability == "disposable":
+                    # A disposable tier (ops.db) is recreated by the next
+                    # bootstrap-touching write; its absence must never block
+                    # the watcher (2026-07-18: preflight raced the bootstrap
+                    # and refused the watcher for an hour over a tier that
+                    # self-healed seconds after the decision).
+                    missing_disposable.append(spec.filename)
+                    continue
                 missing.append(spec.filename)
                 continue
             conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
@@ -314,6 +323,8 @@ def _check_schema_version_fast() -> HealthAlert:
         if not missing and not mismatches:
             severity = HealthSeverity.OK
             message = "archive tier layout matches runtime"
+            if missing_disposable:
+                message += f" (disposable tier(s) pending bootstrap: {', '.join(missing_disposable)})"
         else:
             severity = HealthSeverity.CRITICAL
             parts: list[str] = []

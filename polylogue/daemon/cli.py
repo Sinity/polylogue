@@ -97,6 +97,30 @@ _SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT = 10
 _SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS = 1
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
+_SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
+
+
+async def _periodic_schema_preflight_recheck() -> None:
+    """Poll for tier-layout recovery while the watcher is schema-blocked.
+
+    The blocked decision is made once at startup, but tiers heal out of
+    band: an operator migrates a durable tier, a derived tier is rebuilt,
+    or a disposable tier bootstraps. Without this loop the daemon stayed
+    watcher-less forever after recovery (2026-07-18: an hour of dead
+    watcher until a manual restart). When the layout becomes ready, raise
+    so the supervisor restarts the daemon into a healthy boot — the
+    startup sequence is the only sanctioned way to construct the watcher.
+    """
+    while True:
+        await asyncio.sleep(_SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS)
+        alert = _check_schema_version_fast()
+        if alert.severity != HealthSeverity.CRITICAL:
+            logger.info(
+                "daemon: schema preflight recovered (%s); exiting for supervised restart",
+                alert.message,
+            )
+            raise RuntimeError("schema preflight recovered; restart required to start the live watcher")
+
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
@@ -1403,6 +1427,8 @@ async def run_daemon_services(
     # surviving API/health process is still alive while archive work is
     # intentionally withheld.
     maintenance_tasks: list[asyncio.Task[None]] = [asyncio.create_task(_periodic_lifecycle_heartbeat())]
+    if watcher_blocked:
+        maintenance_tasks.append(asyncio.create_task(_periodic_schema_preflight_recheck()))
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
