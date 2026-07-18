@@ -9,6 +9,7 @@ Writer module: user.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
@@ -27,6 +28,7 @@ from polylogue.core.assertions import (
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE
 from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
@@ -61,6 +63,9 @@ _ASSERTION_TERMINAL_JUDGED_STATUSES: Final[frozenset[AssertionStatus]] = frozens
 _ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"inject": False, "promotion_required": True}
 
 
+_ASSERTION_WRITE_SAVEPOINTS = itertools.count()
+
+
 @contextmanager
 def _immediate_user_write_transaction(conn: sqlite3.Connection) -> Iterator[None]:
     """Start the outer user-tier write scope before observing mutable state.
@@ -70,16 +75,38 @@ def _immediate_user_write_transaction(conn: sqlite3.Connection) -> Iterator[None
     immediate transaction when none exists, and rolls that transaction back if
     the guarded operation fails.  Nested bulk operations already hold the
     immediate transaction and continue to use savepoints for item isolation.
+
+    A caller that already has an open transaction is not necessarily
+    write-locked: a plain/deferred transaction has not yet reserved the
+    SQLite writer slot, so a preservation read taken inside it can still race
+    a concurrent operator judgment landing between that read and this
+    connection's eventual write (polylogue-41ow). The savepoint-scoped
+    zero-row ``UPDATE`` forces the RESERVED lock before any preserve/read
+    decision runs, without committing or rolling back state the caller owns.
+    If the caller's transaction already holds the write lock (e.g. a prior
+    nested call already ran this same upgrade), the forced write is a no-op.
     """
-    if conn.in_transaction:
-        yield
+    if not conn.in_transaction:
+        conn.execute(f"PRAGMA busy_timeout = {WRITE_CONNECTION_PROFILE.busy_timeout_ms}")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
         return
-    conn.execute("BEGIN IMMEDIATE")
+
+    savepoint = f"assertion_write_{next(_ASSERTION_WRITE_SAVEPOINTS)}"
+    conn.execute(f"SAVEPOINT {savepoint}")
     try:
+        conn.execute("UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 0")
         yield
     except BaseException:
-        conn.rollback()
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
         raise
+    else:
+        conn.execute(f"RELEASE {savepoint}")
 
 
 def _default_context_policy() -> dict[str, JSONValue]:

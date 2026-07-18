@@ -1560,6 +1560,112 @@ def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path
         conflict.close()
 
 
+def test_cross_connection_replay_inside_caller_owned_deferred_transaction_cannot_resurrect_operator_accept(
+    tmp_path: Path,
+) -> None:
+    """A caller-owned deferred transaction is upgraded before the preservation read.
+
+    ``_immediate_user_write_transaction`` only issues ``BEGIN IMMEDIATE`` when
+    the connection is idle. A connection that already has an open transaction
+    when it enters ``upsert_assertion`` -- e.g. a caller batching several
+    overlay writes under its own transaction boundary rather than a fresh
+    connection per call -- used to fall through to a bare ``yield`` with no
+    write-lock upgrade, leaving the preservation read unprotected even though
+    the outer transaction had not yet reserved the SQLite writer slot
+    (polylogue-41ow). This reproduces that shape directly: the detector's
+    transaction is opened with a plain ``BEGIN`` (deferred), not
+    ``BEGIN IMMEDIATE``, before it calls into ``upsert_assertion``.
+    """
+
+    db_path = tmp_path / "user.db"
+    setup = open_connection(db_path)
+    initialize_archive_tier(setup, ArchiveTier.USER)
+    try:
+        candidate = upsert_assertion(
+            setup,
+            assertion_id="concurrent-candidate-deferred",
+            target_ref="session:concurrent-deferred",
+            kind=AssertionKind.DECISION,
+            body_text="detector candidate",
+            author_kind="detector",
+            now_ms=1,
+        )
+        setup.commit()
+    finally:
+        setup.close()
+
+    conflict = open_connection(db_path)
+    looked_up = threading.Event()
+    release_detector = threading.Event()
+    operator_done = threading.Event()
+    detector_errors: list[BaseException] = []
+    operator_errors: list[BaseException] = []
+    try:
+
+        def replay_detector() -> None:
+            detector = open_connection(db_path)
+            try:
+                # Caller-owned deferred transaction: not BEGIN IMMEDIATE, so
+                # the writer slot is not yet reserved at this point.
+                detector.execute("BEGIN")
+                assert detector.in_transaction
+                upsert_assertion(
+                    _PauseAfterCandidateLookup(detector, looked_up, release_detector),  # type: ignore[arg-type]
+                    assertion_id=candidate.assertion_id,
+                    target_ref=candidate.target_ref,
+                    kind=candidate.kind,
+                    body_text="detector replay",
+                    author_kind="detector",
+                    now_ms=2,
+                )
+                detector.commit()
+            except BaseException as exc:  # pragma: no cover - asserted by the parent thread
+                detector_errors.append(exc)
+            finally:
+                detector.close()
+
+        def accept_candidate() -> None:
+            operator = open_connection(db_path)
+            try:
+                judge_assertion_candidate(
+                    operator,
+                    candidate_ref=f"assertion:{candidate.assertion_id}",
+                    decision="accept",
+                    actor_ref="user:operator",
+                    now_ms=3,
+                )
+                operator.commit()
+            except BaseException as exc:  # pragma: no cover - asserted by the parent thread
+                operator_errors.append(exc)
+            finally:
+                operator.close()
+                operator_done.set()
+
+        detector_thread = threading.Thread(target=replay_detector)
+        detector_thread.start()
+        assert looked_up.wait(timeout=5)
+
+        operator_thread = threading.Thread(target=accept_candidate)
+        operator_thread.start()
+        assert not operator_done.wait(timeout=0.15), (
+            "operator bypassed the detector's deferred-but-upgraded transaction"
+        )
+        release_detector.set()
+        detector_thread.join(timeout=5)
+        operator_thread.join(timeout=5)
+        assert not detector_thread.is_alive()
+        assert not operator_thread.is_alive()
+        assert detector_errors == []
+        assert operator_errors == []
+
+        final = read_assertion_envelope(conflict, candidate.assertion_id)
+        assert final is not None
+        assert final.status is AssertionStatus.ACCEPTED
+    finally:
+        release_detector.set()
+        conflict.close()
+
+
 def test_assertion_upsert_rolls_back_its_immediate_transaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "user.db"
     conn = open_connection(db_path)
