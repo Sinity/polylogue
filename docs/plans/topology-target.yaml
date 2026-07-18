@@ -1279,11 +1279,11 @@ files:
     target: polylogue/context/selection.py
     owner: stable
   - path: polylogue/coordination/__init__.py
-    loc: 11
+    loc: 16
     target: polylogue/coordination/__init__.py
     owner: stable
   - path: polylogue/coordination/envelope.py
-    loc: 2331
+    loc: 2467
     target: polylogue/coordination/envelope.py
     owner: stable
   - path: polylogue/coordination/payloads.py
@@ -2163,7 +2163,7 @@ files:
     target: polylogue/mcp/declarations/models.py
     owner: stable
   - path: polylogue/mcp/declarations/registry.py
-    loc: 3716
+    loc: 528
     target: polylogue/mcp/declarations/registry.py
     owner: stable
   - path: polylogue/mcp/insight_tool_contracts.py
@@ -2179,36 +2179,16 @@ files:
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
-    loc: 259
+    loc: 204
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
     loc: 114
     target: polylogue/mcp/server.py
     owner: stable
-  - path: polylogue/mcp/server_context_tools.py
-    loc: 199
-    target: polylogue/mcp/server_context_tools.py
-    owner: stable
   - path: polylogue/mcp/server_cutover.py
-    loc: 1443
+    loc: 1485
     target: polylogue/mcp/server_cutover.py
-    owner: stable
-  - path: polylogue/mcp/server_insight_tools.py
-    loc: 808
-    target: polylogue/mcp/server_insight_tools.py
-    owner: stable
-  - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 303
-    target: polylogue/mcp/server_maintenance_tools.py
-    owner: stable
-  - path: polylogue/mcp/server_mutation_tools.py
-    loc: 496
-    target: polylogue/mcp/server_mutation_tools.py
-    owner: stable
-  - path: polylogue/mcp/server_personal_state_tools.py
-    loc: 674
-    target: polylogue/mcp/server_personal_state_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
     loc: 563
@@ -2223,7 +2203,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1237
+    loc: 19
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3921,7 +3901,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 12271
+    loc: 12274
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3997,7 +3977,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
-    loc: 1065
+    loc: 1084
     target: polylogue/storage/sqlite/archive_tiers/source_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/types.py
