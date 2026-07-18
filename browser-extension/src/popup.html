@@ -261,6 +261,18 @@
         <div id="badge" class="badge neutral" aria-live="polite">checking</div>
       </header>
 
+      <section class="row" aria-label="Pending browser actions">
+        <span class="label">Pending browser actions</span><span id="pending-action-count" class="value">0</span>
+      </section>
+
+      <section id="attention-section" class="active-card" hidden aria-labelledby="attention-heading">
+        <div class="section-head"><strong id="attention-heading">Attention</strong></div>
+        <p id="attention-detail" class="log-meta"></p>
+        <div class="controls">
+          <button id="attention-action" hidden><span class="button-label"></span><span class="button-status"></span></button>
+        </div>
+      </section>
+
       <section>
         <div class="section-head"><strong>Open conversations</strong><span id="open-tab-count" class="value">0</span></div>
         <div id="open-tabs" class="tab-list" aria-live="polite"></div>
@@ -291,54 +303,91 @@
         <div id="timeline" class="log" aria-live="polite"></div>
       </section>
 
-      <section aria-labelledby="receiver-heading">
-        <div class="section-head"><strong id="receiver-heading">Paired receiver</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
-        <div class="surface-card">
-          <div id="receiver-pairing-status" class="pairing-id">Identity not checked</div>
-          <p id="receiver-pairing-detail" class="log-meta">Polylogue will bind the first compatible authenticated receiver it reaches.</p>
-        </div>
-        <div class="controls">
-          <button id="reset-pairing" class="danger"><span class="button-label">Reset pairing</span><span class="button-status"></span></button>
-        </div>
-        <p class="section-note">Reset removes only the trusted receiver identity. It does not delete capture or backfill queues.</p>
-      </section>
+      <details id="diagnostics">
+        <summary>Diagnostics · leases, retries, request ids, receiver identity, backfill, raw logs</summary>
 
-      <section aria-labelledby="work-heading">
-        <div class="section-head"><strong id="work-heading">Work queue</strong><span id="work-count" class="value">0</span></div>
-        <p class="section-note">One vocabulary covers local capture retries and provider backfills.</p>
-        <div id="work-queue" class="work-list" aria-live="polite"></div>
-        <details>
-          <summary>Capture retry detail · <span id="queue-count">0</span></summary>
-          <div id="queue-log" class="log"></div>
-        </details>
-      </section>
+        <section aria-labelledby="receiver-heading">
+          <div class="section-head"><strong id="receiver-heading">Paired receiver</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
+          <div class="surface-card">
+            <div id="receiver-pairing-status" class="pairing-id">Identity not checked</div>
+            <p id="receiver-pairing-detail" class="log-meta">Polylogue will bind the first compatible authenticated receiver it reaches.</p>
+          </div>
+          <div class="controls">
+            <button id="reset-pairing" class="danger"><span class="button-label">Reset pairing</span><span class="button-status"></span></button>
+          </div>
+          <p class="section-note">Reset removes only the trusted receiver identity. It does not delete capture or backfill queues.</p>
+        </section>
 
-      <section id="backfill-panel" aria-labelledby="backfill-heading">
-        <div class="section-head">
-          <strong id="backfill-heading">Background backfill</strong>
-          <span id="backfill-status" class="value">idle</span>
-        </div>
-        <select id="backfill-job" aria-label="Backfill job"><option value="">No jobs yet</option></select>
-        <div class="setting-row">
-          <select id="backfill-provider" aria-label="Backfill provider">
-            <option value="chatgpt">ChatGPT</option>
-            <option value="claude-ai">Claude.ai</option>
-          </select>
-          <input id="backfill-cutoff" type="date" aria-label="Capture conversations updated since">
-        </div>
-        <div class="row"><span class="label">Inventory cursor</span><span id="backfill-cursor" class="value">--</span></div>
-        <div class="row"><span class="label">Progress</span><span id="backfill-progress" class="value">--</span></div>
-        <div class="row"><span class="label">Cadence / cooldown</span><span id="backfill-rate" class="value">--</span></div>
-        <div class="row"><span class="label">Last ACK / error</span><span id="backfill-last" class="value">--</span></div>
-        <div class="controls">
-          <button id="backfill-start" class="primary"><span class="button-label">Start</span><span class="button-status"></span></button>
-          <button id="backfill-pause"><span class="button-label">Pause</span><span class="button-status"></span></button>
-          <button id="backfill-resume"><span class="button-label">Resume</span><span class="button-status"></span></button>
-          <button id="backfill-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
-          <button id="backfill-export"><span class="button-label">Export ledger</span><span class="button-status"></span></button>
-        </div>
-        <p class="section-note">Runs against authenticated provider inventory without activating foreground tabs. Provider cooldowns remain authoritative.</p>
-      </section>
+        <section aria-labelledby="work-heading">
+          <div class="section-head"><strong id="work-heading">Work queue</strong><span id="work-count" class="value">0</span></div>
+          <p class="section-note">One vocabulary covers local capture retries and provider backfills.</p>
+          <div id="work-queue" class="work-list" aria-live="polite"></div>
+          <details>
+            <summary>Capture retry detail · <span id="queue-count">0</span></summary>
+            <div id="queue-log" class="log"></div>
+          </details>
+        </section>
+
+        <section id="backfill-panel" aria-labelledby="backfill-heading">
+          <div class="section-head">
+            <strong id="backfill-heading">Background backfill</strong>
+            <span id="backfill-status" class="value">idle</span>
+          </div>
+          <select id="backfill-job" aria-label="Backfill job"><option value="">No jobs yet</option></select>
+          <div class="setting-row">
+            <select id="backfill-provider" aria-label="Backfill provider">
+              <option value="chatgpt">ChatGPT</option>
+              <option value="claude-ai">Claude.ai</option>
+            </select>
+            <input id="backfill-cutoff" type="date" aria-label="Capture conversations updated since">
+          </div>
+          <div class="row"><span class="label">Inventory cursor</span><span id="backfill-cursor" class="value">--</span></div>
+          <div class="row"><span class="label">Progress</span><span id="backfill-progress" class="value">--</span></div>
+          <div class="row"><span class="label">Cadence / cooldown</span><span id="backfill-rate" class="value">--</span></div>
+          <div class="row"><span class="label">Last ACK / error</span><span id="backfill-last" class="value">--</span></div>
+          <div class="controls">
+            <button id="backfill-start" class="primary"><span class="button-label">Start</span><span class="button-status"></span></button>
+            <button id="backfill-pause"><span class="button-label">Pause</span><span class="button-status"></span></button>
+            <button id="backfill-resume"><span class="button-label">Resume</span><span class="button-status"></span></button>
+            <button id="backfill-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
+            <button id="backfill-export"><span class="button-label">Export ledger</span><span class="button-status"></span></button>
+          </div>
+          <p class="section-note">Runs against authenticated provider inventory without activating foreground tabs. Provider cooldowns remain authoritative.</p>
+        </section>
+
+        <section>
+          <div class="section-head"><span class="label">Recent capture log</span><span id="log-count" class="value">0</span></div>
+          <div id="log" class="log"></div>
+        </section>
+
+        <section>
+          <div class="section-head"><span class="label">Debug log</span><span id="debug-count" class="value">0</span></div>
+          <div class="debug-actions">
+            <button id="debug-toggle" class="link-button"><span class="button-label">Show details</span><span class="button-status"></span></button>
+            <button id="debug-export" class="link-button"><span class="button-label">Export JSON</span><span class="button-status"></span></button>
+          </div>
+          <div id="debug-panel" hidden>
+            <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
+            <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
+            <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
+            <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
+            <div class="row"><span class="label">Extension build</span><span id="extension-build" class="value">--</span></div>
+            <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
+            <div id="debug-log" class="log"></div>
+          </div>
+        </section>
+
+        <section aria-labelledby="settings-heading">
+          <strong id="settings-heading">Receiver settings</strong>
+          <label class="label" for="receiver-url">Local receiver URL</label>
+          <div class="setting-row">
+            <input id="receiver-url" value="http://127.0.0.1:8765">
+            <button id="save"><span class="button-label">Save</span><span class="button-status"></span></button>
+          </div>
+          <label class="label" for="receiver-token">Bearer token</label>
+          <input id="receiver-token" type="password" autocomplete="off" placeholder="Required by the default authenticated receiver">
+        </section>
+      </details>
 
       <section aria-labelledby="ambient-heading">
         <div class="section-head"><strong id="ambient-heading">Ambient surface</strong><span id="ambient-site" class="value">Current site</span></div>
@@ -358,38 +407,6 @@
         <p id="assertion-status" class="section-note">Text selections can form a local assertion candidate. Save remains disabled until the authenticated receiver advertises an assertion route.</p>
       </section>
 
-      <section>
-        <div class="section-head"><span class="label">Recent capture log</span><span id="log-count" class="value">0</span></div>
-        <div id="log" class="log"></div>
-      </section>
-
-      <section>
-        <div class="section-head"><span class="label">Debug log</span><span id="debug-count" class="value">0</span></div>
-        <div class="debug-actions">
-          <button id="debug-toggle" class="link-button"><span class="button-label">Show details</span><span class="button-status"></span></button>
-          <button id="debug-export" class="link-button"><span class="button-label">Export JSON</span><span class="button-status"></span></button>
-        </div>
-        <div id="debug-panel" hidden>
-          <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
-          <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
-          <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
-          <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
-          <div class="row"><span class="label">Extension build</span><span id="extension-build" class="value">--</span></div>
-          <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
-          <div id="debug-log" class="log"></div>
-        </div>
-      </section>
-
-      <section aria-labelledby="settings-heading">
-        <strong id="settings-heading">Receiver settings</strong>
-        <label class="label" for="receiver-url">Local receiver URL</label>
-        <div class="setting-row">
-          <input id="receiver-url" value="http://127.0.0.1:8765">
-          <button id="save"><span class="button-label">Save</span><span class="button-status"></span></button>
-        </div>
-        <label class="label" for="receiver-token">Bearer token</label>
-        <input id="receiver-token" type="password" autocomplete="off" placeholder="Required by the default authenticated receiver">
-      </section>
     </main>
     <script src="operator_status.js"></script>
     <script src="popup.js"></script>

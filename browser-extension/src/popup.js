@@ -11,6 +11,7 @@ let currentCaptureQueue = { entries: [], dropped_count: 0 };
 let currentFreshnessQueue = { entries: {}, dropped_count: 0 };
 let currentBackfillJobs = [];
 let currentReceiverOnline = true;
+let currentBrowserActions = [];
 
 function hostMatches(hostname, domain) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -481,6 +482,41 @@ function renderAmbient(ambient, tabUrl = "", assertions = null) {
   }
 }
 
+async function loadBrowserActionsStatus() {
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.browserActions.status" });
+    return Array.isArray(result?.actions) ? result.actions : [];
+  } catch {
+    return [];
+  }
+}
+
+function renderAttention(attention) {
+  const section = document.getElementById("attention-section");
+  const detailNode = document.getElementById("attention-detail");
+  const actionButton = document.getElementById("attention-action");
+  if (!section) return;
+  if (!attention) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  const heading = document.getElementById("attention-heading");
+  if (heading) heading.textContent = attention.headline;
+  if (detailNode) detailNode.textContent = attention.detail || "";
+  if (actionButton) {
+    if (attention.actionId) {
+      actionButton.hidden = false;
+      actionButton.dataset.targetId = attention.actionId;
+      const label = actionButton.querySelector(".button-label");
+      if (label) label.textContent = attention.actionLabel || "Resolve";
+    } else {
+      actionButton.hidden = true;
+      delete actionButton.dataset.targetId;
+    }
+  }
+}
+
 async function loadMissionSnapshot() {
   try {
     const result = await chrome.runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false });
@@ -564,11 +600,17 @@ async function render() {
   document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
 
-  const [tab, openTabs, mission] = await Promise.all([
+  const [tab, openTabs, mission, browserActions] = await Promise.all([
     activeTab(),
     chrome.tabs.query({}),
     loadMissionSnapshot(),
+    loadBrowserActionsStatus(),
   ]);
+  currentBrowserActions = browserActions;
+  const pendingActionCountNode = document.getElementById("pending-action-count");
+  if (pendingActionCountNode) {
+    pendingActionCountNode.textContent = String(operatorStatusApi.pendingBrowserActionCount(browserActions));
+  }
   const extensionBuild = document.getElementById("extension-build");
   if (extensionBuild) {
     const runtime = mission?.extension;
@@ -656,6 +698,20 @@ async function render() {
 
   const ambient = mission?.ambient || ambientFallback(stored.polylogueAmbientSettings, tab?.url || "");
   renderAmbient(ambient, tab?.url || "", mission?.assertions || null);
+
+  const workItems = operatorStatusApi.normalizeWorkItems({
+    captureQueue: currentCaptureQueue,
+    freshnessQueue: currentFreshnessQueue,
+    backfillJobs: currentBackfillJobs,
+    receiverOnline: currentReceiverOnline,
+  });
+  renderAttention(operatorStatusApi.computeAttention({
+    conversationState: state,
+    pairing,
+    health,
+    workItems,
+    browserActions: currentBrowserActions,
+  }));
 }
 
 async function refreshStatus(reason = "popup_manual") {
@@ -691,6 +747,17 @@ document.getElementById("open-polylogue").addEventListener("click", async () => 
     const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
     await chrome.tabs.create({ url });
   }, { busy: "Opening" });
+});
+
+document.getElementById("attention-action")?.addEventListener("click", (event) => {
+  const targetId = event.currentTarget.dataset.targetId;
+  if (!targetId) return;
+  const diagnostics = document.getElementById("diagnostics");
+  if (diagnostics && "open" in diagnostics) diagnostics.open = true;
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  if (target.tagName === "BUTTON") target.click();
+  else target.focus();
 });
 
 document.getElementById("reset-pairing")?.addEventListener("click", async () => {

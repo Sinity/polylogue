@@ -32,6 +32,13 @@ function installDom() {
   const dom = new JSDOM(`<!doctype html>
     <body>
       <span id="badge"></span>
+      <span id="pending-action-count"></span>
+      <section id="attention-section" hidden>
+        <strong id="attention-heading"></strong>
+        <p id="attention-detail"></p>
+        <button id="attention-action" hidden><span class="button-label"></span><span class="button-status"></span></button>
+      </section>
+      <details id="diagnostics"></details>
       <span id="operator-state"></span>
       <strong id="active-heading"></strong>
       <span id="fidelity-flag" hidden></span>
@@ -240,6 +247,57 @@ describe("popup capture", () => {
 
     expect(globalThis.document.getElementById("archive").textContent).toBe("Needs attention");
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("browser-capture token show");
+
+    const attentionSection = globalThis.document.getElementById("attention-section");
+    await vi.waitFor(() => expect(attentionSection.hidden).toBe(false));
+    expect(globalThis.document.getElementById("attention-heading").textContent)
+      .toBe("Receiver requires its pairing token");
+    const actionButton = globalThis.document.getElementById("attention-action");
+    expect(actionButton.hidden).toBe(false);
+
+    const diagnostics = globalThis.document.getElementById("diagnostics");
+    diagnostics.open = false;
+    actionButton.dispatchEvent(new globalThis.window.Event("click", { bubbles: true }));
+    expect(diagnostics.open).toBe(true);
+  });
+
+  it("shows no attention item and a zero pending-action count when everything is healthy", async () => {
+    await loadPopup({
+      polylogueState: { online: true, captured: true, archive_state: { state: "archived" } },
+    });
+
+    await vi.waitFor(() => expect(globalThis.document.getElementById("pending-action-count").textContent).toBe("0"));
+    expect(globalThis.document.getElementById("attention-section").hidden).toBe(true);
+  });
+
+  it("counts queued browser actions and never lets a stuck action-outcome item auto-clear", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.browserActions.status") {
+        return {
+          ok: true,
+          actions: [
+            { action_id: "a1", status: "queued" },
+            { action_id: "a2", status: "leased" },
+            {
+              action_id: "a3",
+              status: "outcome_unknown",
+              last_error: "submit channel ended without a receipt",
+            },
+          ],
+        };
+      }
+      return { ok: true };
+    });
+
+    await vi.waitFor(() => expect(globalThis.document.getElementById("attention-section").hidden).toBe(false));
+    expect(globalThis.document.getElementById("pending-action-count").textContent).toBe("2");
+    expect(globalThis.document.getElementById("attention-heading").textContent)
+      .toBe("A browser action's outcome could not be confirmed");
+    expect(globalThis.document.getElementById("attention-detail").textContent)
+      .toBe("submit channel ended without a receipt");
+    // No actionId is offered for an outcome_unknown action -- there is no safe
+    // one-click resolution, only "Details" (progressive disclosure, not a button).
+    expect(globalThis.document.getElementById("attention-action").hidden).toBe(true);
   });
 
   it("renders DOM fallback with concrete next action", async () => {

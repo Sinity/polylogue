@@ -472,14 +472,101 @@
     };
   }
 
+  // The exception-driven popup surfaces at most one attention item at a
+  // time (polylogue-yyvg.7 AC3). This is a strict typed priority list, not a
+  // free-form aggregation: auth/pairing mismatch (the receiver cannot be
+  // trusted) outranks an unconfirmed action outcome (a stuck submit, never
+  // auto-retried), which outranks a typed capability mismatch on queued
+  // work, which outranks a hard archive failure on the current conversation.
+  // Anything else is healthy/automatic and returns null — silence is the
+  // correct answer far more often than not.
+  function computeAttention({
+    conversationState = null,
+    pairing = null,
+    health = null,
+    workItems = [],
+    browserActions = [],
+  } = {}) {
+    if (pairing?.state === "mismatch" || health?.status === "pairing_mismatch") {
+      return {
+        kind: "auth_pairing_mismatch",
+        tone: "bad",
+        headline: "Receiver identity changed",
+        detail: "The configured endpoint answered as a different receiver. Verify it, then reset pairing.",
+        actionId: "reset-pairing",
+        actionLabel: "Reset pairing",
+      };
+    }
+    if (health?.status === "unauthorized" || conversationState?.error === "unauthorized") {
+      return {
+        kind: "auth_pairing_mismatch",
+        tone: "bad",
+        headline: "Receiver requires its pairing token",
+        detail: "Run `polylogued browser-capture token show` and paste the value into the receiver token field.",
+        actionId: "receiver-token",
+        actionLabel: "Open receiver settings",
+      };
+    }
+
+    const unknownAction = (Array.isArray(browserActions) ? browserActions : [])
+      .find((action) => action?.status === "outcome_unknown");
+    if (unknownAction) {
+      return {
+        kind: "action_outcome_unknown",
+        tone: "bad",
+        headline: "A browser action's outcome could not be confirmed",
+        detail: unknownAction.last_error
+          || "The provider connection ended without a receipt. Check the conversation before retrying.",
+        actionId: null,
+        actionLabel: "Details",
+      };
+    }
+
+    const capabilityItem = (Array.isArray(workItems) ? workItems : [])
+      .find((item) => ["capability_mismatch", "receiver_contract_incompatible"].includes(item?.raw?.cooldown_reason));
+    if (capabilityItem) {
+      return {
+        kind: "capability_mismatch",
+        tone: "bad",
+        headline: `${capabilityItem.title} needs a compatible provider selection`,
+        detail: capabilityItem.cooldown || "The receiver rejected an unsupported provider capability.",
+        actionId: null,
+        actionLabel: "Details",
+      };
+    }
+
+    if (conversationState && (conversationState.archive_state?.state === "failed" || conversationState.error)) {
+      return {
+        kind: "archive_failed",
+        tone: "bad",
+        headline: "This conversation failed to archive",
+        detail: conversationState.archive_state?.latest_failure
+          || conversationState.error
+          || "Check the debug log request id.",
+        actionId: null,
+        actionLabel: "Details",
+      };
+    }
+
+    return null;
+  }
+
+  function pendingBrowserActionCount(browserActions = []) {
+    const pendingStatuses = new Set(["queued", "leased", "preparing", "submit_intent"]);
+    return (Array.isArray(browserActions) ? browserActions : [])
+      .filter((action) => pendingStatuses.has(action?.status)).length;
+  }
+
   root.PolylogueOperatorStatus = Object.freeze({
     OPERATOR_STATUS,
     WORK_STATUS,
+    computeAttention,
     eventPresentation,
     normalizeWorkItems,
     operatorPresentationForState,
     operatorStatusForState,
     operatorStatusLabel,
+    pendingBrowserActionCount,
     receiverPairingPresentation,
   });
 })(globalThis);
