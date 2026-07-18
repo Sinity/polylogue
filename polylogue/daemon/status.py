@@ -2557,6 +2557,7 @@ def assertion_candidate_queue_status_summary() -> dict[str, object]:
         )
         return cast(dict[str, object], payload.model_dump(mode="json"))
     except Exception as exc:
+        logger.warning("assertion candidate queue health collection failed: %s", exc, exc_info=True)
         return {
             "mode": "assertion-candidate-queue-health",
             "state": "unavailable",

@@ -15,7 +15,7 @@ from polylogue.api import Polylogue
 from polylogue.cli import cli
 from polylogue.cli.commands.note import MAX_NOTE_STDIN_BYTES
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
+from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload, PublicRefResolutionPayload
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -252,7 +252,9 @@ def test_terminal_note_idempotency_survives_root_judgment_canary_route(
     assert changed.exit_code == 1
     assert "idempotency_key conflicts" in changed.output
 
-    async def verify_surfaces() -> tuple[AssertionCandidateReviewListPayload, object, object]:
+    async def verify_surfaces() -> tuple[
+        AssertionCandidateReviewListPayload, PublicRefResolutionPayload, PublicRefResolutionPayload
+    ]:
         async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
             reviews = await poly.list_assertion_candidate_reviews(
                 target_ref=session_ref,

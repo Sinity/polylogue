@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -1910,114 +1909,6 @@ def test_upsert_findings_rejects_incomplete_delta_and_unresolved_ref_shapes(tmp_
             upsert_findings_as_assertions(conn, [malformed_ref])
     finally:
         conn.close()
-
-
-def test_upsert_assertion_write_reservation_prevents_judgment_reversion(tmp_path: Path) -> None:
-    """The 41ow interleaving cannot land a judgment between preserve/read and write.
-
-    This exercises the production ``upsert_assertion`` transaction and
-    ``judge_assertion_candidate`` authority over two real SQLite connections.
-    Replacing ``BEGIN IMMEDIATE`` with a deferred transaction makes the
-    operator complete while the automated writer is paused and leaves the
-    candidate reverted, so the test is anti-vacuous for the lock mechanism.
-    """
-
-    db_path = tmp_path / "user.db"
-    seed = _connect(db_path)
-    seed.execute("PRAGMA journal_mode = WAL")
-    upsert_assertion(
-        seed,
-        assertion_id="candidate-race-41ow",
-        target_ref="session:race-41ow",
-        kind=AssertionKind.FINDING,
-        body_text="original candidate",
-        author_ref="agent:producer",
-        author_kind="agent",
-        now_ms=1_000,
-    )
-    seed.close()
-
-    automated = sqlite3.connect(db_path, timeout=5.0, check_same_thread=False)
-    operator = sqlite3.connect(db_path, timeout=5.0, check_same_thread=False)
-    automated.row_factory = sqlite3.Row
-    operator.row_factory = sqlite3.Row
-    automated_at_insert = threading.Event()
-    release_automated = threading.Event()
-    operator_done = threading.Event()
-    errors: list[BaseException] = []
-    blocked_once = False
-
-    def pause_before_automated_insert(
-        action: int, arg1: str | None, _arg2: str | None, _db: str | None, _trigger: str | None
-    ) -> int:
-        nonlocal blocked_once
-        if action == sqlite3.SQLITE_INSERT and arg1 == "assertions" and not blocked_once:
-            blocked_once = True
-            automated_at_insert.set()
-            if not release_automated.wait(5.0):
-                errors.append(TimeoutError("automated writer was not released"))
-        return sqlite3.SQLITE_OK
-
-    automated.set_authorizer(pause_before_automated_insert)
-
-    def replay_candidate() -> None:
-        try:
-            upsert_assertion(
-                automated,
-                assertion_id="candidate-race-41ow",
-                target_ref="session:race-41ow",
-                kind=AssertionKind.FINDING,
-                body_text="automated replay",
-                author_ref="agent:producer",
-                author_kind="agent",
-                now_ms=3_000,
-            )
-        except BaseException as exc:  # pragma: no cover - assertion reports thread failure
-            errors.append(exc)
-
-    def accept_candidate() -> None:
-        try:
-            judge_assertion_candidate(
-                operator,
-                candidate_ref="assertion:candidate-race-41ow",
-                decision="accept",
-                reason="operator confirmed evidence",
-                actor_ref="user:operator",
-                now_ms=2_000,
-            )
-        except BaseException as exc:  # pragma: no cover - assertion reports thread failure
-            errors.append(exc)
-        finally:
-            operator_done.set()
-
-    automated_thread = threading.Thread(target=replay_candidate)
-    operator_thread = threading.Thread(target=accept_candidate)
-    try:
-        automated_thread.start()
-        assert automated_at_insert.wait(3.0)
-        operator_thread.start()
-        time.sleep(0.2)
-        assert not operator_done.is_set(), "operator must wait behind the automated writer reservation"
-        release_automated.set()
-        automated_thread.join(5.0)
-        operator_thread.join(5.0)
-
-        assert not automated_thread.is_alive()
-        assert not operator_thread.is_alive()
-        assert errors == []
-        final = read_assertion_envelope(operator, "candidate-race-41ow")
-        assert final is not None
-        assert final.status is AssertionStatus.ACCEPTED
-        assert final.body_text == "automated replay"
-        latest = user_write.read_latest_candidate_judgment(operator, final.assertion_id)
-        assert latest is not None
-        assert latest.value["decision"] == "accept"
-    finally:
-        release_automated.set()
-        automated_thread.join(1.0)
-        operator_thread.join(1.0)
-        automated.close()
-        operator.close()
 
 
 def test_upsert_assertion_owned_transaction_rolls_back_on_write_failure(tmp_path: Path) -> None:

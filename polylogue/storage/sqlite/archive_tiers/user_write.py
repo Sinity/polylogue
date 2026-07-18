@@ -62,60 +62,6 @@ _ASSERTION_TERMINAL_JUDGED_STATUSES: Final[frozenset[AssertionStatus]] = frozens
 #: shape existing candidate writers (transform/pathology) already set by hand.
 _ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"inject": False, "promotion_required": True}
 
-_ASSERTION_WRITE_SAVEPOINTS = itertools.count()
-
-
-def _configure_assertion_write_connection(conn: sqlite3.Connection) -> None:
-    """Apply the shared lock/FK profile needed by assertion writers.
-
-    ``PRAGMA foreign_keys`` cannot be changed once a transaction is active, so
-    nested callers rely on the canonical connection factory while standalone
-    callers are normalized here. ``busy_timeout`` is safe in either state and
-    keeps direct/test connections aligned with the production write profile.
-    """
-
-    if not conn.in_transaction:
-        conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute(f"PRAGMA busy_timeout = {WRITE_CONNECTION_PROFILE.busy_timeout_ms}")
-
-
-@contextmanager
-def _assertion_write_transaction(conn: sqlite3.Connection) -> Iterator[None]:
-    """Own one immediate write transaction, or isolate work in a savepoint.
-
-    The zero-row ``UPDATE`` is intentional. A savepoint nested under a deferred
-    caller transaction does not itself reserve the SQLite writer slot; this
-    no-op write upgrades that transaction *before* any preserve/read decision.
-    That closes the judgment-preservation TOCTOU window without committing or
-    rolling back work owned by the caller.
-    """
-
-    _configure_assertion_write_connection(conn)
-    if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-        except BaseException:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
-        return
-
-    savepoint = f"assertion_write_{next(_ASSERTION_WRITE_SAVEPOINTS)}"
-    conn.execute(f"SAVEPOINT {savepoint}")
-    try:
-        # Force a RESERVED lock before a preservation read even when the outer
-        # transaction was opened implicitly/deferred by the caller.
-        conn.execute("UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 0")
-        yield
-    except BaseException:
-        conn.execute(f"ROLLBACK TO {savepoint}")
-        conn.execute(f"RELEASE {savepoint}")
-        raise
-    else:
-        conn.execute(f"RELEASE {savepoint}")
-
 
 _ASSERTION_WRITE_SAVEPOINTS = itertools.count()
 
@@ -1849,37 +1795,7 @@ def judge_assertion_candidate(
     replacement_value: object | None = None,
     now_ms: int | None = None,
 ) -> ArchiveAssertionJudgmentEnvelope:
-    """Record one judgment atomically through the canonical lifecycle authority."""
-
-    with _assertion_write_transaction(conn):
-        return _judge_assertion_candidate_locked(
-            conn,
-            candidate_ref=candidate_ref,
-            decision=decision,
-            reason=reason,
-            actor_ref=actor_ref,
-            inject=inject,
-            replacement_kind=replacement_kind,
-            replacement_body_text=replacement_body_text,
-            replacement_value=replacement_value,
-            now_ms=now_ms,
-        )
-
-
-def _judge_assertion_candidate_locked(
-    conn: sqlite3.Connection,
-    *,
-    candidate_ref: str,
-    decision: str,
-    reason: str | None = None,
-    actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
-    inject: bool = False,
-    replacement_kind: str | AssertionKind | None = None,
-    replacement_body_text: str | None = None,
-    replacement_value: object | None = None,
-    now_ms: int | None = None,
-) -> ArchiveAssertionJudgmentEnvelope:
-    """Apply one judgment while the caller owns the SQLite writer slot."""
+    """Record an explicit operator judgment for one candidate assertion."""
 
     with _immediate_user_write_transaction(conn):
         return _judge_assertion_candidate_in_transaction(

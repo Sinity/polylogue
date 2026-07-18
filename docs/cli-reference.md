@@ -468,7 +468,7 @@ Options:
   --accept-all-of-kind            Accept every pending candidate selected by
                                   --kind and time/target filters.
   --target-ref TEXT               Limit review rows to one target object ref.
-  --kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
+  --kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|ontology_candidate|ontology_governance|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
   --candidate-status [candidate|accepted|rejected|deferred|superseded]
   --since TEXT                    Lower candidate creation-time bound (ISO or
                                   relative date).
@@ -479,7 +479,7 @@ Options:
   --actor-ref TEXT                [default: user:local]
   --inject                        Authorize injection for accepted/superseding
                                   assertions.
-  --replacement-kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
+  --replacement-kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|ontology_candidate|ontology_governance|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
   --body TEXT                     Replacement body for --supersede.
   --json                          Shortcut for --format json.
   --format [text|json]            Output format (default: text).

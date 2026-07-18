@@ -19,6 +19,7 @@ from polylogue.core.enums import AssertionKind, BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
 
 def _seed_candidate(root: Path) -> tuple[str, str]:
@@ -116,7 +117,7 @@ async def test_one_evidence_resolution_failure_degrades_only_that_preview(
     archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
     original_resolve = archive.resolve_ref
 
-    async def flaky_resolve(ref: str):
+    async def flaky_resolve(ref: str) -> PublicRefResolutionPayload:
         if ref == "query:evidence-review":
             raise RuntimeError("resolver unavailable")
         return await original_resolve(ref)

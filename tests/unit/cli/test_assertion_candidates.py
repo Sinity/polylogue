@@ -9,12 +9,13 @@ from click.testing import CliRunner
 from polylogue.cli.commands.judge import judge_command
 from polylogue.cli.query_verbs import mark_verb
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
-from polylogue.surfaces.action_affordances import assertion_candidate_review_affordances
+from polylogue.surfaces.action_affordances import CandidateReviewDecision, assertion_candidate_review_affordances
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentItemPayload,
     AssertionBulkJudgmentPayload,
     AssertionCandidateReviewItemPayload,
     AssertionCandidateReviewListPayload,
+    AssertionCandidateReviewStatus,
     AssertionClaimPayload,
     AssertionEvidencePreviewPayload,
     AssertionJudgmentPayload,
@@ -39,14 +40,15 @@ def _claim(status: AssertionStatus = AssertionStatus.CANDIDATE) -> AssertionClai
 
 
 def _review_item(status: AssertionStatus = AssertionStatus.CANDIDATE) -> AssertionCandidateReviewItemPayload:
-    review_status = {
+    review_status_by_assertion_status: dict[AssertionStatus, AssertionCandidateReviewStatus] = {
         AssertionStatus.CANDIDATE: "pending",
         AssertionStatus.ACCEPTED: "accepted",
         AssertionStatus.REJECTED: "rejected",
         AssertionStatus.DEFERRED: "deferred",
         AssertionStatus.SUPERSEDED: "superseded",
-    }[status]
-    disabled = (
+    }
+    review_status = review_status_by_assertion_status[status]
+    disabled: dict[CandidateReviewDecision, str] | None = (
         None
         if status is AssertionStatus.CANDIDATE
         else {
