@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -224,6 +225,99 @@ def test_raw_authority_scale_profile_is_aggregate_only(tmp_path: Path) -> None:
     serialized = str(profile)
     assert "private-native-id" not in serialized
     assert "/private/source/session.jsonl" not in serialized
+
+
+def test_raw_authority_scale_profile_round_trips_sub_256_byte_bucket(tmp_path: Path) -> None:
+    scenario = RawAuthorityScaleScenario.from_profile(
+        {
+            "format": "raw-authority-scale-profile-v1",
+            "authority_component_count": 1,
+            "candidate_count": 1,
+            "expanded_candidate_count": 1,
+            "expanded_total_blob_bytes": 64,
+            "component_cohort_distribution": [
+                {"component_raw_count": 1, "direct_candidate_count": 1, "component_count": 1}
+            ],
+            "component_byte_cohort_distribution": [
+                {
+                    "component_raw_count": 1,
+                    "direct_candidate_count": 1,
+                    "upper_bound_blob_bytes": 64,
+                    "component_count": 1,
+                }
+            ],
+        }
+    )
+
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        prepare_only=True,
+        keep=True,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    requested = cast(dict[str, object], payload["requested_shape"])
+    assert requested["total_payload_bytes"] == 64
+    assert (
+        cast(list[dict[str, int]], requested["component_byte_cohort_distribution"])[0]["upper_bound_blob_bytes"] == 64
+    )
+    # The generated corpus is explicitly larger because valid JSONL cannot be
+    # 64 bytes; the report never conflates synthetic and captured bytes.
+    assert cast(int, payload["generated_payload_bytes"]) > 64
+
+
+def test_raw_authority_scale_pass_uses_continuous_pass_peak_not_lifetime_high_water(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from devtools import raw_authority_scale_proof as proof
+
+    samples = [
+        ProcessSample(10, 10, 0, 1, 0, 0, None, None),
+        ProcessSample(42, 41, 0, 2, 0, 0, None, None),
+        ProcessSample(20, 20, 0, 3, 0, 0, None, None),
+    ]
+
+    class FakeSampler:
+        def __init__(self) -> None:
+            self.samples = samples
+
+        def __enter__(self) -> FakeSampler:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def peak(self, field: str) -> int | None:
+            values = [getattr(sample, field) for sample in self.samples]
+            return max(cast(int, value) for value in values if value is not None)
+
+    result = SimpleNamespace(
+        success=True,
+        metrics={
+            "raw_materialization_candidate_count": 0,
+            "raw_materialization_selected_executable_component_count": 0,
+        },
+        census_receipt=SimpleNamespace(mode="apply", residual_digest="digest", fixed_point=True),
+        repaired_count=0,
+        plan_outcomes=(),
+    )
+    monkeypatch.setattr(proof, "_PassProcessSampler", FakeSampler)
+    monkeypatch.setattr(repair, "repair_raw_materialization", lambda *_args, **_kwargs: result)
+
+    recorded, _digest = proof._record_repair_pass(
+        number=1,
+        mode="apply",
+        config=Config(archive_root=tmp_path, render_root=tmp_path, sources=[]),
+        pass_limit=1,
+        max_payload_bytes=1,
+        check_admission=lambda: None,
+    )
+
+    assert recorded.peak_rss_bytes == 42
+    assert recorded.peak_pss_bytes == 41
 
 
 def test_raw_authority_scale_profile_selects_candidates_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
