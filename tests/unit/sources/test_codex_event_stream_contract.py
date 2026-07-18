@@ -29,7 +29,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
 from polylogue.sources.parsers.codex import parse_stream
@@ -435,3 +435,497 @@ class TestCrossMessageReferences:
         assert len(compactions) == 1
         assert compactions[0].payload["replacement_history_count"] == 1
         assert compactions[0].payload["summary"] == "Conversation compacted"
+
+
+# ---------------------------------------------------------------------------
+# Modern Code Mode functions.exec lowering
+# ---------------------------------------------------------------------------
+
+
+class TestFunctionsExecLowering:
+    """Pin transport-preserving lowering of nested Code Mode operations.
+
+    These tests exercise the production Codex parser. Removing the envelope
+    pre-scan or child-block emission must collapse the asserted child actions
+    back to the historical outer-only shape and fail this class.
+    """
+
+    @staticmethod
+    def _blocks(session: ParsedSession, block_type: BlockType) -> list[ParsedContentBlock]:
+        return [block for message in session.messages for block in message.blocks if block.type == block_type]
+
+    @staticmethod
+    def _mapping(value: object) -> dict[str, object]:
+        assert isinstance(value, dict)
+        return value
+
+    def test_single_child_retains_transport_and_promotes_exact_structural_result(self) -> None:
+        session = _parse(_load_catalog("functions_exec_single.jsonl"), "functions-exec-single")
+        tool_uses = self._blocks(session, BlockType.TOOL_USE)
+        tool_results = self._blocks(session, BlockType.TOOL_RESULT)
+
+        assert [block.tool_name for block in tool_uses] == ["exec", "exec_command"]
+        assert [block.tool_id for block in tool_uses] == [
+            "exec-single",
+            "exec-single::polylogue-child::0",
+        ]
+        child = tool_uses[1]
+        assert child.tool_input is not None
+        assert child.tool_input["command"] == "git status --short"
+        assert child.tool_input["workdir"] == "/repo"
+        assert child.tool_input["byte_count"] == 5
+        provenance = child.tool_input["_polylogue"]
+        assert provenance == {
+            "kind": "codex.functions_exec_child",
+            "registry_type": "exec_command",
+            "parse_state": "parsed",
+            "raw_tool_path": "tools.exec_command",
+            "transport_child_index": 0,
+            "transport": {
+                "provider_message_id": "ctc-single",
+                "tool_id": "exec-single",
+                "tool_name": "exec",
+                "block_position": 0,
+            },
+            "source_span": [21, 92],
+            "structural_result_fields": {"byte_count": 5},
+        }
+
+        # The outer content-item envelope remains evidence. Only the exact JSON
+        # child item gets a structured outcome; the script-status prose does not.
+        assert len(tool_results) == 2
+        assert tool_results[0].tool_id == "exec-single"
+        assert tool_results[0].is_error is None
+        assert tool_results[0].exit_code is None
+        assert tool_results[1].tool_id == "exec-single::polylogue-child::0"
+        assert tool_results[1].is_error is False
+        assert tool_results[1].exit_code == 0
+        assert tool_results[1].metadata == {
+            "codex_functions_exec_child_index": 0,
+            "codex_functions_exec_registry_type": "exec_command",
+            "byte_count": 5,
+        }
+
+    def test_multiple_children_preserve_order_registry_paths_and_unknown_states(self) -> None:
+        session = _parse(_load_catalog("functions_exec_multiple.jsonl"), "functions-exec-multiple")
+        tool_uses = self._blocks(session, BlockType.TOOL_USE)
+        tool_results = self._blocks(session, BlockType.TOOL_RESULT)
+        children = tool_uses[1:]
+
+        assert tool_uses[0].tool_name == "functions.exec"
+        assert [block.tool_name for block in children] == [
+            "exec_command",
+            "apply_patch",
+            "write_stdin",
+            "update_plan",
+            "wait",
+            "web",
+            "image",
+            "mcp.repo_memory.search",
+            "future_tool",
+            "exec_command",
+        ]
+        provenances = [
+            self._mapping(block.tool_input["_polylogue"]) for block in children if block.tool_input is not None
+        ]
+        assert [value["registry_type"] for value in provenances] == [
+            "exec_command",
+            "apply_patch",
+            "write_stdin",
+            "update_plan",
+            "wait",
+            "web",
+            "image",
+            "mcp",
+            "unknown",
+            "exec_command",
+        ]
+        assert [value["transport_child_index"] for value in provenances] == list(range(10))
+        assert [value["parse_state"] for value in provenances] == ["parsed"] * 9 + ["malformed"]
+
+        command_input = children[0].tool_input
+        patch_input = children[1].tool_input
+        unknown_input = children[8].tool_input
+        malformed_input = children[-1].tool_input
+        assert command_input is not None and command_input["command"] == "git status --short"
+        assert patch_input is not None
+        assert patch_input["paths"] == ["src/example.py", "src/renamed.py"]
+        assert patch_input["path"] == "src/example.py"
+        patch_command = patch_input["command"]
+        assert isinstance(patch_command, str) and patch_command.startswith("*** Begin Patch")
+        assert self._mapping(patch_input["_polylogue"])["structural_result_fields"] == {
+            "paths": ["src/renamed.py"],
+            "byte_count": 42,
+        }
+        assert unknown_input is not None
+        assert unknown_input["raw_arguments"] == "{opaque: true}"
+        assert self._mapping(unknown_input["_polylogue"])["registry_type"] == "unknown"
+        assert malformed_input is not None
+        assert malformed_input["raw_arguments"] == "dynamicArgs;"
+        assert "command" not in malformed_input
+        assert self._mapping(malformed_input["_polylogue"])["parse_state"] == "malformed"
+
+        child_results = tool_results[1:]
+        assert [block.tool_id for block in child_results] == [
+            f"exec-multiple::polylogue-child::{index}" for index in range(10)
+        ]
+        assert [(block.is_error, block.exit_code) for block in child_results] == [
+            (True, 2),
+            (None, None),
+            (None, None),
+            (None, None),
+            (None, None),
+            (None, None),
+            (None, None),
+            (False, 0),
+            (None, None),
+            (None, None),
+        ]
+        result_1_metadata = child_results[1].metadata
+        result_6_metadata = child_results[6].metadata
+        assert result_1_metadata is not None
+        assert result_1_metadata["paths"] == ["src/renamed.py"]
+        assert result_1_metadata["byte_count"] == 42
+        assert result_6_metadata is not None
+        assert result_6_metadata["paths"] == ["artifacts/preview.png"]
+        assert result_6_metadata["byte_count"] == 100
+        assert "exit_code=7" in (child_results[8].text or "")
+        assert "exit_code=9" in (child_results[9].text or "")
+
+    def test_repeated_transport_ids_pair_children_by_occurrence_rank(self) -> None:
+        records: list[object] = []
+        for occurrence, exit_code in enumerate((7, 0), start=1):
+            records.extend(
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "custom_tool_call",
+                            "id": f"call-{occurrence}",
+                            "call_id": "repeated-exec",
+                            "name": "exec",
+                            "input": f'tools.exec_command({{cmd: "echo {occurrence}"}});',
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "custom_tool_call_output",
+                            "id": f"result-{occurrence}",
+                            "call_id": "repeated-exec",
+                            "output": [
+                                {"type": "input_text", "text": "Script completed\nOutput:\n"},
+                                {
+                                    "type": "input_text",
+                                    "text": json.dumps({"exit_code": exit_code, "output": f"result-{occurrence}"}),
+                                },
+                            ],
+                        },
+                    },
+                ]
+            )
+
+        session = _parse(records, "repeated-exec")
+        child_uses = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_USE)
+            if block.tool_id == "repeated-exec::polylogue-child::0"
+        ]
+        child_results = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_RESULT)
+            if block.tool_id == "repeated-exec::polylogue-child::0"
+        ]
+        assert [block.tool_input["command"] for block in child_uses if block.tool_input is not None] == [
+            "echo 1",
+            "echo 2",
+        ]
+        assert [(block.text, block.exit_code) for block in child_results] == [
+            ('{"exit_code": 7, "output": "result-1"}', 7),
+            ('{"exit_code": 0, "output": "result-2"}', 0),
+        ]
+
+        # Exercise the production action-pair SQL rather than reproducing its
+        # join in the test. The repeated deterministic child id must pair Nth
+        # use to Nth result, never fan out into a cross product.
+        import sqlite3
+
+        from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                position INTEGER NOT NULL,
+                variant_index INTEGER NOT NULL
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                block_type TEXT NOT NULL,
+                tool_name TEXT,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_path TEXT,
+                tool_input TEXT,
+                tool_id TEXT,
+                text TEXT,
+                tool_result_is_error INTEGER,
+                tool_result_exit_code INTEGER
+            );
+            CREATE TABLE action_pairs (
+                tool_use_block_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                tool_id TEXT,
+                use_rank INTEGER,
+                tool_name TEXT,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_path TEXT,
+                tool_input TEXT,
+                tool_result_block_id TEXT,
+                output_text TEXT,
+                is_error INTEGER,
+                exit_code INTEGER
+            );
+            """
+        )
+        for message in session.messages:
+            message_id = message.provider_message_id
+            conn.execute(
+                "INSERT INTO messages(message_id, position, variant_index) VALUES (?, ?, ?)",
+                (message_id, message.position, message.variant_index or 0),
+            )
+            for block_position, block in enumerate(message.blocks):
+                tool_input = dict(block.tool_input or {})
+                conn.execute(
+                    """
+                    INSERT INTO blocks(
+                        block_id, session_id, message_id, position, block_type,
+                        tool_name, tool_command, tool_path, tool_input, tool_id,
+                        text, tool_result_is_error, tool_result_exit_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"{message_id}:{block_position}",
+                        "session",
+                        message_id,
+                        block_position,
+                        block.type.value,
+                        block.tool_name,
+                        tool_input.get("command"),
+                        tool_input.get("path") or tool_input.get("file_path"),
+                        json.dumps(tool_input, sort_keys=True) if block.tool_input is not None else None,
+                        block.tool_id,
+                        block.text,
+                        block.is_error,
+                        block.exit_code,
+                    ),
+                )
+        refresh_action_pairs(conn, "session")
+        rows = conn.execute(
+            """
+            SELECT use_rank, tool_command, output_text, is_error, exit_code
+            FROM action_pairs
+            WHERE tool_id = 'repeated-exec::polylogue-child::0'
+            ORDER BY use_rank
+            """
+        ).fetchall()
+        assert [dict(row) for row in rows] == [
+            {
+                "use_rank": 1,
+                "tool_command": "echo 1",
+                "output_text": '{"exit_code": 7, "output": "result-1"}',
+                "is_error": 1,
+                "exit_code": 7,
+            },
+            {
+                "use_rank": 2,
+                "tool_command": "echo 2",
+                "output_text": '{"exit_code": 0, "output": "result-2"}',
+                "is_error": 0,
+                "exit_code": 0,
+            },
+        ]
+
+    def test_structured_content_item_result_collection_expands_in_child_order(self) -> None:
+        records: list[object] = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "collection-call",
+                    "call_id": "collection-exec",
+                    "name": "exec",
+                    "input": 'tools.exec_command({cmd: "one"}); tools.exec_command({cmd: "two"});',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "id": "collection-output",
+                    "call_id": "collection-exec",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed\nOutput:\n"},
+                        {
+                            "type": "input_text",
+                            "text": json.dumps(
+                                {
+                                    "results": [
+                                        {"exit_code": 4, "output": "one"},
+                                        {"exit_code": 0, "output": "two"},
+                                    ]
+                                }
+                            ),
+                        },
+                    ],
+                },
+            },
+        ]
+
+        session = _parse(records, "collection-exec")
+        child_results = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_RESULT)
+            if block.tool_id and "::polylogue-child::" in block.tool_id
+        ]
+
+        assert [(block.text, block.exit_code) for block in child_results] == [
+            ('{"exit_code": 4, "output": "one"}', 4),
+            ('{"exit_code": 0, "output": "two"}', 0),
+        ]
+
+    def test_missing_structural_child_result_keeps_use_unpaired(self) -> None:
+        records: list[object] = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "unpaired-call",
+                    "call_id": "unpaired-exec",
+                    "name": "exec",
+                    "input": 'tools.exec_command({cmd: "still-running"});',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "id": "unpaired-output",
+                    "call_id": "unpaired-exec",
+                    "output": [{"type": "input_text", "text": "Script completed\nOutput:\n"}],
+                },
+            },
+        ]
+
+        session = _parse(records, "unpaired-exec")
+        child_uses = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_USE)
+            if block.tool_id and "::polylogue-child::" in block.tool_id
+        ]
+        child_results = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_RESULT)
+            if block.tool_id and "::polylogue-child::" in block.tool_id
+        ]
+
+        assert len(child_uses) == 1
+        assert child_uses[0].tool_input is not None
+        assert child_uses[0].tool_input["command"] == "still-running"
+        assert child_results == []
+
+    def test_single_status_mapping_pairs_with_unknown_outcome(self) -> None:
+        records: list[object] = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "status-call",
+                    "call_id": "status-exec",
+                    "name": "exec",
+                    "input": 'tools.wait({cell_id: "cell-9"});',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "id": "status-output",
+                    "call_id": "status-exec",
+                    "output": {"status": "completed"},
+                },
+            },
+        ]
+
+        session = _parse(records, "status-exec")
+        child_results = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_RESULT)
+            if block.tool_id and "::polylogue-child::" in block.tool_id
+        ]
+
+        assert len(child_results) == 1
+        assert child_results[0].text == '{"status": "completed"}'
+        assert child_results[0].is_error is None
+        assert child_results[0].exit_code is None
+
+    def test_result_before_use_pairs_by_envelope_occurrence_without_recovery_guess(self) -> None:
+        records: list[object] = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "id": "early-output",
+                    "call_id": "early-exec",
+                    "output": {"exit_code": 3, "output": "early"},
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "late-call",
+                    "call_id": "early-exec",
+                    "name": "exec",
+                    "input": 'tools.exec_command({cmd: "late"});',
+                },
+            },
+        ]
+
+        session = _parse(records, "early-exec")
+        child_uses = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_USE)
+            if block.tool_id and "::polylogue-child::" in block.tool_id
+        ]
+        child_results = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_RESULT)
+            if block.tool_id and "::polylogue-child::" in block.tool_id
+        ]
+
+        assert len(child_uses) == 1
+        assert child_uses[0].tool_input is not None
+        assert child_uses[0].tool_input["command"] == "late"
+        assert [(block.text, block.exit_code) for block in child_results] == [
+            ('{"exit_code": 3, "output": "early"}', 3)
+        ]
+
+    def test_lowered_blocks_change_semantic_content_hash(self) -> None:
+        from polylogue.pipeline.ids import session_content_hash
+
+        lowered = _parse(_load_catalog("functions_exec_single.jsonl"), "functions-exec-hash")
+        outer_only = lowered.model_copy(
+            update={
+                "messages": [message.model_copy(update={"blocks": message.blocks[:1]}) for message in lowered.messages]
+            }
+        )
+
+        assert session_content_hash(lowered) != session_content_hash(outer_only)
