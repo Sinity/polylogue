@@ -98,6 +98,11 @@ These expose the archive and its insights:
 - MCP server: `polylogue/mcp/` — exposes the distilled, agent-preferred
   surfaces (`get_postmortem_bundle`) alongside search/list/insight tools.
 - daemon web reader: `polylogue/daemon/web_shell.py`
+- WebUI v2 strangler mount: `polylogue/daemon/webui.py` serves semantic SSR
+  at `GET /app` and manifest-governed, content-hashed Vite assets at
+  `GET /app/assets/:asset`, alongside the legacy shell above (`webui/`,
+  TypeScript + Preact + Vite; committed build output under
+  `polylogue/daemon/static/dist`).
 - dashboard and TUI: `polylogue/ui/`
 - renderers: `polylogue/rendering/`
 
