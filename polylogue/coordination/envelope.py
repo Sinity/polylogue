@@ -8,6 +8,7 @@ import re
 import shlex
 import sqlite3
 import subprocess
+import threading
 from collections.abc import Callable, MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -44,6 +45,7 @@ from polylogue.coordination.payloads import (
     CoordinationWorkItemPayload,
 )
 from polylogue.logging import get_logger
+from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import active_index_db_path, archive_root
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
@@ -160,6 +162,14 @@ def build_coordination_envelope(
         "handoff",
         lambda: _handoff_payloads(repo.root or str(root_cwd), archive=archive, limit=peer_limit),
     )
+    archive_evidence_fallback: tuple[
+        tuple[CoordinationSessionTreePayload, ...],
+        tuple[CoordinationActivityEpisodePayload, ...],
+        tuple[CoordinationSubagentExchangePayload, ...],
+        tuple[CoordinationProofRefPayload, ...],
+        tuple[CoordinationContextFlowRefPayload, ...],
+        str | None,
+    ] = ((), (), (), (), (), f"archive-evidence lookup exceeded {_ARCHIVE_EVIDENCE_DEADLINE_S:g}s deadline")
     (
         session_trees,
         activity_episodes,
@@ -167,7 +177,7 @@ def build_coordination_envelope(
         proof_refs,
         context_flow_refs,
         archive_evidence_degraded_reason,
-    ) = _timed_stage(
+    ) = _bounded_stage(
         stage_timings_ms,
         "archive_evidence",
         lambda: _archive_evidence_payloads(
@@ -176,6 +186,8 @@ def build_coordination_envelope(
             archive,
             limit=peer_limit,
         ),
+        deadline_s=_ARCHIVE_EVIDENCE_DEADLINE_S,
+        fallback=archive_evidence_fallback,
     )
     overlaps = _timed_stage(stage_timings_ms, "overlaps", lambda: _overlap_payloads(repo, work_item, peers, resources))
     advisories = _timed_stage(
@@ -244,6 +256,130 @@ def _timed_stage(
     finally:
         if timings is not None:
             timings[name] = round((perf_counter() - started) * 1_000, 3)
+
+
+_ARCHIVE_EVIDENCE_DEADLINE_S = 3.0
+
+
+def _bounded_stage(
+    timings: MutableMapping[str, float] | None,
+    name: str,
+    call: Callable[[], _StageResult],
+    *,
+    deadline_s: float,
+    fallback: _StageResult,
+) -> _StageResult:
+    """Execute one envelope stage under a deadline, falling back on timeout.
+
+    Unlike :func:`_timed_stage`, an unbounded blocking stage (a full-table
+    archive query with no per-query SQL timeout of its own) cannot delay the
+    whole envelope past ``deadline_s``. Live measurement against a large
+    archive found ``archive_evidence`` alone taking ~10s while every other
+    stage stayed under 1s (polylogue-20d.17) — this bounds exactly that
+    stage. The underlying call keeps running on its own thread past the
+    deadline (no cooperative cancellation for a blocking SQLite query), but
+    the caller gets control back with an explicit degraded result instead
+    of waiting out however long the query takes.
+    """
+    registry = StatusComponentRegistry(
+        [
+            StatusComponentSpec(
+                name=name,
+                scope="coordination",
+                collector=call,
+                deadline_s=deadline_s,
+                cost_class="expensive",
+            )
+        ]
+    )
+    started = perf_counter()
+    snapshot = registry.collect()[name]
+    if timings is not None:
+        timings[name] = round((perf_counter() - started) * 1_000, 3)
+    if snapshot.state in ("fresh", "stale") and snapshot.value is not None:
+        return cast(_StageResult, snapshot.value)
+    return fallback
+
+
+def _coordination_fingerprint(root_cwd: Path) -> str:
+    """Cheap proxy for "has the repo/Beads/archive source changed" (polylogue-20d.17 AC #5).
+
+    A prior TTL-only cache could serve a stale compact envelope past a git
+    commit, a Beads write, or an archive ingest for up to the whole TTL
+    window. Stat-only (no subprocess) so checking it stays cheap even when
+    the cached envelope itself is reused; a mismatch forces a fresh build
+    regardless of TTL age.
+    """
+    parts: list[str] = []
+    for candidate in (
+        root_cwd / ".git" / "HEAD",
+        root_cwd / ".git" / "logs" / "HEAD",
+        root_cwd / ".beads" / "issues.jsonl",
+    ):
+        try:
+            parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
+        except OSError:
+            parts.append(f"{candidate.name}:?")
+    try:
+        db = active_index_db_path()
+        wal = db.with_suffix(".db-wal")
+        target = wal if wal.exists() else db
+        parts.append(f"archive:{target.stat().st_mtime_ns}")
+    except OSError:
+        parts.append("archive:?")
+    return "|".join(parts)
+
+
+class CoordinationEnvelopeCache:
+    """Warm-cache compact coordination envelopes with source-fingerprint invalidation.
+
+    Replaces a prior TTL-only in-memory cache: a changed git HEAD, Beads
+    export, or archive index cannot hide behind an unexpired TTL because
+    :func:`_coordination_fingerprint` is checked on every call, not only
+    after the TTL expires. One instance per long-lived server process (or
+    per test) — its registries are process-local state, not a module
+    singleton, so a fresh instance starts warm-cache-empty.
+    """
+
+    _TTL_S = 1.0
+    _DEADLINE_S = 15.0
+
+    def __init__(self) -> None:
+        self._registries: dict[tuple[str, str, int], StatusComponentRegistry] = {}
+        self._lock = threading.Lock()
+
+    def get_or_build(self, *, view: CoordinationView, cwd: Path | None, limit: int) -> AgentCoordinationPayload:
+        """Return the compact envelope for ``(view, cwd, limit)``, cached and fingerprinted.
+
+        Callers that need a live, uncached read (``detail`` or an explicit
+        ``fresh`` request) should call :func:`build_coordination_envelope`
+        directly instead of this method.
+        """
+        root_cwd = (cwd or Path.cwd()).resolve()
+        key = (view, str(root_cwd), limit)
+        with self._lock:
+            registry = self._registries.get(key)
+            if registry is None:
+                registry = StatusComponentRegistry(
+                    [
+                        StatusComponentSpec(
+                            name="envelope",
+                            scope="coordination",
+                            collector=lambda: build_coordination_envelope(
+                                view=view, cwd=root_cwd, limit=limit, detail=False
+                            ),
+                            deadline_s=self._DEADLINE_S,
+                            ttl_s=self._TTL_S,
+                            fingerprint=lambda: _coordination_fingerprint(root_cwd),
+                            cost_class="expensive",
+                        )
+                    ]
+                )
+                self._registries[key] = registry
+        snapshot = registry.collect()["envelope"]
+        if snapshot.value is not None:
+            return cast(AgentCoordinationPayload, snapshot.value)
+        return build_coordination_envelope(view=view, cwd=root_cwd, limit=limit, detail=False)
 
 
 def project_coordination_envelope(
