@@ -1,0 +1,6 @@
+$ polylogue --origin codex-session find "sessions where origin:codex-session" then select --json
+[{"id":"codex-session:demo-receipts","origin":"codex-session","title":"Fix the clock-sensitive test and prove the suite passes.","date":"2026-07-04"},{"id":"codex-session:demo-anti-grep","origin":"codex-session","title":"Explain error budgets without running a command.","date":"2026-07-04"},{"id":"codex-session:demo-terminal-error","origin":"codex-session","title":"Run the command and stop if it fails.","date":"2026-07-04"},{"id":"codex-session:demo-lineage-subagent","origin":"codex-session","title":"demo-lineage-subagent","date":"2026-07-04"},{"id":"codex-session:demo-lineage-fork","origin":"codex-session","title":"Map the demo lineage base context.","date":"2026-07-04"},{"id":"codex-session:demo-lineage-parent","origin":"codex-session","title":"Map the demo lineage base context.","date":"2026-07-04"},{"id":"codex-session:demo-00","origin":"codex-session","title":"Could you review this code for potential issues?","date":"2024-01-23"}]
+
+$ polylogue find "actions where tool:bash | group by origin | count"
+session.origin=claude-code-session count=6
+session.origin=codex-session count=3

@@ -1,0 +1,31 @@
+$ polylogue find id:codex-session:demo-lineage-fork then read --view transcript
+# Map the demo lineage base context.
+
+`codex-session:demo-lineage-fork`
+
+## user
+Map the demo lineage base context.
+
+## assistant
+I have the base context and can branch the analysis.
+
+## user
+Now take the forked branch and audit construct validity.
+
+## assistant
+The fork diverges into demo corpus construct checks.
+
+$ polylogue find id:codex-session:demo-lineage-parent then read --view transcript
+# Map the demo lineage base context.
+
+`codex-session:demo-lineage-parent`
+
+## user
+Map the demo lineage base context.
+
+## assistant
+I have the base context and can branch the analysis.
+
+## assistant
+Delegating a topology check to a focused subagent.
+Subagent completed. Session: codex-session:demo-lineage-subagent

@@ -22,6 +22,9 @@ better demo supersedes them.
   - readme: `attachment-acquisition-census/README.md`
   - analysis: `attachment-acquisition-census/ANALYSIS.md`
   - files: 5 (4 readable)
+- `basic-usage` — Basic Usage — The Features Actually Work
+  - readme: `basic-usage/README.md`
+  - files: 11 (11 readable)
 - `d4-behavioral-archaeology` — D4 Behavioral Archaeology
   - files: 9 (6 readable)
 - `uplift-two-arm` — Handoff-Pack Uplift Experiment
