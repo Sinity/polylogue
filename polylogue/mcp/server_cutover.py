@@ -16,6 +16,7 @@ from polylogue.mcp.declarations.models import mcp_role_allows
 from polylogue.mcp.payloads import MCPArchiveStatsPayload, MCPRootPayload, session_topology_payload
 
 if TYPE_CHECKING:
+    from polylogue.coordination import CoordinationEnvelopeCache
     from polylogue.maintenance.scope import MaintenanceScopeFilter
     from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
@@ -206,6 +207,20 @@ async def _resume_preamble(
 
 def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     """Register exactly the six default, role-read transactions."""
+
+    # Deferred import + lazy singleton: every other branch in this module
+    # imports its dependencies inside the closure that uses them, to keep
+    # server construction itself cheap; a status(scope="coordination") call
+    # never needs to happen in a given session, so this avoids paying
+    # coordination.envelope's import cost for sessions that never make one.
+    _coordination_cache_holder: list[CoordinationEnvelopeCache] = []
+
+    def _coordination_cache() -> CoordinationEnvelopeCache:
+        if not _coordination_cache_holder:
+            from polylogue.coordination import CoordinationEnvelopeCache
+
+            _coordination_cache_holder.append(CoordinationEnvelopeCache())
+        return _coordination_cache_holder[0]
 
     async def query(
         expression: str | None = None,
@@ -430,6 +445,16 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     include_cached=True,
                     mcp_call_delivery=asdict(mcp_call_outbox_status()),
                 ).model_dump(mode="json", exclude_none=True)
+                return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
+
+            if scope == "coordination":
+                from polylogue.coordination import build_coordination_envelope
+
+                if "detail" in include:
+                    envelope = build_coordination_envelope(view="status", detail=True)
+                else:
+                    envelope = _coordination_cache().get_or_build(view="status", cwd=None, limit=10)
+                root["coordination"] = envelope.model_dump(mode="json", exclude_none=True)
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
             from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
