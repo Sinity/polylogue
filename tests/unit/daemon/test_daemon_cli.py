@@ -1066,6 +1066,52 @@ def test_periodic_raw_materialization_yields_to_pending_browser_capture_spool(
         asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
 
 
+def test_spool_pending_check_ignores_terminal_cursor_states(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Excluded or repeatedly-failed spool files are owned by exclusion and
+    retry policy; they must not park raw materialization indefinitely. Only
+    a file with no cursor yet (genuinely awaiting its live route) yields."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
+
+    spool = tmp_path / "browser-capture"
+    spool.mkdir()
+    capture = spool / "chatgpt-capture.json"
+    capture.write_bytes(b"{}\n")
+    stat = capture.stat()
+
+    records: dict[Path, object] = {}
+    monkeypatch.setattr("polylogue.paths.browser_capture_spool_root", lambda: spool)
+    monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: tmp_path / "index.db")
+    monkeypatch.setattr(
+        "polylogue.sources.live.cursor.CursorStore",
+        lambda _db: SimpleNamespace(get_record=lambda path: records.get(path)),
+    )
+
+    def cursor_record(*, excluded: bool = False, failure_count: int = 0) -> SimpleNamespace:
+        return SimpleNamespace(
+            excluded=excluded,
+            failure_count=failure_count,
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            byte_size=stat.st_size,
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+            content_fingerprint="fp",
+        )
+
+    records.clear()
+    assert daemon_cli._browser_capture_spool_has_pending_files() is True
+
+    records[capture] = cursor_record(excluded=True)
+    assert daemon_cli._browser_capture_spool_has_pending_files() is False
+
+    records[capture] = cursor_record(failure_count=3)
+    assert daemon_cli._browser_capture_spool_has_pending_files() is False
+
+
 def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

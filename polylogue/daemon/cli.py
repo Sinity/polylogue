@@ -691,7 +691,16 @@ def _drain_raw_materialization_once(
 
 
 def _browser_capture_spool_has_pending_files() -> bool:
-    """Whether live browser evidence is awaiting its normal ingest route."""
+    """Whether live browser evidence is awaiting its normal ingest route.
+
+    Only files genuinely waiting on the live route's writer count: a file
+    with no cursor yet, or one whose bytes changed since its cursor. Files
+    in a terminal or failure disposition (``excluded``, ``failure_count``)
+    are owned by exclusion/retry policy — the writer is not what they wait
+    for, and treating them as pending parked raw materialization forever
+    (2026-07-18 restore: the conveyor never ran once while failed spool
+    files sat on disk).
+    """
     from polylogue.paths import browser_capture_spool_root
     from polylogue.sources.live.batch import fingerprint_file
     from polylogue.sources.live.cursor import CursorStore
@@ -707,8 +716,10 @@ def _browser_capture_spool_has_pending_files() -> bool:
         except FileNotFoundError:
             continue
         cursor = cursor_store.get_record(path)
-        if cursor is None or cursor.excluded or cursor.failure_count:
+        if cursor is None:
             return True
+        if cursor.excluded or cursor.failure_count:
+            continue
         if (
             cursor.parser_fingerprint != _PARSER_FINGERPRINT
             or cursor.byte_size != stat.st_size
