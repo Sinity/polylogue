@@ -2110,6 +2110,20 @@ class LiveBatchProcessor:
         # mutable browser snapshots can arrive through the generic inbox.
         if path.suffix.lower() != ".jsonl":
             return None
+        if self._source_name_for(path) == "hermes":
+            # polylogue-flxh: the Hermes watch source's only .jsonl artifact
+            # class is NeMo Relay ATOF (state.db is .db, ATIF/session
+            # snapshots are .json -- see default_sources()'s own docstring).
+            # A real ATOF file is shared across every Hermes session on the
+            # install, so a growth batch can span a session boundary; the
+            # raw-revision-authority replay chain requires exactly one
+            # logical session per raw revision, and incremental append on
+            # such a batch silently and permanently drops the pre-existing
+            # session's new event (confirmed, see the regression test this
+            # commit removes the xfail from). ATOF is therefore always
+            # routed through the full/bundle ingest path below instead,
+            # which already handles multi-session grouping correctly.
+            return None
         cursor = cursor or self._cursor.get_record(path)
         if (
             cursor is None
