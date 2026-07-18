@@ -300,21 +300,29 @@
     return attachments;
   }
 
-  function collectTurns() {
+  async function collectTurns() {
     const nodes = [
       ...document.querySelectorAll('[data-testid^="conversation-turn-"], article, [data-message-author-role]')
     ];
-    return nodes
-      .map((node, index) => {
-        const explicitRole = node.getAttribute("data-message-author-role");
-        const role = explicitRole || roleFromNode(node, index);
-        const text = window.polylogueCapture.visibleText(node);
-        const attachments = collectAttachments(node, index);
-        return text || attachments.length
-          ? { role, text, attachments, provider_meta: { selector_index: index } }
-          : null;
-      })
-      .filter(Boolean);
+    const turns = [];
+    for (const [index, node] of nodes.entries()) {
+      const explicitRole = node.getAttribute("data-message-author-role");
+      const role = explicitRole || roleFromNode(node, index);
+      const text = window.polylogueCapture.visibleText(node);
+      const domAttachments = collectAttachments(node, index);
+      // chatgpt-dom-v1 has no backend-api mapping to resolve file/sandbox ids
+      // from (polylogue-83u.3) — the DOM itself is the only evidence of an
+      // attachment. When a chip's own href/src is already a concrete https
+      // URL (rendered by the page, e.g. an inline image), fetch it through
+      // the SAME authenticated page-bridge mechanism the native adapter uses
+      // for sandbox/file assets (see acquireAssets/requestAssetFromPage), not
+      // a new one. No resolvable URL stays honestly byte_count=0.
+      const attachments = domAttachments.length ? await acquireDomAttachmentBytes(domAttachments) : domAttachments;
+      if (text || attachments.length) {
+        turns.push({ role, text, attachments, provider_meta: { selector_index: index } });
+      }
+    }
+    return turns;
   }
 
   function extractContentText(content) {
@@ -603,6 +611,76 @@
     });
     window.postMessage({ type: assetFetchRequestMessage, requestId, request }, window.location.origin);
     return responsePromise;
+  }
+
+  // chatgpt-dom-v1 attachment byte acquisition (polylogue-83u.3): the DOM
+  // scrape only ever recorded the chip name (byte_count=0) because there is
+  // no backend-api mapping in this degraded capture mode to resolve a
+  // file/sandbox id from. Any chip whose own href/src the page already
+  // rendered as a concrete https URL is fetched through the bridge's "url"
+  // asset kind — the same authenticated page-bridge fetch+hash mechanism
+  // acquireAssets uses for the native adapter's sandbox/file assets, just
+  // skipping the metadata round trip since the URL is already in hand.
+  // Bounded by the same per-file/total-byte/time/failure budgets so a
+  // degraded capture with many broken image chips cannot stall or balloon.
+  async function acquireDomAttachmentBytes(attachments) {
+    const startedAt = Date.now();
+    let totalBytes = 0;
+    let consecutiveFailures = 0;
+    const acquired = [];
+    for (const attachment of attachments) {
+      if (
+        !attachment.url
+        || totalBytes >= assetMaxBytesTotal
+        || Date.now() - startedAt >= assetTotalTimeBudgetMs
+        || consecutiveFailures >= assetConsecutiveFailureLimit
+      ) {
+        acquired.push(attachment);
+        continue;
+      }
+      const request = {
+        kind: "url",
+        url: attachment.url,
+        name: attachment.name,
+        maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes)
+      };
+      const result = await requestAssetFromPage(request);
+      const status = typeof result.status === "string" ? result.status : "request_failed";
+      const contentSha256 = result.asset && result.asset.sha256;
+      const acquiredIsValid =
+        status === "acquired" &&
+        result.asset &&
+        result.asset.base64 &&
+        typeof contentSha256 === "string" &&
+        /^[0-9a-f]{64}$/.test(contentSha256);
+      if (acquiredIsValid) {
+        totalBytes += result.asset.size_bytes || 0;
+        consecutiveFailures = 0;
+        acquired.push({
+          ...attachment,
+          mime_type: result.asset.mime_type || attachment.mime_type || null,
+          size_bytes: result.asset.size_bytes || null,
+          inline_base64: result.asset.base64,
+          provider_meta: {
+            ...attachment.provider_meta,
+            asset_kind: "url",
+            content_sha256: contentSha256
+          }
+        });
+      } else {
+        consecutiveFailures += 1;
+        acquired.push({
+          ...attachment,
+          provider_meta: {
+            ...attachment.provider_meta,
+            asset_kind: "url",
+            asset_fetch_status: status,
+            asset_fetch_detail: result.detail || null
+          }
+        });
+      }
+    }
+    return acquired;
   }
 
   function sandboxPathsFromText(text) {
@@ -903,8 +981,8 @@
         normalizedGenerationObservations,
       )
       : null;
-    const fallbackEnvelope = () => {
-      const turns = collectTurns();
+    const fallbackEnvelope = async () => {
+      const turns = await collectTurns();
       if (!turns.length) return null;
       return window.polylogueCapture.buildEnvelope({
         provider: "chatgpt",
@@ -917,7 +995,7 @@
         }
       });
     };
-    const finalEnvelope = envelope || (requestedConversationId ? null : fallbackEnvelope());
+    const finalEnvelope = envelope || (requestedConversationId ? null : await fallbackEnvelope());
     if (!finalEnvelope) return { ok: false, error: "no_turns" };
     if (deferReceiver) return { ok: true, envelope: finalEnvelope, deferred: true };
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);

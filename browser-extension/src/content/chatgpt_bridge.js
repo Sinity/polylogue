@@ -295,49 +295,14 @@
     }
   }
 
-  async function fetchAssetBytes(request) {
-    let metaUrl;
-    if (request.kind === "sandbox") {
-      metaUrl = new URL(
-        `/backend-api/conversation/${encodeURIComponent(String(request.conversationId))}/interpreter/download`,
-        currentOrigin
-      );
-      metaUrl.searchParams.set("message_id", String(request.messageId));
-      metaUrl.searchParams.set("sandbox_path", String(request.sandboxPath));
-    } else if (request.kind === "file") {
-      metaUrl = new URL(`/backend-api/files/${encodeURIComponent(String(request.fileId))}/download`, currentOrigin);
-    } else {
-      return assetOutcome("invalid_request", { phase: "request", detail: "unsupported_asset_kind" });
-    }
-    const accessToken = await resolveAccessToken();
-    if (!accessToken) {
-      return assetOutcome("unauthorized", { phase: "access_token", detail: "access_token_unavailable" });
-    }
-    const metaResponse = await fetchWithAbort(
-      metaUrl.href,
-      { credentials: "include", cache: "no-store", headers: bearerHeaders(accessToken) },
-      "asset_meta_fetch"
-    );
-    const { meta, rawText } = await readMetadataEnvelope(metaResponse);
-    const failure = metadataFailureOutcome(request, metaResponse, meta, rawText);
-    if (failure) return failure;
-    const downloadUrl = meta && (meta.download_url || meta.downloadUrl || meta.url);
-    if (typeof downloadUrl !== "string" || !downloadUrl) {
-      return assetOutcome("invalid_response", { phase: "metadata", detail: "download_url_missing" });
-    }
-    let signedUrl;
-    try {
-      signedUrl = new URL(downloadUrl, currentOrigin);
-    } catch {
-      return assetOutcome("invalid_response", { phase: "metadata", detail: "download_url_invalid" });
-    }
-    if (signedUrl.protocol !== "https:") {
-      return assetOutcome("invalid_response", { phase: "metadata", detail: "download_url_not_https" });
-    }
-    // Current ChatGPT interpreter downloads may point at the authenticated
-    // same-origin estuary endpoint rather than at a self-authenticating object
-    // store URL. Keep page cookies for that exact origin, but never forward
-    // them (or the bearer) to provider-issued cross-origin signed URLs.
+  // Shared tail for every asset kind once a concrete https URL is known:
+  // fetch it (dropping credentials cross-origin — provider-issued signed
+  // URLs and DOM-rendered CDN links must never receive page cookies/bearer),
+  // enforce the byte budget, and hash+base64 the result. `sandbox`/`file`
+  // resolve `signedUrl` via a metadata round trip first; `url` (a byte-bearing
+  // link already visible in the DOM, e.g. an `img.src`/`a.href`) skips
+  // straight to this tail with no metadata step at all.
+  async function fetchBytesFromResolvedUrl(signedUrl, request, fallbackName) {
     const byteCredentials = signedUrl.origin === currentOrigin ? "include" : "omit";
     const fileResponse = await fetchWithAbort(
       signedUrl.href,
@@ -391,9 +356,72 @@
         size_bytes: buffer.byteLength,
         sha256: contentSha256,
         mime_type: fileResponse.headers.get("content-type") || null,
-        name: (meta && (meta.file_name || meta.fileName)) || null
+        name: fallbackName
       }
     });
+  }
+
+  async function fetchAssetBytes(request) {
+    if (request.kind === "url") {
+      // No metadata round trip: the caller (e.g. the chatgpt-dom-v1 fallback
+      // adapter, which has no backend-api mapping to resolve file/sandbox ids
+      // from) already has a concrete byte-bearing URL straight out of the DOM
+      // (an `img.src`/`a.href` the page itself rendered).
+      let directUrl;
+      try {
+        directUrl = new URL(String(request.url), currentOrigin);
+      } catch {
+        return assetOutcome("invalid_request", { phase: "request", detail: "url_invalid" });
+      }
+      if (directUrl.protocol !== "https:") {
+        return assetOutcome("invalid_request", { phase: "request", detail: "url_not_https" });
+      }
+      return fetchBytesFromResolvedUrl(directUrl, request, request.name || null);
+    }
+
+    let metaUrl;
+    if (request.kind === "sandbox") {
+      metaUrl = new URL(
+        `/backend-api/conversation/${encodeURIComponent(String(request.conversationId))}/interpreter/download`,
+        currentOrigin
+      );
+      metaUrl.searchParams.set("message_id", String(request.messageId));
+      metaUrl.searchParams.set("sandbox_path", String(request.sandboxPath));
+    } else if (request.kind === "file") {
+      metaUrl = new URL(`/backend-api/files/${encodeURIComponent(String(request.fileId))}/download`, currentOrigin);
+    } else {
+      return assetOutcome("invalid_request", { phase: "request", detail: "unsupported_asset_kind" });
+    }
+    const accessToken = await resolveAccessToken();
+    if (!accessToken) {
+      return assetOutcome("unauthorized", { phase: "access_token", detail: "access_token_unavailable" });
+    }
+    const metaResponse = await fetchWithAbort(
+      metaUrl.href,
+      { credentials: "include", cache: "no-store", headers: bearerHeaders(accessToken) },
+      "asset_meta_fetch"
+    );
+    const { meta, rawText } = await readMetadataEnvelope(metaResponse);
+    const failure = metadataFailureOutcome(request, metaResponse, meta, rawText);
+    if (failure) return failure;
+    const downloadUrl = meta && (meta.download_url || meta.downloadUrl || meta.url);
+    if (typeof downloadUrl !== "string" || !downloadUrl) {
+      return assetOutcome("invalid_response", { phase: "metadata", detail: "download_url_missing" });
+    }
+    let signedUrl;
+    try {
+      signedUrl = new URL(downloadUrl, currentOrigin);
+    } catch {
+      return assetOutcome("invalid_response", { phase: "metadata", detail: "download_url_invalid" });
+    }
+    if (signedUrl.protocol !== "https:") {
+      return assetOutcome("invalid_response", { phase: "metadata", detail: "download_url_not_https" });
+    }
+    // Current ChatGPT interpreter downloads may point at the authenticated
+    // same-origin estuary endpoint rather than at a self-authenticating object
+    // store URL. fetchBytesFromResolvedUrl keeps page cookies only for that
+    // exact origin, never forwarding them (or the bearer) cross-origin.
+    return fetchBytesFromResolvedUrl(signedUrl, request, (meta && (meta.file_name || meta.fileName)) || null);
   }
 
   function assetExceptionOutcome(error) {
