@@ -1,0 +1,2606 @@
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index ff588aeb1c2f48a2a42f7ca0d6ea26a317eba8e5..385d7b5d6ba2e68dc7e4f0eed4ce857afd42f9a2 100644
+GIT binary patch
+delta 168
+zcmezRh2z^7jt%ClOh#tY3%M92CO=?h*&NEMY!2pao?!E{XnH_8P~2e!>*i(aGxa8a
+zbd+dTzqeie9%G*T^yEB7>Fpc-GG;R|noKt=W0aZ><S0yKXX2asi^*u}1171h8<^fO
+zPhKY~IbGo$BmeXo7AC354wsd-u`->KXErploF2%|q&|Iv3X|w`Zx$xQ=?gTNxVO8g
+UGHv2ww3sZ|EV*64fGL#=0Ef*va{vGU
+
+delta 175
+zcmV;g08sz-^a%Cz2(UK=0x&s~@o^ZF-~|M;RRtqAm$7mI7_*Q(`Er+W3IQ0CK&S<?
+zrmtx(lj40CgD2j%C*A>WACpN+8kd0l0UehR{{aNI(ER~R0s=EPm+=AuCzmkx0S=cC
+z{{aP+2m%e2`T{bQ-~t-8umbD@lbcBymmux|50`ud0veM*(;~J70?Ho&HJ8z70UDQ}
+d6#^2s_#^`V3IR5g!3Y_b9xnn3w;C`4TnfJMKr#RT
+
+diff --git a/polylogue/api/archive.py b/polylogue/api/archive.py
+index 319a39d6942cd0a73870e011bddf40250c86ff77..e158db2076aa4aa5102e6eeadf7f8506fe2c5152 100644
+--- a/polylogue/api/archive.py
++++ b/polylogue/api/archive.py
+@@ -32,7 +32,7 @@ from polylogue.context.compiler import (
+ )
+ from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
+ from polylogue.core.errors import PolylogueError
+-from polylogue.core.json import JSONDocument
++from polylogue.core.json import JSONDocument, require_json_document
+ from polylogue.core.refs import EvidenceRef, ObjectRef, parse_delegation_edge_object_id, parse_public_ref
+ from polylogue.core.timestamps import parse_archive_datetime
+ from polylogue.core.types import SessionId
+@@ -358,11 +358,10 @@ def _invalid_unicode_ref_payload(ref: str) -> Any | None:
+     )
+ 
+ 
+-#: ObjectRefKind values registered ahead of their backing storage tier
+-#: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
+-#: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
+-#: attempting a lookup against tables that do not exist yet.
+-_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort", "analysis"})
++#: ObjectRefKind values whose backing objects do not yet have a public
++#: resolver. ``resolve_ref`` returns a typed ``PendingObjectRefPayload``
++#: (reason=substrate-pending) instead of pretending the object is absent.
++_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort"})
+ 
+ 
+ def _pending_ref_payload(ref: str, normalized_ref: str, kind: str) -> Any:
+@@ -3080,6 +3079,10 @@ class PolylogueArchiveMixin:
+                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
+             if object_ref.kind == "finding":
+                 return self._resolve_finding_object_ref(archive_root, ref, normalized_ref, object_ref)
++            if object_ref.kind == "analysis":
++                return self._resolve_analysis_definition_ref(archive_root, ref, normalized_ref, object_ref)
++            if object_ref.kind == "analysis-run":
++                return self._resolve_analysis_run_ref(archive_root, ref, normalized_ref, object_ref)
+             if object_ref.kind == "annotation-batch":
+                 return self._resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
+             if object_ref.kind == "delegation":
+@@ -3309,6 +3312,173 @@ class PolylogueArchiveMixin:
+             actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+         )
+ 
++    def _resolve_analysis_definition_ref(
++        self,
++        archive_root: Path,
++        ref: str,
++        normalized_ref: str,
++        object_ref: ObjectRef,
++    ) -> PublicRefResolutionPayload:
++        from polylogue.storage.sqlite.query_objects import get_analysis_definition
++        from polylogue.surfaces.payloads import (
++            AnalysisDefinitionPayload,
++            PublicRefResolutionPayload,
++            model_json_document,
++        )
++
++        user_db = archive_root / "user.db"
++        if not user_db.exists():
++            return cast(
++                PublicRefResolutionPayload,
++                _unresolved_ref_payload(
++                    ref, "analysis definition not found", normalized_ref=normalized_ref, kind="analysis"
++                ),
++            )
++        with closing(sqlite3.connect(user_db)) as conn:
++            conn.row_factory = sqlite3.Row
++            definition = get_analysis_definition(conn, object_ref.object_id)
++        if definition is None:
++            return cast(
++                PublicRefResolutionPayload,
++                _unresolved_ref_payload(
++                    ref, "analysis definition not found", normalized_ref=normalized_ref, kind="analysis"
++                ),
++            )
++        payload = AnalysisDefinitionPayload(
++            analysis_hash=definition.analysis_hash,
++            analysis_ref=definition.ref,
++            definition_protocol_version=definition.definition_protocol_version,
++            canonical_definition=require_json_document(definition.canonical_definition, context="analysis definition"),
++            created_at_ms=definition.created_at_ms,
++        )
++        definition_body = definition.canonical_definition.get("definition")
++        title = None
++        if isinstance(definition_body, dict):
++            raw_title = definition_body.get("name") or definition_body.get("title")
++            title = raw_title if isinstance(raw_title, str) else None
++        return PublicRefResolutionPayload(
++            ref=ref,
++            normalized_ref=normalized_ref,
++            kind="analysis",
++            resolved=True,
++            payload_kind="analysis-definition",
++            payload=model_json_document(payload),
++            title=title or "analysis definition",
++            summary=definition.definition_protocol_version,
++            object_refs=(normalized_ref,),
++        )
++
++    def _resolve_analysis_run_ref(
++        self,
++        archive_root: Path,
++        ref: str,
++        normalized_ref: str,
++        object_ref: ObjectRef,
++    ) -> PublicRefResolutionPayload:
++        from polylogue.storage.sqlite.query_objects import get_analysis_run
++        from polylogue.surfaces.payloads import (
++            AnalysisArchiveGenerationsPayload,
++            AnalysisEvaluationWorldPayload,
++            AnalysisPrivacyStampPayload,
++            AnalysisRetentionStampPayload,
++            AnalysisRunInputPayload,
++            AnalysisRunReceiptPayload,
++            PublicRefResolutionPayload,
++            model_json_document,
++        )
++
++        user_db = archive_root / "user.db"
++        if not user_db.exists():
++            return cast(
++                PublicRefResolutionPayload,
++                _unresolved_ref_payload(
++                    ref, "analysis run not found", normalized_ref=normalized_ref, kind="analysis-run"
++                ),
++            )
++        with closing(sqlite3.connect(user_db)) as conn:
++            conn.row_factory = sqlite3.Row
++            receipt = get_analysis_run(conn, object_ref.object_id)
++        if receipt is None:
++            return cast(
++                PublicRefResolutionPayload,
++                _unresolved_ref_payload(
++                    ref, "analysis run not found", normalized_ref=normalized_ref, kind="analysis-run"
++                ),
++            )
++        payload = AnalysisRunReceiptPayload(
++            receipt_id=receipt.receipt_id,
++            analysis_run_ref=receipt.ref,
++            analysis_ref=receipt.analysis_ref,
++            inputs=tuple(
++                AnalysisRunInputPayload(
++                    input_key=item.input_key,
++                    query_ref=item.query_ref,
++                    result_set_ref=item.result_set_ref,
++                    evaluation_receipt_id=item.evaluation_receipt_id,
++                )
++                for item in receipt.inputs
++            ),
++            archive_generations=AnalysisArchiveGenerationsPayload(
++                source_generation=receipt.archive_generations.source_generation,
++                user_generation=receipt.archive_generations.user_generation,
++                index_generation=receipt.archive_generations.index_generation,
++            ),
++            evaluator_ref=receipt.evaluator_ref,
++            evaluation_world=AnalysisEvaluationWorldPayload(
++                frame_ref=receipt.evaluation_world.frame_ref,
++                runtime_build_ref=receipt.evaluation_world.runtime_build_ref,
++                model_refs=receipt.evaluation_world.model_refs,
++                parameters=require_json_document(
++                    receipt.evaluation_world.parameters or {}, context="analysis evaluation parameters"
++                ),
++            ),
++            privacy_stamp=AnalysisPrivacyStampPayload(
++                classification=receipt.privacy_stamp.classification,
++                policy_ref=receipt.privacy_stamp.policy_ref,
++                contains_raw_content=receipt.privacy_stamp.contains_raw_content,
++                details=require_json_document(receipt.privacy_stamp.details or {}, context="analysis privacy details"),
++            ),
++            retention_stamp=AnalysisRetentionStampPayload(
++                retention_class=receipt.retention_stamp.retention_class,
++                policy_ref=receipt.retention_stamp.policy_ref,
++                excision_policy_ref=receipt.retention_stamp.excision_policy_ref,
++                details=require_json_document(
++                    receipt.retention_stamp.details or {}, context="analysis retention details"
++                ),
++            ),
++            receipt_protocol_version=receipt.receipt_protocol_version,
++            created_at_ms=receipt.created_at_ms,
++        )
++        evidence_refs = tuple(
++            dict.fromkeys(ref_value for item in receipt.inputs for ref_value in (item.query_ref, item.result_set_ref))
++        )
++        object_refs = tuple(
++            dict.fromkeys(
++                (
++                    normalized_ref,
++                    receipt.analysis_ref,
++                    receipt.evaluator_ref,
++                    receipt.evaluation_world.frame_ref,
++                    receipt.privacy_stamp.policy_ref,
++                    receipt.retention_stamp.policy_ref,
++                    receipt.retention_stamp.excision_policy_ref,
++                    *evidence_refs,
++                )
++            )
++        )
++        return PublicRefResolutionPayload(
++            ref=ref,
++            normalized_ref=normalized_ref,
++            kind="analysis-run",
++            resolved=True,
++            payload_kind="analysis-run-receipt",
++            payload=model_json_document(payload),
++            title="analysis run receipt",
++            summary=f"{len(receipt.inputs)} exact input(s); evaluator={receipt.evaluator_ref}",
++            object_refs=object_refs,
++            evidence_refs=evidence_refs,
++        )
++
+     def _resolve_finding_object_ref(
+         self,
+         archive_root: Path,
+@@ -3345,6 +3515,7 @@ class PolylogueArchiveMixin:
+             finding_kind=provenance.finding_kind,
+             query_ref=provenance.query_ref,
+             result_set_ref=provenance.result_set_ref,
++            analysis_run_ref=provenance.analysis_run_ref,
+             baseline_ref=provenance.baseline_ref,
+             current_ref=provenance.current_ref,
+             detector_ref=provenance.detector_ref,
+@@ -3368,6 +3539,7 @@ class PolylogueArchiveMixin:
+                     provenance.target_ref,
+                     provenance.query_ref,
+                     provenance.result_set_ref,
++                    provenance.analysis_run_ref,
+                 )
+                 if ref_value
+             )
+diff --git a/polylogue/core/refs.py b/polylogue/core/refs.py
+index 3768084b84f71cbf69ae56b67293fe8925443466..935cb4e280dd0ca30f2254097decfc5e76ae7c4d 100644
+--- a/polylogue/core/refs.py
++++ b/polylogue/core/refs.py
+@@ -38,17 +38,18 @@ ObjectRefKind: TypeAlias = Literal[
+     "github-issue",
+     "github-pr",
+     "github-review",
+-    # Analysis-provenance object kinds (polylogue-rxdo epic). Most refs land
+-    # here before their backing storage tiers exist; annotation-batch now
+-    # resolves through durable user.db storage (polylogue-rxdo.7.1). Do not append a
+-    # ``@content-hash`` anchor suffix onto these — that belongs to the
+-    # separate citation-anchor work (polylogue-bby.11).
++    # Analysis-provenance object kinds (polylogue-rxdo epic). Query/result
++    # identities, findings, annotation batches, and analysis definitions/runs
++    # now have durable user-tier owners; the remaining kinds may still land
++    # before a public resolver. Do not append a ``@content-hash`` anchor suffix
++    # here — that belongs to separate citation-anchor work (polylogue-bby.11).
+     "query",
+     "query-run",
+     "result-set",
+     "finding",
+     "cohort",
+     "analysis",
++    "analysis-run",
+     "annotation-batch",
+     # rxdo.9.11-.16 comparative-judgment mechanisms (K-O). ``ranker`` and
+     # ``judgment-set`` follow the same content-address discipline as
+@@ -129,6 +130,7 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
+     "finding": "finding",
+     "cohort": "cohort",
+     "analysis": "analysis",
++    "analysis-run": "analysis-run",
+     "annotation-batch": "annotation-batch",
+     "delegation": "delegation",
+     "judgment-set": "judgment-set",
+diff --git a/polylogue/storage/sqlite/archive_tiers/user.py b/polylogue/storage/sqlite/archive_tiers/user.py
+index d435ca270fbfc8353264d63e368fa6aa6857999d..6a4b8f6257ec95bd992b00c4402151f2141bff29 100644
+--- a/polylogue/storage/sqlite/archive_tiers/user.py
++++ b/polylogue/storage/sqlite/archive_tiers/user.py
+@@ -2,7 +2,7 @@
+ 
+ from __future__ import annotations
+ 
+-USER_SCHEMA_VERSION = 9
++USER_SCHEMA_VERSION = 10
+ 
+ USER_DDL = """
+ -- Unified evidence-linked user assertion. Marks, annotations,
+@@ -130,6 +130,119 @@ CREATE TABLE IF NOT EXISTS query_evaluation_receipts (
+ CREATE INDEX IF NOT EXISTS idx_query_evaluation_receipts_query_time
+ ON query_evaluation_receipts(query_hash, created_at_ms DESC);
+ 
++-- DB-native analysis evidence objects. Definitions and run receipts are
++-- procedure/execution records, not assertion claims; findings continue to
++-- live in assertions and cite analysis-run refs through evidence_refs_json.
++CREATE TABLE IF NOT EXISTS analysis_definitions (
++    analysis_hash                TEXT PRIMARY KEY NOT NULL CHECK(
++        length(analysis_hash) = 64
++        AND analysis_hash NOT GLOB '*[^0-9a-f]*'
++    ),
++    canonical_definition_json    TEXT NOT NULL CHECK(
++        json_valid(canonical_definition_json)
++        AND json_type(canonical_definition_json) = 'object'
++    ),
++    definition_protocol_version  TEXT NOT NULL CHECK(length(trim(definition_protocol_version)) > 0),
++    created_at_ms                INTEGER NOT NULL CHECK(created_at_ms >= 0)
++) STRICT;
++
++CREATE TABLE IF NOT EXISTS analysis_runs (
++    receipt_id               TEXT PRIMARY KEY NOT NULL CHECK(
++        receipt_id GLOB 'ar_*'
++        AND length(receipt_id) = 67
++        AND substr(receipt_id, 4) NOT GLOB '*[^0-9a-f]*'
++    ),
++    analysis_hash            TEXT NOT NULL REFERENCES analysis_definitions(analysis_hash)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    source_generation        TEXT NOT NULL CHECK(length(trim(source_generation)) > 0),
++    user_generation          TEXT NOT NULL CHECK(length(trim(user_generation)) > 0),
++    index_generation         TEXT NOT NULL CHECK(length(trim(index_generation)) > 0),
++    evaluator_ref            TEXT NOT NULL CHECK(length(trim(evaluator_ref)) > 0),
++    evaluation_world_json    TEXT NOT NULL CHECK(
++        json_valid(evaluation_world_json)
++        AND json_type(evaluation_world_json) = 'object'
++    ),
++    privacy_stamp_json       TEXT NOT NULL CHECK(
++        json_valid(privacy_stamp_json)
++        AND json_type(privacy_stamp_json) = 'object'
++    ),
++    retention_stamp_json     TEXT NOT NULL CHECK(
++        json_valid(retention_stamp_json)
++        AND json_type(retention_stamp_json) = 'object'
++    ),
++    receipt_protocol_version TEXT NOT NULL CHECK(length(trim(receipt_protocol_version)) > 0),
++    created_at_ms            INTEGER NOT NULL CHECK(created_at_ms >= 0)
++) STRICT;
++
++CREATE INDEX IF NOT EXISTS idx_analysis_runs_definition_time
++ON analysis_runs(analysis_hash, created_at_ms DESC, receipt_id);
++
++CREATE TABLE IF NOT EXISTS analysis_run_inputs (
++    receipt_id            TEXT NOT NULL REFERENCES analysis_runs(receipt_id)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    input_key             TEXT NOT NULL CHECK(length(trim(input_key)) > 0),
++    ordinal               INTEGER NOT NULL CHECK(ordinal >= 0),
++    query_hash            TEXT NOT NULL REFERENCES queries(query_hash)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    result_set_id         TEXT NOT NULL REFERENCES result_sets(result_set_id)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    evaluation_receipt_id TEXT NOT NULL REFERENCES query_evaluation_receipts(receipt_id)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    PRIMARY KEY (receipt_id, input_key),
++    UNIQUE (receipt_id, ordinal)
++) STRICT;
++
++CREATE INDEX IF NOT EXISTS idx_analysis_run_inputs_evidence
++ON analysis_run_inputs(result_set_id, evaluation_receipt_id, receipt_id);
++
++CREATE TRIGGER IF NOT EXISTS analysis_run_inputs_evidence_match_insert
++BEFORE INSERT ON analysis_run_inputs
++WHEN NOT EXISTS (
++    SELECT 1
++    FROM query_evaluation_receipts AS receipt
++    JOIN result_sets AS result_set ON result_set.result_set_id = receipt.result_set_id
++    WHERE receipt.receipt_id = NEW.evaluation_receipt_id
++      AND receipt.query_hash = NEW.query_hash
++      AND receipt.result_set_id = NEW.result_set_id
++      AND result_set.query_hash = NEW.query_hash
++)
++BEGIN
++    SELECT RAISE(ABORT, 'analysis input must bind one matching query result set and evaluation receipt');
++END;
++
++CREATE TRIGGER IF NOT EXISTS analysis_run_inputs_evidence_match_update
++BEFORE UPDATE OF query_hash, result_set_id, evaluation_receipt_id ON analysis_run_inputs
++WHEN NOT EXISTS (
++    SELECT 1
++    FROM query_evaluation_receipts AS receipt
++    JOIN result_sets AS result_set ON result_set.result_set_id = receipt.result_set_id
++    WHERE receipt.receipt_id = NEW.evaluation_receipt_id
++      AND receipt.query_hash = NEW.query_hash
++      AND receipt.result_set_id = NEW.result_set_id
++      AND result_set.query_hash = NEW.query_hash
++)
++BEGIN
++    SELECT RAISE(ABORT, 'analysis input must bind one matching query result set and evaluation receipt');
++END;
++
++CREATE TRIGGER IF NOT EXISTS analysis_definitions_immutable_update
++BEFORE UPDATE ON analysis_definitions
++BEGIN
++    SELECT RAISE(ABORT, 'analysis definitions are immutable');
++END;
++
++CREATE TRIGGER IF NOT EXISTS analysis_runs_immutable_update
++BEFORE UPDATE ON analysis_runs
++BEGIN
++    SELECT RAISE(ABORT, 'analysis run receipts are immutable');
++END;
++
++CREATE TRIGGER IF NOT EXISTS analysis_run_inputs_immutable_update
++BEFORE UPDATE ON analysis_run_inputs
++BEGIN
++    SELECT RAISE(ABORT, 'analysis run inputs are immutable');
++END;
++
+ -- Result manifests are immutable and membership-addressed, so a separate
+ -- pointer records the last watch evaluation even when membership recurs.
+ CREATE TABLE IF NOT EXISTS watched_query_baselines (
+diff --git a/polylogue/storage/sqlite/archive_tiers/user_write.py b/polylogue/storage/sqlite/archive_tiers/user_write.py
+index ff152b84af3cdbf873f79ecb0ba4b070ec9ce50a..cef4c570bcc65d2f13b6b14c9871c19d294d0924 100644
+--- a/polylogue/storage/sqlite/archive_tiers/user_write.py
++++ b/polylogue/storage/sqlite/archive_tiers/user_write.py
+@@ -498,9 +498,10 @@ class ArchiveAssertionCandidateReviewEnvelope:
+ class FindingAssertion:
+     """One detector-produced claim stored through the assertion lifecycle.
+ 
+-    Query and result-set refs deliberately remain opaque at this layer. The
+-    rxdo substrate owns their grammar; this writer preserves them as public
+-    evidence refs so future provenance readers can resolve ancestry.
++    Existing detector families keep their historical opaque query/result ref
++    handling. Generic ``analysis`` findings take the stronger path: they must
++    cite a registered ``analysis-run`` ref and the query/result pair must be an
++    exact input on that immutable receipt before the assertion can be written.
+     """
+ 
+     claim_key: str
+@@ -512,6 +513,7 @@ class FindingAssertion:
+     query_ref: str
+     result_set_ref: str
+     detector_ref: str
++    analysis_run_ref: str | None = None
+     baseline_ref: str | None = None
+     current_ref: str | None = None
+     expected: Mapping[str, JSONValue] | None = None
+@@ -1379,7 +1381,7 @@ def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudg
+ 
+ 
+ _FINDING_KINDS: Final[frozenset[str]] = frozenset(
+-    {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence"}
++    {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence", "analysis"}
+ )
+ 
+ 
+@@ -1407,6 +1409,16 @@ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
+ 
+     query_ref = _validate_finding_ref(finding.query_ref, field="query_ref")
+     result_set_ref = _validate_finding_ref(finding.result_set_ref, field="result_set_ref")
++    analysis_run_ref: str | None = None
++    if finding.analysis_run_ref is not None:
++        analysis_run_ref = normalize_object_ref_text(
++            _validate_finding_ref(finding.analysis_run_ref, field="analysis_run_ref")
++        )
++    if finding.finding_kind == "analysis":
++        query_ref = normalize_object_ref_text(query_ref)
++        result_set_ref = normalize_object_ref_text(result_set_ref)
++        if analysis_run_ref is None:
++            raise ValueError("analysis findings require analysis_run_ref")
+     value: dict[str, object] = {
+         "_schema": "polylogue.finding.v1",
+         "finding_kind": finding.finding_kind,
+@@ -1415,6 +1427,8 @@ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
+         "query_ref": query_ref,
+         "result_set_ref": result_set_ref,
+     }
++    if analysis_run_ref is not None:
++        value["analysis_run_ref"] = analysis_run_ref
+     if finding.baseline_ref is not None:
+         value["baseline_ref"] = _validate_finding_ref(finding.baseline_ref, field="baseline_ref")
+     if finding.current_ref is not None:
+@@ -1455,6 +1469,15 @@ def upsert_findings_as_assertions(
+             result_set_ref,
+             *(_validate_finding_ref(ref, field="evidence_ref") for ref in finding.evidence_refs),
+         ]
++        analysis_run_ref = value.get("analysis_run_ref")
++        if isinstance(analysis_run_ref, str):
++            _require_analysis_finding_binding(
++                conn,
++                analysis_run_ref=analysis_run_ref,
++                query_ref=query_ref,
++                result_set_ref=result_set_ref,
++            )
++            evidence_refs.append(analysis_run_ref)
+         for field in ("baseline_ref", "current_ref"):
+             ref = value.get(field)
+             if isinstance(ref, str):
+@@ -1495,6 +1518,38 @@ def upsert_findings_as_assertions(
+     return envelopes
+ 
+ 
++def _require_analysis_finding_binding(
++    conn: sqlite3.Connection,
++    *,
++    analysis_run_ref: str,
++    query_ref: str,
++    result_set_ref: str,
++) -> None:
++    """Require an analysis finding to cite evidence actually bound by its run."""
++
++    from polylogue.storage.sqlite.query_objects import analysis_run_binds_evidence, get_analysis_run
++
++    try:
++        parsed_run = ObjectRef.parse(analysis_run_ref)
++        parsed_query = ObjectRef.parse(query_ref)
++        parsed_result = ObjectRef.parse(result_set_ref)
++    except ValueError as exc:
++        raise ValueError("analysis finding refs must use registered object-ref grammar") from exc
++    if parsed_run.kind != "analysis-run":
++        raise ValueError("analysis finding analysis_run_ref must use analysis-run:<receipt-id>")
++    if parsed_query.kind != "query" or parsed_result.kind != "result-set":
++        raise ValueError("analysis finding query_ref/result_set_ref must use query/result-set refs")
++    if get_analysis_run(conn, parsed_run.object_id) is None:
++        raise KeyError(analysis_run_ref)
++    if not analysis_run_binds_evidence(
++        conn,
++        receipt_id=parsed_run.object_id,
++        query_hash=parsed_query.object_id,
++        result_set_id=parsed_result.object_id,
++    ):
++        raise ValueError("analysis finding evidence must be one of the cited analysis run inputs")
++
++
+ def _transform_candidate_evidence_refs(candidate: DecisionCandidate) -> list[str]:
+     return [_format_transform_raw_ref(ref) for ref in candidate.raw_refs]
+ 
+diff --git a/polylogue/storage/sqlite/finding_provenance.py b/polylogue/storage/sqlite/finding_provenance.py
+index 46e78683321ae7a8e0fbd0ff4ce273a2e1e6cba9..5d0f802f3372618caeb830947ec8b58c91c47b98 100644
+--- a/polylogue/storage/sqlite/finding_provenance.py
++++ b/polylogue/storage/sqlite/finding_provenance.py
+@@ -4,8 +4,8 @@ Findings are ordinary assertion rows (``polylogue.finding.v1`` value payload,
+ see ``storage/sqlite/archive_tiers/user_write.py``): a prior review flagged
+ that finding provenance "must be QUERYABLE, not prose". This module answers
+ that -- given a finding's assertion id, it re-derives the finding's own
+-declared evidence refs (``query_ref``, ``result_set_ref``, ``baseline_ref``,
+-``current_ref``) plus every generic ``evidence_refs`` entry, resolves each
++declared evidence refs (``query_ref``, ``result_set_ref``, ``analysis_run_ref``,
++``baseline_ref``, ``current_ref``) plus every generic ``evidence_refs`` entry, resolves each
+ against live user-tier storage, and reports an honest current/stale/unknown
+ staleness verdict. It does not (yet) carry a code SHA or corpus-datasheet
+ hash -- those require build-info threading that is out of scope here and
+@@ -22,7 +22,7 @@ from typing import Literal
+ from polylogue.core.enums import AssertionKind
+ from polylogue.core.refs import ObjectRef
+ from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope, read_assertion_envelope
+-from polylogue.storage.sqlite.query_objects import get_query, get_result_set
++from polylogue.storage.sqlite.query_objects import get_analysis_run, get_query, get_result_set
+ 
+ StalenessVerdict = Literal["current", "stale", "unknown"]
+ 
+@@ -42,6 +42,7 @@ class FindingProvenance:
+     finding_kind: str | None
+     query_ref: str | None
+     result_set_ref: str | None
++    analysis_run_ref: str | None
+     baseline_ref: str | None
+     current_ref: str | None
+     detector_ref: str | None
+@@ -65,11 +66,14 @@ def _provenance_from_envelope(conn: sqlite3.Connection, envelope: ArchiveAsserti
+     value = envelope.value if isinstance(envelope.value, dict) else {}
+     query_ref = _str_or_none(value.get("query_ref"))
+     result_set_ref = _str_or_none(value.get("result_set_ref"))
++    analysis_run_ref = _str_or_none(value.get("analysis_run_ref"))
+     baseline_ref = _str_or_none(value.get("baseline_ref"))
+     current_ref = _str_or_none(value.get("current_ref"))
+     finding_kind = _str_or_none(value.get("finding_kind"))
+ 
+-    declared_refs = [ref for ref in (query_ref, result_set_ref, baseline_ref, current_ref) if ref is not None]
++    declared_refs = [
++        ref for ref in (query_ref, result_set_ref, analysis_run_ref, baseline_ref, current_ref) if ref is not None
++    ]
+     all_refs = list(dict.fromkeys([*declared_refs, *envelope.evidence_refs]))
+     resolutions = tuple(_resolve_evidence_ref(conn, ref) for ref in all_refs)
+     resolved_by_ref = {resolution.ref: resolution.resolvable for resolution in resolutions}
+@@ -90,6 +94,7 @@ def _provenance_from_envelope(conn: sqlite3.Connection, envelope: ArchiveAsserti
+         finding_kind=finding_kind,
+         query_ref=query_ref,
+         result_set_ref=result_set_ref,
++        analysis_run_ref=analysis_run_ref,
+         baseline_ref=baseline_ref,
+         current_ref=current_ref,
+         detector_ref=envelope.author_ref,
+@@ -112,6 +117,9 @@ def _resolve_evidence_ref(conn: sqlite3.Connection, ref: str) -> FindingEvidence
+     if parsed.kind == "result-set":
+         found = get_result_set(conn, parsed.object_id) is not None
+         return FindingEvidenceResolution(ref=ref, resolvable=found, reason=None if found else "result set not found")
++    if parsed.kind == "analysis-run":
++        found = get_analysis_run(conn, parsed.object_id) is not None
++        return FindingEvidenceResolution(ref=ref, resolvable=found, reason=None if found else "analysis run not found")
+     if parsed.kind == "assertion":
+         found = read_assertion_envelope(conn, parsed.object_id) is not None
+         return FindingEvidenceResolution(ref=ref, resolvable=found, reason=None if found else "assertion not found")
+diff --git a/polylogue/storage/sqlite/migrations/user/010_analysis_evidence_kernel.sql b/polylogue/storage/sqlite/migrations/user/010_analysis_evidence_kernel.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..07f579b6b38fee10545becac96d59356bfba6342
+--- /dev/null
++++ b/polylogue/storage/sqlite/migrations/user/010_analysis_evidence_kernel.sql
+@@ -0,0 +1,112 @@
++-- DB-native analysis evidence objects. Definitions and run receipts are
++-- procedure/execution records, not assertion claims; findings continue to
++-- live in assertions and cite analysis-run refs through evidence_refs_json.
++CREATE TABLE analysis_definitions (
++    analysis_hash                TEXT PRIMARY KEY NOT NULL CHECK(
++        length(analysis_hash) = 64
++        AND analysis_hash NOT GLOB '*[^0-9a-f]*'
++    ),
++    canonical_definition_json    TEXT NOT NULL CHECK(
++        json_valid(canonical_definition_json)
++        AND json_type(canonical_definition_json) = 'object'
++    ),
++    definition_protocol_version  TEXT NOT NULL CHECK(length(trim(definition_protocol_version)) > 0),
++    created_at_ms                INTEGER NOT NULL CHECK(created_at_ms >= 0)
++) STRICT;
++
++CREATE TABLE analysis_runs (
++    receipt_id               TEXT PRIMARY KEY NOT NULL CHECK(
++        receipt_id GLOB 'ar_*'
++        AND length(receipt_id) = 67
++        AND substr(receipt_id, 4) NOT GLOB '*[^0-9a-f]*'
++    ),
++    analysis_hash            TEXT NOT NULL REFERENCES analysis_definitions(analysis_hash)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    source_generation        TEXT NOT NULL CHECK(length(trim(source_generation)) > 0),
++    user_generation          TEXT NOT NULL CHECK(length(trim(user_generation)) > 0),
++    index_generation         TEXT NOT NULL CHECK(length(trim(index_generation)) > 0),
++    evaluator_ref            TEXT NOT NULL CHECK(length(trim(evaluator_ref)) > 0),
++    evaluation_world_json    TEXT NOT NULL CHECK(
++        json_valid(evaluation_world_json)
++        AND json_type(evaluation_world_json) = 'object'
++    ),
++    privacy_stamp_json       TEXT NOT NULL CHECK(
++        json_valid(privacy_stamp_json)
++        AND json_type(privacy_stamp_json) = 'object'
++    ),
++    retention_stamp_json     TEXT NOT NULL CHECK(
++        json_valid(retention_stamp_json)
++        AND json_type(retention_stamp_json) = 'object'
++    ),
++    receipt_protocol_version TEXT NOT NULL CHECK(length(trim(receipt_protocol_version)) > 0),
++    created_at_ms            INTEGER NOT NULL CHECK(created_at_ms >= 0)
++) STRICT;
++
++CREATE INDEX idx_analysis_runs_definition_time
++ON analysis_runs(analysis_hash, created_at_ms DESC, receipt_id);
++
++CREATE TABLE analysis_run_inputs (
++    receipt_id            TEXT NOT NULL REFERENCES analysis_runs(receipt_id)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    input_key             TEXT NOT NULL CHECK(length(trim(input_key)) > 0),
++    ordinal               INTEGER NOT NULL CHECK(ordinal >= 0),
++    query_hash            TEXT NOT NULL REFERENCES queries(query_hash)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    result_set_id         TEXT NOT NULL REFERENCES result_sets(result_set_id)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    evaluation_receipt_id TEXT NOT NULL REFERENCES query_evaluation_receipts(receipt_id)
++        ON UPDATE RESTRICT ON DELETE RESTRICT,
++    PRIMARY KEY (receipt_id, input_key),
++    UNIQUE (receipt_id, ordinal)
++) STRICT;
++
++CREATE INDEX idx_analysis_run_inputs_evidence
++ON analysis_run_inputs(result_set_id, evaluation_receipt_id, receipt_id);
++
++CREATE TRIGGER analysis_run_inputs_evidence_match_insert
++BEFORE INSERT ON analysis_run_inputs
++WHEN NOT EXISTS (
++    SELECT 1
++    FROM query_evaluation_receipts AS receipt
++    JOIN result_sets AS result_set ON result_set.result_set_id = receipt.result_set_id
++    WHERE receipt.receipt_id = NEW.evaluation_receipt_id
++      AND receipt.query_hash = NEW.query_hash
++      AND receipt.result_set_id = NEW.result_set_id
++      AND result_set.query_hash = NEW.query_hash
++)
++BEGIN
++    SELECT RAISE(ABORT, 'analysis input must bind one matching query result set and evaluation receipt');
++END;
++
++CREATE TRIGGER analysis_run_inputs_evidence_match_update
++BEFORE UPDATE OF query_hash, result_set_id, evaluation_receipt_id ON analysis_run_inputs
++WHEN NOT EXISTS (
++    SELECT 1
++    FROM query_evaluation_receipts AS receipt
++    JOIN result_sets AS result_set ON result_set.result_set_id = receipt.result_set_id
++    WHERE receipt.receipt_id = NEW.evaluation_receipt_id
++      AND receipt.query_hash = NEW.query_hash
++      AND receipt.result_set_id = NEW.result_set_id
++      AND result_set.query_hash = NEW.query_hash
++)
++BEGIN
++    SELECT RAISE(ABORT, 'analysis input must bind one matching query result set and evaluation receipt');
++END;
++
++CREATE TRIGGER analysis_definitions_immutable_update
++BEFORE UPDATE ON analysis_definitions
++BEGIN
++    SELECT RAISE(ABORT, 'analysis definitions are immutable');
++END;
++
++CREATE TRIGGER analysis_runs_immutable_update
++BEFORE UPDATE ON analysis_runs
++BEGIN
++    SELECT RAISE(ABORT, 'analysis run receipts are immutable');
++END;
++
++CREATE TRIGGER analysis_run_inputs_immutable_update
++BEFORE UPDATE ON analysis_run_inputs
++BEGIN
++    SELECT RAISE(ABORT, 'analysis run inputs are immutable');
++END;
+diff --git a/polylogue/storage/sqlite/query_objects.py b/polylogue/storage/sqlite/query_objects.py
+index 4c7f59e54651c097e3edc38122117060bdbcbb19..b39e069cbd9f83358a3298bd62927f27cac9ab40 100644
+--- a/polylogue/storage/sqlite/query_objects.py
++++ b/polylogue/storage/sqlite/query_objects.py
+@@ -3,9 +3,12 @@
+ from __future__ import annotations
+ 
+ import json
++import math
+ import sqlite3
++import unicodedata
++from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+-from typing import Literal
++from typing import Final, Literal, cast
+ 
+ from polylogue.core.hashing import hash_payload
+ from polylogue.core.query_identity import (
+@@ -16,6 +19,11 @@ from polylogue.core.query_identity import (
+     query_ref,
+     require_supported_definition_protocol_version,
+ )
++from polylogue.core.refs import ObjectRef, normalize_object_ref_text
++
++ANALYSIS_DEFINITION_PROTOCOL_VERSION: Final = "polylogue.analysis-definition.v1"
++ANALYSIS_RUN_RECEIPT_PROTOCOL_VERSION: Final = "polylogue.analysis-run-receipt.v1"
++ANALYSIS_RUN_ID_PREFIX: Final = "ar_"
+ 
+ QueryEdgeKind = Literal["operand-of", "refines", "supersedes", "derived-from", "same-as"]
+ ResultSetExactness = Literal["exact", "capped", "sampled", "estimate"]
+@@ -71,6 +79,102 @@ class EvaluationReceipt:
+     degradation: dict[str, JsonValue] | None = None
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class StoredEvaluationReceipt:
++    receipt_id: str
++    query_hash: str
++    result_set_id: str | None
++    source_generation: str
++    user_generation: str
++    index_generation: str
++    runtime_build_ref: str
++    model_refs: tuple[str, ...]
++    resolved_bounds: dict[str, JsonValue]
++    degradation: dict[str, JsonValue]
++    created_at_ms: int
++
++
++@dataclass(frozen=True, slots=True)
++class AnalysisDefinition:
++    analysis_hash: str
++    canonical_definition: dict[str, JsonValue]
++    definition_protocol_version: str
++    created_at_ms: int
++
++    @property
++    def ref(self) -> str:
++        return ObjectRef(kind="analysis", object_id=self.analysis_hash).format()
++
++
++@dataclass(frozen=True, slots=True)
++class AnalysisArchiveGenerations:
++    source_generation: str
++    user_generation: str
++    index_generation: str
++
++
++@dataclass(frozen=True, slots=True)
++class AnalysisEvaluationWorld:
++    frame_ref: str
++    runtime_build_ref: str
++    model_refs: tuple[str, ...] = ()
++    parameters: dict[str, JsonValue] | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class AnalysisPrivacyStamp:
++    classification: str
++    policy_ref: str
++    contains_raw_content: bool
++    details: dict[str, JsonValue] | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class AnalysisRetentionStamp:
++    retention_class: str
++    policy_ref: str
++    excision_policy_ref: str
++    details: dict[str, JsonValue] | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class AnalysisRunInput:
++    input_key: str
++    query_hash: str
++    result_set_id: str
++    evaluation_receipt_id: str
++
++    @property
++    def query_ref(self) -> str:
++        return ObjectRef(kind="query", object_id=self.query_hash).format()
++
++    @property
++    def result_set_ref(self) -> str:
++        return ObjectRef(kind="result-set", object_id=self.result_set_id).format()
++
++
++@dataclass(frozen=True, slots=True)
++class AnalysisRunReceipt:
++    receipt_id: str
++    analysis_hash: str
++    inputs: tuple[AnalysisRunInput, ...]
++    archive_generations: AnalysisArchiveGenerations
++    evaluator_ref: str
++    evaluation_world: AnalysisEvaluationWorld
++    privacy_stamp: AnalysisPrivacyStamp
++    retention_stamp: AnalysisRetentionStamp
++    receipt_protocol_version: str
++    created_at_ms: int
++
++    @property
++    def ref(self) -> str:
++        return ObjectRef(kind="analysis-run", object_id=self.receipt_id).format()
++
++    @property
++    def analysis_ref(self) -> str:
++        return ObjectRef(kind="analysis", object_id=self.analysis_hash).format()
++
++
+ def put_query(
+     conn: sqlite3.Connection,
+     planned_ast: dict[str, JsonValue],
+@@ -411,6 +515,633 @@ def put_evaluation_receipt(
+     )
+ 
+ 
++def canonical_analysis_definition(
++    definition: Mapping[str, JsonValue],
++    *,
++    definition_protocol_version: str = ANALYSIS_DEFINITION_PROTOCOL_VERSION,
++) -> dict[str, JsonValue]:
++    """Return the content-addressed, protocol-versioned analysis definition."""
++
++    version = _require_protocol_version(
++        definition_protocol_version,
++        expected=ANALYSIS_DEFINITION_PROTOCOL_VERSION,
++        label="analysis definition",
++    )
++    canonical = _canonical_analysis_value(definition)
++    if not isinstance(canonical, dict):
++        raise TypeError("analysis definition must be a JSON object")
++    return {
++        "definition": canonical,
++        "definition_protocol_version": version,
++    }
++
++
++def analysis_hash_for_definition(
++    definition: Mapping[str, JsonValue],
++    *,
++    definition_protocol_version: str = ANALYSIS_DEFINITION_PROTOCOL_VERSION,
++) -> str:
++    """Return the stable SHA-256 identity for one analysis definition."""
++
++    return hash_payload(
++        canonical_analysis_definition(
++            definition,
++            definition_protocol_version=definition_protocol_version,
++        )
++    )
++
++
++def put_analysis_definition(
++    conn: sqlite3.Connection,
++    definition: Mapping[str, JsonValue],
++    *,
++    definition_protocol_version: str = ANALYSIS_DEFINITION_PROTOCOL_VERSION,
++    created_at_ms: int,
++) -> AnalysisDefinition:
++    """Idempotently persist one immutable, content-addressed analysis definition."""
++
++    _require_non_negative_int(created_at_ms, label="analysis definition created_at_ms")
++    canonical = canonical_analysis_definition(
++        definition,
++        definition_protocol_version=definition_protocol_version,
++    )
++    version = canonical.get("definition_protocol_version")
++    if not isinstance(version, str):
++        raise AssertionError("canonical analysis definition protocol version must be a string")
++    analysis_hash = hash_payload(canonical)
++    existing = get_analysis_definition(conn, analysis_hash)
++    if existing is not None:
++        if existing.canonical_definition != canonical or existing.definition_protocol_version != version:
++            raise ValueError(f"analysis hash conflicts with a different definition: {analysis_hash}")
++        return existing
++    conn.execute(
++        """
++        INSERT INTO analysis_definitions (
++            analysis_hash, canonical_definition_json, definition_protocol_version, created_at_ms
++        ) VALUES (?, ?, ?, ?)
++        """,
++        (analysis_hash, _json(canonical), version, created_at_ms),
++    )
++    return AnalysisDefinition(
++        analysis_hash=analysis_hash,
++        canonical_definition=canonical,
++        definition_protocol_version=version,
++        created_at_ms=created_at_ms,
++    )
++
++
++def get_analysis_definition(conn: sqlite3.Connection, analysis_hash: str) -> AnalysisDefinition | None:
++    """Read one immutable analysis definition by its content hash."""
++
++    row = conn.execute(
++        """
++        SELECT analysis_hash, canonical_definition_json, definition_protocol_version, created_at_ms
++        FROM analysis_definitions
++        WHERE analysis_hash = ?
++        """,
++        (analysis_hash,),
++    ).fetchone()
++    if row is None:
++        return None
++    analysis_hash = str(row[0])
++    canonical_definition = _json_mapping(row[1], label="analysis canonical definition")
++    version = _require_protocol_version(
++        str(row[2]),
++        expected=ANALYSIS_DEFINITION_PROTOCOL_VERSION,
++        label="analysis definition",
++    )
++    if canonical_definition.get("definition_protocol_version") != version:
++        raise ValueError(f"analysis definition {analysis_hash} has inconsistent protocol metadata")
++    if hash_payload(canonical_definition) != analysis_hash:
++        raise ValueError(f"analysis definition {analysis_hash} failed content-address verification")
++    return AnalysisDefinition(
++        analysis_hash=analysis_hash,
++        canonical_definition=canonical_definition,
++        definition_protocol_version=version,
++        created_at_ms=_stored_int(row[3], label="analysis definition created_at_ms"),
++    )
++
++
++def get_evaluation_receipt(conn: sqlite3.Connection, receipt_id: str) -> StoredEvaluationReceipt | None:
++    """Read the exact durable query-evaluation receipt cited by an analysis input."""
++
++    row = conn.execute(
++        """
++        SELECT receipt_id, query_hash, result_set_id, source_generation, user_generation,
++               index_generation, runtime_build_ref, model_refs_json, resolved_bounds_json,
++               degradation_json, created_at_ms
++        FROM query_evaluation_receipts
++        WHERE receipt_id = ?
++        """,
++        (receipt_id,),
++    ).fetchone()
++    return _stored_evaluation_receipt_from_row(row) if row is not None else None
++
++
++def get_latest_evaluation_receipt_for_result_set(
++    conn: sqlite3.Connection,
++    result_set_id: str,
++) -> StoredEvaluationReceipt | None:
++    """Return the newest immutable evaluator receipt for one materialized relation."""
++
++    row = conn.execute(
++        """
++        SELECT receipt_id, query_hash, result_set_id, source_generation, user_generation,
++               index_generation, runtime_build_ref, model_refs_json, resolved_bounds_json,
++               degradation_json, created_at_ms
++        FROM query_evaluation_receipts
++        WHERE result_set_id = ?
++        ORDER BY created_at_ms DESC, receipt_id DESC
++        LIMIT 1
++        """,
++        (result_set_id,),
++    ).fetchone()
++    return _stored_evaluation_receipt_from_row(row) if row is not None else None
++
++
++def put_analysis_run(
++    conn: sqlite3.Connection,
++    *,
++    analysis_hash: str,
++    inputs: Sequence[AnalysisRunInput],
++    archive_generations: AnalysisArchiveGenerations,
++    evaluator_ref: str,
++    evaluation_world: AnalysisEvaluationWorld,
++    privacy_stamp: AnalysisPrivacyStamp,
++    retention_stamp: AnalysisRetentionStamp,
++    created_at_ms: int,
++    receipt_protocol_version: str = ANALYSIS_RUN_RECEIPT_PROTOCOL_VERSION,
++) -> AnalysisRunReceipt:
++    """Persist an immutable receipt bound to exact durable query evidence.
++
++    The receipt id is a content hash over the definition, sorted named inputs,
++    archive generations, evaluator/world, policy stamps, and run timestamp.
++    Repeating the exact same receipt is idempotent; changing any bound input or
++    evaluator/world field necessarily creates a different ``analysis-run`` ref.
++    """
++
++    if get_analysis_definition(conn, analysis_hash) is None:
++        raise KeyError(f"analysis:{analysis_hash}")
++    _require_non_negative_int(created_at_ms, label="analysis run created_at_ms")
++    version = _require_protocol_version(
++        receipt_protocol_version,
++        expected=ANALYSIS_RUN_RECEIPT_PROTOCOL_VERSION,
++        label="analysis run receipt",
++    )
++    normalized_inputs = _validated_analysis_inputs(conn, inputs)
++    normalized_generations = AnalysisArchiveGenerations(
++        source_generation=_non_empty(archive_generations.source_generation, label="source_generation"),
++        user_generation=_non_empty(archive_generations.user_generation, label="user_generation"),
++        index_generation=_non_empty(archive_generations.index_generation, label="index_generation"),
++    )
++    normalized_evaluator_ref = normalize_object_ref_text(evaluator_ref)
++    normalized_world = _normalize_analysis_world(evaluation_world)
++    normalized_privacy = _normalize_analysis_privacy_stamp(privacy_stamp)
++    normalized_retention = _normalize_analysis_retention_stamp(retention_stamp)
++    canonical_receipt = _analysis_receipt_payload(
++        analysis_hash=analysis_hash,
++        inputs=normalized_inputs,
++        archive_generations=normalized_generations,
++        evaluator_ref=normalized_evaluator_ref,
++        evaluation_world=normalized_world,
++        privacy_stamp=normalized_privacy,
++        retention_stamp=normalized_retention,
++        receipt_protocol_version=version,
++        created_at_ms=created_at_ms,
++    )
++    receipt_id = f"{ANALYSIS_RUN_ID_PREFIX}{hash_payload(canonical_receipt)}"
++    candidate = AnalysisRunReceipt(
++        receipt_id=receipt_id,
++        analysis_hash=analysis_hash,
++        inputs=normalized_inputs,
++        archive_generations=normalized_generations,
++        evaluator_ref=normalized_evaluator_ref,
++        evaluation_world=normalized_world,
++        privacy_stamp=normalized_privacy,
++        retention_stamp=normalized_retention,
++        receipt_protocol_version=version,
++        created_at_ms=created_at_ms,
++    )
++    existing = get_analysis_run(conn, receipt_id)
++    if existing is not None:
++        if existing != candidate:
++            raise ValueError(f"analysis run id conflicts with a different receipt: {receipt_id}")
++        return existing
++    conn.execute(
++        """
++        INSERT INTO analysis_runs (
++            receipt_id, analysis_hash, source_generation, user_generation, index_generation,
++            evaluator_ref, evaluation_world_json, privacy_stamp_json, retention_stamp_json,
++            receipt_protocol_version, created_at_ms
++        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++        """,
++        (
++            receipt_id,
++            analysis_hash,
++            normalized_generations.source_generation,
++            normalized_generations.user_generation,
++            normalized_generations.index_generation,
++            normalized_evaluator_ref,
++            _json(_analysis_world_payload(normalized_world)),
++            _json(_analysis_privacy_payload(normalized_privacy)),
++            _json(_analysis_retention_payload(normalized_retention)),
++            version,
++            created_at_ms,
++        ),
++    )
++    conn.executemany(
++        """
++        INSERT INTO analysis_run_inputs (
++            receipt_id, input_key, ordinal, query_hash, result_set_id, evaluation_receipt_id
++        ) VALUES (?, ?, ?, ?, ?, ?)
++        """,
++        (
++            (
++                receipt_id,
++                item.input_key,
++                ordinal,
++                item.query_hash,
++                item.result_set_id,
++                item.evaluation_receipt_id,
++            )
++            for ordinal, item in enumerate(normalized_inputs)
++        ),
++    )
++    return candidate
++
++
++def get_analysis_run(conn: sqlite3.Connection, receipt_id: str) -> AnalysisRunReceipt | None:
++    """Read one immutable analysis-run receipt and all exact evidence bindings."""
++
++    row = conn.execute(
++        """
++        SELECT receipt_id, analysis_hash, source_generation, user_generation, index_generation,
++               evaluator_ref, evaluation_world_json, privacy_stamp_json, retention_stamp_json,
++               receipt_protocol_version, created_at_ms
++        FROM analysis_runs
++        WHERE receipt_id = ?
++        """,
++        (receipt_id,),
++    ).fetchone()
++    if row is None:
++        return None
++    input_rows = conn.execute(
++        """
++        SELECT input_key, query_hash, result_set_id, evaluation_receipt_id
++        FROM analysis_run_inputs
++        WHERE receipt_id = ?
++        ORDER BY ordinal
++        """,
++        (receipt_id,),
++    ).fetchall()
++    world = _analysis_world_from_payload(_json_mapping(row[6], label="analysis evaluation world"))
++    privacy = _analysis_privacy_from_payload(_json_mapping(row[7], label="analysis privacy stamp"))
++    retention = _analysis_retention_from_payload(_json_mapping(row[8], label="analysis retention stamp"))
++    version = _require_protocol_version(
++        str(row[9]),
++        expected=ANALYSIS_RUN_RECEIPT_PROTOCOL_VERSION,
++        label="analysis run receipt",
++    )
++    inputs = _validated_analysis_inputs(
++        conn,
++        tuple(
++            AnalysisRunInput(
++                input_key=str(input_row[0]),
++                query_hash=str(input_row[1]),
++                result_set_id=str(input_row[2]),
++                evaluation_receipt_id=str(input_row[3]),
++            )
++            for input_row in input_rows
++        ),
++    )
++    analysis_hash = str(row[1])
++    if get_analysis_definition(conn, analysis_hash) is None:
++        raise ValueError(f"analysis run {receipt_id} cites a missing analysis definition")
++    candidate = AnalysisRunReceipt(
++        receipt_id=str(row[0]),
++        analysis_hash=analysis_hash,
++        inputs=inputs,
++        archive_generations=AnalysisArchiveGenerations(
++            source_generation=_non_empty(row[2], label="source_generation"),
++            user_generation=_non_empty(row[3], label="user_generation"),
++            index_generation=_non_empty(row[4], label="index_generation"),
++        ),
++        evaluator_ref=normalize_object_ref_text(str(row[5])),
++        evaluation_world=world,
++        privacy_stamp=privacy,
++        retention_stamp=retention,
++        receipt_protocol_version=version,
++        created_at_ms=_stored_int(row[10], label="analysis run created_at_ms"),
++    )
++    canonical_receipt = _analysis_receipt_payload(
++        analysis_hash=candidate.analysis_hash,
++        inputs=candidate.inputs,
++        archive_generations=candidate.archive_generations,
++        evaluator_ref=candidate.evaluator_ref,
++        evaluation_world=candidate.evaluation_world,
++        privacy_stamp=candidate.privacy_stamp,
++        retention_stamp=candidate.retention_stamp,
++        receipt_protocol_version=candidate.receipt_protocol_version,
++        created_at_ms=candidate.created_at_ms,
++    )
++    expected_id = f"{ANALYSIS_RUN_ID_PREFIX}{hash_payload(canonical_receipt)}"
++    if candidate.receipt_id != expected_id:
++        raise ValueError(f"analysis run {candidate.receipt_id} failed receipt verification")
++    return candidate
++
++
++def analysis_run_binds_evidence(
++    conn: sqlite3.Connection,
++    *,
++    receipt_id: str,
++    query_hash: str,
++    result_set_id: str,
++) -> bool:
++    """Return whether a run cites the exact query/result-set pair."""
++
++    return (
++        conn.execute(
++            """
++            SELECT 1
++            FROM analysis_run_inputs
++            WHERE receipt_id = ? AND query_hash = ? AND result_set_id = ?
++            LIMIT 1
++            """,
++            (receipt_id, query_hash, result_set_id),
++        ).fetchone()
++        is not None
++    )
++
++
++def _validated_analysis_inputs(
++    conn: sqlite3.Connection,
++    inputs: Sequence[AnalysisRunInput],
++) -> tuple[AnalysisRunInput, ...]:
++    if not inputs:
++        raise ValueError("analysis run must bind at least one query evidence input")
++    normalized: list[AnalysisRunInput] = []
++    seen_keys: set[str] = set()
++    for item in inputs:
++        input_key = _non_empty(item.input_key, label="analysis input_key")
++        if input_key in seen_keys:
++            raise ValueError(f"analysis input keys must be unique: {input_key!r}")
++        seen_keys.add(input_key)
++        result_set = get_result_set(conn, item.result_set_id)
++        if result_set is None:
++            raise KeyError(f"result-set:{item.result_set_id}")
++        receipt = get_evaluation_receipt(conn, item.evaluation_receipt_id)
++        if receipt is None:
++            raise KeyError(f"query-evaluation-receipt:{item.evaluation_receipt_id}")
++        if result_set.query_hash != item.query_hash:
++            raise ValueError("analysis input result set must belong to its query")
++        if receipt.query_hash != item.query_hash or receipt.result_set_id != item.result_set_id:
++            raise ValueError("analysis input evaluation receipt must bind the same query result set")
++        normalized.append(
++            AnalysisRunInput(
++                input_key=input_key,
++                query_hash=item.query_hash,
++                result_set_id=item.result_set_id,
++                evaluation_receipt_id=item.evaluation_receipt_id,
++            )
++        )
++    return tuple(sorted(normalized, key=lambda item: item.input_key))
++
++
++def _analysis_receipt_payload(
++    *,
++    analysis_hash: str,
++    inputs: Sequence[AnalysisRunInput],
++    archive_generations: AnalysisArchiveGenerations,
++    evaluator_ref: str,
++    evaluation_world: AnalysisEvaluationWorld,
++    privacy_stamp: AnalysisPrivacyStamp,
++    retention_stamp: AnalysisRetentionStamp,
++    receipt_protocol_version: str,
++    created_at_ms: int,
++) -> dict[str, JsonValue]:
++    return {
++        "analysis_hash": analysis_hash,
++        "archive_generations": {
++            "source_generation": archive_generations.source_generation,
++            "user_generation": archive_generations.user_generation,
++            "index_generation": archive_generations.index_generation,
++        },
++        "created_at_ms": created_at_ms,
++        "evaluation_world": _analysis_world_payload(evaluation_world),
++        "evaluator_ref": evaluator_ref,
++        "inputs": [
++            {
++                "evaluation_receipt_id": item.evaluation_receipt_id,
++                "input_key": item.input_key,
++                "query_hash": item.query_hash,
++                "result_set_id": item.result_set_id,
++            }
++            for item in inputs
++        ],
++        "privacy_stamp": _analysis_privacy_payload(privacy_stamp),
++        "receipt_protocol_version": receipt_protocol_version,
++        "retention_stamp": _analysis_retention_payload(retention_stamp),
++    }
++
++
++def _normalize_analysis_world(value: AnalysisEvaluationWorld) -> AnalysisEvaluationWorld:
++    return AnalysisEvaluationWorld(
++        frame_ref=normalize_object_ref_text(value.frame_ref),
++        runtime_build_ref=_non_empty(value.runtime_build_ref, label="analysis runtime_build_ref"),
++        model_refs=tuple(_non_empty(ref, label="analysis model_ref") for ref in value.model_refs),
++        parameters=_canonical_json_mapping(value.parameters or {}, label="analysis world parameters"),
++    )
++
++
++def _normalize_analysis_privacy_stamp(value: AnalysisPrivacyStamp) -> AnalysisPrivacyStamp:
++    if not isinstance(value.contains_raw_content, bool):
++        raise TypeError("analysis privacy contains_raw_content must be a boolean")
++    return AnalysisPrivacyStamp(
++        classification=_non_empty(value.classification, label="analysis privacy classification"),
++        policy_ref=normalize_object_ref_text(value.policy_ref),
++        contains_raw_content=value.contains_raw_content,
++        details=_canonical_json_mapping(value.details or {}, label="analysis privacy details"),
++    )
++
++
++def _normalize_analysis_retention_stamp(value: AnalysisRetentionStamp) -> AnalysisRetentionStamp:
++    return AnalysisRetentionStamp(
++        retention_class=_non_empty(value.retention_class, label="analysis retention_class"),
++        policy_ref=normalize_object_ref_text(value.policy_ref),
++        excision_policy_ref=normalize_object_ref_text(value.excision_policy_ref),
++        details=_canonical_json_mapping(value.details or {}, label="analysis retention details"),
++    )
++
++
++def _analysis_world_payload(value: AnalysisEvaluationWorld) -> dict[str, JsonValue]:
++    return {
++        "frame_ref": value.frame_ref,
++        "model_refs": list(value.model_refs),
++        "parameters": value.parameters or {},
++        "runtime_build_ref": value.runtime_build_ref,
++    }
++
++
++def _analysis_privacy_payload(value: AnalysisPrivacyStamp) -> dict[str, JsonValue]:
++    return {
++        "classification": value.classification,
++        "contains_raw_content": value.contains_raw_content,
++        "details": value.details or {},
++        "policy_ref": value.policy_ref,
++    }
++
++
++def _analysis_retention_payload(value: AnalysisRetentionStamp) -> dict[str, JsonValue]:
++    return {
++        "details": value.details or {},
++        "excision_policy_ref": value.excision_policy_ref,
++        "policy_ref": value.policy_ref,
++        "retention_class": value.retention_class,
++    }
++
++
++def _analysis_world_from_payload(payload: Mapping[str, JsonValue]) -> AnalysisEvaluationWorld:
++    model_refs = payload.get("model_refs", [])
++    if not isinstance(model_refs, list) or not all(isinstance(item, str) for item in model_refs):
++        raise ValueError("analysis evaluation world model_refs must be an array of strings")
++    parameters = payload.get("parameters", {})
++    if not isinstance(parameters, dict):
++        raise ValueError("analysis evaluation world parameters must be an object")
++    return AnalysisEvaluationWorld(
++        frame_ref=normalize_object_ref_text(_non_empty(payload.get("frame_ref"), label="analysis frame_ref")),
++        runtime_build_ref=_non_empty(payload.get("runtime_build_ref"), label="analysis runtime_build_ref"),
++        model_refs=tuple(_non_empty(ref, label="analysis model_ref") for ref in model_refs),
++        parameters=_canonical_json_mapping(parameters, label="analysis world parameters"),
++    )
++
++
++def _analysis_privacy_from_payload(payload: Mapping[str, JsonValue]) -> AnalysisPrivacyStamp:
++    contains_raw_content = payload.get("contains_raw_content")
++    if not isinstance(contains_raw_content, bool):
++        raise ValueError("analysis privacy contains_raw_content must be a boolean")
++    details = payload.get("details", {})
++    if not isinstance(details, dict):
++        raise ValueError("analysis privacy details must be an object")
++    return AnalysisPrivacyStamp(
++        classification=_non_empty(payload.get("classification"), label="analysis privacy classification"),
++        policy_ref=normalize_object_ref_text(
++            _non_empty(payload.get("policy_ref"), label="analysis privacy policy_ref")
++        ),
++        contains_raw_content=contains_raw_content,
++        details=_canonical_json_mapping(details, label="analysis privacy details"),
++    )
++
++
++def _analysis_retention_from_payload(payload: Mapping[str, JsonValue]) -> AnalysisRetentionStamp:
++    details = payload.get("details", {})
++    if not isinstance(details, dict):
++        raise ValueError("analysis retention details must be an object")
++    return AnalysisRetentionStamp(
++        retention_class=_non_empty(payload.get("retention_class"), label="analysis retention_class"),
++        policy_ref=normalize_object_ref_text(
++            _non_empty(payload.get("policy_ref"), label="analysis retention policy_ref")
++        ),
++        excision_policy_ref=normalize_object_ref_text(
++            _non_empty(payload.get("excision_policy_ref"), label="analysis excision_policy_ref")
++        ),
++        details=_canonical_json_mapping(details, label="analysis retention details"),
++    )
++
++
++def _stored_evaluation_receipt_from_row(row: sqlite3.Row | tuple[object, ...]) -> StoredEvaluationReceipt:
++    model_refs = _json_sequence(row[7], label="evaluation receipt model refs")
++    if not all(isinstance(item, str) for item in model_refs):
++        raise ValueError("evaluation receipt model refs must be strings")
++    return StoredEvaluationReceipt(
++        receipt_id=str(row[0]),
++        query_hash=str(row[1]),
++        result_set_id=str(row[2]) if row[2] is not None else None,
++        source_generation=str(row[3]),
++        user_generation=str(row[4]),
++        index_generation=str(row[5]),
++        runtime_build_ref=str(row[6]),
++        model_refs=tuple(cast(str, item) for item in model_refs),
++        resolved_bounds=_json_mapping(row[8], label="evaluation receipt resolved bounds"),
++        degradation=_json_mapping(row[9], label="evaluation receipt degradation"),
++        created_at_ms=_stored_int(row[10], label="evaluation receipt created_at_ms"),
++    )
++
++
++def _require_protocol_version(value: str, *, expected: str, label: str) -> str:
++    normalized = _non_empty(value, label=f"{label} protocol version")
++    if normalized != expected:
++        raise ValueError(f"unsupported {label} protocol version: {normalized!r}")
++    return normalized
++
++
++def _non_empty(value: object, *, label: str) -> str:
++    if not isinstance(value, str):
++        raise TypeError(f"{label} must be a string")
++    normalized = unicodedata.normalize("NFC", value).strip()
++    if not normalized:
++        raise ValueError(f"{label} must be non-empty")
++    return normalized
++
++
++def _require_non_negative_int(value: object, *, label: str) -> int:
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise TypeError(f"{label} must be an integer")
++    if value < 0:
++        raise ValueError(f"{label} must be non-negative")
++    return value
++
++
++def _stored_int(value: object, *, label: str) -> int:
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise ValueError(f"{label} must be an integer")
++    return value
++
++
++def _canonical_analysis_value(value: JsonValue) -> JsonValue:
++    if isinstance(value, str):
++        return unicodedata.normalize("NFC", value)
++    if value is None or isinstance(value, (bool, int)):
++        return value
++    if isinstance(value, float):
++        if not math.isfinite(value):
++            raise ValueError("analysis payload floats must be finite")
++        return value
++    if isinstance(value, Mapping):
++        canonical: dict[str, JsonValue] = {}
++        for key, item in value.items():
++            if not isinstance(key, str):
++                raise TypeError("analysis payload object keys must be strings")
++            canonical_key = unicodedata.normalize("NFC", key)
++            if canonical_key in canonical:
++                raise ValueError(f"analysis payload has duplicate normalized key: {canonical_key!r}")
++            canonical[canonical_key] = _canonical_analysis_value(item)
++        return canonical
++    if isinstance(value, Sequence):
++        return [_canonical_analysis_value(item) for item in value]
++    raise TypeError(f"analysis payload contains unsupported JSON value: {type(value).__name__}")
++
++
++def _canonical_json_mapping(value: Mapping[str, JsonValue], *, label: str) -> dict[str, JsonValue]:
++    canonical = _canonical_analysis_value(value)
++    if not isinstance(canonical, dict):
++        raise TypeError(f"{label} must be a JSON object")
++    return canonical
++
++
++def _json_mapping(value: object, *, label: str) -> dict[str, JsonValue]:
++    parsed = json.loads(str(value))
++    if not isinstance(parsed, dict):
++        raise ValueError(f"{label} must be a JSON object")
++    return parsed
++
++
++def _json_sequence(value: object, *, label: str) -> list[JsonValue]:
++    parsed = json.loads(str(value))
++    if not isinstance(parsed, list):
++        raise ValueError(f"{label} must be a JSON array")
++    return parsed
++
++
+ def put_query_edge(
+     conn: sqlite3.Connection,
+     *,
+@@ -517,10 +1248,28 @@ def _manifest_from_row(row: sqlite3.Row | tuple[object, ...]) -> ResultSetManife
+ 
+ 
+ __all__ = [
++    "ANALYSIS_DEFINITION_PROTOCOL_VERSION",
++    "ANALYSIS_RUN_ID_PREFIX",
++    "ANALYSIS_RUN_RECEIPT_PROTOCOL_VERSION",
++    "AnalysisArchiveGenerations",
++    "AnalysisDefinition",
++    "AnalysisEvaluationWorld",
++    "AnalysisPrivacyStamp",
++    "AnalysisRetentionStamp",
++    "AnalysisRunInput",
++    "AnalysisRunReceipt",
+     "EvaluationReceipt",
+     "QueryObject",
+     "RetainedQueryRun",
+     "ResultSetManifest",
++    "StoredEvaluationReceipt",
++    "analysis_hash_for_definition",
++    "analysis_run_binds_evidence",
++    "canonical_analysis_definition",
++    "get_analysis_definition",
++    "get_analysis_run",
++    "get_evaluation_receipt",
++    "get_latest_evaluation_receipt_for_result_set",
+     "get_latest_result_set",
+     "get_query",
+     "get_result_set",
+@@ -530,6 +1279,8 @@ __all__ = [
+     "list_watched_queries",
+     "membership_merkle_root",
+     "migrate_saved_query_assertions",
++    "put_analysis_definition",
++    "put_analysis_run",
+     "put_evaluation_receipt",
+     "put_query",
+     "put_query_edge",
+diff --git a/polylogue/surfaces/payloads.py b/polylogue/surfaces/payloads.py
+index a029733fb9b9898dcbe65fbc1e25519383f53967..63867d4b9116000ada2f62c234d90662b4e97ea0 100644
+--- a/polylogue/surfaces/payloads.py
++++ b/polylogue/surfaces/payloads.py
+@@ -18,7 +18,12 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+ from polylogue.core.assertions import AssertionContextTrustClass
+ from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+ from polylogue.core.json import JSONDocument, JSONValue, require_json_document
+-from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
++from polylogue.core.refs import (
++    ObjectRef,
++    delegation_edge_object_id,
++    normalize_object_ref_text,
++    normalize_public_ref_text,
++)
+ from polylogue.surfaces.action_affordances import (
+     ActionAffordancePayload,
+     CandidateReviewDecision,
+@@ -1643,6 +1648,150 @@ class AssertionClaimPayload(SurfacePayloadModel):
+         )
+ 
+ 
++class AnalysisDefinitionPayload(SurfacePayloadModel):
++    """Typed read payload for one content-addressed analysis definition."""
++
++    unit: Literal["analysis-definition"] = "analysis-definition"
++    analysis_hash: str
++    analysis_ref: str
++    definition_protocol_version: str
++    canonical_definition: Mapping[str, object]
++    created_at_ms: int
++
++    @field_validator("canonical_definition")
++    @classmethod
++    def _validate_analysis_definition_document(cls, value: Mapping[str, object]) -> Mapping[str, object]:
++        return require_json_document(dict(value), context="analysis definition")
++
++    @field_validator("analysis_ref")
++    @classmethod
++    def _validate_analysis_ref(cls, value: str) -> str:
++        normalized = normalize_object_ref_text(value)
++        if ObjectRef.parse(normalized).kind != "analysis":
++            raise ValueError("analysis_ref must use analysis:<hash>")
++        return normalized
++
++
++class AnalysisRunInputPayload(SurfacePayloadModel):
++    """One exact query-result/evaluation-receipt binding in an analysis run."""
++
++    input_key: str
++    query_ref: str
++    result_set_ref: str
++    evaluation_receipt_id: str
++
++    @field_validator("query_ref")
++    @classmethod
++    def _validate_analysis_input_query_ref(cls, value: str) -> str:
++        normalized = normalize_object_ref_text(value)
++        if ObjectRef.parse(normalized).kind != "query":
++            raise ValueError("query_ref must use query:<hash>")
++        return normalized
++
++    @field_validator("result_set_ref")
++    @classmethod
++    def _validate_analysis_input_result_set_ref(cls, value: str) -> str:
++        normalized = normalize_object_ref_text(value)
++        if ObjectRef.parse(normalized).kind != "result-set":
++            raise ValueError("result_set_ref must use result-set:<id>")
++        return normalized
++
++
++class AnalysisArchiveGenerationsPayload(SurfacePayloadModel):
++    source_generation: str
++    user_generation: str
++    index_generation: str
++
++
++class AnalysisEvaluationWorldPayload(SurfacePayloadModel):
++    frame_ref: str
++    runtime_build_ref: str
++    model_refs: tuple[str, ...] = ()
++    parameters: Mapping[str, object] = Field(default_factory=dict)
++
++    @field_validator("parameters")
++    @classmethod
++    def _validate_analysis_parameters(cls, value: Mapping[str, object]) -> Mapping[str, object]:
++        return require_json_document(dict(value), context="analysis evaluation parameters")
++
++    @field_validator("frame_ref")
++    @classmethod
++    def _validate_analysis_frame_ref(cls, value: str) -> str:
++        return normalize_object_ref_text(value)
++
++
++class AnalysisPrivacyStampPayload(SurfacePayloadModel):
++    classification: str
++    policy_ref: str
++    contains_raw_content: bool
++    details: Mapping[str, object] = Field(default_factory=dict)
++
++    @field_validator("details")
++    @classmethod
++    def _validate_analysis_privacy_details(cls, value: Mapping[str, object]) -> Mapping[str, object]:
++        return require_json_document(dict(value), context="analysis privacy details")
++
++    @field_validator("policy_ref")
++    @classmethod
++    def _validate_analysis_privacy_policy_ref(cls, value: str) -> str:
++        return normalize_object_ref_text(value)
++
++
++class AnalysisRetentionStampPayload(SurfacePayloadModel):
++    retention_class: str
++    policy_ref: str
++    excision_policy_ref: str
++    details: Mapping[str, object] = Field(default_factory=dict)
++
++    @field_validator("details")
++    @classmethod
++    def _validate_analysis_retention_details(cls, value: Mapping[str, object]) -> Mapping[str, object]:
++        return require_json_document(dict(value), context="analysis retention details")
++
++    @field_validator("policy_ref", "excision_policy_ref")
++    @classmethod
++    def _validate_analysis_retention_refs(cls, value: str) -> str:
++        return normalize_object_ref_text(value)
++
++
++class AnalysisRunReceiptPayload(SurfacePayloadModel):
++    """Typed read payload for one immutable analysis-run receipt."""
++
++    unit: Literal["analysis-run-receipt"] = "analysis-run-receipt"
++    receipt_id: str
++    analysis_run_ref: str
++    analysis_ref: str
++    inputs: tuple[AnalysisRunInputPayload, ...]
++    archive_generations: AnalysisArchiveGenerationsPayload
++    evaluator_ref: str
++    evaluation_world: AnalysisEvaluationWorldPayload
++    privacy_stamp: AnalysisPrivacyStampPayload
++    retention_stamp: AnalysisRetentionStampPayload
++    receipt_protocol_version: str
++    created_at_ms: int
++
++    @field_validator("analysis_run_ref")
++    @classmethod
++    def _validate_analysis_run_ref(cls, value: str) -> str:
++        normalized = normalize_object_ref_text(value)
++        if ObjectRef.parse(normalized).kind != "analysis-run":
++            raise ValueError("analysis_run_ref must use analysis-run:<receipt-id>")
++        return normalized
++
++    @field_validator("analysis_ref")
++    @classmethod
++    def _validate_run_analysis_ref(cls, value: str) -> str:
++        normalized = normalize_object_ref_text(value)
++        if ObjectRef.parse(normalized).kind != "analysis":
++            raise ValueError("analysis_ref must use analysis:<hash>")
++        return normalized
++
++    @field_validator("evaluator_ref")
++    @classmethod
++    def _validate_analysis_evaluator_ref(cls, value: str) -> str:
++        return normalize_object_ref_text(value)
++
++
+ class FindingEvidenceRefState(SurfacePayloadModel):
+     """Live resolution state for one evidence ref cited by a finding."""
+ 
+@@ -1671,6 +1820,7 @@ class FindingProvenancePayload(SurfacePayloadModel):
+     finding_kind: str | None
+     query_ref: str | None
+     result_set_ref: str | None
++    analysis_run_ref: str | None
+     baseline_ref: str | None
+     current_ref: str | None
+     detector_ref: str | None
+@@ -2260,13 +2410,13 @@ class AnnotationBatchPayload(SurfacePayloadModel):
+ class PendingObjectRefPayload(SurfacePayloadModel):
+     """Typed placeholder embedded in ``PublicRefResolutionPayload.payload``.
+ 
+-    Some ``ObjectRefKind`` values (the polylogue-rxdo analysis-provenance
+-    kinds: ``query``, ``query-run``, ``result-set``, ``finding``, ``cohort``,
+-    and ``analysis``) are registered before their backing storage tiers exist.
++    Some ``ObjectRefKind`` values (currently ``query``, ``query-run``,
++    ``result-set``, and ``cohort``) are registered before a public resolver is
++    available for them.
+     ``resolve_ref`` returns this typed payload for them instead of an opaque
+     not-found so clients can distinguish "not yet implemented" from "does not
+-    exist". Annotation batches have durable user-tier storage and resolve
+-    through :class:`AnnotationBatchPayload`.
++    exist". Findings, analysis definitions/runs, and annotation batches have
++    durable user-tier storage and resolve through their typed payloads.
+     """
+ 
+     unit: Literal["pending"] = "pending"
+@@ -3568,6 +3718,13 @@ __all__ = [
+     "FacetTimeRange",
+     "FacetFamilyStatusPayload",
+     "FacetsResponse",
++    "AnalysisArchiveGenerationsPayload",
++    "AnalysisDefinitionPayload",
++    "AnalysisEvaluationWorldPayload",
++    "AnalysisPrivacyStampPayload",
++    "AnalysisRetentionStampPayload",
++    "AnalysisRunInputPayload",
++    "AnalysisRunReceiptPayload",
+     "FindingEvidenceRefState",
+     "FindingProvenancePayload",
+     "ArchiveDebtActionPayload",
+diff --git a/tests/unit/api/test_analysis_evidence_kernel.py b/tests/unit/api/test_analysis_evidence_kernel.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d8ffc4a2ae836d04ccd1fb860f084555e915f0d4
+--- /dev/null
++++ b/tests/unit/api/test_analysis_evidence_kernel.py
+@@ -0,0 +1,347 @@
++"""Real-route proof for the first-party analysis evidence kernel.
++
++This fixture is deliberately synthetic: it uses only generic provider/session
++labels and generated text.  The route is not a toy repository.  It writes
++sessions through ``ArchiveStore.write_parsed``, materializes watched-query
++result sets and evaluation receipts through the default daemon convergence
++stage and ``ArchiveCanonicalPlanEvaluator``, persists analysis definitions/runs
++through ``query_objects``, writes findings through the assertion lifecycle, and
++reads all three public objects through ``Polylogue.resolve_ref``.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from pathlib import Path
++
++import pytest
++
++from polylogue import Polylogue
++from polylogue.archive.message.roles import Role
++from polylogue.core.enums import BlockType, Provider
++from polylogue.daemon.convergence import DaemonConverger
++from polylogue.daemon.convergence_stages import make_default_convergence_stages
++from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
++from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
++from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
++from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, upsert_findings_as_assertions
++from polylogue.storage.sqlite.query_objects import (
++    AnalysisArchiveGenerations,
++    AnalysisEvaluationWorld,
++    AnalysisPrivacyStamp,
++    AnalysisRetentionStamp,
++    AnalysisRunInput,
++    AnalysisRunReceipt,
++    StoredEvaluationReceipt,
++    get_analysis_run,
++    get_latest_evaluation_receipt_for_result_set,
++    get_watched_query_baseline,
++    put_analysis_definition,
++    put_analysis_run,
++    put_query,
++    put_query_name,
++)
++
++
++def _write_synthetic_session(archive_root: Path, *, ordinal: int) -> str:
++    with ArchiveStore(archive_root) as archive:
++        return archive.write_parsed(
++            ParsedSession(
++                source_name=Provider.CODEX,
++                provider_session_id=f"analysis-fixture-{ordinal}",
++                title=f"Synthetic analysis fixture {ordinal}",
++                created_at=f"2026-01-{ordinal:02d}T00:00:00+00:00",
++                updated_at=f"2026-01-{ordinal:02d}T00:01:00+00:00",
++                messages=[
++                    ParsedMessage(
++                        provider_message_id=f"analysis-fixture-{ordinal}-m1",
++                        role=Role.USER,
++                        text=f"synthetic archive item {ordinal}",
++                        timestamp=f"2026-01-{ordinal:02d}T00:00:00+00:00",
++                        blocks=[
++                            ParsedContentBlock(
++                                type=BlockType.TEXT,
++                                text=f"synthetic archive item {ordinal}",
++                            )
++                        ],
++                    )
++                ],
++            )
++        )
++
++
++def _converge_watched_query(archive_root: Path, session_id: str) -> None:
++    stages = make_default_convergence_stages(archive_root / "index.db")
++    standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
++    converger = DaemonConverger(stages=(standing_stage,), max_workers=1)
++    states, _timings = converger.converge_sessions((session_id,))
++    assert states[session_id].stages["standing-queries"].value == "done"
++
++
++def _latest_watch_evidence(
++    conn: sqlite3.Connection,
++    query_hash: str,
++) -> tuple[str, StoredEvaluationReceipt]:
++    result_set = get_watched_query_baseline(conn, query_hash)
++    assert result_set is not None
++    receipt = get_latest_evaluation_receipt_for_result_set(conn, result_set.result_set_id)
++    assert receipt is not None
++    return result_set.result_set_id, receipt
++
++
++def _put_run(
++    conn: sqlite3.Connection,
++    *,
++    analysis_hash: str,
++    query_hash: str,
++    result_set_id: str,
++    evaluation_receipt: StoredEvaluationReceipt,
++    evaluator_version: int,
++    created_at_ms: int,
++) -> AnalysisRunReceipt:
++    return put_analysis_run(
++        conn,
++        analysis_hash=analysis_hash,
++        inputs=(
++            AnalysisRunInput(
++                input_key="matched-sessions",
++                query_hash=query_hash,
++                result_set_id=result_set_id,
++                evaluation_receipt_id=evaluation_receipt.receipt_id,
++            ),
++        ),
++        archive_generations=AnalysisArchiveGenerations(
++            source_generation=evaluation_receipt.source_generation,
++            user_generation=evaluation_receipt.user_generation,
++            index_generation=evaluation_receipt.index_generation,
++        ),
++        evaluator_ref=f"agent:synthetic-analysis-evaluator.v{evaluator_version}",
++        evaluation_world=AnalysisEvaluationWorld(
++            frame_ref=f"artifact:synthetic-analysis-frame.v{evaluator_version}",
++            runtime_build_ref=f"polylogue:synthetic-analysis.v{evaluator_version}",
++            parameters={"aggregation": "count", "include_raw_content": False},
++        ),
++        privacy_stamp=AnalysisPrivacyStamp(
++            classification="synthetic",
++            policy_ref="artifact:synthetic-privacy-policy.v1",
++            contains_raw_content=False,
++            details={"fixture": True},
++        ),
++        retention_stamp=AnalysisRetentionStamp(
++            retention_class="fixture",
++            policy_ref="artifact:synthetic-retention-policy.v1",
++            excision_policy_ref="artifact:synthetic-excision-policy.v1",
++            details={"history": "append-only"},
++        ),
++        created_at_ms=created_at_ms,
++    )
++
++
++async def test_analysis_definition_run_and_finding_survive_real_route_rerun(tmp_path: Path) -> None:
++    """Prove stable identity, exact evidence, and append-only rerun history.
++
++    Production dependencies exercised:
++
++    * ``ArchiveStore.write_parsed`` for source/index storage;
++    * ``make_default_convergence_stages`` ->
++      ``ArchiveCanonicalPlanEvaluator`` for exact result-set/evaluation receipt
++      materialization;
++    * ``put_analysis_definition``/``put_analysis_run`` for user-tier objects;
++    * ``upsert_findings_as_assertions`` for the real claim lifecycle; and
++    * ``Polylogue.resolve_ref`` for typed product reads.
++
++    Anti-vacuity mutations: deleting canonical definition hashing breaks the
++    equal-definition assertions; dropping an exact input, evaluator, or world
++    field from the receipt digest breaks the second-run distinction (the
++    component-isolation storage test covers generations and both policy stamps);
++    bypassing analysis-run binding in the finding writer breaks both rejection
++    assertions; returning the old pending stub or prose-only finding payload
++    breaks the public-resolution assertions; replacing INSERT-only receipts
++    with an upsert-overwrite breaks the two-row and old-receipt checks.
++    """
++
++    archive_root = tmp_path / "archive"
++    first_session_id = _write_synthetic_session(archive_root, ordinal=1)
++    initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
++    initialize_archive_database(archive_root / "ops.db", ArchiveTier.OPS)
++
++    with sqlite3.connect(archive_root / "user.db") as conn:
++        query = put_query(
++            conn,
++            {"kind": "field", "field": "origin", "op": "=", "values": ["codex-session"]},
++            grain="session",
++            lane="dialogue",
++            rank_policy="mixed",
++            created_at_ms=1,
++        )
++        put_query_name(
++            conn,
++            name="synthetic-analysis-watch",
++            query_hash=query.query_hash,
++            watch=True,
++            updated_at_ms=2,
++        )
++        conn.commit()
++
++    _converge_watched_query(archive_root, first_session_id)
++
++    with sqlite3.connect(archive_root / "user.db") as conn:
++        first_result_set_id, first_evaluation_receipt = _latest_watch_evidence(conn, query.query_hash)
++        definition = put_analysis_definition(
++            conn,
++            {
++                "name": "Synthetic café match count",
++                "inputs": {"matched-sessions": {"type": "query-result"}},
++                "steps": [{"op": "count", "input": "matched-sessions"}],
++                "output": {"measure": "member_count", "unit": "sessions"},
++            },
++            created_at_ms=10,
++        )
++        equivalent_definition = put_analysis_definition(
++            conn,
++            {
++                "output": {"unit": "sessions", "measure": "member_count"},
++                "steps": [{"input": "matched-sessions", "op": "count"}],
++                "inputs": {"matched-sessions": {"type": "query-result"}},
++                "name": "Synthetic cafe\u0301 match count",
++            },
++            created_at_ms=11,
++        )
++        assert equivalent_definition == definition
++        assert conn.execute("SELECT COUNT(*) FROM analysis_definitions").fetchone()[0] == 1
++
++        first_run = _put_run(
++            conn,
++            analysis_hash=definition.analysis_hash,
++            query_hash=query.query_hash,
++            result_set_id=first_result_set_id,
++            evaluation_receipt=first_evaluation_receipt,
++            evaluator_version=1,
++            created_at_ms=12,
++        )
++
++        uncited_finding = FindingAssertion(
++            claim_key="synthetic-session-count",
++            target_ref=definition.ref,
++            body_text="One synthetic session matched the archived query.",
++            finding_kind="analysis",
++            statistic={"op": "count", "value": 1, "unit": "sessions"},
++            n=1,
++            query_ref=query.ref,
++            result_set_ref=f"result-set:{first_result_set_id}",
++            detector_ref=first_run.evaluator_ref,
++        )
++        with pytest.raises(ValueError, match="require analysis_run_ref"):
++            upsert_findings_as_assertions(conn, [uncited_finding], now_ms=13)
++
++        [finding] = upsert_findings_as_assertions(
++            conn,
++            [
++                FindingAssertion(
++                    claim_key=uncited_finding.claim_key,
++                    target_ref=uncited_finding.target_ref,
++                    body_text=uncited_finding.body_text,
++                    finding_kind=uncited_finding.finding_kind,
++                    statistic=uncited_finding.statistic,
++                    n=uncited_finding.n,
++                    query_ref=uncited_finding.query_ref,
++                    result_set_ref=uncited_finding.result_set_ref,
++                    detector_ref=uncited_finding.detector_ref,
++                    analysis_run_ref=first_run.ref,
++                    scope_ref=definition.ref,
++                )
++            ],
++            now_ms=14,
++        )
++        conn.commit()
++
++    second_session_id = _write_synthetic_session(archive_root, ordinal=2)
++    _converge_watched_query(archive_root, second_session_id)
++
++    with sqlite3.connect(archive_root / "user.db") as conn:
++        second_result_set_id, second_evaluation_receipt = _latest_watch_evidence(conn, query.query_hash)
++        assert second_result_set_id != first_result_set_id
++        assert second_evaluation_receipt.receipt_id != first_evaluation_receipt.receipt_id
++
++        with pytest.raises(ValueError, match="cited analysis run inputs"):
++            upsert_findings_as_assertions(
++                conn,
++                [
++                    FindingAssertion(
++                        claim_key="mismatched-run-evidence",
++                        target_ref=definition.ref,
++                        body_text="This must not bind an uncited result set.",
++                        finding_kind="analysis",
++                        statistic={"op": "count", "value": 2, "unit": "sessions"},
++                        n=2,
++                        query_ref=query.ref,
++                        result_set_ref=f"result-set:{second_result_set_id}",
++                        detector_ref=first_run.evaluator_ref,
++                        analysis_run_ref=first_run.ref,
++                    )
++                ],
++                now_ms=15,
++            )
++
++        second_run = _put_run(
++            conn,
++            analysis_hash=definition.analysis_hash,
++            query_hash=query.query_hash,
++            result_set_id=second_result_set_id,
++            evaluation_receipt=second_evaluation_receipt,
++            evaluator_version=2,
++            created_at_ms=16,
++        )
++        assert second_run.receipt_id != first_run.receipt_id
++        assert get_analysis_run(conn, first_run.receipt_id) == first_run
++        assert get_analysis_run(conn, second_run.receipt_id) == second_run
++        assert conn.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0] == 2
++        conn.commit()
++
++    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
++    try:
++        definition_resolution = await archive.resolve_ref(definition.ref)
++        first_run_resolution = await archive.resolve_ref(first_run.ref)
++        second_run_resolution = await archive.resolve_ref(second_run.ref)
++        finding_resolution = await archive.resolve_ref(f"finding:{finding.assertion_id}")
++
++        assert definition_resolution.resolved is True
++        assert definition_resolution.payload_kind == "analysis-definition"
++        assert definition_resolution.payload is not None
++        assert definition_resolution.payload["analysis_hash"] == definition.analysis_hash
++
++        assert first_run_resolution.resolved is True
++        assert first_run_resolution.payload_kind == "analysis-run-receipt"
++        assert first_run_resolution.payload is not None
++        assert first_run_resolution.payload["inputs"][0]["evaluation_receipt_id"] == first_evaluation_receipt.receipt_id
++        assert first_run_resolution.payload["archive_generations"] == {
++            "source_generation": first_evaluation_receipt.source_generation,
++            "user_generation": first_evaluation_receipt.user_generation,
++            "index_generation": first_evaluation_receipt.index_generation,
++        }
++        assert first_run_resolution.payload["evaluator_ref"] == "agent:synthetic-analysis-evaluator.v1"
++        assert first_run_resolution.payload["evaluation_world"]["frame_ref"] == "artifact:synthetic-analysis-frame.v1"
++        assert first_run_resolution.payload["privacy_stamp"]["contains_raw_content"] is False
++        assert first_run_resolution.payload["retention_stamp"]["retention_class"] == "fixture"
++
++        assert second_run_resolution.resolved is True
++        assert second_run_resolution.payload is not None
++        assert second_run_resolution.payload["receipt_id"] != first_run_resolution.payload["receipt_id"]
++        assert second_run_resolution.payload["inputs"][0]["result_set_ref"] == f"result-set:{second_result_set_id}"
++        assert second_run_resolution.payload["evaluator_ref"] == "agent:synthetic-analysis-evaluator.v2"
++
++        assert finding_resolution.resolved is True
++        assert finding_resolution.payload_kind == "finding-provenance"
++        assert finding_resolution.payload is not None
++        assert "body_text" not in finding_resolution.payload
++        assert finding_resolution.payload["analysis_run_ref"] == first_run.ref
++        assert finding_resolution.payload["staleness_verdict"] == "current"
++        evidence_state = {item["ref"]: item["resolvable"] for item in finding_resolution.payload["evidence"]}
++        assert evidence_state == {
++            query.ref: True,
++            f"result-set:{first_result_set_id}": True,
++            first_run.ref: True,
++        }
++    finally:
++        await archive.close()
+diff --git a/tests/unit/api/test_facade_contracts.py b/tests/unit/api/test_facade_contracts.py
+index f7178507793ae12bbbe054a5ade02f55b82abd0c..4fdba47d121cf7920b17ddee753cdd303ca5d708 100644
+--- a/tests/unit/api/test_facade_contracts.py
++++ b/tests/unit/api/test_facade_contracts.py
+@@ -2520,7 +2520,6 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
+         ("query-run", "sha256:deadbeef:run-1"),
+         ("result-set", "sha256:deadbeef:run-1:result-1"),
+         ("cohort", "cohort-1"),
+-        ("analysis", "analysis-1"),
+     ],
+ )
+ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance_kinds(
+@@ -2528,10 +2527,10 @@ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance
+ ) -> None:
+     """polylogue-rxdo.1: refs land ahead of storage; resolution stubs cleanly.
+ 
+-    ``query``/``query-run``/``result-set``/``cohort``/``analysis``
+-    are registered ObjectRefKind values with no backing table yet
+-    (polylogue-rxdo.2/.3/.8). ``finding`` graduated out of this pending set
+-    in polylogue-rxdo.4 -- see
++    ``query``/``query-run``/``result-set``/``cohort`` are registered
++    ObjectRefKind values whose public read paths remain pending. ``analysis``
++    and ``analysis-run`` now resolve through the DB-native evidence kernel, and
++    ``finding`` graduated out of this pending set in polylogue-rxdo.4 -- see
+     ``test_resolve_ref_returns_finding_provenance_payload`` below.
+     resolve_ref must not raise and must not silently pretend to resolve
+     these remaining kinds — it returns a typed pending payload carrying
+diff --git a/tests/unit/cli/__snapshots__/test_plain_cli_snapshots.ambr b/tests/unit/cli/__snapshots__/test_plain_cli_snapshots.ambr
+index b72b676ee0b4400b2242039706bfb22f21b82e53..8f397a98f369c79cdf3abd81ce03d8435d6a7594 100644
+--- a/tests/unit/cli/__snapshots__/test_plain_cli_snapshots.ambr
++++ b/tests/unit/cli/__snapshots__/test_plain_cli_snapshots.ambr
+@@ -1042,8 +1042,8 @@
+         "path": "<PATH>",
+         "exists": true,
+         "size_bytes": <SIZE_BYTES>,
+-        "expected_user_version": 9,
+-        "user_version": 9,
++        "expected_user_version": 10,
++        "user_version": 10,
+         "version_status": "ok",
+         "table_counts": {
+           "assertions": 0,
+diff --git a/tests/unit/storage/test_archive_tiers_assertions.py b/tests/unit/storage/test_archive_tiers_assertions.py
+index 6c5a0a26ea62b00e38af09d5df0e4242d62eae53..de5b267e1e3c7993d22161e5fd872bfee4943620 100644
+--- a/tests/unit/storage/test_archive_tiers_assertions.py
++++ b/tests/unit/storage/test_archive_tiers_assertions.py
+@@ -87,6 +87,8 @@ def test_user_tier_initialization_is_idempotent(tmp_path: Path) -> None:
+ 
+     assert "retained_query_runs_result_set_query_match_insert" in triggers
+     assert "watched_query_baselines_result_set_query_match_update" in triggers
++    assert "analysis_run_inputs_evidence_match_insert" in triggers
++    assert "analysis_runs_immutable_update" in triggers
+ 
+ 
+ def _insert_index_session(conn: sqlite3.Connection, native_id: str) -> str:
+@@ -149,6 +151,9 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
+         assert _table_exists(conn, "context_deliveries")
+         assert _table_exists(conn, "annotation_schemas")
+         assert _table_exists(conn, "annotation_batches")
++        assert _table_exists(conn, "analysis_definitions")
++        assert _table_exists(conn, "analysis_runs")
++        assert _table_exists(conn, "analysis_run_inputs")
+         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+     finally:
+         conn.close()
+@@ -174,6 +179,9 @@ def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
+             "annotation_batches",
+             "annotation_schemas",
+             "assertions",
++            "analysis_definitions",
++            "analysis_run_inputs",
++            "analysis_runs",
+             "context_deliveries",
+             "queries",
+             "query_edges",
+diff --git a/tests/unit/storage/test_durable_migrations.py b/tests/unit/storage/test_durable_migrations.py
+index 850d060b31155b02ca08c7cb256c3fddbad3b2d4..8d760c2a63e68321b44ac24ea0fd2741bc82bae5 100644
+--- a/tests/unit/storage/test_durable_migrations.py
++++ b/tests/unit/storage/test_durable_migrations.py
+@@ -156,6 +156,16 @@ _USER_DURABLE_SCHEMA_OBJECTS = (
+     "retained_query_runs",
+     "query_evaluation_receipts",
+     "idx_query_evaluation_receipts_query_time",
++    "analysis_definitions",
++    "analysis_runs",
++    "idx_analysis_runs_definition_time",
++    "analysis_run_inputs",
++    "idx_analysis_run_inputs_evidence",
++    "analysis_run_inputs_evidence_match_insert",
++    "analysis_run_inputs_evidence_match_update",
++    "analysis_definitions_immutable_update",
++    "analysis_runs_immutable_update",
++    "analysis_run_inputs_immutable_update",
+     "watched_query_baselines",
+     "retained_query_runs_result_set_query_match_insert",
+     "retained_query_runs_result_set_query_match_update",
+@@ -234,6 +244,73 @@ def _assert_query_provenance_binding_triggers(conn: sqlite3.Connection) -> None:
+         )
+ 
+ 
++def _assert_analysis_evidence_kernel_triggers(conn: sqlite3.Connection) -> None:
++    """Prove exact evidence binding and immutable receipt rows at the SQL boundary."""
++
++    first_hash, second_hash = "b" * 64, "c" * 64
++    analysis_hash = "d" * 64
++    receipt_id = f"ar_{'e' * 64}"
++    conn.execute(
++        """
++        INSERT INTO query_evaluation_receipts (
++            receipt_id, query_hash, result_set_id, source_generation, user_generation,
++            index_generation, runtime_build_ref, model_refs_json, resolved_bounds_json,
++            degradation_json, created_at_ms
++        ) VALUES ('analysis-eval-receipt', ?, 'binding-first', 'source:g1', 'user:g1',
++                  'index:g1', 'build:test', '[]', '{}', '{}', 1)
++        """,
++        (first_hash,),
++    )
++    conn.execute(
++        """
++        INSERT INTO analysis_definitions (
++            analysis_hash, canonical_definition_json, definition_protocol_version, created_at_ms
++        ) VALUES (?, ?, 'polylogue.analysis-definition.v1', 1)
++        """,
++        (
++            analysis_hash,
++            '{"definition":{},"definition_protocol_version":"polylogue.analysis-definition.v1"}',
++        ),
++    )
++    conn.execute(
++        """
++        INSERT INTO analysis_runs (
++            receipt_id, analysis_hash, source_generation, user_generation, index_generation,
++            evaluator_ref, evaluation_world_json, privacy_stamp_json, retention_stamp_json,
++            receipt_protocol_version, created_at_ms
++        ) VALUES (?, ?, 'source:g1', 'user:g1', 'index:g1', 'agent:test',
++                  '{"frame_ref":"artifact:frame","runtime_build_ref":"build:test","model_refs":[],"parameters":{}}',
++                  '{"classification":"synthetic","policy_ref":"artifact:privacy","contains_raw_content":false,"details":{}}',
++                  '{"retention_class":"fixture","policy_ref":"artifact:retention","excision_policy_ref":"artifact:excision","details":{}}',
++                  'polylogue.analysis-run-receipt.v1', 1)
++        """,
++        (receipt_id, analysis_hash),
++    )
++    with pytest.raises(sqlite3.IntegrityError, match="matching query result set"):
++        conn.execute(
++            """
++            INSERT INTO analysis_run_inputs (
++                receipt_id, input_key, ordinal, query_hash, result_set_id, evaluation_receipt_id
++            ) VALUES (?, 'corpus', 0, ?, 'binding-second', 'analysis-eval-receipt')
++            """,
++            (receipt_id, second_hash),
++        )
++    conn.execute(
++        """
++        INSERT INTO analysis_run_inputs (
++            receipt_id, input_key, ordinal, query_hash, result_set_id, evaluation_receipt_id
++        ) VALUES (?, 'corpus', 0, ?, 'binding-first', 'analysis-eval-receipt')
++        """,
++        (receipt_id, first_hash),
++    )
++    with pytest.raises(sqlite3.IntegrityError, match="definitions are immutable"):
++        conn.execute("UPDATE analysis_definitions SET created_at_ms = 2 WHERE analysis_hash = ?", (analysis_hash,))
++    with pytest.raises(sqlite3.IntegrityError, match="receipts are immutable"):
++        conn.execute("UPDATE analysis_runs SET created_at_ms = 2 WHERE receipt_id = ?", (receipt_id,))
++    with pytest.raises(sqlite3.IntegrityError, match="inputs are immutable"):
++        conn.execute("UPDATE analysis_run_inputs SET ordinal = 1 WHERE receipt_id = ?", (receipt_id,))
++
++
+ def _assert_user_v6_annotation_checks(conn: sqlite3.Connection, *, suffix: str) -> None:
+     with pytest.raises(sqlite3.IntegrityError):
+         conn.execute(
+@@ -337,7 +414,7 @@ def test_user_tier_v3_migrates_to_current_with_verified_backup_receipt(
+         result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+         assert result.from_version == 3
+         assert result.to_version == USER_SCHEMA_VERSION
+-        assert result.applied_versions == (4, 5, 6, 7, 8, 9)
++        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10)
+         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
+         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
+@@ -391,8 +468,8 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
+     try:
+         result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+         assert result.from_version == 5
+-        assert result.to_version == USER_SCHEMA_VERSION == 9
+-        assert result.applied_versions == (6, 7, 8, 9)
++        assert result.to_version == USER_SCHEMA_VERSION == 10
++        assert result.applied_versions == (6, 7, 8, 9, 10)
+         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
+         assert conn.execute("SELECT assertion_id FROM assertions WHERE assertion_id = 'sentinel'").fetchone()
+         saved_target = conn.execute(
+@@ -419,12 +496,14 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
+             "idx_assertions_scope_kind_status"
+         }
+         _assert_query_provenance_binding_triggers(conn)
++        _assert_analysis_evidence_kernel_triggers(conn)
+ 
+-        fresh_db = tmp_path / "fresh-user-v6.db"
++        fresh_db = tmp_path / "fresh-user-v10.db"
+         initialize_archive_database(fresh_db, ArchiveTier.USER)
+         with sqlite3.connect(fresh_db) as fresh_conn:
+             assert _user_durable_schema_sql(conn) == _user_durable_schema_sql(fresh_conn)
+             _assert_query_provenance_binding_triggers(fresh_conn)
++            _assert_analysis_evidence_kernel_triggers(fresh_conn)
+             assert tuple(conn.execute("PRAGMA foreign_key_list(annotation_batches)")) == tuple(
+                 fresh_conn.execute("PRAGMA foreign_key_list(annotation_batches)")
+             )
+diff --git a/tests/unit/storage/test_query_objects.py b/tests/unit/storage/test_query_objects.py
+index 5be268d23c42227e707eb528315f500fac3a8b06..fe8d208dfa1d52ab4a92dbbbdef748da9a4dabac 100644
+--- a/tests/unit/storage/test_query_objects.py
++++ b/tests/unit/storage/test_query_objects.py
+@@ -2,18 +2,29 @@ from __future__ import annotations
+ 
+ import json
+ import sqlite3
++from dataclasses import replace
+ 
+ import pytest
+ 
+ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+ from polylogue.storage.sqlite.query_objects import (
++    AnalysisArchiveGenerations,
++    AnalysisEvaluationWorld,
++    AnalysisPrivacyStamp,
++    AnalysisRetentionStamp,
++    AnalysisRunInput,
+     EvaluationReceipt,
++    analysis_run_binds_evidence,
++    get_analysis_definition,
++    get_analysis_run,
+     get_query,
+     get_retained_query_run,
+     get_watched_query_baseline,
+     list_watched_queries,
+     migrate_saved_query_assertions,
++    put_analysis_definition,
++    put_analysis_run,
+     put_evaluation_receipt,
+     put_query,
+     put_query_edge,
+@@ -270,3 +281,283 @@ def test_watch_baseline_and_receipt_ids_reject_cross_query_or_conflicting_state(
+             "INSERT INTO watched_query_baselines (query_hash, result_set_id, updated_at_ms) VALUES (?, ?, ?)",
+             (first.query_hash, second_result.result_set_id, 4),
+         )
++
++
++def test_analysis_definitions_and_runs_are_content_addressed_immutable_history() -> None:
++    """Exercise the production user-tier definition/run persistence path.
++
++    Anti-vacuity: removing NFC canonicalization or hashing from
++    ``put_analysis_definition`` breaks the stable-id assertions; omitting an
++    input, generation, evaluator/world, or policy stamp from
++    ``put_analysis_run`` breaks the distinct-receipt assertions; replacing the
++    INSERT-only tables with an overwrite breaks the two-row/history checks.
++    """
++
++    conn = _conn()
++    query = put_query(
++        conn,
++        {"kind": "field", "field": "origin", "op": "=", "values": ["codex-session"]},
++        grain="session",
++        lane="dialogue",
++        rank_policy="mixed",
++        created_at_ms=1,
++    )
++    first_result = put_result_set(
++        conn,
++        result_set_id="analysis-result-one",
++        query_hash=query.query_hash,
++        grain="session",
++        corpus_epoch="index:v1:100",
++        member_refs=("session:synthetic-one",),
++        exactness="exact",
++        persistence_class="finding",
++        created_at_ms=2,
++    )
++    put_evaluation_receipt(
++        conn,
++        query_hash=query.query_hash,
++        result_set_id=first_result.result_set_id,
++        receipt=EvaluationReceipt(
++            receipt_id="evaluation-one",
++            source_generation="source:v7",
++            user_generation="user:v10",
++            index_generation="index:v1:100",
++            runtime_build_ref="polylogue:synthetic",
++        ),
++        created_at_ms=3,
++    )
++
++    first_definition = put_analysis_definition(
++        conn,
++        {
++            "name": "Synthetic café archive count",
++            "inputs": {"matched": {"type": "query-result"}},
++            "steps": [{"input": "matched", "op": "count"}],
++            "output": {"unit": "sessions"},
++        },
++        created_at_ms=4,
++    )
++    equivalent_definition = put_analysis_definition(
++        conn,
++        {
++            "output": {"unit": "sessions"},
++            "steps": [{"op": "count", "input": "matched"}],
++            "inputs": {"matched": {"type": "query-result"}},
++            "name": "Synthetic cafe\u0301 archive count",
++        },
++        created_at_ms=5,
++    )
++
++    assert equivalent_definition == first_definition
++    assert get_analysis_definition(conn, first_definition.analysis_hash) == first_definition
++    assert conn.execute("SELECT COUNT(*) FROM analysis_definitions").fetchone()[0] == 1
++
++    first_input = AnalysisRunInput(
++        input_key="matched",
++        query_hash=query.query_hash,
++        result_set_id=first_result.result_set_id,
++        evaluation_receipt_id="evaluation-one",
++    )
++    first_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(first_input,),
++        archive_generations=AnalysisArchiveGenerations(
++            source_generation="source:v7",
++            user_generation="user:v10",
++            index_generation="index:v1:100",
++        ),
++        evaluator_ref="agent:synthetic-analysis-evaluator.v1",
++        evaluation_world=AnalysisEvaluationWorld(
++            frame_ref="artifact:synthetic-analysis-frame.v1",
++            runtime_build_ref="polylogue:synthetic-analysis.v1",
++            parameters={"count_nulls": False},
++        ),
++        privacy_stamp=AnalysisPrivacyStamp(
++            classification="synthetic",
++            policy_ref="artifact:synthetic-privacy-policy.v1",
++            contains_raw_content=False,
++        ),
++        retention_stamp=AnalysisRetentionStamp(
++            retention_class="fixture",
++            policy_ref="artifact:synthetic-retention-policy.v1",
++            excision_policy_ref="artifact:synthetic-excision-policy.v1",
++        ),
++        created_at_ms=6,
++    )
++    same_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(first_input,),
++        archive_generations=first_run.archive_generations,
++        evaluator_ref=first_run.evaluator_ref,
++        evaluation_world=first_run.evaluation_world,
++        privacy_stamp=first_run.privacy_stamp,
++        retention_stamp=first_run.retention_stamp,
++        created_at_ms=first_run.created_at_ms,
++    )
++
++    assert same_run == first_run
++    assert get_analysis_run(conn, first_run.receipt_id) == first_run
++    assert analysis_run_binds_evidence(
++        conn,
++        receipt_id=first_run.receipt_id,
++        query_hash=query.query_hash,
++        result_set_id=first_result.result_set_id,
++    )
++
++    generation_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(first_input,),
++        archive_generations=replace(
++            first_run.archive_generations,
++            index_generation="index:v1:101",
++        ),
++        evaluator_ref=first_run.evaluator_ref,
++        evaluation_world=first_run.evaluation_world,
++        privacy_stamp=first_run.privacy_stamp,
++        retention_stamp=first_run.retention_stamp,
++        created_at_ms=first_run.created_at_ms,
++    )
++    evaluator_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(first_input,),
++        archive_generations=first_run.archive_generations,
++        evaluator_ref="agent:synthetic-analysis-evaluator.v2",
++        evaluation_world=first_run.evaluation_world,
++        privacy_stamp=first_run.privacy_stamp,
++        retention_stamp=first_run.retention_stamp,
++        created_at_ms=first_run.created_at_ms,
++    )
++    world_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(first_input,),
++        archive_generations=first_run.archive_generations,
++        evaluator_ref=first_run.evaluator_ref,
++        evaluation_world=replace(
++            first_run.evaluation_world,
++            parameters={"count_nulls": True},
++        ),
++        privacy_stamp=first_run.privacy_stamp,
++        retention_stamp=first_run.retention_stamp,
++        created_at_ms=first_run.created_at_ms,
++    )
++    privacy_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(first_input,),
++        archive_generations=first_run.archive_generations,
++        evaluator_ref=first_run.evaluator_ref,
++        evaluation_world=first_run.evaluation_world,
++        privacy_stamp=replace(
++            first_run.privacy_stamp,
++            classification="synthetic-redacted",
++        ),
++        retention_stamp=first_run.retention_stamp,
++        created_at_ms=first_run.created_at_ms,
++    )
++    retention_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(first_input,),
++        archive_generations=first_run.archive_generations,
++        evaluator_ref=first_run.evaluator_ref,
++        evaluation_world=first_run.evaluation_world,
++        privacy_stamp=first_run.privacy_stamp,
++        retention_stamp=replace(
++            first_run.retention_stamp,
++            retention_class="fixture-short",
++        ),
++        created_at_ms=first_run.created_at_ms,
++    )
++    component_receipt_ids = {
++        first_run.receipt_id,
++        generation_run.receipt_id,
++        evaluator_run.receipt_id,
++        world_run.receipt_id,
++        privacy_run.receipt_id,
++        retention_run.receipt_id,
++    }
++    assert len(component_receipt_ids) == 6
++
++    second_result = put_result_set(
++        conn,
++        result_set_id="analysis-result-two",
++        query_hash=query.query_hash,
++        grain="session",
++        corpus_epoch="index:v1:200",
++        member_refs=("session:synthetic-one", "session:synthetic-two"),
++        exactness="exact",
++        persistence_class="finding",
++        created_at_ms=7,
++    )
++    put_evaluation_receipt(
++        conn,
++        query_hash=query.query_hash,
++        result_set_id=second_result.result_set_id,
++        receipt=EvaluationReceipt(
++            receipt_id="evaluation-two",
++            source_generation="source:v7",
++            user_generation="user:v10",
++            index_generation="index:v1:200",
++            runtime_build_ref="polylogue:synthetic",
++        ),
++        created_at_ms=8,
++    )
++    second_input = AnalysisRunInput(
++        input_key="matched",
++        query_hash=query.query_hash,
++        result_set_id=second_result.result_set_id,
++        evaluation_receipt_id="evaluation-two",
++    )
++    input_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(second_input,),
++        archive_generations=first_run.archive_generations,
++        evaluator_ref=first_run.evaluator_ref,
++        evaluation_world=first_run.evaluation_world,
++        privacy_stamp=first_run.privacy_stamp,
++        retention_stamp=first_run.retention_stamp,
++        created_at_ms=first_run.created_at_ms,
++    )
++    second_run = put_analysis_run(
++        conn,
++        analysis_hash=first_definition.analysis_hash,
++        inputs=(second_input,),
++        archive_generations=AnalysisArchiveGenerations(
++            source_generation="source:v7",
++            user_generation="user:v10",
++            index_generation="index:v1:200",
++        ),
++        evaluator_ref="agent:synthetic-analysis-evaluator.v2",
++        evaluation_world=AnalysisEvaluationWorld(
++            frame_ref="artifact:synthetic-analysis-frame.v2",
++            runtime_build_ref="polylogue:synthetic-analysis.v2",
++            parameters={"count_nulls": False},
++        ),
++        privacy_stamp=first_run.privacy_stamp,
++        retention_stamp=first_run.retention_stamp,
++        created_at_ms=9,
++    )
++
++    assert input_run.receipt_id != first_run.receipt_id
++    assert second_run.receipt_id != first_run.receipt_id
++    assert second_run.receipt_id != input_run.receipt_id
++    assert get_analysis_run(conn, first_run.receipt_id) == first_run
++    assert get_analysis_run(conn, second_run.receipt_id) == second_run
++    assert conn.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0] == 8
++    assert not analysis_run_binds_evidence(
++        conn,
++        receipt_id=first_run.receipt_id,
++        query_hash=query.query_hash,
++        result_set_id=second_result.result_set_id,
++    )
++    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
++        conn.execute(
++            "UPDATE analysis_runs SET evaluator_ref = ? WHERE receipt_id = ?",
++            ("agent:overwrite-attempt", first_run.receipt_id),
++        )
