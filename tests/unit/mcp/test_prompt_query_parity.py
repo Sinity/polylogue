@@ -1,4 +1,4 @@
-"""Parity between shipped MCP prompt recipes and executable query_units grammar."""
+"""Parity between shipped MCP prompt recipes and the executable ``query`` grammar."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from polylogue.mcp.server import build_server
 from tests.infra.mcp import invoke_surface_async
 
 _QUERY_CALL_RE = re.compile(
-    r"query_units\(expression=(?P<quote>['\"])(?P<expression>.*?)(?P=quote)(?P<arguments>[^)]*)\)",
+    r"query\(expression=(?P<quote>['\"])(?P<expression>.*?)(?P=quote)(?P<arguments>[^)]*)\)",
     re.DOTALL,
 )
 _ARGUMENT_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*=")
@@ -24,9 +24,9 @@ _PROMPT_CASES: Mapping[str, dict[str, object]] = {
 
 
 @pytest.mark.asyncio
-async def test_shipped_query_units_prompt_recipes_match_parser_and_discovered_schema() -> None:
+async def test_shipped_query_prompt_recipes_match_parser_and_discovered_schema() -> None:
     server = build_server(role="read")
-    query_tool = server._tool_manager._tools["query_units"]
+    query_tool = server._tool_manager._tools["query"]
     properties = query_tool.parameters["properties"]
     assert isinstance(properties, dict)
     observed_prompts: set[str] = set()
@@ -36,7 +36,7 @@ async def test_shipped_query_units_prompt_recipes_match_parser_and_discovered_sc
         rendered = await invoke_surface_async(prompt.fn, **kwargs)
         assert isinstance(rendered, str)
         matches = list(_QUERY_CALL_RE.finditer(rendered))
-        assert matches, f"{prompt_name} must expose at least one query_units recipe"
+        assert matches, f"{prompt_name} must expose at least one query recipe"
         observed_prompts.add(prompt_name)
         for match in matches:
             expression = match.group("expression")
@@ -44,8 +44,7 @@ async def test_shipped_query_units_prompt_recipes_match_parser_and_discovered_sc
             assert source is not None, f"{prompt_name} advertises a non-executable expression: {expression}"
             advertised_arguments = {"expression", *_ARGUMENT_RE.findall(match.group("arguments"))}
             assert advertised_arguments <= set(properties), (
-                f"{prompt_name} advertises hidden query_units arguments: "
-                f"{sorted(advertised_arguments - set(properties))}"
+                f"{prompt_name} advertises hidden query arguments: {sorted(advertised_arguments - set(properties))}"
             )
 
     assert observed_prompts == set(_PROMPT_CASES)

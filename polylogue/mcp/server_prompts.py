@@ -494,7 +494,7 @@ Report: what was attempted, where it failed (cite tool_result errors by ref), wh
 
 Call sequence:
 1. list_assertion_claims(kinds="decision,judgment,lesson", statuses="active,candidate", limit={limit}) — recorded decisions (authoritative when user-authored).
-2. query_units(expression={assertion_query!r}) — targeted assertion search.
+2. query(expression={assertion_query!r}) — targeted assertion search.
 3. search(query={ranked_query!r}, limit=10) — decision discussions never recorded as assertions.
 
 Rules:
@@ -510,7 +510,7 @@ Rules:
         return f"""Surface failures in '{repo_name}' since {since} that were never acknowledged.
 
 Call sequence:
-1. query_units(expression={failure_query!r}, limit=20) — action rows for sessions containing failed tool outcomes.
+1. query(expression={failure_query!r}, limit=20) — action rows for sessions containing failed tool outcomes.
 2. find_stuck_sessions(since="{since}") — sessions whose provider tool calls are bounded as stuck.
 3. For each hit: list_marks(session_id=<session_id>) and list_annotations for that session — an existing mark/annotation means acknowledged.
 
@@ -526,8 +526,8 @@ Report only sessions with failures and no acknowledgment; cite the failing actio
         return f"""Find sessions that touched file path '{path}'.
 
 Call sequence:
-1. query_units(expression={repository_query!r}, limit=20) — file/action rows for sessions that touched the path.
-2. query_units(expression={path_query!r}, limit=20) — per-file action rows (edits, reads, shell references).
+1. query(expression={repository_query!r}, limit=20) — file/action rows for sessions that touched the path.
+2. query(expression={path_query!r}, limit=20) — per-file action rows (edits, reads, shell references).
 3. search(query='"{path}"', limit=10) — mentions in prose that never became edits.
 4. get_session_summary(id=<session_id>) on each hit for orientation.
 

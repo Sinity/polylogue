@@ -78,26 +78,30 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             )
         del limit
 
+        normalized = _object_ref(ref)
+        session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
+
         async def run() -> str:
-            normalized = _object_ref(ref)
             if view == "topology":
-                session_id = normalized.removeprefix("session:")
-                topology = await hooks.get_polylogue().get_session_topology(session_id)
+                topology_session_id = normalized.removeprefix("session:")
+                topology = await hooks.get_polylogue().get_session_topology(topology_session_id)
                 if topology is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="read")
                 return hooks.json_payload(session_topology_payload(topology, session_id=str(topology.target_id)))
             return hooks.json_payload(await hooks.get_polylogue().resolve_ref(normalized))
 
-        return await hooks.async_safe_call("read", run)
+        return await hooks.async_safe_call("read", run, session_id=session_id)
 
     async def get(ref: str, projection: str | None = None) -> str:
         """Resolve one exact stable object or evidence identity."""
         del projection
+        normalized = _object_ref(ref)
+        session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
 
         async def run() -> str:
-            return hooks.json_payload(await hooks.get_polylogue().resolve_ref(_object_ref(ref)))
+            return hooks.json_payload(await hooks.get_polylogue().resolve_ref(normalized))
 
-        return await hooks.async_safe_call("get", run)
+        return await hooks.async_safe_call("get", run, session_id=session_id)
 
     async def explain(
         subject: Literal["query", "capability", "ref", "result", "recovery"],
@@ -174,6 +178,24 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         """Report compact archive authority and readiness status."""
 
         async def run() -> str:
+            root: dict[str, object] = {"scope": scope}
+            if scope == "operation":
+                from dataclasses import asdict
+
+                from polylogue.mcp.call_log import mcp_call_outbox_status
+                from polylogue.mcp.payloads import MCPReadinessReportPayload
+                from polylogue.readiness import get_readiness
+
+                report = get_readiness(hooks.get_config())
+                root["operation"] = MCPReadinessReportPayload.from_report(
+                    report,
+                    include_counts=True,
+                    include_detail=True,
+                    include_cached=True,
+                    mcp_call_delivery=asdict(mcp_call_outbox_status()),
+                ).model_dump(mode="json", exclude_none=True)
+                return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
+
             from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
             from polylogue.mcp.archive_support import mcp_archive_root
 
@@ -184,18 +206,17 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 ),
             )
             stats = await transaction.run(lambda archive: archive.stats())
-            root: dict[str, object] = {"scope": scope}
             if "provider_usage" not in include:
                 root["archive"] = MCPArchiveStatsPayload.from_archive_stats(
                     stats, include_embedded=False, include_db_size=False
                 ).model_dump(mode="json")
             if "provider_usage" in include:
-                report = await hooks.get_polylogue().provider_usage_report(
+                report_usage = await hooks.get_polylogue().provider_usage_report(
                     origin=ref,
                     limit=10,
                     detail="headline",
                 )
-                usage = report.to_dict()
+                usage = report_usage.to_dict()
                 root["provider_usage"] = {
                     "model_rollup_usage": usage["model_rollup_usage"],
                     "pricing_grain": usage["pricing_grain"],

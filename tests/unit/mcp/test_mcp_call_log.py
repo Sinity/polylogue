@@ -103,12 +103,13 @@ def test_registered_tools_persist_success_and_typed_failure_through_daemon(
         try:
             server = cast(MCPServerUnderTest, build_server(role="read"))
 
-            stats = invoke_surface(server._tool_manager._tools["stats"].fn)
+            status = invoke_surface(server._tool_manager._tools["status"].fn, scope="archive")
             missing = invoke_surface(
-                server._tool_manager._tools["get_session_summary"].fn,
-                id="codex-session:missing",
+                server._tool_manager._tools["read"].fn,
+                ref="session:codex-session:missing",
+                view="topology",
             )
-            assert '"total_sessions"' in stats
+            assert '"archive"' in status
             assert '"error": "not_found"' in missing
             assert flush_mcp_call_log(timeout=5.0)
         finally:
@@ -116,51 +117,43 @@ def test_registered_tools_persist_success_and_typed_failure_through_daemon(
 
     calls = _read_calls(workspace_env["archive_root"])
     by_tool = {entry.tool_name: entry for entry in calls}
-    assert {"stats", "get_session_summary"} <= set(by_tool), tuple(by_tool)
-    assert by_tool["stats"].success is True
-    assert by_tool["stats"].error_detail is None
-    assert by_tool["get_session_summary"].success is False
-    assert by_tool["get_session_summary"].error_detail == "not_found"
+    assert {"status", "read"} <= set(by_tool), tuple(by_tool)
+    assert by_tool["status"].success is True
+    assert by_tool["status"].error_detail is None
+    assert by_tool["read"].success is False
+    assert by_tool["read"].error_detail == "not_found"
     session_calls = _read_calls(workspace_env["archive_root"], session_id="codex-session:missing")
-    assert [entry.tool_name for entry in session_calls] == ["get_session_summary"]
+    assert [entry.tool_name for entry in session_calls] == ["read"]
 
 
 def test_session_tools_and_successor_preamble_are_queryable_by_session(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise real FastMCP wrappers for the previously uncorrelated tools."""
-    missing_session = "codex-session:missing-correlation"
-    successor_session = "claude-code-session:new-successor"
-    neighbor_session = "codex-session:neighbor-seed"
-    comparison_sessions = ("codex-session:compare-a", "claude-code-session:compare-b")
+    """Exercise real FastMCP wrappers for session-scoped call-log correlation.
+
+    ``get``/``read`` thread the ref's session id into the call log (#see
+    server_cutover.py); this proves two distinct session-scoped calls are
+    independently queryable by their own session id, not merged into one
+    bucket or dropped.
+    """
+    first_session = "codex-session:missing-correlation-a"
+    second_session = "claude-code-session:missing-correlation-b"
     with _running_daemon() as daemon_url:
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
         _set_runtime_services(None)
         try:
             server = cast(MCPServerUnderTest, build_server(role="read"))
             tools = server._tool_manager._tools
-            invoke_surface(tools["get_messages"].fn, session_id=missing_session)
-            invoke_surface(tools["raw_artifacts"].fn, session_id=missing_session)
-            invoke_surface(
-                tools["compose_context_preamble"].fn,
-                cwd=str(workspace_env["archive_root"]),
-                successor_session_id=successor_session,
-            )
-            invoke_surface(tools["neighbor_candidates"].fn, id=neighbor_session)
-            invoke_surface(tools["compare_sessions"].fn, session_ids=",".join(comparison_sessions))
+            invoke_surface(tools["get"].fn, ref=f"session:{first_session}")
+            invoke_surface(tools["read"].fn, ref=f"session:{second_session}")
             assert flush_mcp_call_log(timeout=5.0)
         finally:
             _set_runtime_services(None)
 
-    missing_calls = _read_calls(workspace_env["archive_root"], session_id=missing_session)
-    assert {entry.tool_name for entry in missing_calls} == {"get_messages", "raw_artifacts"}
-    successor_calls = _read_calls(workspace_env["archive_root"], session_id=successor_session)
-    assert [entry.tool_name for entry in successor_calls] == ["compose_context_preamble"]
-    neighbor_calls = _read_calls(workspace_env["archive_root"], session_id=neighbor_session)
-    assert [entry.tool_name for entry in neighbor_calls] == ["neighbor_candidates"]
-    for session_id in comparison_sessions:
-        comparison_calls = _read_calls(workspace_env["archive_root"], session_id=session_id)
-        assert [entry.tool_name for entry in comparison_calls] == ["compare_sessions"]
+    first_calls = _read_calls(workspace_env["archive_root"], session_id=first_session)
+    assert [entry.tool_name for entry in first_calls] == ["get"]
+    second_calls = _read_calls(workspace_env["archive_root"], session_id=second_session)
+    assert [entry.tool_name for entry in second_calls] == ["read"]
 
 
 def test_readiness_surface_exposes_outbox_pressure(
@@ -172,8 +165,8 @@ def test_readiness_surface_exposes_outbox_pressure(
         _set_runtime_services(None)
         try:
             server = cast(MCPServerUnderTest, build_server(role="read"))
-            payload = json.loads(invoke_surface(server._tool_manager._tools["readiness_check"].fn))
-            delivery = payload["mcp_call_delivery"]
+            payload = json.loads(invoke_surface(server._tool_manager._tools["status"].fn, scope="operation"))
+            delivery = payload["operation"]["mcp_call_delivery"]
             assert {
                 "pending_count",
                 "pending_bytes",
