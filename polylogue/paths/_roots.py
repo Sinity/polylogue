@@ -75,6 +75,12 @@ def embeddings_db_path() -> Path:
 
 def resolve_active_index_db_path(*, db_anchor: Path, index_db: Path) -> Path:
     """Resolve the active query/index database path."""
+    pointer = archive_root() / ".index-active-pointer"
+    if pointer.exists():
+        target = Path(pointer.read_text(encoding="utf-8").strip())
+        if not target.is_absolute() or target.name != "index.db":
+            raise RuntimeError(f"invalid active index pointer: {target}")
+        return target
     if db_anchor.name == "index.db":
         return db_anchor
     return index_db
@@ -122,7 +128,14 @@ def archive_file_set_root_for_paths(*, archive_root_path: Path, db_anchor: Path)
 
 def active_index_db_path() -> Path:
     """Currently active query/index database path."""
-    return index_db_path()
+    root = archive_root()
+    pointer = root / ".index-active-pointer"
+    if pointer.exists():
+        target = Path(pointer.read_text(encoding="utf-8").strip())
+        if not target.is_absolute() or target.name != "index.db":
+            raise RuntimeError(f"invalid active index pointer: {target}")
+        return target
+    return root / "index.db"
 
 
 def browser_capture_spool_root() -> Path:

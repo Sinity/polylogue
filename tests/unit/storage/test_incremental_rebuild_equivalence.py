@@ -1069,6 +1069,8 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
         "quarantined_raw_count": 0,
         "adoption_deferred_raw_count": 0,
         "authority_selection_expanded": True,
+        "scheduled_raw_count": 4,
+        "raw_batch_size": 500,
     }
     rebuilt_insights = repair_session_insights(
         _config(generation_root, index_path=generation_path),

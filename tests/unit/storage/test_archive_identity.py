@@ -7,6 +7,7 @@ import pytest
 from polylogue.storage.archive_identity import (
     ArchiveIdentity,
     ArchiveIdentityConflictError,
+    ArchiveLocation,
     assert_writable_archive_identity,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -30,6 +31,25 @@ def test_path_aliases_resolve_to_equal_archive_identity(tmp_path: Path) -> None:
     assert direct.durable_id == through_alias.durable_id
     assert direct.active_generation == through_alias.active_generation
     assert not direct.conflicts_with(through_alias)
+
+
+def test_location_keeps_durable_tiers_at_configured_root_and_follows_active_pointer(tmp_path: Path) -> None:
+    configured = tmp_path / "configured"
+    canonical = tmp_path / "canonical"
+    _touch_tiers(configured)
+    _touch_tiers(canonical)
+    for name in ("source.db", "user.db", "ops.db", "embeddings.db"):
+        (configured / name).unlink()
+        (configured / name).symlink_to(canonical / name)
+    (configured / ".index-active-pointer").write_text(str(canonical / "index.db"), encoding="utf-8")
+
+    location = ArchiveLocation.resolve(configured)
+
+    assert location.active_index_path == canonical / "index.db"
+    assert location.active_tier("source").resolved_path == (canonical / "source.db").resolve()
+    assert location.active_tier("ops").resolved_path == (canonical / "ops.db").resolve()
+    assert location.shadow_index is not None
+    assert location.shadow_index.resolved_path == configured / "index.db"
 
 
 def test_split_roots_sharing_durable_tiers_reject_distinct_indexes_before_mutation(tmp_path: Path) -> None:
