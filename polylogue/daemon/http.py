@@ -430,6 +430,7 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/app/cost"),
         ("GET", "/app/sessions"),
         ("GET", "/app/sessions/:session_id"),
+        ("GET", "/app/search"),
         ("GET", "/app/assets/:asset"),
         ("GET", "/s/:session_id"),
         ("GET", "/w/:mode"),
@@ -1605,6 +1606,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return
             self._serve_webui_session_read(path[2])
             return
+        if path == ["app", "search"]:
+            if not self._check_shell_bootstrap_access():
+                return
+            self._serve_webui_search(params)
+            return
         if len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2]):
             if not self._check_shell_bootstrap_access():
                 return
@@ -2132,6 +2138,78 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
         self._send_webui_html(HTTPStatus.OK, render_session_read_page(bundle, session_id, session))
+
+    def _serve_webui_search(self, params: dict[str, list[str]]) -> None:
+        """Serve the DSL search vertical over the shared ``SearchEnvelope``.
+
+        Semantics stay server-side: this delegates to the same
+        ``compile_expression_into``/``_do_search_list`` path used by
+        ``GET /api/sessions?query=...`` so the browser never re-filters or
+        re-ranks a hit list itself.
+        """
+        from polylogue.archive.query.expression import ExpressionCompileError, compile_expression_into
+        from polylogue.archive.query.spec import SessionQuerySpec, clamp_query_limit
+        from polylogue.daemon.webui import (
+            SEARCH_RESULT_LIMIT,
+            WebUIAssetBundle,
+            WebUIAssetError,
+            render_search_page,
+            render_webui_asset_error,
+        )
+
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+        except WebUIAssetError as exc:
+            logger.error("webui asset discovery failed: %s", exc)
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+
+        query = self._get_param(params, "q") or ""
+        cursor = self._get_param(params, "cursor")
+        limit = clamp_query_limit(self._get_int(params, "limit", SEARCH_RESULT_LIMIT), default=SEARCH_RESULT_LIMIT)
+
+        if not query:
+            self._send_webui_html(HTTPStatus.OK, render_search_page(bundle, None, query))
+            return
+
+        try:
+            base = SessionQuerySpec.from_params(
+                {"cursor": cursor, "limit": limit, "offset": 0} if cursor else {"limit": limit, "offset": 0}
+            )
+            spec = compile_expression_into(query, base)
+        except ExpressionCompileError as exc:
+            self._send_webui_html(HTTPStatus.OK, render_search_page(bundle, None, query, parse_error=str(exc)))
+            return
+
+        async def _search(poly: Polylogue) -> object:
+            return await self._do_search_list(poly, spec, limit, 0)
+
+        try:
+            result = self._sync_run(_search)
+        except sqlite3.OperationalError as exc:
+            logger.exception("webui search read failed")
+            status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            notice = (
+                "The archive is temporarily busy; retry this search shortly."
+                if status is HTTPStatus.SERVICE_UNAVAILABLE
+                else "This search could not be completed."
+            )
+            self._send_webui_html(status, render_search_page(bundle, None, query, notice=notice))
+            return
+        except Exception:
+            logger.exception("webui search render failed")
+            self._send_webui_html(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                render_search_page(bundle, None, query, notice="This search could not be completed."),
+            )
+            return
+        if not isinstance(result, Mapping):
+            self._send_webui_html(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                render_search_page(bundle, None, query, notice="This search could not be completed."),
+            )
+            return
+        self._send_webui_html(HTTPStatus.OK, render_search_page(bundle, result, query))
 
     def _serve_webui_observability(self) -> None:
         """Serve the registry-driven observability SSR page."""

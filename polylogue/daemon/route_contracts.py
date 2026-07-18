@@ -104,6 +104,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
+        "/app/search",
+        "browser_shell",
+        "shell_supported",
+        "unauthenticated_loopback",
+        "semantic search results HTML",
+        "SSR-first ranked search over the shared SearchEnvelope; Preact enhances only cursor-based pagination.",
+    ),
+    RouteContract(
+        "GET",
         "/app/assets/:asset",
         "browser_shell",
         "shell_supported",
