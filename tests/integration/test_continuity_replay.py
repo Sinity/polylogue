@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from devtools.continuity_replay import replay_archive
-from polylogue.core.json import JSONDocument, json_document_list, require_json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document_list, require_json_document
 from tests.infra.continuity import ContinuityFixtureSeed, load_continuity_catalog, seed_continuity_archive
 from tests.infra.continuity_mutations import continuity_mutation, continuity_mutation_names
 
@@ -93,6 +94,87 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
     assert cost_page["budget_exceeded"] is True
     assert isinstance(cost_page["response_sha256"], str)
     assert len(cost_page["response_sha256"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_query_units_continuation_accepts_distinct_multi_page_rows(
+    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
+) -> None:
+    """The registered FastMCP route preserves actual distinct unit rows across pages."""
+
+    archive_root, catalog, _ = continuity_corpus
+    report = await replay_archive(
+        archive_root,
+        catalog,
+        scenario_names=("parallel-claude-incident",),
+        transport="registered",
+    )
+
+    assert report["status"] == "pass"
+    [result] = json_document_list(report["results"])
+    receipts = json_document_list(result["route_receipts"])
+    members = next(receipt for receipt in receipts if receipt["step_id"] == "incident-members")
+    assert members["page_count"] == 6
+    assert members["enumerated_item_count"] == members["unique_identity_count"] == 91
+    assert members["exact_enumeration_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_query_units_continuation_rejects_duplicate_row_with_advancing_offset(
+    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
+) -> None:
+    """A real handler response that repeats a prior row fails before fact reducers can mask it."""
+
+    archive_root, catalog, _ = continuity_corpus
+    first_page_item: JSONValue | None = None
+    observed_page_offsets: list[tuple[int, int]] = []
+
+    def repeat_first_row_on_second_page(
+        tool: str,
+        arguments: dict[str, object],
+        invocation: int,
+        response_text: str,
+    ) -> str:
+        del invocation
+        nonlocal first_page_item
+        if tool != "query_units" or arguments.get("expression") != (
+            'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
+        ):
+            return response_text
+        payload = require_json_document(json.loads(response_text), context="duplicate continuation response")
+        offset = payload.get("offset")
+        next_offset = payload.get("next_offset")
+        assert isinstance(offset, int) and not isinstance(offset, bool)
+        assert isinstance(next_offset, int) and not isinstance(next_offset, bool)
+        observed_page_offsets.append((offset, next_offset))
+        if arguments.get("continuation") is None:
+            items = payload.get("items")
+            if isinstance(items, list) and items:
+                first_page_item = items[0]
+            return response_text
+        if first_page_item is None:
+            return response_text
+        items = payload.get("items")
+        assert isinstance(items, list) and items
+        items[0] = first_page_item
+        return json.dumps(payload)
+
+    report = await replay_archive(
+        archive_root,
+        catalog,
+        scenario_names=("parallel-claude-incident",),
+        transport="registered",
+        response_mutator=repeat_first_row_on_second_page,
+    )
+
+    assert report["status"] == "fail"
+    assert observed_page_offsets == [(0, 17), (17, 34)]
+    [result] = json_document_list(report["results"])
+    [diagnostic] = json_document_list(result["diagnostics"])
+    assert diagnostic["kind"] == "duplicate_pagination_identity"
+    assert diagnostic["failure_class"] == "execution"
+    assert "page 2" in str(diagnostic["message"])
+    assert "codex-session:ext-continuity-incident-member-001:attempt" in str(diagnostic["message"])
 
 
 @pytest.mark.asyncio

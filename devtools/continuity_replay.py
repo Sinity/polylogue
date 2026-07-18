@@ -88,6 +88,14 @@ class ContinuityReplayError(RuntimeError):
         self.failure_class = failure_class
 
 
+@dataclass(frozen=True, slots=True)
+class _ReturnedUnitIdentity:
+    """Stable identity extracted from one actual paginated unit row."""
+
+    key: str
+    display: str
+
+
 class MCPContinuityRoute:
     """Invoke handlers registered on Polylogue's real FastMCP read server."""
 
@@ -826,7 +834,7 @@ async def _execute_step(
     merged_items: list[JSONValue] = []
     continuation: str | None = None
     seen_continuations: set[str] = set()
-    seen_identities: set[str] = set()
+    seen_identities: dict[str, _ReturnedUnitIdentity] = {}
     expected_offset = 0
     page_index = 0
 
@@ -862,16 +870,19 @@ async def _execute_step(
             if receipt.query_ref is None:
                 receipt.query_ref = current_query_ref
                 receipt.result_ref = current_result_ref
-            page_identity_keys = _page_identity_keys(step, page_items)
-            duplicates = sorted(seen_identities.intersection(page_identity_keys))
+            page_identities = _returned_unit_identities(step, page_items)
+            duplicates = [identity for identity in page_identities if identity.key in seen_identities]
             if duplicates:
+                duplicate_values = ", ".join(identity.display for identity in duplicates)
                 raise ContinuityReplayError(
-                    f"step {step.step_id!r} replayed {len(duplicates)} item identities",
+                    f"step {step.step_id!r} page {page_index + 1} replayed {len(duplicates)} "
+                    f"logical unit identit{'y' if len(duplicates) == 1 else 'ies'} from an earlier page: "
+                    f"{duplicate_values}",
                     kind="duplicate_pagination_identity",
                     failure_class="execution",
                 )
-            seen_identities.update(page_identity_keys)
-            identity_hash = _hash_strings(sorted(page_identity_keys))
+            seen_identities.update({identity.key: identity for identity in page_identities})
+            identity_hash = _hash_strings(sorted(identity.key for identity in page_identities))
             merged_items.extend(require_json_value(item, context=f"route item {step.step_id}") for item in page_items)
         receipt.pages.append(
             require_json_document(
@@ -1078,14 +1089,19 @@ def _validate_page_envelope(
     return page_total
 
 
-def _page_identity_keys(step: ContinuityRouteStep, page_items: Sequence[object]) -> set[str]:
+def _returned_unit_identities(
+    step: ContinuityRouteStep,
+    page_items: Sequence[object],
+) -> list[_ReturnedUnitIdentity]:
+    """Extract the declared stable identity from each returned query-unit row."""
+
     if not step.item_identity_path:
         raise ContinuityReplayError(
             f"paginated step {step.step_id!r} declares no item identity path",
             kind="missing_item_identity_contract",
             failure_class="plan",
         )
-    identities: set[str] = set()
+    identities: dict[str, _ReturnedUnitIdentity] = {}
     for index, item in enumerate(page_items):
         values = _values_at(item, step.item_identity_path)
         if len(values) != 1:
@@ -1104,12 +1120,12 @@ def _page_identity_keys(step: ContinuityRouteStep, page_items: Sequence[object])
         key = json.dumps(value, sort_keys=True, separators=(",", ":"))
         if key in identities:
             raise ContinuityReplayError(
-                f"step {step.step_id!r} repeated an identity inside one page",
+                f"step {step.step_id!r} page returned duplicate logical unit identity {key}",
                 kind="duplicate_page_identity",
                 failure_class="execution",
             )
-        identities.add(key)
-    return identities
+        identities[key] = _ReturnedUnitIdentity(key=key, display=key)
+    return list(identities.values())
 
 
 def _decode_route_payload(step: ContinuityRouteStep, response_text: str) -> JSONDocument:
