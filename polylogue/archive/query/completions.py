@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
@@ -31,6 +31,9 @@ from polylogue.archive.query.metadata import (
 )
 from polylogue.operations.action_contracts import ACTION_CONTRACTS, CliActionContract
 from polylogue.surfaces.action_affordances import InputUnit
+
+if TYPE_CHECKING:
+    from polylogue.archive.query.discovery import QueryDiscoveryRoute
 
 CompletionKind = str
 CandidateProvider = Callable[[], list["QueryCompletionCandidate"]]
@@ -77,6 +80,7 @@ class QueryCompletionCandidate:
     payload_model: str | None = None
     unsupported_reason: str | None = None
     preview_command: str | None = None
+    route: QueryDiscoveryRoute | None = None
 
     def to_payload(self) -> dict[str, object]:
         """Return the structured candidate payload for machine consumers."""
@@ -97,6 +101,7 @@ class QueryCompletionCandidate:
             "payload_model": self.payload_model,
             "unsupported_reason": self.unsupported_reason,
             "preview_command": self.preview_command,
+            "route": self.route,
         }
 
 
@@ -536,6 +541,7 @@ def query_example_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
                 description=(f"{row.answers} {semantics.phrase} Projection: {projection}. Cost: {row.cost_class}."),
                 source="QUERY_DISCOVERY_EXAMPLES",
                 payload_model=row.unit_source,
+                route=row.route,
             )
         )
     return candidates[:50]

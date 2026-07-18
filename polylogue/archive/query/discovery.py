@@ -318,12 +318,9 @@ RECURSIVE_COLUMNS = ("session_id", "parent_refs", "child_refs", "continuation")
 RESULT_SEMANTICS_TEACHING: tuple[QueryResultSemanticsContract, ...] = (
     QueryResultSemanticsContract(
         coverage="exhaustive",
-        total="exact",
+        total="qualified",
         continuation="cursor-or-offset",
-        phrase=(
-            "Exhaustive relation, physically paged; total is exact for the declared filters. "
-            "Follow continuation until absent."
-        ),
+        phrase=("Exhaustive relation is paged: total is page-local; follow continuation until absent."),
     ),
     QueryResultSemanticsContract(
         coverage="top-k",
@@ -1500,6 +1497,7 @@ def _capability_example_payload(example: QueryDiscoveryExample) -> dict[str, obj
         "result_semantics": example.result_semantics,
         "projection_columns": list(example.projection_columns),
         "cost_class": example.cost_class,
+        "route": example.route,
     }
 
 

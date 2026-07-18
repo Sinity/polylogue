@@ -202,11 +202,14 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         "required_recovery": "Use the returned continuation to advance; do not replay the same page.",
                     },
                     "corpus": {
-                        "source": "polylogue.archive.query.discovery",
                         "positive_count": len(QUERY_DISCOVERY_EXAMPLES),
                         "negative_count": len(QUERY_DISCOVERY_NEGATIVE_EXAMPLES),
                         "examples_via": {"tool": "query_completions", "arguments": {"kind": "example"}},
                         "errors_via": {"tool": "query_completions", "arguments": {"kind": "error"}},
+                        # Completion candidates expose one of these declaration
+                        # routes verbatim in their ``route`` field; no
+                        # adapter-only aliases obscure route-dependent semantics.
+                        "routes": sorted({example.route for example in QUERY_DISCOVERY_EXAMPLES}),
                     },
                     "result_semantics": {
                         contract.coverage: {

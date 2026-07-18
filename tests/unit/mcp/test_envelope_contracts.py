@@ -456,6 +456,14 @@ def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
     assert root["corpus"]["negative_count"] >= 10
     assert root["corpus"]["examples_via"]["arguments"] == {"kind": "example"}
     assert root["corpus"]["errors_via"]["arguments"] == {"kind": "error"}
+    assert set(root["corpus"]["routes"]) == {
+        "query",
+        "ranked-search",
+        "sampled-query",
+        "aggregate-query",
+        "context-builder",
+        "recursive-graph",
+    }
     assert set(root["result_semantics"]) == {
         "exhaustive",
         "top-k",
@@ -465,6 +473,8 @@ def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
         "recursive-page",
     }
     assert "not exhaustive" in root["result_semantics"]["top-k"]["teaching"].lower()
+    assert root["result_semantics"]["exhaustive"]["total"] == "qualified"
+    assert "page-local" in root["result_semantics"]["exhaustive"]["teaching"]
     assert {name: contract["mcp_declaration"] for name, contract in root["result_semantics"].items()} == {
         "exhaustive": "exhaustive_page",
         "top-k": "top_k",

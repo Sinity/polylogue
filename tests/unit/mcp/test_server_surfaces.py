@@ -1064,7 +1064,9 @@ class TestArchiveGenericToolSurfaces:
 
         Production dependencies: FastMCP resource/tool registration, the
         query transaction, and the SQLite action relation. Removing the
-        transaction identity makes this route's refs and continuation diverge.
+        transaction identity makes this route's refs and continuation diverge;
+        changing the envelope total to a relation-wide count makes the
+        page-local-total assertion fail.
         """
         archive_root = tmp_path / "archive"
         with ArchiveStore(archive_root) as archive:
@@ -1105,7 +1107,11 @@ class TestArchiveGenericToolSurfaces:
         assert first_payload["query_ref"] == second_payload["query_ref"]
         assert first_payload["result_ref"] == second_payload["result_ref"]
         assert first_payload["continuation"] is not None
+        assert first_payload["total"] == len(first_payload["items"]) == 1
         assert first_payload["items"][0]["tool_use_block_id"] != second_payload["items"][0]["tool_use_block_id"]
+        exhaustive = discovery_payload["result_semantics"]["exhaustive"]
+        assert exhaustive["total"] == "qualified"
+        assert "page-local" in exhaustive["teaching"]
 
     @pytest.mark.asyncio
     async def test_query_units_tool_rejects_session_expression(self: object, mcp_server: MCPServerUnderTest) -> None:

@@ -95,7 +95,7 @@ Result coverage and `total` must be read with the declared semantics:
 
 | Class | Total | Continuation | Discovery wording |
 |---|---|---|---|
-| `exhaustive` | `exact` | `cursor-or-offset` | Exhaustive relation, physically paged; total is exact for the declared filters. Follow continuation until absent. |
+| `exhaustive` | `qualified` | `cursor-or-offset` | Exhaustive relation is paged: total is page-local; follow continuation until absent. |
 | `top-k` | `qualified` | `ranked-frontier` | Top-k by relevance, not exhaustive; total is qualified and must not be read as all matching archive rows. |
 | `sample` | `qualified` | `none` | Sample, not exhaustive; total is qualified and does not establish archive-wide coverage. |
 | `aggregate` | `aggregate` | `cursor-or-offset` | Aggregate over the declared input relation; totals describe aggregate buckets, while input coverage is reported separately. |

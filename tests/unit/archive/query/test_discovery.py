@@ -178,8 +178,9 @@ def test_result_semantics_contracts_are_complete_truthful_and_unique() -> None:
     assert all(contract.phrase.endswith(".") for contract in RESULT_SEMANTICS_TEACHING)
 
     contracts = {contract.coverage: contract for contract in RESULT_SEMANTICS_TEACHING}
-    assert contracts["exhaustive"].total == "exact"
+    assert contracts["exhaustive"].total == "qualified"
     assert contracts["exhaustive"].continuation == "cursor-or-offset"
+    assert "page-local" in contracts["exhaustive"].phrase
     assert contracts["top-k"].total == "qualified"
     assert "not exhaustive" in contracts["top-k"].phrase.lower()
     assert contracts["sample"].total == "qualified"
@@ -252,6 +253,14 @@ def test_catalog_and_completion_payloads_project_the_same_declarations() -> None
     ]
     assert candidates[0]["source"] == "QUERY_DISCOVERY_EXAMPLES"
     assert "Exhaustive relation" in cast(str, candidates[0]["description"])
+    assert candidates[0]["route"] == "query"
+
+    sample_completion = query_completion_payload("example", incomplete="samples recent")
+    sample_candidates = cast(list[dict[str, object]], sample_completion["candidates"])
+    assert [candidate["value"] for candidate in sample_candidates] == [
+        query_discovery_example("sample-repository-window").expression
+    ]
+    assert sample_candidates[0]["route"] == "sampled-query"
 
     error_completion = query_completion_payload("error", incomplete="repo:example-repo AND path")
     errors = cast(list[dict[str, object]], error_completion["candidates"])
