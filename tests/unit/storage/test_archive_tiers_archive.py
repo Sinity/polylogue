@@ -1481,3 +1481,44 @@ def test_archive_coverage_averages_render_none_not_zero_over_empty_denominator(t
     assert day_row.avg_assistant_words is None
     assert day_row.tool_use_percentage is None
     assert day_row.thinking_percentage is None
+
+
+def test_list_archive_debt_insights_correct_while_main_connection_holds_transaction(tmp_path: Path) -> None:
+    """Cross-tier debt reads use their own connection, not the long-lived one.
+
+    _archive_source_raw_link_debt / _archive_user_overlay_debt used to
+    ATTACH/DETACH sibling tiers directly on ArchiveStore's own long-lived
+    connection. That connection may already own a transaction by the time a
+    debt report runs (e.g. a caller mid-batch); coupling the attach lifecycle
+    to it risked interference with whatever transaction state the caller
+    holds. They now open a dedicated short-lived read-only connection per
+    call, so the report is correct (and does not disturb the caller's
+    transaction) even while the main connection has one open.
+    """
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="debt-under-open-transaction",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="debt target")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        facade._conn.execute("BEGIN")
+        try:
+            insights = facade.list_archive_debt_insights()
+            by_name = {insight.debt_name: insight for insight in insights}
+            assert by_name["archive_source_raw_links"].issue_count == 0
+            assert by_name["archive_user_overlay_orphans"].issue_count == 0
+            # The debt read must not have consumed or altered the caller's
+            # own still-open transaction.
+            assert facade._conn.in_transaction
+        finally:
+            facade._conn.rollback()
