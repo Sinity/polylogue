@@ -35,7 +35,7 @@ from polylogue.core.errors import (
 from polylogue.logging import get_logger
 from polylogue.mcp.declarations.models import MCPRole, mcp_role_allows
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
-from polylogue.services import RuntimeServices, build_runtime_services
+from polylogue.services import RuntimeServices
 from polylogue.surfaces.payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
@@ -662,7 +662,7 @@ def _get_runtime_services() -> RuntimeServices:
     """Return the configured runtime service scope for MCP handlers."""
     global _runtime_services
     if _runtime_services is None:
-        _runtime_services = build_runtime_services()
+        raise RuntimeError("MCP runtime services were not installed by build_server")
     return _runtime_services
 
 
@@ -675,7 +675,10 @@ def _get_polylogue() -> Polylogue:
     """Return a ``Polylogue`` facade bound to the configured archive/database."""
     from polylogue.api import Polylogue
 
-    cfg = _get_config()
+    services = _get_runtime_services()
+    if services.runtime is not None:
+        return Polylogue(runtime=services.runtime)
+    cfg = services.get_config()
     return Polylogue(archive_root=cfg.archive_root, db_path=cfg.db_path)
 
 

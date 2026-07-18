@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -16,31 +15,18 @@ if TYPE_CHECKING:
 _FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
 
 
-def plain_forced_by_env() -> bool:
-    from polylogue.config import load_polylogue_config
-
-    return load_polylogue_config().force_plain
-
-
-def no_color_requested() -> bool:
-    """Return True if NO_COLOR is set to any non-empty value.
-
-    Honors the convention documented at https://no-color.org/: presence of a
-    non-empty ``NO_COLOR`` environment variable disables color output, even
-    when the destination is a TTY. The variable is intentionally orthogonal
-    to ``POLYLOGUE_FORCE_PLAIN``: ``NO_COLOR`` is a request to drop ANSI
-    color codes; plain mode is a stronger request that also drops Rich
-    layout primitives (tables, boxes, glyphs).
-    """
-    return bool(os.environ.get("NO_COLOR"))
+def plain_forced_by_env(*, force_plain: bool = False) -> bool:
+    """Return the already-resolved plain-output setting."""
+    return force_plain
 
 
-def should_use_plain(*, plain: bool) -> bool:
-    if plain:
-        return True
-    if plain_forced_by_env():
-        return True
-    if no_color_requested():
+def no_color_requested(*, no_color: bool = False) -> bool:
+    """Return the already-resolved standards-based NO_COLOR setting."""
+    return no_color
+
+
+def should_use_plain(*, plain: bool, force_plain: bool = False, no_color: bool = False) -> bool:
+    if plain or force_plain or no_color:
         return True
     return not (sys.stdout.isatty() and sys.stderr.isatty())
 
