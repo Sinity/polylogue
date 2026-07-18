@@ -149,7 +149,7 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("continue",),
     ("stats",),
     ("mark",),
-    ("mark", "candidates"),
+    ("judge",),
 )
 _PLAIN_CMD_IDS = [" ".join(args) if args else "root" for args in _PLAIN_COMMANDS]
 
@@ -185,16 +185,14 @@ class TestJsonOutputValidity:
         assert "status" in parsed
 
     def test_candidate_assertions_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
-        """polylogue mark candidates list --format json produces parseable JSON."""
+        """polylogue judge --list --format json produces parseable JSON."""
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", "mark", "candidates", "list", "--format", "json"], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["--plain", "judge", "--list", "--format", "json"], catch_exceptions=False)
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
         assert "items" in parsed
-        assert parsed["statuses"] == ["candidate"]
+        assert parsed["candidate_statuses"] == ["candidate"]
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +233,7 @@ class TestJsonEnvelopeParametrized:
         "cmd_args",
         [
             ["ops", "doctor", "--format", "json"],
-            ["mark", "candidates", "list", "--format", "json"],
+            ["judge", "--list", "--format", "json"],
         ],
         ids=["ops-doctor", "candidate-assertions"],
     )
@@ -254,7 +252,7 @@ class TestJsonEnvelopeParametrized:
         "cmd_args",
         [
             ["ops", "doctor", "--format", "json"],
-            ["mark", "candidates", "list", "--format", "json"],
+            ["judge", "--list", "--format", "json"],
         ],
         ids=["ops-doctor", "candidate-assertions"],
     )
@@ -276,17 +274,17 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args,expected_error",
         [
-            (["mark", "candidates", "list", "--format", "yaml"], "Invalid value for '--format'"),
+            (["judge", "--list", "--format", "yaml"], "Invalid value for '--format'"),
         ],
         ids=["candidate-assertions-yaml-rejected"],
     )
-    def test_json_only_commands_reject_other_formats(
+    def test_machine_output_commands_reject_unknown_formats(
         self: object,
         cli_workspace: dict[str, Path],
         cmd_args: list[str],
         expected_error: str,
     ) -> None:
-        """JSON-only commands reject non-json formats with a clear Click error."""
+        """Machine-output commands reject unknown formats with a clear Click error."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code != 0
@@ -336,14 +334,14 @@ class TestJsonDeterminism:
         assert parsed[0] == parsed[1]
 
     def test_candidate_assertions_json_deterministic(self: object, cli_workspace: dict[str, Path]) -> None:
-        """Two mark candidates list --format json runs produce identical output."""
+        """Two root judge list JSON runs produce identical output."""
         runner = CliRunner()
         outputs: list[str] = []
 
         for _ in range(2):
             result = runner.invoke(
                 cli,
-                ["--plain", "mark", "candidates", "list", "--format", "json"],
+                ["--plain", "judge", "--list", "--format", "json"],
                 catch_exceptions=False,
             )
             assert result.exit_code == 0

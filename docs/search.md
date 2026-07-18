@@ -408,18 +408,19 @@ keeps pending candidates separate from already judged lifecycle rows:
 
 ```bash
 polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
-polylogue mark candidates list --target-ref session:codex-session:abc123 --format json
-polylogue mark candidates review --target-ref session:codex-session:abc123 --format json
+polylogue judge --target-ref session:codex-session:abc123 --list --format json
+polylogue judge --target-ref session:codex-session:abc123 --review --format json
+polylogue judge --status --format json
 ```
 
-The judgment workflow lives under `polylogue mark candidates` and writes
-back into the same `user.db` assertion substrate:
+The sole public judgment workflow is root `polylogue judge`; it writes through
+the existing lifecycle authority into the same `user.db` assertion substrate:
 
 ```bash
-polylogue mark candidates accept assertion:candidate-id --reason "confirmed by transcript" --format json
-polylogue mark candidates reject assertion:candidate-id --reason "unsupported by evidence" --format json
-polylogue mark candidates defer assertion:candidate-id --reason "needs another source" --format json
-polylogue mark candidates supersede assertion:candidate-id --kind summary --body "replacement claim" --format json
+polylogue judge --accept assertion:candidate-id --reason "confirmed by transcript" --format json
+polylogue judge --reject assertion:candidate-id --reason "unsupported by evidence" --format json
+polylogue judge --defer assertion:candidate-id --reason "needs another source" --format json
+polylogue judge --supersede assertion:candidate-id --replacement-kind summary --body "replacement claim" --format json
 ```
 
 The closed assertion status vocabulary is `active`, `candidate`, `accepted`,
@@ -429,12 +430,22 @@ fail at the typed boundary instead of being rendered as generic strings.
 candidate assertion ref and whose `supersedes` lineage points at the candidate.
 `reject` writes `status:rejected`, and `defer` writes `status:deferred`; both
 preserve a judgment assertion with the reason and leave a durable lifecycle
-record. Judged candidates remain in `mark candidates review` with disabled
+record. Judged candidates remain in `polylogue judge --review` with disabled
 action reasons such as `candidate_already_accepted`, `candidate_already_rejected`,
-`candidate_deferred`, or `candidate_superseded`, while `mark candidates list`
-only shows candidates still awaiting judgment. No candidate assertion is
-injected into compiled context unless a later surface asks for candidates
-explicitly.
+`candidate_deferred`, or `candidate_superseded`, while `polylogue judge --list`
+only shows candidates still awaiting judgment. Review rows disclose the claim
+summary, source identity, candidate age, total evidence count, and up to five
+bounded evidence previews; unresolved or failed references are represented as
+explicit per-reference states rather than failing the whole review. No candidate
+assertion is injected into compiled context unless a later surface asks for
+candidates explicitly.
+
+`polylogue judge --status` is a non-destructive queue-health query. It reports
+pending counts and age, lifecycle/kind/source breakdowns, producer-run state,
+scheduler heartbeat, convergence debt, and retention outcome. An empty queue is
+healthy only when a recent successful producer run and fresh heartbeat are both
+observable; otherwise it remains `empty-unverified`. Candidates older than 60
+days remain durable and visible as retained backlog.
 
 Pending candidate judgments also appear in the operator debt cockpit:
 

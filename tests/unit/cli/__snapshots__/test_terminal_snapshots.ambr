@@ -216,14 +216,15 @@
       find      Search the archive, then optionally run an...
       read      Read matched sessions (route to view<PATH>).
       select    Select one matched session or print candidate identities.
-      mark      Mark selected sessions; review candidates under mark candidates.
+      mark      Mark selected sessions with tags, notes, and durable marks.
       note      Capture a terminal memory candidate.
+      judge     Interactively triage candidate assertions.
       analyze   Analyze matched sessions and named facet families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
       continue  Resume a session or compile successor context as JSON.
-      Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
-      command.
+      Use `find QUERY then ACTION`; root `judge` owns assertion-candidate
+      review; `facets` is the direct archive aggregate command.
     Setup, import, and evidence:
       config    Show resolved Polylogue configuration with...
       init      Detect chat sources and write a starter polylogue.toml.
@@ -246,7 +247,6 @@
     Other commands:
       agent        Install executable agent guidance.
       annotations  Import typed annotation batches.
-      judge        Interactively triage candidate assertions.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -470,16 +470,18 @@
                 view<PATH>).
       select    Select one matched session or print candidate
                 identities.
-      mark      Mark selected sessions; review candidates
-                under mark candidates.
+      mark      Mark selected sessions with tags, notes, and
+                durable marks.
       note      Capture a terminal memory candidate.
+      judge     Interactively triage candidate assertions.
       analyze   Analyze matched sessions and named facet
                 families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
       continue  Resume a session or compile successor context
                 as JSON.
-      Use `find QUERY then ACTION`; `facets` is the direct
+      Use `find QUERY then ACTION`; root `judge` owns
+      assertion-candidate review; `facets` is the direct
       archive aggregate command.
     Setup, import, and evidence:
       config    Show resolved Polylogue configuration with...
@@ -505,7 +507,6 @@
     Other commands:
       agent        Install executable agent guidance.
       annotations  Import typed annotation batches.
-      judge        Interactively triage candidate assertions.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -650,14 +651,15 @@
       find      Search the archive, then optionally run an...
       read      Read matched sessions (route to view<PATH>).
       select    Select one matched session or print candidate identities.
-      mark      Mark selected sessions; review candidates under mark candidates.
+      mark      Mark selected sessions with tags, notes, and durable marks.
       note      Capture a terminal memory candidate.
+      judge     Interactively triage candidate assertions.
       analyze   Analyze matched sessions and named facet families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
       continue  Resume a session or compile successor context as JSON.
-      Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
-      command.
+      Use `find QUERY then ACTION`; root `judge` owns assertion-candidate
+      review; `facets` is the direct archive aggregate command.
     Setup, import, and evidence:
       config    Show resolved Polylogue configuration with...
       init      Detect chat sources and write a starter polylogue.toml.
@@ -680,6 +682,5 @@
     Other commands:
       agent        Install executable agent guidance.
       annotations  Import typed annotation batches.
-      judge        Interactively triage candidate assertions.
   '''
 # ---

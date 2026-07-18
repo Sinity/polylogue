@@ -34,6 +34,34 @@ def _candidate() -> AssertionClaimPayload:
     )
 
 
+def test_judge_mutation_requires_candidate_ref() -> None:
+    """A decision option cannot be parsed without its explicit candidate ref."""
+
+    invocation = CliRunner().invoke(judge_command, ["--accept"])
+
+    assert invocation.exit_code == 2
+    assert "requires an argument" in invocation.output
+
+
+def test_judge_injection_requires_explicit_flag() -> None:
+    """Acceptance defaults to non-injecting unless the operator opts in."""
+
+    payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
+    polylogue = SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload))
+    env = cast(AppEnv, SimpleNamespace(polylogue=polylogue))
+
+    invocation = CliRunner().invoke(
+        judge_command,
+        ["--accept", "assertion:candidate-judge-1", "--format", "json"],
+        obj=env,
+        catch_exceptions=False,
+    )
+
+    assert invocation.exit_code == 0
+    item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
+    assert item.inject is False
+
+
 def test_judge_noninteractive_accept_uses_bulk_lifecycle_payload() -> None:
     candidate = _candidate()
     result = AssertionJudgmentResultPayload(
@@ -98,10 +126,24 @@ def test_judge_edit_preserves_the_candidate_lifecycle_kind() -> None:
 
 def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
     finding = _candidate()
-    decision = finding.model_copy(update={"assertion_id": "candidate-decision-1", "kind": AssertionKind.DECISION})
     payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
+    from polylogue.surfaces.action_affordances import assertion_candidate_review_affordances
+    from polylogue.surfaces.payloads import AssertionCandidateReviewItemPayload, AssertionCandidateReviewListPayload
+
+    review_item = AssertionCandidateReviewItemPayload(
+        candidate_ref="assertion:candidate-judge-1",
+        review_status="pending",
+        candidate=finding,
+        action_affordances=assertion_candidate_review_affordances(candidate_ref="assertion:candidate-judge-1"),
+    )
+    review_payload = AssertionCandidateReviewListPayload(
+        items=(review_item,),
+        total=1,
+        limit=1,
+        candidate_statuses=(AssertionStatus.CANDIDATE,),
+    )
     polylogue = SimpleNamespace(
-        list_assertion_candidates=AsyncMock(return_value=[finding, decision]),
+        list_assertion_candidate_reviews=AsyncMock(return_value=review_payload),
         judge_assertion_candidates=AsyncMock(return_value=payload),
     )
     env = SimpleNamespace(polylogue=polylogue)
@@ -117,4 +159,9 @@ def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
     assert json.loads(invocation.output)["applied_count"] == 0
     items = polylogue.judge_assertion_candidates.await_args.kwargs["items"]
     assert [item.candidate_ref for item in items] == ["assertion:candidate-judge-1"]
-    polylogue.list_assertion_candidates.assert_awaited_once_with(kinds=(AssertionKind.FINDING,), limit=None)
+    polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(
+        target_ref=None,
+        kinds=(AssertionKind.FINDING,),
+        statuses=(AssertionStatus.CANDIDATE,),
+        limit=None,
+    )

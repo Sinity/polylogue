@@ -201,17 +201,17 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
         id="candidate-assertion-review",
         title="Review candidate assertions",
         intent="List, accept, reject, defer, or supersede model-produced assertion candidates through explicit judgment commands.",
-        query_shape="find EXACT_REF then mark candidates list|accept|reject|defer|supersede",
-        action_sequence="find → mark candidates",
-        action_paths=(("find",), ("mark",)),
+        query_shape="polylogue judge --target-ref REF --list|--accept|--reject|--defer|--supersede",
+        action_sequence="judge",
+        action_paths=(("judge",),),
         read_views=(),
-        selector_policy="`mark candidates` owns assertion-candidate review for a selected session or target ref; ordinary `mark` owns session overlays.",
+        selector_policy="Root `polylogue judge` owns assertion-candidate review; ordinary `mark` owns session overlays selected by query.",
         cardinality_policy="Candidate list may be scoped to a selected target; each accept/reject/defer/supersede mutation names one candidate id and one target/session scope.",
         safety_policy="mutating; changes are explicit user overlay operations with accept/reject/defer/supersede verbs.",
         output_policy="Human summaries and JSON candidate lists/operation receipts.",
         evidence_policy="Candidate rows include target refs, evidence refs, claim class, status, and judgment operation trace.",
         surfaces=("cli", "daemon", "completion", "docs"),
-        cli_example="polylogue find id:claude-code-session:... then mark candidates list --format json",
+        cli_example="polylogue judge --target-ref session:claude-code-session:... --review --format json",
     ),
     QueryActionWorkflow(
         id="resolve-ref-drilldown",
@@ -251,18 +251,7 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
 QUERY_ACTION_WORKFLOW_BY_ID: dict[str, QueryActionWorkflow] = {entry.id: entry for entry in QUERY_ACTION_WORKFLOWS}
 
 
-PRODUCT_VERB_MATRIX_EXTRA_ROWS: tuple[ProductVerbMatrixRow, ...] = (
-    ProductVerbMatrixRow(
-        action_id="mark candidates",
-        target_input="selected session target_ref / candidate assertion id",
-        cardinality="list scoped candidates or singleton candidate judgment",
-        safety="mutating",
-        formats=("human", "json"),
-        destinations=("terminal", "stdout", "api", "mcp"),
-        selection_confirmation="polylogue find EXACT_REF then mark candidates list --target-ref REF",
-        next_actions=("read", "mark candidates list"),
-    ),
-)
+PRODUCT_VERB_MATRIX_EXTRA_ROWS: tuple[ProductVerbMatrixRow, ...] = ()
 
 
 ACTION_UNIT_EVIDENCE: tuple[ActionUnitEvidence, ...] = (
@@ -294,12 +283,12 @@ ACTION_UNIT_EVIDENCE: tuple[ActionUnitEvidence, ...] = (
         action_id="mark",
         evidence_unit="user overlay operation over selected session refs",
         evidence_surface="mark commands emit operation receipts and persist session tags, stars, pins, archive marks, and notes.",
-        negative_guard="Multi-match mutations require --all or --first; assertion candidates stay under mark candidates.",
+        negative_guard="Multi-match mutations require --all or --first; assertion candidates stay under root `polylogue judge`.",
     ),
     ActionUnitEvidence(
-        action_id="mark candidates",
+        action_id="judge",
         evidence_unit="candidate assertion id plus judgment operation",
-        evidence_surface="mark candidates list/accept/reject/defer/supersede routes through candidate assertion review.",
+        evidence_surface="root judge list/review/accept/reject/defer/supersede routes through the canonical candidate lifecycle.",
         negative_guard="Candidate confidence is never admission authority; human judgment command is required.",
     ),
     ActionUnitEvidence(
@@ -443,28 +432,28 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         required_affordance_ids=("analyze",),
     ),
     ExecutableWorkflowGoldenPath(
-        id="mark-candidates-list-json",
+        id="judge-review-json",
         workflow_id="candidate-assertion-review",
-        description="Candidate review lists pending candidate assertions through an explicit judgment surface.",
+        description="Root judge lists durable candidate history with bounded evidence disclosure.",
         command=(
-            "find",
-            f"id:{DEMO_CLAUDE_CODE_SESSION_ID}",
-            "then",
-            "mark",
-            "candidates",
-            "list",
+            "judge",
+            "--target-ref",
+            f"session:{DEMO_CLAUDE_CODE_SESSION_ID}",
+            "--review",
             "--format",
             "json",
         ),
-        action_path=("mark",),
+        action_path=("judge",),
         output_kind="json_object",
         json_expectations=(
+            JsonExpectation(("mode",), "string"),
             JsonExpectation(("items",), "array"),
+            JsonExpectation(("items", 0, "evidence_previews"), "array"),
             JsonExpectation(("total",), "integer"),
-            JsonExpectation(("statuses",), "array"),
+            JsonExpectation(("candidate_statuses",), "array"),
         ),
-        stdout_contains=('"statuses"', '"candidate"'),
-        required_affordance_ids=("mark",),
+        stdout_contains=('"evidence_previews"', '"candidate"'),
+        required_affordance_ids=("judge",),
     ),
     ExecutableWorkflowGoldenPath(
         id="delete-dry-run-json",

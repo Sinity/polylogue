@@ -157,14 +157,15 @@ Commands:
     find      Search the archive, then optionally run an...
     read      Read matched sessions (route to view/destination).
     select    Select one matched session or print candidate identities.
-    mark      Mark selected sessions; review candidates under mark candidates.
+    mark      Mark selected sessions with tags, notes, and durable marks.
     note      Capture a terminal memory candidate.
+    judge     Interactively triage candidate assertions.
     analyze   Analyze matched sessions and named facet families.
     facets    Show global or scoped archive facet families.
     delete    Delete matched sessions.
     continue  Resume a session or compile successor context as JSON.
-    Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
-    command.
+    Use `find QUERY then ACTION`; root `judge` owns assertion-candidate
+    review; `facets` is the direct archive aggregate command.
 
   Setup, import, and evidence:
     config    Show resolved Polylogue configuration with...
@@ -191,7 +192,6 @@ Commands:
   Other commands:
     agent        Install executable agent guidance.
     annotations  Import typed annotation batches.
-    judge        Interactively triage candidate assertions.
 ```
 
 ## Analyze Verb
@@ -411,7 +411,7 @@ Usage: polylogue mark [OPTIONS] [COMMAND] [ARGS]...
 
   Mark query-result sessions with tags, notes, or durable marks.
 
-  This owns session overlays only. Use `mark candidates` for assertion-
+  This owns session overlays only. Use root `polylogue judge` for assertion-
   candidate review; target-ref/web annotations are separate surfaces, not
   hidden here.
 
@@ -444,32 +444,46 @@ Options:
   --json            Shortcut for --format json.
   --format [json]   Output format. JSON emits a MutationResultPayload.
   --help            Show this message and exit.
-
-Commands:
-  candidates  Review assertion candidates for a selected session or...
 ```
 
-## Mark Candidate Assertions
+## Judge Candidate Assertions
 
 ```text
-Usage: polylogue mark candidates [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue judge [OPTIONS]
 
-  Review assertion candidates for a selected session or target ref.
-
-  Candidate commands own review state and claim judgment: review, list,
-  accept, reject, defer, or supersede candidate assertions. They do not apply
-  ordinary session tags, stars, pins, archive marks, or notes.
+  Review and judge assertions through the sole public operator lifecycle.
 
 Options:
-  --help  Show this message and exit.
-
-Commands:
-  accept     Accept a candidate assertion into an active assertion.
-  defer      Record a durable candidate assertion deferral.
-  list       List candidate assertion claims.
-  reject     Reject a candidate assertion with a durable reason.
-  review     List candidate assertion review state and disabled actions.
-  supersede  Supersede a candidate with an explicit active assertion.
+  --list                          List pending candidates without judging.
+  --review                        List durable review history, not only
+                                  pending candidates.
+  --status                        Show non-destructive queue and producer
+                                  health.
+  --accept TEXT                   Accept one or more candidate assertion refs.
+  --reject TEXT                   Reject one or more candidate assertion refs.
+  --defer TEXT                    Durably defer one or more candidate
+                                  assertion refs.
+  --supersede TEXT                Supersede one or more candidate assertion
+                                  refs.
+  --accept-all-of-kind            Accept every pending candidate selected by
+                                  --kind and time/target filters.
+  --target-ref TEXT               Limit review rows to one target object ref.
+  --kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
+  --candidate-status [candidate|accepted|rejected|deferred|superseded]
+  --since TEXT                    Lower candidate creation-time bound (ISO or
+                                  relative date).
+  --until TEXT                    Upper candidate creation-time bound (ISO or
+                                  relative date).
+  --limit INTEGER RANGE           [default: 50; 1<=x<=500]
+  --reason TEXT
+  --actor-ref TEXT                [default: user:local]
+  --inject                        Authorize injection for accepted/superseding
+                                  assertions.
+  --replacement-kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
+  --body TEXT                     Replacement body for --supersede.
+  --json                          Shortcut for --format json.
+  --format [text|json]            Output format (default: text).
+  --help                          Show this message and exit.
 ```
 
 ## Continue Verb
@@ -767,6 +781,7 @@ It records the public action floor, not every utility command in the Click tree.
 | `polylogue continue` | `read` | `selection` | `query_result_set` | `singleton` | `safe` | `human`, `json` | `terminal`, `stdout`, `clipboard`, `file`, `api`, `mcp` | - | `polylogue find QUERY then select` | `item` | - | `read`, `mark` | `session_id` |
 | `polylogue select` | `read` | `selection` | `query_result_set` | `singleton` | `safe` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | - | `item` | - | `read`, `continue`, `analyze`, `mark`, `delete` | `session_id` |
 | `polylogue mark` | `write` | `selection` | `query_result_set` | `explicit_multi` | `mutating` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | `polylogue find QUERY then select` | `mutation` | `single_match_unless_all_or_first` | `read`, `analyze` | `session_id` |
+| `polylogue judge` | `write` | `candidate` | `assertion_candidate` | `explicit_multi` | `mutating` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | `polylogue judge --review` | `item` | `explicit_candidate_ref_for_mutation`, `authenticated_injection_opt_in` | `read`, `judge` | - |
 | `polylogue analyze` | `read` | `selection` | `query_result_set` | `any` | `safe` | `human`, `json`, `ndjson` | `terminal`, `stdout`, `file`, `api`, `mcp` | - | - | `result_set` | - | `select`, `read` | `query_expression` |
 | `polylogue delete` | `destructive` | `selection` | `query_result_set` | `destructive_multi` | `destructive` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | `polylogue find QUERY then delete --dry-run` | `polylogue find QUERY then select` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `find` | `session_id` |
 | `polylogue import` | `import` | `path` | `path` | `singleton` | `mutating` | `human` | `terminal`, `stdout`, `api` | - | - | `mutation` | `path_exists_or_demo`, `daemon_accepts_schedule` | `ops`, `read`, `analyze` | `filesystem_path` |

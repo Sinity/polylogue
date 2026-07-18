@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -30,7 +30,6 @@ from polylogue.archive.viewport import (
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, read_view_option_names
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
-from polylogue.core.enums import AssertionStatus
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
@@ -1606,7 +1605,7 @@ def mark_verb(
 ) -> None:
     """Mark query-result sessions with tags, notes, or durable marks.
 
-    This owns session overlays only. Use `mark candidates` for assertion-candidate review;
+    This owns session overlays only. Use root `polylogue judge` for assertion-candidate review;
     target-ref/web annotations are separate surfaces, not hidden here.
 
     \b
@@ -1626,7 +1625,7 @@ def mark_verb(
         polylogue find id:abc then mark --pin
         polylogue find 'repo:polylogue since:7d' then mark --tag-add sprint --all
     """
-    import uuid
+    import hashlib
 
     from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
 
@@ -1683,7 +1682,8 @@ def mark_verb(
             if do_unarchive:
                 await poly.remove_mark(sid, "archive")
             if note_text is not None:
-                annotation_id = f"note-{uuid.uuid4().hex[:16]}"
+                digest = hashlib.sha256(f"{sid}\0{note_text}".encode("utf-8", errors="surrogatepass")).hexdigest()
+                annotation_id = f"note-{digest}"
                 await poly.save_annotation(annotation_id, sid, note_text)
 
     run_coroutine_sync(_apply_marks())
@@ -1725,235 +1725,6 @@ def mark_verb(
         click.echo(f"Marked {count} session(s): {'; '.join(ops)}")
     else:
         click.echo("No mark operations specified.")
-
-
-@mark_verb.group("candidates")
-def mark_candidates_group() -> None:
-    """Review assertion candidates for a selected session or target ref.
-
-    Candidate commands own review state and claim judgment: review, list,
-    accept, reject, defer, or supersede candidate assertions. They do not apply ordinary session tags,
-    stars, pins, archive marks, or notes.
-    """
-
-
-@mark_candidates_group.command("list")
-@click.option("--target-ref", default=None, help="Limit candidates to one target object ref.")
-@click.option("--limit", "-l", type=int, default=50, show_default=True)
-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
-@click.pass_obj
-def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
-    """List candidate assertion claims."""
-    items = run_coroutine_sync(env.polylogue.list_assertion_candidates(target_ref=target_ref, limit=limit))
-    if output_format == "json":
-        from polylogue.surfaces.payloads import AssertionClaimListPayload
-
-        payload = AssertionClaimListPayload(
-            items=tuple(items), total=len(items), limit=limit, statuses=(AssertionStatus.CANDIDATE,)
-        )
-        click.echo(serialize_surface_payload(payload, exclude_none=True))
-        return
-    if not items:
-        click.echo("No candidate assertions found.")
-        return
-    for item in items:
-        detail = item.body_text or (json.dumps(item.value, sort_keys=True) if item.value is not None else "")
-        click.echo(f"{item.assertion_id:<32} {item.kind:<20} {item.target_ref} {detail}")
-
-
-@mark_candidates_group.command("review")
-@click.option("--target-ref", default=None, help="Limit candidate review rows to one target object ref.")
-@click.option("--limit", "-l", type=int, default=50, show_default=True)
-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
-@click.pass_obj
-def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
-    """List candidate assertion review state and disabled actions."""
-    from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
-
-    payload = run_coroutine_sync(env.polylogue.list_assertion_candidate_reviews(target_ref=target_ref, limit=limit))
-    if not isinstance(payload, AssertionCandidateReviewListPayload):
-        payload = AssertionCandidateReviewListPayload.from_envelopes(
-            payload,
-            limit=limit,
-            target_ref=target_ref,
-        )
-    if output_format == "json":
-        click.echo(serialize_surface_payload(payload, exclude_none=True))
-        return
-    if not payload.items:
-        click.echo("No assertion candidate review rows found.")
-        return
-    for item in payload.items:
-        disabled = sorted(
-            {
-                action.availability.disabled_reason
-                for action in item.action_affordances
-                if action.availability.disabled_reason
-            }
-        )
-        detail = item.candidate.body_text or (
-            json.dumps(item.candidate.value, sort_keys=True) if item.candidate.value is not None else ""
-        )
-        suffix = f" disabled={','.join(disabled)}" if disabled else ""
-        click.echo(
-            f"{item.candidate.assertion_id:<32} {item.review_status:<10} "
-            f"{item.candidate.kind:<20} {item.candidate.target_ref} {detail}{suffix}"
-        )
-
-
-@mark_candidates_group.command("accept")
-@click.argument("candidate_refs", nargs=-1, required=True)
-@click.option("--reason", default=None)
-@click.option("--actor-ref", default="user:local", show_default=True)
-@click.option("--inject", is_flag=True, help="Authorize context injection for accepted candidates.")
-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
-@click.pass_obj
-def accept_mark_candidate_command(
-    env: AppEnv,
-    candidate_refs: tuple[str, ...],
-    reason: str | None,
-    actor_ref: str,
-    inject: bool,
-    output_format: str | None,
-) -> None:
-    """Accept a candidate assertion into an active assertion."""
-    _emit_candidate_judgment(
-        env,
-        candidate_refs=candidate_refs,
-        decision="accept",
-        reason=reason,
-        actor_ref=actor_ref,
-        inject=inject,
-        output_format=output_format,
-    )
-
-
-@mark_candidates_group.command("reject")
-@click.argument("candidate_refs", nargs=-1, required=True)
-@click.option("--reason", required=True)
-@click.option("--actor-ref", default="user:local", show_default=True)
-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
-@click.pass_obj
-def reject_mark_candidate_command(
-    env: AppEnv,
-    candidate_refs: tuple[str, ...],
-    reason: str,
-    actor_ref: str,
-    output_format: str | None,
-) -> None:
-    """Reject a candidate assertion with a durable reason."""
-    _emit_candidate_judgment(
-        env,
-        candidate_refs=candidate_refs,
-        decision="reject",
-        reason=reason,
-        actor_ref=actor_ref,
-        output_format=output_format,
-    )
-
-
-@mark_candidates_group.command("defer")
-@click.argument("candidate_refs", nargs=-1, required=True)
-@click.option("--reason", default=None)
-@click.option("--actor-ref", default="user:local", show_default=True)
-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
-@click.pass_obj
-def defer_mark_candidate_command(
-    env: AppEnv,
-    candidate_refs: tuple[str, ...],
-    reason: str | None,
-    actor_ref: str,
-    output_format: str | None,
-) -> None:
-    """Record a durable candidate assertion deferral."""
-    _emit_candidate_judgment(
-        env,
-        candidate_refs=candidate_refs,
-        decision="defer",
-        reason=reason,
-        actor_ref=actor_ref,
-        output_format=output_format,
-    )
-
-
-@mark_candidates_group.command("supersede")
-@click.argument("candidate_refs", nargs=-1, required=True)
-@click.option("--kind", "replacement_kind", required=True, help="Kind for the replacement active assertion.")
-@click.option("--body", "replacement_body_text", required=True, help="Body text for the replacement assertion.")
-@click.option("--reason", default=None)
-@click.option("--actor-ref", default="user:local", show_default=True)
-@click.option("--inject", is_flag=True, help="Authorize context injection for promoted replacements.")
-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
-@click.pass_obj
-def supersede_mark_candidate_command(
-    env: AppEnv,
-    candidate_refs: tuple[str, ...],
-    replacement_kind: str,
-    replacement_body_text: str,
-    reason: str | None,
-    actor_ref: str,
-    inject: bool,
-    output_format: str | None,
-) -> None:
-    """Supersede a candidate with an explicit active assertion."""
-    _emit_candidate_judgment(
-        env,
-        candidate_refs=candidate_refs,
-        decision="supersede",
-        reason=reason,
-        actor_ref=actor_ref,
-        inject=inject,
-        output_format=output_format,
-        replacement_kind=replacement_kind,
-        replacement_body_text=replacement_body_text,
-    )
-
-
-def _emit_candidate_judgment(
-    env: AppEnv,
-    *,
-    candidate_refs: Sequence[str],
-    decision: str,
-    reason: str | None,
-    actor_ref: str,
-    output_format: str | None,
-    replacement_kind: str | None = None,
-    replacement_body_text: str | None = None,
-    inject: bool = False,
-) -> None:
-    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
-
-    payload = run_coroutine_sync(
-        env.polylogue.judge_assertion_candidates(
-            items=tuple(
-                ArchiveAssertionBulkJudgmentItemEnvelope(
-                    candidate_ref=candidate_ref,
-                    decision=decision,
-                    reason=reason,
-                    actor_ref=actor_ref,
-                    inject=inject,
-                    replacement_kind=replacement_kind,
-                    replacement_body_text=replacement_body_text,
-                )
-                for candidate_ref in candidate_refs
-            )
-        )
-    )
-    if output_format == "json":
-        click.echo(serialize_surface_payload(payload, exclude_none=True))
-        return
-    for item in payload.items:
-        if item.result is None:
-            click.echo(f"{decision}: {item.candidate_ref} -> failed ({item.error or 'unknown error'})")
-            continue
-        result_ref = item.result.judgment.resulting_assertion_ref or "no active assertion"
-        click.echo(f"{decision}: {item.result.candidate.assertion_id} -> {result_ref} ({item.outcome})")
 
 
 @click.group("analyze", invoke_without_command=True, no_args_is_help=False)

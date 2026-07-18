@@ -263,7 +263,7 @@ def build_document(
         "",
         "Shell completions are part of the workflow contract. They must cover `find QUERY then ACTION`, the action verbs "
         "(`select`, `read`, `continue`, `analyze`, `mark`, `delete`), read views, destinations and view-scoped formats, "
-        "mutating/destructive guards (`mark --all|--first`, `delete --dry-run|--yes|--all`), `mark candidates` subcommands, "
+        "mutating/destructive guards (`mark --all|--first`, `delete --dry-run|--yes|--all`), root `judge` options, "
         "and `continue --candidates` options. Unsupported query syntax must fail loudly and must not be completed as broad FTS.",
         "",
         "## Daemon and Browser Workbench Contract",

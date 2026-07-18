@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import hashlib
 import json
 import logging
 import sqlite3
@@ -33,7 +34,13 @@ from polylogue.context.compiler import (
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
 from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument
-from polylogue.core.refs import EvidenceRef, ObjectRef, parse_delegation_edge_object_id, parse_public_ref
+from polylogue.core.refs import (
+    EvidenceRef,
+    ObjectRef,
+    normalize_object_ref_text,
+    parse_delegation_edge_object_id,
+    parse_public_ref,
+)
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
@@ -58,6 +65,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveMessageRow,
     ArchiveSessionEnvelope,
 )
+from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
@@ -120,8 +128,11 @@ if TYPE_CHECKING:
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
         AssertionBulkJudgmentPayload,
+        AssertionCandidateQueueHealthPayload,
+        AssertionCandidateQueueState,
         AssertionCandidateReviewListPayload,
         AssertionClaimPayload,
+        AssertionEvidenceResolutionState,
         AssertionJudgmentResultPayload,
         BulkTagMutationResult,
         DeleteSessionResult,
@@ -1049,7 +1060,7 @@ def _archive_list_assertion_claims(
     if not user_db.exists():
         return []
     try:
-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
             if kinds is None:
@@ -1090,7 +1101,7 @@ def _archive_get_context_delivery(
     if not user_db.exists():
         return None
     try:
-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
             receipt = read_context_delivery(conn, snapshot_ref)
@@ -1230,7 +1241,7 @@ def _archive_list_assertion_candidate_reviews(
     if not user_db.exists():
         return []
     try:
-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
             return list_assertion_candidate_reviews(
@@ -1244,6 +1255,220 @@ def _archive_list_assertion_candidate_reviews(
             conn.close()
     except sqlite3.Error:
         return []
+
+
+def _archive_assertion_candidate_queue_health(
+    config: Config,
+    *,
+    now_ms: int | None = None,
+) -> AssertionCandidateQueueHealthPayload:
+    """Project queue depth, retention, producer telemetry, and scheduler health."""
+
+    from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ASSERTION_CANDIDATE_JUDGMENT_KINDS,
+        ASSERTION_CANDIDATE_REVIEW_STATUSES,
+    )
+    from polylogue.surfaces.payloads import AssertionCandidateQueueHealthPayload
+
+    observed_at_ms = int(datetime.now(UTC).timestamp() * 1000) if now_ms is None else now_ms
+    archive_root = _active_archive_root(config)
+    user_db = archive_root / "user.db"
+    if not user_db.exists():
+        return AssertionCandidateQueueHealthPayload(
+            state="unavailable",
+            observed_at_ms=observed_at_ms,
+            pending_count=0,
+            caveats=("user.db is not initialized",),
+        )
+
+    kind_values = tuple(kind.value for kind in ASSERTION_CANDIDATE_JUDGMENT_KINDS)
+    review_status_values = tuple(status.value for status in ASSERTION_CANDIDATE_REVIEW_STATUSES)
+    kind_placeholders = ",".join("?" for _ in kind_values)
+    status_placeholders = ",".join("?" for _ in review_status_values)
+    try:
+        conn = open_readonly_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assertions'").fetchone()
+            if table is None:
+                raise sqlite3.OperationalError("assertions table is unavailable")
+            status_counts = {
+                str(row[0]): int(row[1])
+                for row in conn.execute(
+                    f"""
+                    SELECT status, COUNT(*)
+                    FROM assertions
+                    WHERE kind IN ({kind_placeholders})
+                      AND status IN ({status_placeholders})
+                    GROUP BY status
+                    ORDER BY status
+                    """,
+                    (*kind_values, *review_status_values),
+                )
+            }
+            kind_counts = {
+                str(row[0]): int(row[1])
+                for row in conn.execute(
+                    f"""
+                    SELECT kind, COUNT(*)
+                    FROM assertions
+                    WHERE kind IN ({kind_placeholders}) AND status = ?
+                    GROUP BY kind
+                    ORDER BY kind
+                    """,
+                    (*kind_values, AssertionStatus.CANDIDATE.value),
+                )
+            }
+            source_counts = {
+                str(row[0]): int(row[1])
+                for row in conn.execute(
+                    f"""
+                    SELECT COALESCE(author_kind, 'unknown') || ':' || COALESCE(author_ref, 'unknown'), COUNT(*)
+                    FROM assertions
+                    WHERE kind IN ({kind_placeholders}) AND status = ?
+                    GROUP BY author_kind, author_ref
+                    ORDER BY COUNT(*) DESC, author_kind, author_ref
+                    """,
+                    (*kind_values, AssertionStatus.CANDIDATE.value),
+                )
+            }
+            age_cutoff_ms = observed_at_ms - 60 * 24 * 60 * 60 * 1000
+            aggregate = conn.execute(
+                f"""
+                SELECT COUNT(*), MIN(created_at_ms), MAX(created_at_ms),
+                       SUM(CASE WHEN created_at_ms < ? THEN 1 ELSE 0 END)
+                FROM assertions
+                WHERE kind IN ({kind_placeholders}) AND status = ?
+                """,
+                (age_cutoff_ms, *kind_values, AssertionStatus.CANDIDATE.value),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return AssertionCandidateQueueHealthPayload(
+            state="unavailable",
+            observed_at_ms=observed_at_ms,
+            pending_count=0,
+            caveats=(f"queue read failed: {exc}",),
+        )
+
+    pending_count = int(aggregate[0] or 0) if aggregate is not None else 0
+    oldest_pending_at_ms = int(aggregate[1]) if aggregate is not None and aggregate[1] is not None else None
+    newest_pending_at_ms = int(aggregate[2]) if aggregate is not None and aggregate[2] is not None else None
+    stale_pending_count = int(aggregate[3] or 0) if aggregate is not None else 0
+
+    producer_status: str | None = None
+    producer_observed_at_ms: int | None = None
+    producer_debt_count = 0
+    scheduler_state: Literal["fresh", "stale", "stopped", "unknown"] = "unknown"
+    scheduler_heartbeat_at_ms: int | None = None
+    caveats: list[str] = []
+    ops_db = archive_root / "ops.db"
+    if not ops_db.exists():
+        caveats.append("ops.db is unavailable; producer and scheduler health are unverified")
+    else:
+        try:
+            ops_conn = open_readonly_connection(ops_db)
+            try:
+                if ops_conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_stage_events'"
+                ).fetchone():
+                    producer_row = ops_conn.execute(
+                        """
+                        SELECT status, observed_at_ms
+                        FROM daemon_stage_events
+                        WHERE stage = 'standing-queries'
+                        ORDER BY observed_at_ms DESC, rowid DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    if producer_row is not None:
+                        producer_status = str(producer_row[0])
+                        producer_observed_at_ms = int(producer_row[1])
+                if ops_conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
+                ).fetchone():
+                    debt_row = ops_conn.execute(
+                        """
+                        SELECT COUNT(*) FROM convergence_debt
+                        WHERE stage = 'standing-queries' AND status IN ('failed', 'deferred')
+                        """
+                    ).fetchone()
+                    producer_debt_count = int(debt_row[0] or 0) if debt_row is not None else 0
+                if ops_conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_lifecycle'"
+                ).fetchone():
+                    lifecycle_row = ops_conn.execute(
+                        """
+                        SELECT stopped_at_ms, last_heartbeat_at_ms
+                        FROM daemon_lifecycle
+                        ORDER BY started_at_ms DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    if lifecycle_row is not None:
+                        scheduler_heartbeat_at_ms = int(lifecycle_row[1])
+                        if lifecycle_row[0] is not None:
+                            scheduler_state = "stopped"
+                        elif observed_at_ms - scheduler_heartbeat_at_ms <= (
+                            DAEMON_HEARTBEAT_STALE_AFTER_SECONDS * 1000
+                        ):
+                            scheduler_state = "fresh"
+                        else:
+                            scheduler_state = "stale"
+            finally:
+                ops_conn.close()
+        except sqlite3.Error as exc:
+            caveats.append(f"ops telemetry read failed: {exc}")
+
+    producer_age_ms = None if producer_observed_at_ms is None else max(0, observed_at_ms - producer_observed_at_ms)
+    heartbeat_age_ms = None if scheduler_heartbeat_at_ms is None else max(0, observed_at_ms - scheduler_heartbeat_at_ms)
+    successful_producer_statuses = {"completed", "done", "ok", "success", "succeeded"}
+    failed_producer_statuses = {"error", "failed", "interrupted"}
+    producer_fresh = (
+        producer_status in successful_producer_statuses
+        and producer_age_ms is not None
+        and producer_age_ms <= 24 * 60 * 60 * 1000
+    )
+
+    state: AssertionCandidateQueueState
+    if producer_debt_count or producer_status in failed_producer_statuses or scheduler_state in {"stale", "stopped"}:
+        state = "producer-stalled"
+    elif stale_pending_count:
+        state = "stale-pending"
+    elif pending_count:
+        state = "pending"
+    elif producer_fresh and scheduler_state == "fresh":
+        state = "healthy-empty"
+    else:
+        state = "empty-unverified"
+        if producer_status is None:
+            caveats.append("no successful standing-queries producer event is observable")
+        if scheduler_state != "fresh":
+            caveats.append("a fresh scheduler heartbeat is not observable")
+
+    return AssertionCandidateQueueHealthPayload(
+        state=state,
+        observed_at_ms=observed_at_ms,
+        pending_count=pending_count,
+        status_counts=status_counts,
+        kind_counts=kind_counts,
+        source_counts=source_counts,
+        oldest_pending_at_ms=oldest_pending_at_ms,
+        newest_pending_at_ms=newest_pending_at_ms,
+        oldest_pending_age_ms=None if oldest_pending_at_ms is None else max(0, observed_at_ms - oldest_pending_at_ms),
+        stale_pending_count=stale_pending_count,
+        retention_outcome="retained-visible" if stale_pending_count else "none",
+        producer_status=producer_status,
+        producer_observed_at_ms=producer_observed_at_ms,
+        producer_age_ms=producer_age_ms,
+        scheduler_state=scheduler_state,
+        scheduler_heartbeat_at_ms=scheduler_heartbeat_at_ms,
+        scheduler_heartbeat_age_ms=heartbeat_age_ms,
+        producer_debt_count=producer_debt_count,
+        caveats=tuple(dict.fromkeys(caveats)),
+    )
 
 
 def _archive_judge_assertion_candidate(
@@ -1266,7 +1491,7 @@ def _archive_judge_assertion_candidate(
     if not user_db.exists():
         raise ValueError("assertion user tier is not initialized")
     try:
-        conn = sqlite3.connect(user_db)
+        conn = open_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
             result = judge_assertion_candidate(
@@ -1298,17 +1523,34 @@ def _archive_capture_assertion_candidate(
     cwd: Path | None = None,
     author_ref: str = "user:local",
     author_kind: str = "user",
+    idempotency_key: str | None = None,
 ) -> Any:
     """Write one terminal-captured assertion through the user-tier gate."""
 
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
 
     normalized_body = body_text.strip()
     if not normalized_body:
         raise ValueError("note text cannot be empty")
+    normalized_author_ref = normalize_object_ref_text(author_ref)
+    normalized_author_kind = author_kind.strip().lower()
+    if not normalized_author_kind:
+        raise ValueError("author_kind cannot be empty")
 
-    assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
+    normalized_idempotency_key = None if idempotency_key is None else idempotency_key.strip()
+    if idempotency_key is not None and not normalized_idempotency_key:
+        raise ValueError("idempotency_key cannot be empty")
+    if normalized_idempotency_key is not None and len(normalized_idempotency_key) > 240:
+        raise ValueError("idempotency_key exceeds 240 characters")
+
+    if normalized_idempotency_key is None:
+        assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
+    else:
+        identity = hashlib.sha256(
+            f"{normalized_author_ref}\0{normalized_idempotency_key}".encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        assertion_id = f"assertion-terminal-note:{identity}"
     resolved_refs: list[str] = []
     with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
         for ref in refs:
@@ -1337,10 +1579,57 @@ def _archive_capture_assertion_candidate(
         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
         user_db = archive.user_db_path
 
+    fingerprint_document = {
+        "author_kind": normalized_author_kind,
+        "author_ref": normalized_author_ref,
+        "body_text": normalized_body,
+        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "kind": kind.value,
+        "scope_refs": normalized_scope_refs,
+        "target_ref": target_ref,
+    }
+    capture_fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_document,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+
     try:
-        conn = sqlite3.connect(user_db)
+        conn = open_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
+            # The key lookup and first write share one reservation. Without
+            # this, two changed captures racing on the same key could both
+            # observe absence and the later writer would overwrite history.
+            conn.execute("BEGIN IMMEDIATE")
+            existing = read_assertion_envelope(conn, assertion_id)
+            if existing is not None:
+                existing_value = existing.value if isinstance(existing.value, dict) else {}
+                existing_scope_refs = existing_value.get("scope_refs")
+                existing_document = {
+                    "author_kind": existing.author_kind,
+                    "author_ref": existing.author_ref,
+                    "body_text": existing.body_text,
+                    "evidence_refs": existing.evidence_refs,
+                    "kind": existing.kind.value,
+                    "scope_refs": existing_scope_refs if isinstance(existing_scope_refs, list) else [],
+                    "target_ref": existing.target_ref,
+                }
+                existing_fingerprint = hashlib.sha256(
+                    json.dumps(
+                        existing_document,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8", errors="surrogatepass")
+                ).hexdigest()
+                if existing_fingerprint == capture_fingerprint:
+                    conn.commit()
+                    return existing
+                raise ValueError("idempotency_key conflicts with a different assertion candidate capture")
             envelope = upsert_assertion(
                 conn,
                 assertion_id=assertion_id,
@@ -1354,8 +1643,8 @@ def _archive_capture_assertion_candidate(
                     "unanchored": not bool(resolved_refs),
                 },
                 body_text=normalized_body,
-                author_ref=author_ref,
-                author_kind=author_kind,
+                author_ref=normalized_author_ref,
+                author_kind=normalized_author_kind,
                 evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
                 status=AssertionStatus.CANDIDATE,
                 context_policy={"inject": False, "promotion_required": True},
@@ -1381,7 +1670,7 @@ def _archive_judge_assertion_candidates(
     if not user_db.exists():
         raise ValueError("assertion user tier is not initialized")
     try:
-        conn = sqlite3.connect(user_db)
+        conn = open_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
             result = judge_assertion_candidates(conn, items)
@@ -1415,7 +1704,7 @@ def _archive_emit_pathology_assertions(
         raise ValueError("assertion user tier is not initialized")
     emitted = 0
     try:
-        conn = sqlite3.connect(user_db)
+        conn = open_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
             for session_id, findings in findings_by_session.items():
@@ -2389,7 +2678,10 @@ class PolylogueArchiveMixin:
         """List candidate assertion review state separately from active claims."""
 
         from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CANDIDATE_REVIEW_STATUSES
-        from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
+        from polylogue.surfaces.payloads import (
+            AssertionCandidateReviewListPayload,
+            AssertionEvidencePreviewPayload,
+        )
 
         candidate_statuses = ASSERTION_CANDIDATE_REVIEW_STATUSES if statuses is None else statuses
         review_rows = cast(
@@ -2402,12 +2694,65 @@ class PolylogueArchiveMixin:
                 limit=limit,
             ),
         )
+        evidence_previews: dict[str, tuple[AssertionEvidencePreviewPayload, ...]] = {}
+        for review in review_rows:
+            previews: list[AssertionEvidencePreviewPayload] = []
+            for evidence_ref in review.candidate.evidence_refs[:5]:
+                try:
+                    resolution = await self.resolve_ref(evidence_ref)
+                except Exception as exc:
+                    previews.append(
+                        AssertionEvidencePreviewPayload(
+                            ref=evidence_ref,
+                            state="error",
+                            reason=str(exc)[:300],
+                        )
+                    )
+                    continue
+                caveat = next(iter(resolution.caveats), None)
+                diagnostic = " ".join(
+                    value for value in (caveat, resolution.summary, resolution.payload_kind) if value
+                ).lower()
+                evidence_state: AssertionEvidenceResolutionState
+                if resolution.resolved:
+                    evidence_state = "resolved"
+                elif "unsupported" in diagnostic:
+                    evidence_state = "unsupported"
+                elif "pending" in diagnostic or resolution.payload_kind == "pending":
+                    evidence_state = "pending"
+                else:
+                    evidence_state = "missing"
+                previews.append(
+                    AssertionEvidencePreviewPayload(
+                        ref=evidence_ref,
+                        state=evidence_state,
+                        kind=resolution.kind,
+                        title=None if resolution.title is None else resolution.title[:200],
+                        excerpt=None if resolution.summary is None else resolution.summary[:600],
+                        reason=None if resolution.resolved else (caveat or "reference did not resolve")[:300],
+                        open_commands=tuple(
+                            action.command
+                            for action in resolution.actions
+                            if action.enabled and action.command is not None
+                        )[:3],
+                        open_hrefs=tuple(
+                            action.href for action in resolution.actions if action.enabled and action.href is not None
+                        )[:3],
+                    )
+                )
+            evidence_previews[review.candidate.assertion_id] = tuple(previews)
         return AssertionCandidateReviewListPayload.from_envelopes(
             review_rows,
             limit=limit if limit is not None else len(review_rows),
             target_ref=target_ref,
             candidate_statuses=candidate_statuses,
+            evidence_previews=evidence_previews,
         )
+
+    async def assertion_candidate_queue_health(self) -> AssertionCandidateQueueHealthPayload:
+        """Return a non-destructive health projection for the judgment queue."""
+
+        return _archive_assertion_candidate_queue_health(self.config)
 
     async def judge_assertion_candidate(
         self,
@@ -2448,6 +2793,7 @@ class PolylogueArchiveMixin:
         cwd: Path | None = None,
         author_ref: str = "user:local",
         author_kind: str = "user",
+        idempotency_key: str | None = None,
     ) -> AssertionClaimPayload:
         """Capture a terminal assertion as a non-injected candidate for review."""
 
@@ -2462,6 +2808,7 @@ class PolylogueArchiveMixin:
             cwd=cwd,
             author_ref=author_ref,
             author_kind=author_kind,
+            idempotency_key=idempotency_key,
         )
         return AssertionClaimPayload.from_envelope(envelope)
 
@@ -3346,7 +3693,7 @@ class PolylogueArchiveMixin:
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "assertion not found", normalized_ref=normalized_ref, kind="assertion"),
             )
-        with closing(sqlite3.connect(user_db)) as conn:
+        with closing(open_readonly_connection(user_db)) as conn:
             conn.row_factory = sqlite3.Row
             envelope = read_assertion_envelope(conn, object_ref.object_id)
         if envelope is None:
@@ -3390,7 +3737,7 @@ class PolylogueArchiveMixin:
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
             )
-        with closing(sqlite3.connect(user_db)) as conn:
+        with closing(open_readonly_connection(user_db)) as conn:
             conn.row_factory = sqlite3.Row
             provenance = compute_finding_provenance(conn, object_ref.object_id)
         if provenance is None:
