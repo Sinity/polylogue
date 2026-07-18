@@ -910,7 +910,7 @@ files:
     target: polylogue/cli/commands/maintenance/_preview.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_raw_identity.py
-    loc: 220
+    loc: 203
     target: polylogue/cli/commands/maintenance/_raw_identity.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_rebuild_index.py
@@ -1438,7 +1438,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2120
+    loc: 2122
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -2366,6 +2366,10 @@ files:
     loc: 243
     target: polylogue/product/continuity_scenarios.py
     owner: stable
+  - path: polylogue/product/raw_authority.py
+    loc: 109
+    target: polylogue/product/raw_authority.py
+    owner: stable
   - path: polylogue/product/workflows.py
     loc: 523
     target: polylogue/product/workflows.py
@@ -3279,7 +3283,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 603
+    loc: 620
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
