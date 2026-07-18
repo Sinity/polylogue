@@ -817,7 +817,11 @@ def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
             """
         )
         conn.execute(
-            "INSERT INTO message_embeddings_meta VALUES (?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO message_embeddings_meta (
+                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
             ("elev-1:m1", "voyage-4", 1024, b"\x00" * 32, 1, needs_reindex),
         )
         conn.commit()
