@@ -324,11 +324,12 @@ def _capture_mcp_preview(operation: BackfillOperation) -> dict[str, Any]:
     from polylogue.mcp.server import build_server
 
     server = build_server(role="admin")
-    fn = server._tool_manager._tools["maintenance_preview"].fn
+    fn = server._tool_manager._tools["maintenance"].fn
 
     with patch("polylogue.maintenance.planner.preview_backfill", return_value=operation):
         result = asyncio.run(
             fn(
+                operation="preview",
                 session_ids=["c1", "c2"],
                 origin="claude-code-session",
                 source_family="claude-code-session",

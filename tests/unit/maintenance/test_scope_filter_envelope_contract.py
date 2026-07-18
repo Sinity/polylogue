@@ -193,7 +193,7 @@ def _invoke_daemon_plan(body: dict[str, Any]) -> tuple[dict[str, Any], Maintenan
 
 
 def _invoke_mcp_preview() -> tuple[dict[str, Any], MaintenanceScopeFilter]:
-    """Drive ``maintenance_preview`` with the canonical filter args."""
+    """Drive ``maintenance(operation="preview")`` with the canonical filter args."""
     from polylogue.mcp.server import build_server
 
     captured: dict[str, MaintenanceScopeFilter] = {}
@@ -203,11 +203,12 @@ def _invoke_mcp_preview() -> tuple[dict[str, Any], MaintenanceScopeFilter]:
         return _operation_for(scope_filter)
 
     server = build_server(role="admin")
-    fn = server._tool_manager._tools["maintenance_preview"].fn
+    fn = server._tool_manager._tools["maintenance"].fn
 
     with patch("polylogue.maintenance.planner.preview_backfill", side_effect=_capture):
         result = asyncio.run(
             fn(
+                operation="preview",
                 targets=["session_insights"],
                 session_ids=["c1", "c2"],
                 origin="claude-code-session",

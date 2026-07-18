@@ -484,6 +484,16 @@ def test_api_cost_outlook_returns_typed_cycle_outlook() -> None:
         assert key in payload, f"missing key {key!r} in outlook envelope"
 
 
+@pytest.mark.xfail(
+    reason=(
+        "The six-tool MCP cutover (polylogue-t46.8, #3095) retired the standalone "
+        "cost_outlook tool without a replacement -- cost/usage rollup MCP wiring "
+        "needs a design decision (point-fix vs. generic re-hosting of the whole "
+        "INSIGHT_REGISTRY cost/usage family), tracked in polylogue-hg97."
+    ),
+    raises=KeyError,
+    strict=True,
+)
 @pytest.mark.asyncio
 async def test_mcp_cost_outlook_tool_uses_shared_envelope() -> None:
     """The MCP ``cost_outlook`` tool serializes the same typed envelope.

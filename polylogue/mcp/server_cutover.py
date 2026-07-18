@@ -43,6 +43,9 @@ async def _query_sessions(
     since: str | None,
     until: str | None,
     sort: str | None,
+    min_messages: int | None,
+    max_messages: int | None,
+    min_words: int | None,
 ) -> str:
     """Session-level rows for ``query(projection="sessions", ...)``.
 
@@ -66,6 +69,9 @@ async def _query_sessions(
         until=until,
         sort=sort,
         limit=limit,
+        min_messages=min_messages,
+        max_messages=max_messages,
+        min_words=min_words,
     )
     clamped_limit = hooks.clamp_limit(request.limit)
     spec = request.build_spec(hooks.clamp_limit)
@@ -212,14 +218,18 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         since: str | None = None,
         until: str | None = None,
         sort: str | None = None,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> str:
         """Execute a terminal DSL page, or resume it using only its q2 token.
 
         ``projection="sessions"`` switches to session-level rows instead of
         unit-source rows: ``expression`` becomes a free-text ranked search
         (top-k) when given, or an exhaustive listing filtered by
-        origin/tag/repo/since/until/sort when omitted. Continuation is not
-        yet implemented for this projection.
+        origin/tag/repo/since/until/sort/min_messages/max_messages/min_words
+        when omitted. Continuation is not yet implemented for this
+        projection.
         """
 
         async def run() -> str:
@@ -240,6 +250,9 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     since=since,
                     until=until,
                     sort=sort,
+                    min_messages=min_messages,
+                    max_messages=max_messages,
+                    min_words=min_words,
                 )
 
             from polylogue.archive.query.transaction import (
@@ -1102,6 +1115,9 @@ async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) 
         since=query.get("since"),
         until=query.get("until"),
         sort=query.get("sort"),
+        min_messages=query.get("min_messages"),
+        max_messages=query.get("max_messages"),
+        min_words=query.get("min_words"),
     )
 
 
@@ -1125,6 +1141,7 @@ def _build_mcp_scope_filter(
     from pathlib import Path
 
     from polylogue.core.enums import Origin
+    from polylogue.maintenance.scope import MaintenanceScopeFilter
 
     time_range: tuple[datetime, datetime] | None
     if since is not None or until is not None:
