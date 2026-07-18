@@ -21,6 +21,7 @@ from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     BlobPublicationReceipt,
     BlobPublicationReservationStore,
+    consume_blob_publication_receipt,
     exclude_archive_blob_publishers,
     reconcile_blob_publication_reservations,
 )
@@ -96,6 +97,58 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     assert final_gc.deleted_count == 0
     assert final_gc.skipped_reserved == 0
     assert final_gc.skipped_referenced >= 1
+
+
+def test_consume_blob_publication_receipt_is_idempotent(tmp_path: Path) -> None:
+    """The common finalizer's release is safe to call more than once (polylogue-0puw AC2).
+
+    consume_blob_publication_receipt is the durable-reference-commit boundary
+    every ingest path (raw, index-attachment, batch) relies on to release a
+    reservation. A retried or duplicated finalization call for the same
+    publication_id/blob_hash must not raise and must not affect an unrelated
+    reservation for the same blob_hash held by a different publication_id.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    payload = b"idempotent finalizer target"
+    publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+    blob_hash, _ = publisher.write_from_bytes(payload)
+    receipt_id = publisher.receipt_id(blob_hash)
+    assert receipt_id is not None
+    publisher.flush()
+
+    other_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+    other_blob_hash, _ = other_publisher.write_from_bytes(payload)
+    other_receipt_id = other_publisher.receipt_id(other_blob_hash)
+    assert other_receipt_id is not None
+    other_publisher.flush()
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
+            ).fetchone()[0]
+            == 2
+        )
+
+        consume_blob_publication_receipt(conn, receipt_id, bytes.fromhex(blob_hash))
+        conn.commit()
+        remaining = conn.execute(
+            "SELECT publication_id FROM blob_publication_reservations WHERE blob_hash = ?",
+            (bytes.fromhex(blob_hash),),
+        ).fetchall()
+        assert remaining == [(other_receipt_id,)]
+
+        # A retried/duplicated finalization of the already-consumed receipt
+        # is a no-op: no error, and the sibling publisher's reservation for
+        # the same content is untouched.
+        consume_blob_publication_receipt(conn, receipt_id, bytes.fromhex(blob_hash))
+        conn.commit()
+        remaining_after_retry = conn.execute(
+            "SELECT publication_id FROM blob_publication_reservations WHERE blob_hash = ?",
+            (bytes.fromhex(blob_hash),),
+        ).fetchall()
+        assert remaining_after_retry == [(other_receipt_id,)]
 
 
 def test_two_same_hash_publishers_consume_only_their_own_receipt(tmp_path: Path) -> None:
