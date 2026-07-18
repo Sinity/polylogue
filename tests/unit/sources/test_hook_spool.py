@@ -90,7 +90,7 @@ def test_hook_spool_keeps_event_pending_when_source_tier_write_fails(tmp_path: P
 
     result = drain_hook_event_spool(blocked_root, root=spool_root)
 
-    assert result == type(result)(acknowledged=0, failed=1)
+    assert result == type(result)(acknowledged=0, failed=1, remaining=1)
     assert event_path.exists()
     assert list(acknowledged_hook_spool_dir(spool_root).glob("*.json")) == []
     assert list(pending_hook_spool_dir(spool_root).glob("*.json")) == [event_path]
@@ -432,6 +432,53 @@ def test_hermes_hook_spool_survives_a_truncated_envelope_alongside_a_valid_one(t
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (1,)
 
 
+def test_drain_opens_archive_once_per_pass_and_honors_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One archive open per drain pass (never per record), bounded by limit,
+    with remaining telling the caller to drain again."""
+    from types import SimpleNamespace
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    spool_root = tmp_path / "hooks"
+    for index in range(5):
+        enqueue_hook_event(
+            event_id=f"batch-event-{index}",
+            provider="codex",
+            event_type="PostToolUse",
+            session_id="session-1",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"tool_name": "exec"},
+            root=spool_root,
+        )
+    archive_root = tmp_path / "archive"
+    open_calls = 0
+    real_open = ArchiveStore.open_existing
+
+    def counting_open(root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
+        nonlocal open_calls
+        open_calls += 1
+        return real_open(root, read_only=read_only, read_timeout=read_timeout)
+
+    monkeypatch.setattr(
+        "polylogue.sources.hooks.ArchiveStore",
+        SimpleNamespace(open_existing=counting_open),
+    )
+
+    first = drain_hook_event_spool(archive_root, root=spool_root, limit=2)
+    assert first.acknowledged == 2
+    assert first.failed == 0
+    assert first.remaining == 3
+    assert open_calls == 1
+
+    second = drain_hook_event_spool(archive_root, root=spool_root)
+    assert second.acknowledged == 3
+    assert second.remaining == 0
+    assert open_calls == 2
+
+
 def test_persist_record_raises_rather_than_defaulting_an_unmapped_provider_to_codex(tmp_path: Path) -> None:
     """``_validated_record`` already rejects any provider outside
     ``_SUPPORTED_PROVIDERS`` before a record reaches ``_persist_record``, so
@@ -440,9 +487,11 @@ def test_persist_record_raises_rather_than_defaulting_an_unmapped_provider_to_co
     ``_ORIGIN_TOKEN_BY_PROVIDER`` would). It must raise, not silently
     misclassify a genuinely-unknown provider as Codex."""
 
-    from polylogue.sources.hooks import _persist_record
+    from typing import cast
 
-    archive_root = tmp_path / "archive"
+    from polylogue.sources.hooks import _persist_record
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
     record: dict[str, object] = {
         "event_id": "unmapped-provider-event",
         "event_type": "tool_start",
@@ -451,8 +500,10 @@ def test_persist_record_raises_rather_than_defaulting_an_unmapped_provider_to_co
         "payload": {},
         "observed_at_ms": 0,
     }
+    # The mapping check precedes any archive access, so a sentinel proves the
+    # raise happens before anything touches the store.
     with pytest.raises(HookSpoolRecordError, match="no origin mapping"):
-        _persist_record(archive_root, tmp_path / "unused.json", record)
+        _persist_record(cast(ArchiveStore, object()), tmp_path / "unused.json", record)
 
 
 def test_hermes_per_turn_end_and_durable_finalize_remain_distinct_event_types(tmp_path: Path) -> None:
