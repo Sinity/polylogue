@@ -3563,23 +3563,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         from polylogue.archive.query.execution_control import QueryTimeoutError, classify_unit_expression_workload
-        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+        from polylogue.archive.query.transaction import QueryTransaction, query_units_transaction_request
 
         # The handler thread is dedicated, so the read runs in place; the
         # execution context supplies the deadline and shares the process-wide
         # admission controller with the async surfaces (polylogue-z9gh.1).
+        #
+        # This route does not yet accept a ``continuation`` query parameter
+        # (unlike the MCP query_units tool), so a caller cannot resume a page
+        # here; it only gets an epoch-bound continuation token in the
+        # response for parity with the other surfaces. Wiring HTTP resume is
+        # tracked as follow-on scope (see polylogue-z9gh.9 notes).
         transaction = QueryTransaction(
             archive_root,
-            QueryTransactionRequest(
-                operation="query_units",
-                arguments={
-                    "expression": expression,
-                    "session_filters": dict(request.session_filters or {}),
-                },
+            query_units_transaction_request(
+                archive_root=archive_root,
+                expression=expression,
+                session_filters=request.session_filters or {},
                 page_size=limit,
                 offset=offset,
-                projection="terminal-unit-envelope",
-                stable_order="canonical",
             ),
             workload_class=classify_unit_expression_workload(expression),
             read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,

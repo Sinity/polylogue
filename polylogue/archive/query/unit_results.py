@@ -27,7 +27,11 @@ from polylogue.archive.query.spec import (
     parse_query_date,
     split_csv,
 )
-from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
+from polylogue.archive.query.transaction import (
+    QueryContinuation,
+    QueryTransactionRequest,
+    archive_index_epoch,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.payloads import (
@@ -521,18 +525,22 @@ def query_unit_envelope(
         session_filters=request.session_filters,
         execution_context=execution_context,
     )
-    canonical_request = transaction_request or QueryTransactionRequest(
-        operation="query_units",
-        arguments={
-            "expression": request.expression,
-            "session_filters": dict(request.session_filters or {}),
-        },
-        page_size=request.limit,
-        offset=request.offset,
-    )
+    canonical_request = transaction_request
+    if canonical_request is None:
+        archive_root = getattr(archive, "archive_root", None)
+        canonical_request = QueryTransactionRequest(
+            operation="query_units",
+            arguments={
+                "expression": request.expression,
+                "session_filters": dict(request.session_filters or {}),
+            },
+            page_size=request.limit,
+            offset=request.offset,
+            archive_epoch=archive_index_epoch(archive_root / "index.db") if archive_root is not None else "",
+        )
     if canonical_request.operation != "query_units":
         raise ValueError("query-unit envelope requires a query_units transaction")
-    result_ref = "result:" + canonical_request.query_ref.removeprefix("query:")
+    result_ref = canonical_request.result_ref
     next_offset = getattr(envelope, "next_offset", None)
     continuation = (
         QueryContinuation(

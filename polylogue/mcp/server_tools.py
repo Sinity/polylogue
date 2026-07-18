@@ -300,10 +300,17 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.archive.query.execution_control import classify_unit_expression_workload
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
-            from polylogue.archive.query.transaction import QueryContinuation, QueryTransaction, QueryTransactionRequest
+            from polylogue.archive.query.transaction import (
+                QueryContinuation,
+                QueryContinuationStaleError,
+                QueryTransaction,
+                query_units_transaction_request,
+                validate_continuation_epoch,
+            )
             from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
             config = hooks.get_config()
+            archive_root = mcp_archive_root(config)
             effective_expression = requested_expression
             effective_limit = limit
             effective_offset = offset
@@ -319,6 +326,10 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                         code="invalid_continuation",
                         tool="query_units",
                     )
+                try:
+                    validate_continuation_epoch(continuation_request, archive_root=archive_root)
+                except QueryContinuationStaleError as exc:
+                    return hooks.error_json(str(exc), code=exc.code, tool="query_units")
                 effective_expression = str(continuation_request.arguments.get("expression", requested_expression))
                 effective_offset = continuation_request.offset
                 effective_limit = continuation_request.page_size
@@ -379,14 +390,13 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     "session_filters": dict(unit_request.session_filters or {}),
                 }
                 transaction = QueryTransaction(
-                    mcp_archive_root(config),
-                    QueryTransactionRequest(
-                        operation="query_units",
-                        arguments=canonical_arguments,
+                    archive_root,
+                    query_units_transaction_request(
+                        archive_root=archive_root,
+                        expression=effective_expression,
+                        session_filters=unit_request.session_filters or {},
                         page_size=clamped_limit,
                         offset=clamped_offset,
-                        projection="terminal-unit-envelope",
-                        stable_order="canonical",
                     ),
                     workload_class=classify_unit_expression_workload(effective_expression),
                 )
