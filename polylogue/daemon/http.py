@@ -2003,7 +2003,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_webui_html(HTTPStatus.OK, render_archive_overview_page(bundle, page))
 
     def _serve_webui_session_list(self, params: dict[str, list[str]]) -> None:
-        from polylogue.archive.query.spec import clamp_query_limit
+        from polylogue.archive.query.spec import QuerySpecError, clamp_query_limit
         from polylogue.daemon.webui import (
             SESSION_LIST_LIMIT,
             WebUIAssetBundle,
@@ -2038,6 +2038,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         offset = max(0, self._get_int(params, "offset", 0))
         try:
             page = self._do_archive_session_list(archive_root, params, limit, offset, "/app/sessions")
+        except QuerySpecError as exc:
+            self._send_webui_html(
+                HTTPStatus.BAD_REQUEST,
+                render_session_list_page(bundle, None, filters, notice=str(exc)),
+            )
+            return
         except sqlite3.OperationalError as exc:
             logger.exception("webui session list read failed")
             status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR

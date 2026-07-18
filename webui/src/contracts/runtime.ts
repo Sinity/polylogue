@@ -56,5 +56,8 @@ export function requiredBoolean(record: Record<string, unknown>, key: string): b
 
 export function optionalBoolean(record: Record<string, unknown>, key: string): boolean {
   const value = record[key];
-  return typeof value === 'boolean' && value;
+  if (value === undefined || value === null) {
+    return false;
+  }
+  return requiredBoolean(record, key);
 }

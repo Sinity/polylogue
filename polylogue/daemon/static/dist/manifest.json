@@ -1,49 +1,49 @@
 {
-  "_styles-CWJQniuB.css": {
-    "file": "styles-CWJQniuB.css",
-    "src": "_styles-CWJQniuB.css"
-  },
-  "_styles-CZzoe2u0.js": {
-    "file": "styles-CZzoe2u0.js",
+  "_styles-Bqw_TvPJ.js": {
+    "file": "styles-Bqw_TvPJ.js",
     "name": "styles",
     "css": [
       "styles-CWJQniuB.css"
     ]
   },
+  "_styles-CWJQniuB.css": {
+    "file": "styles-CWJQniuB.css",
+    "src": "_styles-CWJQniuB.css"
+  },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-DfBWwhF8.js",
+    "file": "archive-overview-B1lN82fL.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-CZzoe2u0.js"
+      "_styles-Bqw_TvPJ.js"
     ]
   },
   "src/entrypoints/observability.tsx": {
-    "file": "observability-ByuU1g3r.js",
+    "file": "observability-1J75KNAu.js",
     "name": "observability",
     "src": "src/entrypoints/observability.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-CZzoe2u0.js"
+      "_styles-Bqw_TvPJ.js"
     ]
   },
   "src/entrypoints/session-list.tsx": {
-    "file": "session-list-BrZBszvc.js",
+    "file": "session-list-C73CEEh5.js",
     "name": "session-list",
     "src": "src/entrypoints/session-list.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-CZzoe2u0.js"
+      "_styles-Bqw_TvPJ.js"
     ]
   },
   "src/entrypoints/session-read.tsx": {
-    "file": "session-read-CGPo8IeH.js",
+    "file": "session-read-DrIn8GQ3.js",
     "name": "session-read",
     "src": "src/entrypoints/session-read.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-CZzoe2u0.js"
+      "_styles-Bqw_TvPJ.js"
     ]
   }
 }

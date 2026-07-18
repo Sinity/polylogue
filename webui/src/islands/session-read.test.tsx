@@ -36,4 +36,42 @@ describe('SessionReadIsland', () => {
     expect(screen.getByRole('button', { name: 'All messages loaded' })).toBeDisabled();
     expect(loadPage).not.toHaveBeenCalled();
   });
+
+  it('auto-pages to resolve a deep-linked message beyond the SSR-rendered first page', async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const laterMessage: SessionMessageRow = { ...toolMessage, id: 'message:99', text: 'The later, deep-linked message.' };
+    const loadPage = vi
+      .fn()
+      .mockResolvedValueOnce({ messages: [toolMessage], total: 32 })
+      .mockResolvedValueOnce({ messages: [laterMessage], total: 32 });
+    render(
+      <SessionReadIsland
+        sessionId="codex-session:session/2"
+        initialNextOffset={30}
+        loadPage={loadPage}
+        initialHash="#msg-message:99"
+      />,
+    );
+
+    await screen.findByText('The later, deep-linked message.');
+    await vi.waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+
+    expect(loadPage).toHaveBeenNthCalledWith(1, 'codex-session:session/2', 30);
+    expect(loadPage).toHaveBeenNthCalledWith(2, 'codex-session:session/2', 31);
+  });
+
+  it('reports a bounded search when a deep-linked message never resolves', async () => {
+    const loadPage = vi.fn(async () => ({ messages: [], total: 0 }));
+    render(
+      <SessionReadIsland
+        sessionId="s1"
+        initialNextOffset={30}
+        loadPage={loadPage}
+        initialHash="#msg-does-not-exist"
+      />,
+    );
+
+    await screen.findByText('The linked message could not be located within the paged transcript.');
+    expect(loadPage).toHaveBeenCalledTimes(1);
+  });
 });

@@ -2315,6 +2315,18 @@ class TestWebUIV2:
         assert f'href="/app/sessions/{quote(C3, safe="")}"' not in html_body
         assert f'value="{html_module.escape(origin)}"' in html_body
 
+    def test_session_list_page_rejects_an_invalid_since_facet_with_400(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """An unparseable ``since`` value is a client error, not an internal 500."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/sessions?since={quote('not-a-date')}")
+
+        assert status == HTTPStatus.BAD_REQUEST
+        assert "invalid since" in html_body
+
     def test_session_read_page_renders_message_flow_with_deep_link_anchor(
         self,
         workspace_env: dict[str, Path],

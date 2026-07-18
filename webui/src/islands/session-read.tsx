@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import type { SessionMessageRow } from '../contracts/session-read';
 import { fetchSessionMessagesPage } from '../lib/api';
 
@@ -11,7 +11,12 @@ export interface SessionReadIslandProps {
   readonly sessionId: string;
   readonly initialNextOffset?: number | null;
   readonly loadPage?: PageLoader;
+  /** Overridable for tests; defaults to the real page's fragment. */
+  readonly initialHash?: string;
 }
+
+/** Bounds the deep-link resolve loop below so a stale/bogus anchor cannot page forever. */
+const MAX_DEEP_LINK_PAGES = 50;
 
 function messageTimestamp(timestamp: string | null): string {
   return timestamp ?? 'Time unavailable';
@@ -62,6 +67,7 @@ export function SessionReadIsland({
   sessionId,
   initialNextOffset,
   loadPage = fetchSessionMessagesPage,
+  initialHash = typeof window === 'undefined' ? '' : window.location.hash,
 }: SessionReadIslandProps) {
   const [nextOffset, setNextOffset] = useState<number | null | undefined>(initialNextOffset);
   const [messages, setMessages] = useState<readonly SessionMessageRow[]>([]);
@@ -70,6 +76,59 @@ export function SessionReadIsland({
 
   const exhausted = nextOffset === null || nextOffset === undefined;
   const buttonLabel = exhausted ? 'All messages loaded' : 'Load more messages';
+
+  useEffect(() => {
+    const targetId = initialHash.startsWith('#') ? initialHash.slice(1) : initialHash;
+    if (!targetId || document.getElementById(targetId) !== null) {
+      return;
+    }
+    const targetMessageId = targetId.startsWith('msg-') ? targetId.slice(4) : targetId;
+    let cancelled = false;
+    let offset = initialNextOffset;
+    async function resolveDeepLink(): Promise<void> {
+      setLoading(true);
+      setStatus('Locating the linked message…');
+      let found = false;
+      for (let page = 0; page < MAX_DEEP_LINK_PAGES && !found; page += 1) {
+        if (cancelled || offset === null || offset === undefined) {
+          break;
+        }
+        const loadedAt = offset;
+        const result = await loadPage(sessionId, loadedAt);
+        if (cancelled) {
+          return;
+        }
+        setMessages((current) => [...current, ...result.messages]);
+        found = result.messages.some((message) => message.id === targetMessageId);
+        const reachedEnd = loadedAt + result.messages.length >= result.total || result.messages.length === 0;
+        offset = reachedEnd ? null : loadedAt + result.messages.length;
+        setNextOffset(offset);
+      }
+      setLoading(false);
+      if (!found) {
+        setStatus('The linked message could not be located within the paged transcript.');
+        return;
+      }
+      // Wait a tick past this render so the freshly appended message has
+      // committed to the DOM before scrolling to its anchor.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (cancelled) {
+        return;
+      }
+      document.getElementById(targetId)?.scrollIntoView();
+      setStatus('');
+    }
+    void resolveDeepLink().catch(() => {
+      if (!cancelled) {
+        setLoading(false);
+        setStatus('The linked message could not be loaded.');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Deep-link resolution runs once per mount against the anchor present at load time.
+  }, []);
 
   async function loadNextPage(): Promise<void> {
     if (loading || exhausted) {
