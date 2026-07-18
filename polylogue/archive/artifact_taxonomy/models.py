@@ -17,6 +17,7 @@ class ArtifactKind(StrEnum):
     WORKFLOW_JOURNAL = "workflow_journal"
     AGENT_TRANSCRIPT = "agent_transcript"
     ADOPT_MANIFEST = "adopt_manifest"
+    COORDINATOR_SESSION_STREAM = "coordinator_session_stream"
     SESSION_INDEX = "session_index"
     BRIDGE_POINTER = "bridge_pointer"
     METADATA_DOCUMENT = "metadata_document"

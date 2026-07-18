@@ -110,6 +110,7 @@ from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import hermes_state
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.sources.source_acquisition_components import (
@@ -1256,6 +1257,7 @@ class LiveBatchProcessor:
                 failed.append(path)
                 continue
             captured_file_observations[path] = _file_observation(stat)
+            origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
             if heartbeat is not None:
                 heartbeat(
                     "full_file_scan",
@@ -1314,6 +1316,46 @@ class LiveBatchProcessor:
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
+            elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
+                provider = fallback_provider
+                source_name = provider.value
+                if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
+                    try:
+                        if heartbeat is not None:
+                            heartbeat(
+                                "full_blob_copy",
+                                current_path=path,
+                                source_payload_read_bytes=source_payload_read_bytes,
+                            )
+                        raw_id, blob_size = blob_store.write_from_path(
+                            path,
+                            heartbeat=_blob_copy_heartbeat(
+                                heartbeat,
+                                path=path,
+                                source_payload_read_bytes=source_payload_read_bytes,
+                            ),
+                        )
+                        blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                    except OSError:
+                        failed.append(path)
+                        continue
+                    source_payload_read_bytes += blob_size
+                else:
+                    try:
+                        payload = path.read_bytes()
+                    except OSError:
+                        failed.append(path)
+                        continue
+                    raw_id, blob_size = blob_store.write_from_bytes(payload)
+                    blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                    raw_payloads[raw_id] = payload
+                    source_payload_read_bytes += len(payload)
                 if heartbeat is not None:
                     heartbeat(
                         "full_blob_copy",
@@ -1630,6 +1672,16 @@ class LiveBatchProcessor:
                         )
                         source_write_name = "full.source_raw_write"
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
+                    artifact_rule = artifact_rule_for_path(provider, record.source_path)
+                    if artifact_rule is not None and artifact_rule.parse_policy != "session":
+                        # OriginSpec fact artifacts are valid raw authority even
+                        # though provider session parsing intentionally returns
+                        # no sessions.  Admit the raw revision and let the
+                        # convergence materializer project it into generic work
+                        # evidence instead of treating it as a failed JSON file.
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     if not _captured_jsonl_ends_at_record_boundary(
                         source_path=record.source_path,
                         required=record.requires_complete_record_boundary,

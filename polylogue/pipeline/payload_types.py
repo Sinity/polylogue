@@ -27,6 +27,10 @@ class AcquireDiagnostics(TypedDict, total=False):
 
 
 class ParseBatchObservation(TypedDict, total=False):
+    claude_workflow_materialization: bool
+    claude_workflow_summary: dict[str, object]
+    failed: bool
+    error: str
     primary_ingest_store: str
     archive_primary_write: bool
     archive_write_mode: str
@@ -99,6 +103,7 @@ class ParseBatchObservationSummary(TypedDict, total=False):
 class IngestDiagnostics(TypedDict, total=False):
     acquisition: AcquireDiagnostics
     batch_observations: ParseBatchObservationSummary
+    claude_workflow: dict[str, object]
 
 
 class MaterializeStageObservation(TypedDict, total=False):

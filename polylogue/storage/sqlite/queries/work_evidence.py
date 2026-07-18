@@ -7,7 +7,7 @@ from typing import cast
 
 import aiosqlite
 
-from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef
+from polylogue.core.refs import ActorRef, ExecutionContextRef, ObjectRef
 from polylogue.insights.work_evidence import (
     WorkEvidenceAssociationState,
     WorkEvidenceAuthority,
@@ -17,6 +17,7 @@ from polylogue.insights.work_evidence import (
     WorkEvidenceNode,
     WorkEvidenceNodeKind,
     WorkEvidenceTraversal,
+    parse_work_evidence_source_ref,
 )
 from polylogue.storage.query_models import WorkEvidenceTraversalQuery
 
@@ -46,7 +47,7 @@ def _node_from_row(row: aiosqlite.Row) -> WorkEvidenceNode:
         ref=ObjectRef.parse(str(row["node_ref"])),
         kind=cast(WorkEvidenceNodeKind, str(row["node_kind"])),
         label=str(row["label"]),
-        evidence_refs=tuple(EvidenceRef.parse(value) for value in _json_array(row["evidence_refs_json"])),
+        evidence_refs=tuple(parse_work_evidence_source_ref(value) for value in _json_array(row["evidence_refs_json"])),
         corpus_snapshot_ref=ObjectRef.parse(str(row["corpus_snapshot_ref"])),
         authority=cast(WorkEvidenceAuthority, str(row["authority"])),
         confidence=float(row["confidence"]),
@@ -64,7 +65,7 @@ def _edge_from_row(row: aiosqlite.Row) -> WorkEvidenceEdge:
         kind=cast(WorkEvidenceEdgeKind, str(row["edge_kind"])),
         source_ref=ObjectRef.parse(str(row["source_ref"])),
         target_ref=ObjectRef.parse(str(row["target_ref"])),
-        evidence_refs=tuple(EvidenceRef.parse(value) for value in _json_array(row["evidence_refs_json"])),
+        evidence_refs=tuple(parse_work_evidence_source_ref(value) for value in _json_array(row["evidence_refs_json"])),
         corpus_snapshot_ref=ObjectRef.parse(str(row["corpus_snapshot_ref"])),
         authority=cast(WorkEvidenceAuthority, str(row["authority"])),
         confidence=float(row["confidence"]),
