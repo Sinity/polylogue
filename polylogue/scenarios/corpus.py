@@ -59,8 +59,14 @@ DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID = "codex-session:demo-lineage-subagent"
 DEMO_CODEX_TERMINAL_ERROR_SESSION_ID = "codex-session:demo-terminal-error"
 DEMO_CODEX_RECEIPTS_SESSION_ID = "codex-session:demo-receipts"
 DEMO_CODEX_ANTI_GREP_SESSION_ID = "codex-session:demo-anti-grep"
+DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID = "claude-code-session:demo-lineage-compaction-parent"
+# The compaction fixture models a TRUE main-session auto-compact: its
+# transcript must literally replay its own dedicated parent's messages
+# (bounded content-membership >= 90%, polylogue-4ts.3) rather than the shared
+# generic baseline session, so it gets its own small parent instead of
+# reusing DEMO_CLAUDE_CODE_SESSION_ID.
 DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
-    "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
+    f"{DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID}:agent-acompact-demo"
 )
 DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID = "claude-code-session:demo-lineage-sidechain"
 # Two materials (a direct export and a browser capture) reporting the same
@@ -81,6 +87,7 @@ DEMO_SESSION_IDS = (
     DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_CODEX_RECEIPTS_SESSION_ID,
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
@@ -295,6 +302,7 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "codex/lineage-fork.jsonl",
             "codex/lineage-subagent.jsonl",
             "codex/terminal-error.jsonl",
+            "claude-code/lineage-compaction-parent.jsonl",
             "claude-code/agent-acompact-demo.jsonl",
             "claude-code/lineage-sidechain.jsonl",
         ),

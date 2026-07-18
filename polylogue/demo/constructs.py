@@ -198,18 +198,25 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         description=(
             "A structurally failed tool result precedes a compaction boundary whose summary text "
             "omits any mention of the failure, so compaction-honesty demos must diff full session "
-            "evidence against the summary rather than trusting the summary alone."
+            "evidence against the summary rather than trusting the summary alone. The failed action "
+            "is genuine replayed parent content (polylogue-4ts.3 >= 90% membership gate), so "
+            "prefix-sharing dedup stores it once under the parent's own physical session rather "
+            "than duplicating it under the child — the check reads both physical locations, the "
+            "same way a composed transcript read recomposes parent-up-to-branch plus child tail."
         ),
         sql="""
             SELECT CASE WHEN
                 EXISTS (
                     SELECT 1 FROM actions
-                    WHERE session_id = 'claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo'
+                    WHERE session_id IN (
+                        'claude-code-session:demo-lineage-compaction-parent:agent-acompact-demo',
+                        'claude-code-session:demo-lineage-compaction-parent'
+                    )
                       AND is_error = 1
                 )
                 AND EXISTS (
                     SELECT 1 FROM session_events
-                    WHERE session_id = 'claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo'
+                    WHERE session_id = 'claude-code-session:demo-lineage-compaction-parent:agent-acompact-demo'
                       AND event_type = 'compaction'
                       AND LOWER(summary) NOT LIKE '%fail%'
                       AND LOWER(summary) NOT LIKE '%error%'

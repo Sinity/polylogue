@@ -21,6 +21,7 @@ from polylogue.demo import evaluate_demo_constructs, seed_demo_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
     DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
 )
 
@@ -85,13 +86,18 @@ async def test_compaction_omission_construct_goes_red_when_failed_attempt_withhe
 
     assert _coverage_for(archive_root, "compaction_omits_failed_attempt") is True
 
+    # The failed action is genuine replayed parent content (>= 90% membership,
+    # polylogue-4ts.3), so prefix-sharing dedup stores it once under the
+    # dedicated parent's own physical session rather than duplicating it under
+    # the child's — delete from wherever it actually lives rather than
+    # assuming child-only physical storage.
     with sqlite3.connect(archive_root / "index.db") as conn:
         deleted = conn.execute(
             """
             DELETE FROM blocks
-            WHERE session_id = ? AND block_type = 'tool_result' AND tool_result_is_error = 1
+            WHERE session_id IN (?, ?) AND block_type = 'tool_result' AND tool_result_is_error = 1
             """,
-            (DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,),
+            (DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID, DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID),
         ).rowcount
         conn.commit()
     assert deleted >= 1

@@ -131,7 +131,11 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert chatgpt_raw_rows == 3
     assert chatgpt_session_rows == 1
     assert ("branch", "prefix-sharing") in links
-    assert ("continuation", "spawned-fresh") in links
+    # A genuine main-session agent-acompact-* replays its dedicated parent's
+    # content verbatim (>= 90% membership, polylogue-4ts.3), so the archive
+    # writer's content-membership gate confirms real prefix-sharing rather
+    # than an unverified "continuation" label with no actual shared content.
+    assert ("continuation", "prefix-sharing") in links
     assert ("subagent", "spawned-fresh") in links
     assert len(compaction_events) >= 1
     assert sidechain_sessions == [(DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,)]

@@ -15,6 +15,7 @@ from polylogue.config import Source, load_polylogue_config
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
@@ -431,10 +432,74 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
     fork_id = "demo-lineage-fork"
     subagent_id = "demo-lineage-subagent"
     terminal_error_id = DEMO_CODEX_TERMINAL_ERROR_SESSION_ID.removeprefix("codex-session:")
-    claude_parent_id = DEMO_CLAUDE_CODE_SESSION_ID.removeprefix("claude-code-session:")
+    compaction_parent_id = DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID.removeprefix("claude-code-session:")
     sidechain_id = DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID.removeprefix("claude-code-session:")
     base_user = "Map the demo lineage base context."
     base_assistant = "I have the base context and can branch the analysis."
+
+    # The compaction fixture must model a TRUE main-session auto-compact: its
+    # pre-summary transcript is expected to literally replay the parent's own
+    # messages (bounded content-membership gate >= 90%, polylogue-4ts.3), not
+    # just share a session id. Define the shared narrative once and replay it
+    # verbatim into both the dedicated parent file and the acompact copy so
+    # the two stay byte-identical by construction instead of by convention.
+    def _compaction_narrative_records(*, uuid_prefix: str) -> tuple[dict[str, object], ...]:
+        return (
+            _claude_code_record(
+                record_type="user",
+                uuid=f"{uuid_prefix}-u0",
+                session_id=compaction_parent_id,
+                timestamp="2026-07-04T10:03:01Z",
+                role="user",
+                content="Fix the flaky clock test before continuing the demo lineage audit.",
+            ),
+            # A structurally failed attempt precedes the compaction boundary below.
+            # The compaction summary deliberately omits it (#polylogue-212.11
+            # compaction-honesty anchor) — a reader trusting the summary alone
+            # would never learn the first edit failed.
+            _claude_code_record(
+                record_type="assistant",
+                uuid=f"{uuid_prefix}-fail-a0",
+                session_id=compaction_parent_id,
+                timestamp="2026-07-04T10:03:02Z",
+                role="assistant",
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_acompact_fail",
+                        "name": "Edit",
+                        "input": {
+                            "file_path": "tests/fixtures/shared_clock.py",
+                            "old_string": "class SharedClock",
+                            "new_string": "class IsolatedClock",
+                        },
+                    }
+                ],
+            ),
+            _claude_code_record(
+                record_type="user",
+                uuid=f"{uuid_prefix}-fail-r0",
+                session_id=compaction_parent_id,
+                timestamp="2026-07-04T10:03:03Z",
+                role="user",
+                content=[
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_acompact_fail",
+                        "content": "F tests/test_clock.py::test_uses_monotonic_clock\n1 failed in 0.21s",
+                        "is_error": True,
+                    }
+                ],
+            ),
+            _claude_code_record(
+                record_type="assistant",
+                uuid=f"{uuid_prefix}-fail-a1",
+                session_id=compaction_parent_id,
+                timestamp="2026-07-04T10:03:04Z",
+                role="assistant",
+                content="All tests pass now; the clock fix is complete.",
+            ),
+        )
 
     _write_jsonl(
         source_root / "codex" / "lineage-parent.jsonl",
@@ -468,66 +533,22 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
+        source_root / "claude-code" / "lineage-compaction-parent.jsonl",
+        _compaction_narrative_records(uuid_prefix="compaction-parent"),
+    )
+    _write_jsonl(
         source_root / "claude-code" / "agent-acompact-demo.jsonl",
         (
-            _claude_code_record(
-                record_type="user",
-                uuid="acompact-u0",
-                session_id=claude_parent_id,
-                timestamp="2026-07-04T10:03:01Z",
-                role="user",
-                content="Fix the flaky clock test before continuing the demo lineage audit.",
-            ),
-            # A structurally failed attempt precedes the compaction boundary below.
-            # The compaction summary deliberately omits it (#polylogue-212.11
-            # compaction-honesty anchor) — a reader trusting the summary alone
-            # would never learn the first edit failed.
-            _claude_code_record(
-                record_type="assistant",
-                uuid="acompact-fail-a0",
-                session_id=claude_parent_id,
-                timestamp="2026-07-04T10:03:02Z",
-                role="assistant",
-                content=[
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_acompact_fail",
-                        "name": "Edit",
-                        "input": {
-                            "file_path": "tests/fixtures/shared_clock.py",
-                            "old_string": "class SharedClock",
-                            "new_string": "class IsolatedClock",
-                        },
-                    }
-                ],
-            ),
-            _claude_code_record(
-                record_type="user",
-                uuid="acompact-fail-r0",
-                session_id=claude_parent_id,
-                timestamp="2026-07-04T10:03:03Z",
-                role="user",
-                content=[
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_acompact_fail",
-                        "content": "F tests/test_clock.py::test_uses_monotonic_clock\n1 failed in 0.21s",
-                        "is_error": True,
-                    }
-                ],
-            ),
-            _claude_code_record(
-                record_type="assistant",
-                uuid="acompact-fail-a1",
-                session_id=claude_parent_id,
-                timestamp="2026-07-04T10:03:04Z",
-                role="assistant",
-                content="All tests pass now; the clock fix is complete.",
-            ),
+            # Literal replay of the parent's own messages, matching real Claude
+            # Code auto-compact behavior (the compactor re-reads and re-emits
+            # the whole conversation) and clearing the archive writer's >= 90%
+            # content-membership gate so this stays classified as a true
+            # continuation rather than a subagent self-compaction sidechain.
+            *_compaction_narrative_records(uuid_prefix="acompact"),
             _claude_code_record(
                 record_type="summary",
                 uuid="acompact-s1",
-                session_id=claude_parent_id,
+                session_id=compaction_parent_id,
                 timestamp="2026-07-04T10:03:05Z",
                 role="system",
                 content="Compacted demo lineage context: parent, branch, subagent, and caveats.",
