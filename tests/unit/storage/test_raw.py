@@ -10,11 +10,13 @@ This module contains tests for:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import aiosqlite
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.repository import SessionRepository
@@ -25,6 +27,8 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries.raw_reads import get_raw_session as get_query_raw_session
 from polylogue.storage.sqlite.queries.raw_writes import save_raw_session as save_query_raw_session
 from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
+
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -383,6 +387,86 @@ class TestRawSessionStorage:
         records = await backend.get_raw_sessions_batch(["raw-c", "raw-a", "missing", "raw-b"])
 
         assert [record.raw_id for record in records] == ["raw-c", "raw-a", "raw-b"]
+
+
+class TestRawSessionWriterSingleSource:
+    """polylogue-vwia: the async and sync-core raw writers must not diverge.
+
+    ``SQLiteRawMixin.save_raw_session`` (async_sqlite_raw.py) used to hand-roll
+    its own 18-column ``INSERT OR REPLACE``, while the durable-tier writer
+    (queries/raw_writes.py) used a 28-column ``INSERT OR IGNORE`` including
+    revision-authority evidence. A re-save through the async path silently
+    reset revision lineage to defaults. The async mixin now delegates to the
+    same writer function; these tests guard against either a column-list
+    regression in that writer or a second hand-rolled INSERT reappearing.
+    """
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
+        """Create a SQLiteBackend with a temp database."""
+        db_path = tmp_path / "test.db"
+        return SQLiteBackend(db_path=db_path)
+
+    async def test_writer_insert_covers_every_live_raw_sessions_column(self, tmp_path: Path) -> None:
+        """The canonical writer's INSERT must name every column the live DDL defines."""
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        async with aiosqlite.connect(source_db) as conn:
+            cursor = await conn.execute("PRAGMA table_info(raw_sessions)")
+            live_columns = {row[1] for row in await cursor.fetchall()}
+
+        writer_source = (_REPO_ROOT / "polylogue/storage/sqlite/queries/raw_writes.py").read_text()
+        match = re.search(r"INSERT OR IGNORE INTO raw_sessions \(([^)]+)\)", writer_source)
+        assert match is not None, "expected exactly one canonical raw_sessions INSERT in raw_writes.py"
+        writer_columns = {c.strip() for c in match.group(1).split(",")}
+
+        assert writer_columns == live_columns, (
+            "queries/raw_writes.py's INSERT column list has drifted from the live raw_sessions "
+            f"DDL: missing from writer={live_columns - writer_columns} "
+            f"extra in writer={writer_columns - live_columns}"
+        )
+
+    async def test_async_backend_has_no_second_raw_sessions_insert(self) -> None:
+        """The async mixin must delegate, not hand-roll a competing INSERT/REPLACE."""
+        mixin_source = (_REPO_ROOT / "polylogue/storage/sqlite/async_sqlite_raw.py").read_text()
+        assert "INTO raw_sessions" not in mixin_source, (
+            "async_sqlite_raw.py should delegate save_raw_session to "
+            "queries/raw_writes.py, not embed its own INSERT statement (polylogue-vwia)"
+        )
+
+    async def test_resave_never_alters_revision_evidence(self, backend: SQLiteBackend) -> None:
+        """Re-saving an existing raw_id must never reset durable revision authority."""
+        envelope = RawRevisionEnvelope(
+            logical_source_key="chatgpt:conv-1",
+            kind=RawRevisionKind.FULL,
+            source_revision="rev-1",
+            acquisition_generation=1,
+            authority=RawRevisionAuthority.BYTE_PROVEN,
+        )
+        original = make_raw_session(
+            raw_id="revision-guarded",
+            source_name="chatgpt",
+            source_path="/tmp/export.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+            revision=envelope,
+        )
+        assert await backend.save_raw_session(original) is True
+
+        # A retried/duplicate acquisition of the same raw_id carries no revision
+        # evidence of its own; it must not be able to wipe the original's.
+        resave = make_raw_session(
+            raw_id="revision-guarded",
+            source_name="chatgpt",
+            source_path="/tmp/export.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        )
+        assert await backend.save_raw_session(resave) is False
+
+        recovered = await backend.get_raw_session("revision-guarded")
+        assert recovered is not None
+        assert recovered.revision == envelope
 
     async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
         """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
