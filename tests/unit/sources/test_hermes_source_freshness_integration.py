@@ -1,6 +1,6 @@
 """Real end-to-end proof of Hermes source coverage through the existing
-named-source freshness surface (polylogue-1xc.13), plus a confirmed live-
-ingestion bug discovered while proving it.
+named-source freshness surface (polylogue-1xc.13), plus a regression test for
+a confirmed live-ingestion bug (polylogue-1zex) found and fixed here.
 
 fs1.15 ("Expose Hermes-to-Polylogue integration liveness and coverage") asks
 for coverage/freshness reporting to "flow through the EXISTING named-source
@@ -15,14 +15,18 @@ fs1.15's ask without new code.
 
 Driving state.db through the real live watcher (not the marker-payload/CLI
 route the rest of this repo's Hermes tests use) surfaced a second confirmed
-bug, distinct from polylogue-flxh: ``revision_backfill.py``'s ``_parse_one``
-(used by the live watcher's single-session raw-revision-chain replay branch,
-and shared with historical repair) has zero SQLite awareness -- unlike the
-two OTHER call sites in ``live/batch.py`` that correctly special-case Hermes
-SQLite sources before falling back to JSON parsing. A state.db (or
-verification_evidence.db) with exactly one session at ingest time hits this
-branch and crashes; two or more sessions route through the working
-membership-census branch instead.
+bug (polylogue-1zex), distinct from polylogue-flxh: ``revision_backfill.py``'s
+``_parse_one`` (used by the live watcher's single-session raw-revision-chain
+replay branch, and shared with historical repair) had zero SQLite awareness
+-- unlike the two OTHER call sites in ``live/batch.py`` that correctly
+special-case Hermes SQLite sources before falling back to JSON parsing. A
+state.db (or verification_evidence.db) with exactly one session at ingest
+time hit this branch and crashed; two or more sessions routed through the
+working membership-census branch instead. Fixed (2026-07-18, Fable-adjudicated
+hybrid): SQLite magic-byte detection in ``_parse_one``
+(``sqlite_snapshot.looks_like_sqlite_bytes``) plus the real on-disk blob path
+threaded through via ``ArchiveStore.blob_path_for_hash`` (falling back to a
+bounded temp-file spill only when no real path is materialized).
 """
 
 from __future__ import annotations
@@ -66,6 +70,33 @@ CREATE TABLE messages (
 );
 """
 
+_VERIFICATION_DB_SCHEMA = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE verification_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    root TEXT NOT NULL,
+    command TEXT NOT NULL,
+    canonical_command TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    status TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    output_summary TEXT NOT NULL
+);
+CREATE TABLE verification_state (
+    session_id TEXT NOT NULL,
+    root TEXT NOT NULL,
+    last_event_id INTEGER,
+    last_edit_at TEXT,
+    changed_paths_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (session_id, root)
+);
+INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+"""
+
 
 def _make_processor(
     workspace_env: dict[str, Path], root_name: str, db_name: str
@@ -84,31 +115,15 @@ def _make_processor(
     return archive, processor, root
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Confirmed live-ingestion bug polylogue-1zex (distinct from polylogue-flxh): "
-        "revision_backfill.py's _parse_one (used by live/batch.py's single-"
-        "session raw-revision-chain replay branch at _parse_raw_revision_chain, "
-        "shared with historical repair) has zero SQLite awareness -- unlike "
-        "the two other Hermes call sites in live/batch.py that correctly check "
-        "hermes_state.looks_like_state_db_path / "
-        "hermes_verification.looks_like_verification_evidence_db_path before "
-        "falling back to JSON parsing. A state.db (or verification_evidence.db) "
-        "with exactly one session at ingest time -- a brand new Hermes install, "
-        "or any minimal/test fixture -- takes this branch and crashes with "
-        "UnicodeDecodeError trying to json-parse raw SQLite bytes. Two or more "
-        "sessions route through the working membership-census branch instead "
-        "(see test_hermes_state_db_multi_session_source_reaches_indexed_"
-        "through_named_freshness below), which is presumably why this was not "
-        "caught by prior review -- real installs almost always have many "
-        "sessions. Remove this xfail once fixed."
-    ),
-    strict=True,
-)
 @pytest.mark.asyncio
-async def test_hermes_state_db_single_session_full_ingest_crashes(
+async def test_hermes_state_db_single_session_full_ingest_reaches_indexed_through_named_freshness(
     workspace_env: dict[str, Path],
 ) -> None:
+    """Regression test for polylogue-1zex: a state.db with exactly ONE
+    session used to crash the live watcher's full-ingest path with
+    UnicodeDecodeError (_parse_one had no SQLite awareness). This is the
+    real-world common case for a brand-new Hermes install."""
+
     archive, processor, root = _make_processor(workspace_env, "hermes-home-single", "hermes-state-single.db")
     source_path = root / "state.db"
     try:
@@ -125,6 +140,44 @@ async def test_hermes_state_db_single_session_full_ingest_crashes(
         metrics = await processor.ingest_files([source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 1
+
+        freshness = project_named_source_freshness(workspace_env["archive_root"], source_path)
+        assert freshness.stage in {NamedSourceStage.INDEXED_UNCONVERGED, NamedSourceStage.SEARCHABLE}
+        assert freshness.accepted_raw_revision is not None
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_hermes_verification_evidence_db_single_session_full_ingest_reaches_indexed(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Sibling regression for polylogue-1zex's other affected source:
+    verification_evidence.db with exactly one session hit the same
+    SQLite-unaware _parse_one branch."""
+
+    archive, processor, root = _make_processor(
+        workspace_env, "hermes-home-verification-single", "hermes-verification-single.db"
+    )
+    source_path = root / "verification_evidence.db"
+    try:
+        with sqlite3.connect(source_path) as conn:
+            conn.executescript(_VERIFICATION_DB_SCHEMA)
+            conn.execute(
+                "INSERT INTO verification_events "
+                "(created_at, session_id, cwd, root, command, canonical_command, kind, scope, status, "
+                "exit_code, output_summary) VALUES "
+                "('2026-07-18T00:00:00Z', 'verify-session-1', '/repo', '/repo', 'pytest', 'pytest', "
+                "'test', 'targeted', 'passed', 0, 'ok')"
+            )
+
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        assert metrics.failed_file_count == 0
+        assert metrics.ingested_session_count == 1
+
+        freshness = project_named_source_freshness(workspace_env["archive_root"], source_path)
+        assert freshness.stage in {NamedSourceStage.INDEXED_UNCONVERGED, NamedSourceStage.SEARCHABLE}
+        assert freshness.accepted_raw_revision is not None
     finally:
         await archive.close()
 

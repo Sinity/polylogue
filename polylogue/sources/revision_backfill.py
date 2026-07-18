@@ -7,7 +7,8 @@ import os
 import pickle
 import sqlite3
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -25,7 +26,9 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
+from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -497,12 +500,19 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     seemingly harmless live replay helper from reintroducing ``read_all()``
     for Codex/Claude JSONL evidence.
     """
-    provider, _blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
     if is_stream_record_provider(source_path, str(provider)):
         with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
             return _parse_stream(stream_provider, payload, stream_path)
     _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
-    return _parse_one(provider, eager_payload, source_path)
+    payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
+    return _parse_one(
+        provider,
+        eager_payload,
+        source_path,
+        payload_path=payload_path,
+        archive_root=archive.archive_root,
+    )
 
 
 class _ParsedSessionSpill:
@@ -579,7 +589,14 @@ class _ParsedSessionSpill:
         return sessions, payload_bytes
 
 
-def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[ParsedSession]:
+def _parse_one(
+    provider: Provider,
+    payload: bytes,
+    source_path: str,
+    *,
+    payload_path: Path | None = None,
+    archive_root: Path | None = None,
+) -> list[ParsedSession]:
     source_name = Path(source_path).name
     fallback_id = Path(source_path).stem
     if is_stream_record_provider(source_path, str(provider)):
@@ -589,12 +606,48 @@ def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[Par
             fallback_id,
             source_path=source_path,
         )
+    if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
+        with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
+            if hermes_state.looks_like_state_db_path(sqlite_path):
+                return hermes_state.parse_state_db(
+                    sqlite_path,
+                    fallback_id=fallback_id,
+                    profile_root=Path(source_path).parent,
+                )
+            if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path):
+                return hermes_verification.parse_verification_evidence_db(sqlite_path, fallback_id=fallback_id)
     return parse_payload(
         provider,
         list(_iter_json_stream(BytesIO(payload), source_name)),
         fallback_id,
         source_path=source_path,
     )
+
+
+@contextmanager
+def _sqlite_payload_path(
+    payload: bytes,
+    payload_path: Path | None,
+    archive_root: Path | None,
+) -> Iterator[Path]:
+    """Yield a real filesystem path for SQLite-shaped raw revision bytes.
+
+    ``sqlite3.connect`` cannot open in-memory bytes. Prefer the already-
+    materialized blob path (no copy); only spill to a bounded temp file when
+    no real path is available (e.g. the blob is not yet flushed to disk).
+    """
+    if payload_path is not None:
+        yield payload_path
+        return
+    scratch_dir = archive_root if archive_root is not None else Path(tempfile.gettempdir())
+    fd, name = tempfile.mkstemp(prefix=".revision-sqlite-spill-", suffix=".sqlite", dir=scratch_dir)
+    os.close(fd)
+    temp_path = Path(name)
+    try:
+        temp_path.write_bytes(payload)
+        yield temp_path
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:

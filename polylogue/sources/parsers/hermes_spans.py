@@ -66,22 +66,25 @@ decision (topology_edges / session_links) that is explicitly deferred, not
 silently assumed. Read-side correlation by the shared Hermes session id
 remains possible today via ``hermes_observer_session_id_for``.
 
-KNOWN LIVE INGESTION BUG (polylogue-flxh, confirmed 2026-07-18, not yet
-fixed): the real ATOF producer writes ONE shared ``events.jsonl`` file across
-every Hermes session on an install (live-verified: 3+ distinct session ids
-interleaved in one file), but the live-ingest raw-revision-authority replay
-chain (``polylogue/sources/live/batch.py``) and append path
-(``polylogue/sources/live/append_ingest.py``) both require exactly one
-logical session per raw revision. When a file-growth batch spans a Hermes
-session boundary (a new event for an already-tracked session lands alongside
-a brand-new session's first event), the new event for the ALREADY-TRACKED
-session is silently and permanently lost while the brand-new session is
-still created -- empirically proven by
-``tests/unit/sources/test_live_watcher.py::test_live_append_atof_shared_file_multi_session_boundary_loses_events``
-(``xfail(strict=True)`` pending the fix). This affects only the LIVE watcher
-ingestion path, not ``parse_atof_stream`` itself (which is correct and
-idempotent when given the full file, per this module's own tests) or the
-manual/CLI import path.
+LIVE INGESTION FIX (polylogue-flxh, confirmed 2026-07-18, fixed same day):
+the real ATOF producer writes ONE shared ``events.jsonl`` file across every
+Hermes session on an install (live-verified: 3+ distinct session ids
+interleaved in one file), unlike Claude Code/Codex where one JSONL file is
+always exactly one session. A growth batch can therefore span a Hermes
+session boundary. Two changes: (1) the live watcher (``live/batch.py``)
+never attempts incremental append for the Hermes ATOF source class, always
+routing it through the full/bundle ingest path, which already handles
+multi-session grouping correctly (Fable-adjudicated Direction 3); (2) the
+real root cause -- the ATOF/ATIF summary message text below used to embed
+live event/step counts, which changed on every reparse and broke the
+archive's membership-classifier invariant that message content must be an
+unchanging prefix across revisions to safely recognize append-only growth,
+causing a genuinely-monotonic growth batch to look non-monotonic and get
+silently rejected in favor of the stale revision. The summary text is now
+session-id-only and permanently stable; counts remain fully queryable from
+session_events / ``import_fidelity_declaration``. Regression proof:
+``tests/unit/sources/test_live_watcher.py::test_live_append_atof_shared_file_multi_session_boundary_retains_all_events``
+(also proves idempotent replay of a growth batch).
 """
 
 from __future__ import annotations
@@ -413,27 +416,16 @@ def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
 
 
 def _atof_session(session_id: str, events: list[ParsedSessionEvent], skipped: int) -> ParsedSession:
-    counts = {
-        event_type: sum(event.event_type == event_type for event in events)
-        for event_type in (
-            "hermes_llm_request_span",
-            "hermes_tool_execution_span",
-            "hermes_subagent_span",
-            "hermes_decision_span",
-            "hermes_error_span",
-            "hermes_context_span",
-            "hermes_observer_span",
-            "hermes_atof_unpaired_scope",
-        )
-    }
-    summary_text = (
-        f"Hermes ATOF observer stream: {len(events)} event(s) "
-        f"({counts['hermes_llm_request_span']} LLM, {counts['hermes_tool_execution_span']} tool, "
-        f"{counts['hermes_decision_span']} decision, {counts['hermes_subagent_span']} subagent, "
-        f"{counts['hermes_error_span']} error, {counts['hermes_context_span']} context, "
-        f"{counts['hermes_observer_span']} unrecognized, {counts['hermes_atof_unpaired_scope']} unpaired; "
-        f"{skipped} unparseable)."
-    )
+    del skipped  # counts live in session_events/import_fidelity_declaration, never in message text
+    # Deliberately stable across every replay/revision of this session (never
+    # embeds live event counts): the archive's membership classifier
+    # (session_revision_membership.classify_membership_revisions) requires
+    # message content to be an unchanging prefix across revisions to safely
+    # recognize append-only growth. A count-bearing summary that gets
+    # rewritten on every reparse breaks that invariant and makes new events
+    # for an already-observed session look like a non-monotonic edit,
+    # silently discarding them.
+    summary_text = f"Hermes ATOF observer stream: {session_id}"
     provider_session_id = observer_session_provider_id(session_id)
     return ParsedSession(
         source_name=Provider.HERMES,
@@ -510,17 +502,13 @@ def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSessio
             continue
         events.append(_subagent_span_event(subagent, index))
 
-    llm_events = sum(1 for e in events if e.event_type == "hermes_llm_request_span")
-    tool_events = sum(1 for e in events if e.event_type == "hermes_tool_execution_span")
-    subagent_events = sum(1 for e in events if e.event_type == "hermes_subagent_span")
-    generic_events = sum(1 for e in events if e.event_type == "hermes_observer_span")
-
-    summary_text = (
-        f"Hermes ATIF trajectory: {len(raw_steps)} step(s) "
-        f"({tool_events} tool call span(s), {llm_events} message span(s), "
-        f"{subagent_events} subagent trajectory(ies), {generic_events} unrecognized, "
-        f"{skipped} unparseable)."
-    )
+    # Deliberately stable across every replay/revision of this session (never
+    # embeds live step/event counts): see _atof_session's identical note --
+    # the archive's membership classifier requires message content to be an
+    # unchanging prefix across revisions to safely recognize append-only
+    # growth. Counts remain fully queryable from session_events /
+    # import_fidelity_declaration.
+    summary_text = f"Hermes ATIF trajectory: {session_id}"
     provider_session_id = observer_session_provider_id(session_id)
     return ParsedSession(
         source_name=Provider.HERMES,

@@ -1516,40 +1516,58 @@ def _atof_record(*, session_id: str, uuid: str, timestamp: str, name: str = "her
     }
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Confirmed data-loss bug, Ref polylogue-flxh: real ~/.hermes/observability/"
-        "nemo-relay/atof/events.jsonl is ONE file shared across every Hermes "
-        "session on the install (live evidence: 3+ distinct hermes session ids "
-        "interleaved in one file), unlike Claude Code/Codex where one JSONL file "
-        "is always exactly one session. The raw-revision-authority replay chain "
-        "(_parse_raw_revision_chain: 'raw revision did not replay to exactly one "
-        "session') and the append-ingest path (append_ingest.py: 'append payload "
-        "did not prove one session and cursor identity') both assume exactly one "
-        "logical session per raw revision. When a growth batch for an "
-        "already-tracked ATOF file contains events for a session that already "
-        "has prior accepted raw revisions (session A) AND a brand-new session "
-        "(session B), the reconciliation raises and the whole path/full-ingest "
-        "attempt is marked failed -- but session B's insert had already been "
-        "committed while session A's new event was not, so the overall failure "
-        "silently masks a real, permanent loss of session A's new evidence "
-        "(not a retry-safe deferral: the same bytes fail identically on retry, "
-        "and 5 consecutive failures quarantine the whole file). Remove this "
-        "xfail once fixed."
-    ),
-    strict=True,
-)
+def _atof_event_uuids_by_session(archive_root: Path) -> dict[str, list[str]]:
+    index_db = archive_root / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT s.native_id, se.payload_json
+            FROM session_events se
+            JOIN sessions s ON s.session_id = se.session_id
+            WHERE se.event_type = 'hermes_context_span'
+            ORDER BY s.native_id, se.position
+            """
+        ).fetchall()
+    event_uuids_by_session: dict[str, list[str]] = {}
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        event_uuids_by_session.setdefault(row["native_id"], []).append(payload["event_uuid"])
+    return event_uuids_by_session
+
+
 @pytest.mark.asyncio
-async def test_live_append_atof_shared_file_multi_session_boundary_loses_events(
+async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_events(
     workspace_env: dict[str, Path],
 ) -> None:
-    """Empirically drive an append batch whose bytes span two distinct hermes
-    session ids -- the real shared-ATOF-file shape -- and prove session A's new
-    event (a-turn-2) is NOT silently lost while session B (b-turn-1) is created.
+    """Regression test for polylogue-flxh: real ~/.hermes/observability/
+    nemo-relay/atof/events.jsonl is ONE file shared across every Hermes
+    session on the install (live evidence: 3+ distinct hermes session ids
+    interleaved in one file), unlike Claude Code/Codex where one JSONL file
+    is always exactly one session.
 
-    This must FAIL today (xfail, strict): direct sqlite inspection after the
-    growth batch shows session A still has only its original a-turn-1 event
-    while session B is fully present with b-turn-1 -- a-turn-2 never lands.
+    Drives a growth batch whose bytes span two distinct hermes session ids
+    -- the real shared-file shape -- and proves session A's new event
+    (a-turn-2) is NOT lost while session B (b-turn-1) is created alongside
+    it. Also proves idempotent replay: re-ingesting the identical growth
+    batch a second time must not duplicate or otherwise change the stored
+    state (the producer's own UUID+scope-phase dedup, unaffected by this
+    fix, must still hold end-to-end).
+
+    Root cause (found empirically, corrected the original polylogue-flxh
+    diagnosis which assumed the bug was in the incremental-append path):
+    the ATOF summary message's text used to embed live event counts, which
+    changed on every reparse. The archive's membership classifier
+    (session_revision_membership.classify_membership_revisions) requires
+    message content to be an unchanging prefix across revisions to safely
+    recognize append-only growth -- a count-bearing summary broke that
+    invariant, so a genuinely-monotonic growth batch looked like a
+    non-monotonic edit and the classifier conservatively kept the stale
+    revision. Fixed by making the summary message text session-id-only
+    (stable forever); ATOF is also now origin-scoped away from the
+    incremental-append path entirely (Fable-adjudicated Direction 3),
+    since a real ATOF file can span a session boundary in a growth delta
+    in a way Claude Code/Codex/Beads JSONL files structurally cannot.
     """
     root = workspace_env["data_root"] / "hermes-observability"
     root.mkdir(parents=True)
@@ -1582,25 +1600,16 @@ async def test_live_append_atof_shared_file_multi_session_boundary_loses_events(
                 handle.write(json.dumps(record) + "\n")
         await processor.ingest_files([source_path], emit_event=False)
 
-        index_db = workspace_env["archive_root"] / "index.db"
-        with sqlite3.connect(index_db) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT s.native_id, se.payload_json
-                FROM session_events se
-                JOIN sessions s ON s.session_id = se.session_id
-                WHERE se.event_type = 'hermes_context_span'
-                ORDER BY s.native_id, se.position
-                """
-            ).fetchall()
-        event_uuids_by_session: dict[str, list[str]] = {}
-        for row in rows:
-            payload = json.loads(row["payload_json"])
-            event_uuids_by_session.setdefault(row["native_id"], []).append(payload["event_uuid"])
-
+        event_uuids_by_session = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert event_uuids_by_session.get("observer:atof-session-a") == ["a-turn-1", "a-turn-2"]
         assert event_uuids_by_session.get("observer:atof-session-b") == ["b-turn-1"]
+
+        # Idempotent replay: re-ingesting the SAME growth batch bytes again
+        # (e.g. a poll cycle firing before the cursor advanced, or a daemon
+        # restart replaying its tail) must not duplicate or lose anything.
+        await processor.ingest_files([source_path], emit_event=False)
+        replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
+        assert replayed == event_uuids_by_session
     finally:
         await archive.close()
 
