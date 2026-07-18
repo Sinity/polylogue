@@ -17,15 +17,22 @@ from polylogue.core.json import JSONDocument
 
 @dataclass(frozen=True, slots=True)
 class RawMaterializationCounts:
-    """Separate units produced by one bounded maintenance pass."""
+    """Separate units produced by one bounded maintenance pass.
+
+    ``censused_components`` counts parser-census work performed toward a
+    paused replay plan: no sessions were repaired yet, but the pass moved
+    the backlog and the caller's backlog burst must continue instead of
+    treating the census phase as quiescence.
+    """
 
     repaired_sessions: int = 0
     executed_plans: int = 0
     remaining_candidates: int = 0
+    censused_components: int = 0
 
     @property
     def made_progress(self) -> bool:
-        return self.repaired_sessions > 0 or self.executed_plans > 0
+        return self.repaired_sessions > 0 or self.executed_plans > 0 or self.censused_components > 0
 
 
 def inspect_frontier(config: Config) -> Any:

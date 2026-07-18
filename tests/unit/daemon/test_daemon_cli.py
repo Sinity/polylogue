@@ -1014,6 +1014,51 @@ def test_periodic_raw_materialization_bursts_through_backlog(
     ]
 
 
+def test_periodic_raw_materialization_burst_continues_through_census_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A census-paused pass repairs nothing but IS progress: the burst must
+    keep going until the persisted parser census completes (22k-raw census
+    at one pass per interval would take half a day)."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    schedule = [
+        RawMaterializationCounts(
+            repaired_sessions=0, executed_plans=0, remaining_candidates=200, censused_components=16
+        ),
+        RawMaterializationCounts(
+            repaired_sessions=0, executed_plans=0, remaining_candidates=100, censused_components=16
+        ),
+        RawMaterializationCounts(repaired_sessions=16, executed_plans=0, remaining_candidates=0),
+    ]
+    sleeps: list[float] = []
+
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        return schedule.pop(0)
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync=fake_run_sync),
+    )
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert schedule == []
+    assert sleeps == [
+        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
+        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
+        daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
+    ]
+
+
 def test_periodic_raw_materialization_burst_stops_without_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
