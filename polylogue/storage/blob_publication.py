@@ -371,6 +371,30 @@ def reconcile_blob_publication_reservations(
     )
 
 
+def reconcile_blob_publication_reservations_under_exclusion(
+    source_db_path: Path,
+    blob_root: Path,
+    *,
+    index_db_path: Path | None = None,
+) -> BlobPublicationReconciliation:
+    """Reconcile receipts while holding archive-wide publisher exclusion.
+
+    ``reconcile_blob_publication_reservations`` only clears rows when handed
+    a live ``ArchiveWriterExclusion`` -- without one, ``may_clear`` is always
+    false and every classified row is merely retained forever, a durable
+    reservation leak. This entry point acquires the exclusion itself so a
+    caller (daemon startup, a maintenance command) cannot silently make
+    deletion unreachable by forgetting to pass one (polylogue-qs0a).
+    """
+    with exclude_archive_blob_publishers(source_db_path) as exclusion:
+        return reconcile_blob_publication_reservations(
+            source_db_path,
+            blob_root,
+            index_db_path=index_db_path,
+            writer_exclusion=exclusion,
+        )
+
+
 def abandon_blob_publication_receipts(
     source_db_path: Path,
     blob_root: Path,
@@ -438,4 +462,5 @@ __all__ = [
     "inspect_blob_publication_receipts",
     "publication_receipt_id",
     "reconcile_blob_publication_reservations",
+    "reconcile_blob_publication_reservations_under_exclusion",
 ]
