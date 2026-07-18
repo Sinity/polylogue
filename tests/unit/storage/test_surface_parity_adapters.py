@@ -177,11 +177,14 @@ class _MCPSurface:
 
     async def ids(self, case: _Case) -> tuple[str, ...]:
         if case.search is not None:
-            payload = await self._server._tool_manager._tools["search"].fn(query=case.search, limit=case.limit or 100)
+            payload = await self._server._tool_manager._tools["query"].fn(
+                expression=case.search, projection="sessions", limit=case.limit or 100
+            )
             parsed = json.loads(payload)
             hits = parsed.get("hits", parsed.get("items", []))
             return tuple(sorted({_hit_id(hit) for hit in hits}))
-        payload = await self._server._tool_manager._tools["list_sessions"].fn(
+        payload = await self._server._tool_manager._tools["query"].fn(
+            projection="sessions",
             limit=case.limit if case.limit is not None else 100,
             origin=_origin_for_provider(case.provider),
             min_messages=case.min_messages,

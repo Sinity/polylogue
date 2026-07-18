@@ -71,7 +71,8 @@ class _MCPSurface:
         return self._server._tool_manager._tools[name].fn
 
     async def list_ids(self, *, origin: str | None = None, limit: int | None = None) -> tuple[str, ...]:
-        payload = await self._tool("list_sessions")(
+        payload = await self._tool("query")(
+            projection="sessions",
             limit=1000 if limit is None else limit,
             origin=origin,
         )
@@ -82,7 +83,7 @@ class _MCPSurface:
         return len(await self.list_ids(origin=origin, limit=1000))
 
     async def search_ids(self, query: str, *, limit: int = 50) -> tuple[str, ...]:
-        payload = await self._tool("search")(query=query, limit=limit)
+        payload = await self._tool("query")(expression=query, projection="sessions", limit=limit)
         parsed = json.loads(payload)
         hits = parsed.get("hits", parsed.get("items", []))
         ids: list[str] = []

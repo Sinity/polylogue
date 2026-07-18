@@ -245,26 +245,24 @@ class TestMaintenanceMCPTools:
 
         server = build_server(role="admin")
         tools = server._tool_manager._tools
-        assert "maintenance_preview" in tools
-        assert "maintenance_execute" in tools
+        assert "maintenance" in tools
 
     def test_maintenance_tools_absent_from_read_server(self) -> None:
         from polylogue.mcp.server import build_server
 
         server = build_server(role="read")
         tools = server._tool_manager._tools
-        assert "maintenance_preview" not in tools
-        assert "maintenance_execute" not in tools
+        assert "maintenance" not in tools
 
     def test_maintenance_preview_returns_envelope(self) -> None:
         from polylogue.mcp.server import build_server
 
         operation = _example_operation()
         server = build_server(role="admin")
-        fn = server._tool_manager._tools["maintenance_preview"].fn
+        fn = server._tool_manager._tools["maintenance"].fn
 
         with _patched_preview(operation):
-            result = asyncio.run(fn())
+            result = asyncio.run(fn(operation="preview"))
 
         payload = json.loads(result)
         assert set(payload.keys()) == EXPECTED_ENVELOPE_KEYS
