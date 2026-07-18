@@ -31,6 +31,7 @@ venv/
 .pytest_cache/
 .hypothesis/
 .mypy_cache/
+.dmypy.json
 .ruff_cache/
 .benchmarks/
 /artifacts/

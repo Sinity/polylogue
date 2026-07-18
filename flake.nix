@@ -166,7 +166,6 @@
           devtoolsCli
           git
           ruff
-          mypy
           py-spy
           python.pkgs.pyinstrument
           bat
