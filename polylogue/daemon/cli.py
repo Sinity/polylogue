@@ -596,14 +596,17 @@ async def _bridge_catch_up_complete(
 async def _reconcile_blob_publications() -> None:
     """Classify crash-left publication reservations before source catch-up."""
     from polylogue.paths import archive_root
-    from polylogue.storage.blob_publication import reconcile_blob_publication_reservations
+    from polylogue.storage.blob_publication import reconcile_blob_publication_reservations_under_exclusion
 
     root = archive_root()
     if not (root / "source.db").exists():
         return
+    # Reconciliation only clears rows under a live ArchiveWriterExclusion; the
+    # `_under_exclusion` entry point acquires it itself so this startup call
+    # cannot silently regress into a no-op reconciliation (polylogue-qs0a).
     outcome = await daemon_write_coordinator().run_sync(
         "startup.blob_publications",
-        reconcile_blob_publication_reservations,
+        reconcile_blob_publication_reservations_under_exclusion,
         root / "source.db",
         root / "blob",
         index_db_path=root / "index.db",

@@ -2685,6 +2685,55 @@ def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
     assert seen_busy_timeout == [fts_startup._FTS_STARTUP_BUSY_TIMEOUT_MS]
 
 
+def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Startup reconciliation must run under real writer exclusion (polylogue-qs0a).
+
+    Without a live ``ArchiveWriterExclusion``, ``reconcile_blob_publication_reservations``'s
+    ``may_clear`` gate is always false and every classified row is only ever
+    retained -- a durable reservation leak. This proves the daemon startup
+    call actually acquires the exclusion and clears the two terminal buckets
+    (referenced, missing-bytes) it already knows how to classify safely.
+    """
+    from polylogue.core.enums import Origin
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+
+    source_db = archive_root_path / "source.db"
+    store = BlobStore(archive_root_path / "blob")
+    publisher = ArchiveBlobPublisher(source_db, store.root)
+    missing_hash, _ = publisher.write_from_bytes(b"startup-missing-terminal")
+    referenced_hash, referenced_size = publisher.write_from_bytes(b"startup-referenced-terminal")
+    publisher.flush()
+    store.blob_path(missing_hash).unlink()
+    with sqlite3.connect(source_db) as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.CHATGPT_EXPORT,
+            source_path="startup-referenced.json",
+            source_index=0,
+            blob_hash=bytes.fromhex(referenced_hash),
+            blob_size=referenced_size,
+            acquired_at_ms=1,
+            raw_id="startup-referenced-raw",
+        )
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 2
+
+    asyncio.run(daemon_cli._reconcile_blob_publications())
+
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+
+
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
