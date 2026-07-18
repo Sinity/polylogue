@@ -2142,7 +2142,7 @@ class TestReaderQueryUnits:
                 _get_json(base_url, f"/api/query-units?continuation={quote(continuation)}"),
             )
 
-        assert continuation.startswith("q1.")
+        assert continuation.startswith("q2.")
         assert first["query_ref"] == second["query_ref"]
         assert first["result_ref"] == second["result_ref"]
         assert second["offset"] == 1
@@ -2150,6 +2150,27 @@ class TestReaderQueryUnits:
         first_items = cast(list[dict[str, object]], first["items"])
         second_items = cast(list[dict[str, object]], second["items"])
         assert first_items[0]["message_id"] != second_items[0]["message_id"]
+
+    def test_query_units_endpoint_rejects_stale_continuation(self, workspace_env: dict[str, Path]) -> None:
+        """HTTP validates a resumed page from its reader snapshot, like MCP.
+
+        Production dependencies: the daemon HTTP route, QueryTransaction, and
+        index-tier frame triggers. Removing the snapshot validation lets this
+        request advance a stale offset across a rewritten session.
+        """
+        expression = quote("messages where text:Hello")
+        with _running_server(workspace_env) as (_, base_url):
+            first = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}&limit=1"))
+            with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+                conn.execute("UPDATE sessions SET title = 'rewritten during pagination' WHERE session_id = ?", (C1,))
+            status, payload = _request_json(
+                base_url,
+                "GET",
+                f"/api/query-units?continuation={quote(str(first['continuation']), safe='')}",
+            )
+
+        assert status == HTTPStatus.CONFLICT
+        assert cast(dict[str, object], payload)["error"] == "query_continuation_stale"
 
     def test_query_units_endpoint_consumes_opaque_continuations(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("messages where text:Hello")

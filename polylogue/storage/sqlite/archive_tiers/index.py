@@ -24,7 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-INDEX_SCHEMA_VERSION = 39
+INDEX_SCHEMA_VERSION = 40
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS fts_freshness_state (
 """
 
 INDEX_DDL = f"""
+-- Continuation frames are deliberately tier-local: query-unit continuations
+-- combine this counter with the user-tier counter, so a write in either
+-- relation family invalidates an offset resume without inventing an archive-
+-- wide generation for unrelated tiers.
+CREATE TABLE IF NOT EXISTS query_unit_frame_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch INTEGER NOT NULL DEFAULT 0 CHECK (epoch >= 0)
+) STRICT;
+
+INSERT OR IGNORE INTO query_unit_frame_state(singleton, epoch) VALUES (1, 0);
+
 CREATE TABLE IF NOT EXISTS raw_revision_applications (
     decision_id              TEXT PRIMARY KEY,
     raw_id                   TEXT NOT NULL,
@@ -571,6 +582,21 @@ WHERE resolved_dst_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_session_links_dst_native
 ON session_links(dst_origin, dst_native_id);
 
+-- Resolver writes can change terminal ``delegations`` without replacing a
+-- transcript row, so they belong to the query-unit relation frame.
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_links_insert
+AFTER INSERT ON session_links BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_links_update
+AFTER UPDATE ON session_links BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_links_delete
+AFTER DELETE ON session_links BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+
 CREATE TABLE IF NOT EXISTS threads (
     thread_id                    TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
     dominant_repo_id             TEXT REFERENCES repos(repo_id) ON DELETE SET NULL,
@@ -820,6 +846,55 @@ CREATE TABLE IF NOT EXISTS session_tags (
     PRIMARY KEY(session_id, tag, tag_source)
 ) STRICT;
 
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_insert
+AFTER INSERT ON sessions BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_update
+AFTER UPDATE ON sessions BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_delete
+AFTER DELETE ON sessions BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_messages_insert
+AFTER INSERT ON messages BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_messages_update
+AFTER UPDATE ON messages BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_messages_delete
+AFTER DELETE ON messages BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_blocks_insert
+AFTER INSERT ON blocks BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_blocks_update
+AFTER UPDATE ON blocks BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_blocks_delete
+AFTER DELETE ON blocks BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_insert
+AFTER INSERT ON session_tags BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_update
+AFTER UPDATE ON session_tags BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_delete
+AFTER DELETE ON session_tags BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+
 CREATE TABLE IF NOT EXISTS insight_materialization (
     insight_type                 TEXT NOT NULL CHECK(insight_type IN (
                                     'session_profile', 'work_events', 'phases', 'latency', 'thread',
@@ -1022,6 +1097,21 @@ ON session_profiles(first_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
 ON session_profiles(canonical_session_date DESC);
 
+-- Session-profile fields supply query-unit session predicates such as repo
+-- and tags; a materializer rewrite must invalidate an offset continuation.
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_profiles_insert
+AFTER INSERT ON session_profiles BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_profiles_update
+AFTER UPDATE ON session_profiles BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_profiles_delete
+AFTER DELETE ON session_profiles BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+
 -- polylogue-y964: delegations is a versioned, recomputable read model spined
 -- on the PARENT's own dispatch actions, not on `session_links` plumbing. Two
 -- upstream facts drove a full rebuild rather than a column-alias fix:
@@ -1111,6 +1201,22 @@ CREATE INDEX IF NOT EXISTS idx_delegation_facts_state
 ON delegation_facts(mapping_state, parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_model
 ON delegation_facts(requested_model, dispatch_turn_model, child_session_dominant_model);
+
+-- The terminal ``delegations`` adapter reads this materialized relation
+-- directly.  Count its maintenance writes even when their source update was
+-- outside the terminal transcript tables above.
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_insert
+AFTER INSERT ON delegation_facts BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_update
+AFTER UPDATE ON delegation_facts BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_delete
+AFTER DELETE ON delegation_facts BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
 
 CREATE TABLE IF NOT EXISTS delegation_refresh_scope (
     parent_session_id TEXT PRIMARY KEY

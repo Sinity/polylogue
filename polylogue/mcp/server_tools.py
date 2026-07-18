@@ -296,10 +296,17 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.archive.query.execution_control import classify_unit_expression_workload
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
-            from polylogue.archive.query.transaction import QueryContinuation, QueryTransaction, QueryTransactionRequest
+            from polylogue.archive.query.transaction import (
+                QueryArchiveEpochUnreadableError,
+                QueryContinuation,
+                QueryContinuationStaleError,
+                QueryTransaction,
+                query_units_transaction_request,
+            )
             from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
             config = hooks.get_config()
+            archive_root = mcp_archive_root(config)
             effective_expression = requested_expression
             effective_limit = limit
             effective_offset = offset
@@ -375,28 +382,32 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     "session_filters": dict(unit_request.session_filters or {}),
                 }
                 transaction = QueryTransaction(
-                    mcp_archive_root(config),
-                    QueryTransactionRequest(
-                        operation="query_units",
-                        arguments=canonical_arguments,
+                    archive_root,
+                    continuation_request
+                    or query_units_transaction_request(
+                        expression=effective_expression,
+                        session_filters=unit_request.session_filters or {},
                         page_size=clamped_limit,
                         offset=clamped_offset,
-                        projection="terminal-unit-envelope",
-                        stable_order="canonical",
                     ),
                     workload_class=classify_unit_expression_workload(effective_expression),
                 )
                 with hooks.response_context("query_units", canonical_arguments):
-                    return hooks.json_payload(
-                        await transaction.run(
-                            lambda archive: query_unit_envelope(
-                                archive,
-                                unit_request,
-                                execution_context=transaction.context,
-                                transaction_request=transaction.request,
-                            ),
+                    try:
+                        return hooks.json_payload(
+                            await transaction.run(
+                                lambda archive: query_unit_envelope(
+                                    archive,
+                                    unit_request,
+                                    execution_context=transaction.context,
+                                    transaction_request=transaction.request,
+                                ),
+                            )
                         )
-                    )
+                    except QueryContinuationStaleError as exc:
+                        return hooks.error_json(str(exc), code=exc.code, tool="query_units")
+                    except QueryArchiveEpochUnreadableError as exc:
+                        return hooks.error_json(str(exc), code=exc.code, tool="query_units")
             except ExpressionCompileError as exc:
                 return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
 
