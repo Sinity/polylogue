@@ -315,7 +315,7 @@ def census_historical_revision_evidence(
     """Complete the source-tier census stage without applying index changes."""
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        _ParsedSessionSpill(archive_root) as spill,
+        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
     ):
         state = _census_historical_revision_evidence(
             archive,
@@ -360,7 +360,10 @@ def backfill_historical_revision_evidence(
         if owned_inactive_generation is not None
         else ArchiveStore.open_existing(archive_root, read_only=False)
     )
-    with archive_context as archive, _ParsedSessionSpill(archive_root) as spill:
+    with (
+        archive_context as archive,
+        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+    ):
         census = _census_historical_revision_evidence(
             archive,
             spill,
@@ -392,7 +395,7 @@ def backfill_historical_revision_evidence(
                 # cohort to membership governance and let parsed-content
                 # prefix rules decide it; append chains remain byte-governed.
                 for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
-                    sessions, _payload_bytes = spill.for_raw(raw_id)
+                    sessions, _payload_bytes = spill.for_raw(archive, raw_id)
                     if len(sessions) != 1:
                         raise RuntimeError(f"full revision {raw_id} no longer parses to one session")
                     archive.replace_raw_membership_census(
@@ -409,7 +412,7 @@ def backfill_historical_revision_evidence(
             parsed_by_raw_id: dict[str, ParsedSession] = {}
             retained_bytes = 0
             for raw_id in plan.accepted_raw_ids:
-                sessions, payload_bytes = spill.for_raw(raw_id)
+                sessions, payload_bytes = spill.for_raw(archive, raw_id)
                 if len(sessions) != 1:
                     raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
                 parsed_by_raw_id[raw_id] = sessions[0]
@@ -438,14 +441,17 @@ def backfill_historical_revision_evidence(
             retained_bytes = 0
             candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
             candidate_raw_ids.update(membership_candidates.get(logical_key, ()))
-            for raw_id, session, payload_bytes in spill.for_logical_key(logical_key):
-                if raw_id not in candidate_raw_ids:
-                    continue
-                projection = session_revision_projection(session)
-                member_sessions[raw_id] = session
-                projections[raw_id] = projection
-                revisions.append(MembershipRevision(raw_id, projection, session.updated_at))
-                retained_bytes += payload_bytes
+            for raw_id in sorted(candidate_raw_ids):
+                sessions, payload_bytes = spill.for_raw(archive, raw_id)
+                for session in sessions:
+                    session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                    if session_logical_key != logical_key:
+                        continue
+                    projection = session_revision_projection(session)
+                    member_sessions[raw_id] = session
+                    projections[raw_id] = projection
+                    revisions.append(MembershipRevision(raw_id, projection, session.updated_at))
+                    retained_bytes += payload_bytes
             if retention_observer is not None:
                 retention_observer(len(member_sessions), retained_bytes)
             classification = classify_membership_revisions(revisions)
@@ -500,9 +506,16 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
 
 
 class _ParsedSessionSpill:
-    """Disk-backed parser output cache bounded by one logical replay cohort."""
+    """Bounded parsed-session cache; durable raw bytes remain the replay source.
 
-    def __init__(self, archive_root: Path) -> None:
+    A census may span an archive-wide set of raw rows.  Its parser output must
+    not become an archive-wide second materialization.  Entries that do not
+    fit the caller's existing component envelope are deliberately not cached;
+    replay reparses them from durable source evidence.  This trades bounded
+    I/O for completeness and makes no raw cohort silently disappear.
+    """
+
+    def __init__(self, archive_root: Path, *, max_cached_payload_bytes: int | None) -> None:
         fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=archive_root)
         os.close(fd)
         self.path = Path(name)
@@ -519,6 +532,8 @@ class _ParsedSessionSpill:
             """
         )
         self.conn.execute("CREATE INDEX parsed_sessions_logical ON parsed_sessions(logical_key, raw_id)")
+        self.max_cached_payload_bytes = max_cached_payload_bytes
+        self.cached_payload_bytes = 0
 
     def __enter__(self) -> _ParsedSessionSpill:
         return self
@@ -534,6 +549,10 @@ class _ParsedSessionSpill:
         self.path.unlink(missing_ok=True)
 
     def add(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
+        if self.max_cached_payload_bytes is None or payload_bytes > self.max_cached_payload_bytes:
+            return
+        if self.cached_payload_bytes + payload_bytes > self.max_cached_payload_bytes:
+            return
         with self.conn:
             self.conn.executemany(
                 "INSERT INTO parsed_sessions(raw_id, logical_key, payload_bytes, parsed) VALUES (?, ?, ?, ?)",
@@ -547,19 +566,17 @@ class _ParsedSessionSpill:
                     for session in sessions
                 ),
             )
+        self.cached_payload_bytes += payload_bytes
 
-    def for_raw(self, raw_id: str) -> tuple[list[ParsedSession], int]:
+    def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
         rows = self.conn.execute(
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
         ).fetchall()
-        return [pickle.loads(bytes(row[0])) for row in rows], int(rows[0][1]) if rows else 0
-
-    def for_logical_key(self, logical_key: str) -> list[tuple[str, ParsedSession, int]]:
-        rows = self.conn.execute(
-            "SELECT raw_id, parsed, payload_bytes FROM parsed_sessions WHERE logical_key = ? ORDER BY raw_id",
-            (logical_key,),
-        ).fetchall()
-        return [(str(row[0]), pickle.loads(bytes(row[1])), int(row[2])) for row in rows]
+        if rows:
+            return [pickle.loads(bytes(row[0])) for row in rows], int(rows[0][1])
+        sessions, payload_bytes, _kind = _parse_retained_raw(archive, raw_id)
+        self.add(raw_id, sessions, payload_bytes=payload_bytes)
+        return sessions, payload_bytes
 
 
 def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[ParsedSession]:

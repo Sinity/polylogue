@@ -582,7 +582,9 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     )
     monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", fake_converge)
 
-    assert daemon_cli._drain_raw_materialization_once(limit=11) == 10
+    counts = daemon_cli._drain_raw_materialization_once(limit=11)
+    assert counts.repaired_sessions == 7
+    assert counts.executed_plans == 3
     assert order == ["restore", "recover-frontier", "materialize", "frontier"]
     assert calls == {
         "restore_db_path": tmp_path / "archive" / "source.db",
