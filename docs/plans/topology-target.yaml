@@ -1476,7 +1476,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2166
+    loc: 2192
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1637,7 +1637,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2840
+    loc: 2862
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -1713,7 +1713,7 @@ files:
     target: polylogue/daemon/web_shell_workspace.py
     owner: stable
   - path: polylogue/daemon/webui.py
-    loc: 885
+    loc: 1137
     target: polylogue/daemon/webui.py
     owner: stable
   - path: polylogue/daemon/workspace_routes.py
@@ -2255,7 +2255,7 @@ files:
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/operations/status_protocol.py
-    loc: 342
+    loc: 344
     target: polylogue/operations/status_protocol.py
     owner: stable
   - path: polylogue/paths/__init__.py
@@ -2425,7 +2425,7 @@ files:
     target: polylogue/product/continuity_scenarios.py
     owner: stable
   - path: polylogue/product/raw_authority.py
-    loc: 109
+    loc: 110
     target: polylogue/product/raw_authority.py
     owner: stable
   - path: polylogue/product/workflows.py
@@ -3281,7 +3281,7 @@ files:
     target: polylogue/sources/parsers/hermes_lifecycle.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_spans.py
-    loc: 779
+    loc: 854
     target: polylogue/sources/parsers/hermes_spans.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
