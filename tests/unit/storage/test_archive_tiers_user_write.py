@@ -243,3 +243,29 @@ def test_archive_tiers_user_write_minimal_upserts(tmp_path: Path) -> None:
     assert refreshed_note.body == "updated note"
     assert refreshed_note.target_type == "session"
     assert refreshed_note.target_id == "session-1"
+
+
+def test_upsert_recall_pack_without_explicit_id_updates_same_named_pack(tmp_path: Path) -> None:
+    """A changed payload for the same name must update, not fork, the pack.
+
+    Without a caller-supplied recall_pack_id, the id used to incorporate the
+    payload's content hash: a content change for the same name then computed
+    a different assertion_id, so the ON CONFLICT upsert in upsert_assertion
+    never matched and the update appended a second, disconnected row instead
+    of updating the existing logical pack (polylogue-2o3d).
+    """
+    conn = _connect(tmp_path / "user.db")
+
+    first = upsert_recall_pack(conn, "launch-pack", {"session_ids": ["session-1"]}, now_ms=1)
+    second = upsert_recall_pack(conn, "launch-pack", {"session_ids": ["session-1", "session-2"]}, now_ms=2)
+
+    assert second.recall_pack_id == first.recall_pack_id
+
+    pack_assertions = list_assertions_for_target(
+        conn, f"recall_pack:{first.recall_pack_id}", kind=AssertionKind.RECALL_PACK
+    )
+    assert len(pack_assertions) == 1
+    assert pack_assertions[0].value == {"session_ids": ["session-1", "session-2"]}
+
+    refreshed = read_archive_recall_pack_envelope(conn, first.recall_pack_id)
+    assert refreshed.payload == {"session_ids": ["session-1", "session-2"]}
