@@ -440,6 +440,34 @@ describe("popup capture", () => {
     expect(document.getElementById("open-tabs").textContent).toContain("Catching up");
   });
 
+  it("prefers a fresher ledger entry over a stale global snapshot for the same conversation", async () => {
+    // Reproduces a live incident: right after a receiver reconfiguration,
+    // the async mission/global-state snapshot can lag a ledger write that
+    // already landed, even though both describe the exact same tracked
+    // conversation. The active card must not show a stale "nothing tracked
+    // yet" fallback when the ledger already knows this conversation is
+    // archived.
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        provider: "chatgpt",
+        provider_session_id: "test-conversation",
+        updated_at: "2026-07-18T22:00:00.000Z",
+      },
+      polylogueSessionLedger: {
+        "chatgpt:test-conversation": {
+          archive_state: { state: "archived" },
+          turn_count: 2,
+          updated_at: "2026-07-18T22:05:00.000Z",
+        },
+      },
+    });
+
+    expect(document.getElementById("badge").textContent).toBe("safe / current");
+    expect(document.getElementById("state").textContent).toBe("The latest capture is visible in the archive.");
+    expect(document.getElementById("attention-section").hidden).toBe(true);
+  });
+
   it("renders the ledger and timeline for a Grok query conversation", async () => {
     await loadPopup({
       polylogueState: {
