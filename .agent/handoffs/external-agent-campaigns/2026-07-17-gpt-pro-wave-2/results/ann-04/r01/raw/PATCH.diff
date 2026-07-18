@@ -1,0 +1,3915 @@
+diff --git a/devtools/render_cli_reference.py b/devtools/render_cli_reference.py
+index 3489b9aed9e663474186db339053851c81076380..e4118d652e62ca20e84455be9274f25612b9a1b0 100644
+--- a/devtools/render_cli_reference.py
++++ b/devtools/render_cli_reference.py
+@@ -19,7 +19,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+     ("Select Verb", ("select",)),
+     ("Delete Verb", ("delete",)),
+     ("Mark Verb", ("mark",)),
+-    ("Mark Candidate Assertions", ("mark", "candidates")),
++    ("Judge Candidate Assertions", ("judge",)),
+     ("Continue Verb", ("continue",)),
+     ("Insights", ("ops", "insights")),
+     ("Operations", ("ops",)),
+diff --git a/devtools/render_product_workflows.py b/devtools/render_product_workflows.py
+index 061553d9f64cd59333106a64d2686b6be9bfa8a6..c676f5bf31e49706fb0ceb454d8178b9f71a5fb7 100644
+--- a/devtools/render_product_workflows.py
++++ b/devtools/render_product_workflows.py
+@@ -263,7 +263,7 @@ def build_document(
+         "",
+         "Shell completions are part of the workflow contract. They must cover `find QUERY then ACTION`, the action verbs "
+         "(`select`, `read`, `continue`, `analyze`, `mark`, `delete`), read views, destinations and view-scoped formats, "
+-        "mutating/destructive guards (`mark --all|--first`, `delete --dry-run|--yes|--all`), `mark candidates` subcommands, "
++        "mutating/destructive guards (`mark --all|--first`, `delete --dry-run|--yes|--all`), root `judge` options, "
+         "and `continue --candidates` options. Unsupported query syntax must fail loudly and must not be completed as broad FTS.",
+         "",
+         "## Daemon and Browser Workbench Contract",
+diff --git a/docs/cli-reference.md b/docs/cli-reference.md
+index 68f6b630b02f1f29c36cfaf47896f682bcc9d512..5b9847923ee98921e3d38524af4df37477b514e3 100644
+--- a/docs/cli-reference.md
++++ b/docs/cli-reference.md
+@@ -157,14 +157,15 @@ Commands:
+     find      Search the archive, then optionally run an...
+     read      Read matched sessions (route to view/destination).
+     select    Select one matched session or print candidate identities.
+-    mark      Mark selected sessions; review candidates under mark candidates.
++    mark      Mark selected sessions with tags, notes, and durable marks.
+     note      Capture a terminal memory candidate.
++    judge     Interactively triage candidate assertions.
+     analyze   Analyze matched sessions and named facet families.
+     facets    Show global or scoped archive facet families.
+     delete    Delete matched sessions.
+     continue  Resume a session or compile successor context as JSON.
+-    Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
+-    command.
++    Use `find QUERY then ACTION`; root `judge` owns assertion-candidate
++    review; `facets` is the direct archive aggregate command.
+ 
+   Setup, import, and evidence:
+     config    Show resolved Polylogue configuration with...
+@@ -190,7 +191,6 @@ Commands:
+ 
+   Other commands:
+     annotations  Import typed annotation batches.
+-    judge        Interactively triage candidate assertions.
+ ```
+ 
+ ## Analyze Verb
+@@ -410,7 +410,7 @@ Usage: polylogue mark [OPTIONS] [COMMAND] [ARGS]...
+ 
+   Mark query-result sessions with tags, notes, or durable marks.
+ 
+-  This owns session overlays only. Use `mark candidates` for assertion-
++  This owns session overlays only. Use root `polylogue judge` for assertion-
+   candidate review; target-ref/web annotations are separate surfaces, not
+   hidden here.
+ 
+@@ -443,32 +443,46 @@ Options:
+   --json            Shortcut for --format json.
+   --format [json]   Output format. JSON emits a MutationResultPayload.
+   --help            Show this message and exit.
+-
+-Commands:
+-  candidates  Review assertion candidates for a selected session or...
+ ```
+ 
+-## Mark Candidate Assertions
++## Judge Candidate Assertions
+ 
+ ```text
+-Usage: polylogue mark candidates [OPTIONS] COMMAND [ARGS]...
++Usage: polylogue judge [OPTIONS]
+ 
+-  Review assertion candidates for a selected session or target ref.
+-
+-  Candidate commands own review state and claim judgment: review, list,
+-  accept, reject, defer, or supersede candidate assertions. They do not apply
+-  ordinary session tags, stars, pins, archive marks, or notes.
++  Review and judge assertions through the sole public operator lifecycle.
+ 
+ Options:
+-  --help  Show this message and exit.
+-
+-Commands:
+-  accept     Accept a candidate assertion into an active assertion.
+-  defer      Record a durable candidate assertion deferral.
+-  list       List candidate assertion claims.
+-  reject     Reject a candidate assertion with a durable reason.
+-  review     List candidate assertion review state and disabled actions.
+-  supersede  Supersede a candidate with an explicit active assertion.
++  --list                          List pending candidates without judging.
++  --review                        List durable review history, not only
++                                  pending candidates.
++  --status                        Show non-destructive queue and producer
++                                  health.
++  --accept TEXT                   Accept one or more candidate assertion refs.
++  --reject TEXT                   Reject one or more candidate assertion refs.
++  --defer TEXT                    Durably defer one or more candidate
++                                  assertion refs.
++  --supersede TEXT                Supersede one or more candidate assertion
++                                  refs.
++  --accept-all-of-kind            Accept every pending candidate selected by
++                                  --kind and time/target filters.
++  --target-ref TEXT               Limit review rows to one target object ref.
++  --kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
++  --candidate-status [candidate|accepted|rejected|deferred|superseded]
++  --since TEXT                    Lower candidate creation-time bound (ISO or
++                                  relative date).
++  --until TEXT                    Upper candidate creation-time bound (ISO or
++                                  relative date).
++  --limit INTEGER RANGE           [default: 50; 1<=x<=500]
++  --reason TEXT
++  --actor-ref TEXT                [default: user:local]
++  --inject                        Authorize injection for accepted/superseding
++                                  assertions.
++  --replacement-kind [mark|highlight|annotation|correction|suppression|tag|metadata|saved_query|recall_pack|workspace_note|note|decision|caveat|lesson|blocker|handoff|judgment|run_state|prompt_eval|transform_candidate|pathology|finding|secret_candidate|excision_record|excision_request|comparative_judgment]
++  --body TEXT                     Replacement body for --supersede.
++  --json                          Shortcut for --format json.
++  --format [text|json]            Output format (default: text).
++  --help                          Show this message and exit.
+ ```
+ 
+ ## Continue Verb
+@@ -766,6 +780,7 @@ It records the public action floor, not every utility command in the Click tree.
+ | `polylogue continue` | `read` | `selection` | `query_result_set` | `singleton` | `safe` | `human`, `json` | `terminal`, `stdout`, `clipboard`, `file`, `api`, `mcp` | - | `polylogue find QUERY then select` | `item` | - | `read`, `mark` | `session_id` |
+ | `polylogue select` | `read` | `selection` | `query_result_set` | `singleton` | `safe` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | - | `item` | - | `read`, `continue`, `analyze`, `mark`, `delete` | `session_id` |
+ | `polylogue mark` | `write` | `selection` | `query_result_set` | `explicit_multi` | `mutating` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | `polylogue find QUERY then select` | `mutation` | `single_match_unless_all_or_first` | `read`, `analyze` | `session_id` |
++| `polylogue judge` | `write` | `candidate` | `assertion_candidate` | `explicit_multi` | `mutating` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | `polylogue judge --review` | `item` | `explicit_candidate_ref_for_mutation`, `authenticated_injection_opt_in` | `read`, `judge` | - |
+ | `polylogue analyze` | `read` | `selection` | `query_result_set` | `any` | `safe` | `human`, `json`, `ndjson` | `terminal`, `stdout`, `file`, `api`, `mcp` | - | - | `result_set` | - | `select`, `read` | `query_expression` |
+ | `polylogue delete` | `destructive` | `selection` | `query_result_set` | `destructive_multi` | `destructive` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | `polylogue find QUERY then delete --dry-run` | `polylogue find QUERY then select` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `find` | `session_id` |
+ | `polylogue import` | `import` | `path` | `path` | `singleton` | `mutating` | `human` | `terminal`, `stdout`, `api` | - | - | `mutation` | `path_exists_or_demo`, `daemon_accepts_schedule` | `ops`, `read`, `analyze` | `filesystem_path` |
+diff --git a/docs/product/workflows.md b/docs/product/workflows.md
+index 9a5c859678e25556616b5899b67b52de8b32030d..28f1d620677316adf4b4188b741dca6a6c1fa979 100644
+--- a/docs/product/workflows.md
++++ b/docs/product/workflows.md
+@@ -25,7 +25,7 @@ This product contract is generated from the live workflow registry and CLI actio
+ | Find then continue from selected context (`find-then-continue`) | `find EXACT_REF then continue [--format json] or continue --candidates --repo PATH` | Continuation from query results is singleton; candidate mode uses repo/cwd/recent-file evidence instead of query text.<br>continue rejects ambiguous result sets until a selector narrows the seed session. | Human by default; --format json emits the shared ContextImage payload.<br>Seed refs, read views, query-unit rows, assertions/candidates flags, freshness, and caveats travel in the context image. | `cli`<br>`daemon`<br>`mcp`<br>`completion`<br>`docs` |
+ | Find then mark selected sessions (`find-then-mark-session`) | `find QUERY then mark --tag-add TAG\|--star\|--pin\|--archive\|--note TEXT [--all\|--first]` | `mark` owns selected session overlays: tags, star, pin, archive marks, and notes. It does not own candidate assertions or future target-ref/web annotations.<br>Zero matches mutate nothing; one exact match is safe; many ranked matches require --all or --first before mutation. | Human receipt names the affected session count and operations; automation should use action-affordance guards for explicit multi selection.<br>Mutation receipt is backed by selected session refs, overlay operation names, and idempotent tag/mark outcomes. | `cli`<br>`daemon`<br>`mcp`<br>`completion`<br>`docs` |
+ | Find then analyze named facet families (`find-then-analyze-facets`) | `find QUERY then analyze --facets [--include-deferred] [--no-idf] [--format json]` | The query result set is the aggregate scope; exact refs scope to one selected session, while text queries keep the ranked multi-session set.<br>Facets accept zero, one, or many sessions: zero returns empty scoped buckets; one exact match returns singleton buckets; many returns aggregate buckets without selecting a target. | Terminal labels and JSON family_status name provider origins, user tags, canonical repos, provider-role counts, material origins, message types, action types, content flags, omitted/noisy tokens, freshness, and deferred state.<br>Facet JSON distinguishes role_counts from material_origins and reports repo canonicalization/omitted counts so path tokens are not presented as authoritative repos. | `cli`<br>`daemon`<br>`mcp`<br>`web`<br>`completion`<br>`docs` |
+-| Review candidate assertions (`candidate-assertion-review`) | `find EXACT_REF then mark candidates list\|accept\|reject\|defer\|supersede` | `mark candidates` owns assertion-candidate review for a selected session or target ref; ordinary `mark` owns session overlays.<br>Candidate list may be scoped to a selected target; each accept/reject/defer/supersede mutation names one candidate id and one target/session scope. | Human summaries and JSON candidate lists/operation receipts.<br>Candidate rows include target refs, evidence refs, claim class, status, and judgment operation trace. | `cli`<br>`daemon`<br>`completion`<br>`docs` |
++| Review candidate assertions (`candidate-assertion-review`) | `polylogue judge --target-ref REF --list\|--accept\|--reject\|--defer\|--supersede` | Root `polylogue judge` owns assertion-candidate review; ordinary `mark` owns session overlays selected by query.<br>Candidate list may be scoped to a selected target; each accept/reject/defer/supersede mutation names one candidate id and one target/session scope. | Human summaries and JSON candidate lists/operation receipts.<br>Candidate rows include target refs, evidence refs, claim class, status, and judgment operation trace. | `cli`<br>`daemon`<br>`completion`<br>`docs` |
+ | Resolve exact refs and drill down (`resolve-ref-drilldown`) | `polylogue read REF or find id:SESSION then select/read` | Exact refs are identity filters; unmatched refs return no target instead of falling back to broad FTS; exact ref plus extra text remains a scoped search-within-session query.<br>Zero exact refs resolve to an unresolved/no-results shape; one exact match resolves to one session/message/block/assertion/operation shape; many ranked text matches remain candidate rows until selected. | Direct exact-ref reads are JSON or selected-session read-view payloads; query-selected drilldowns follow the selected read view format contract.<br>Resolved payload includes target_ref/identity_key, selected session payload, or an explicit unresolved state. | `cli`<br>`daemon`<br>`mcp`<br>`completion`<br>`docs` |
+ | Browser capture status and next action (`browser-capture-status`) | `polylogue ops status or daemon status strip/browser-capture readiness routes` | Runtime status is not a source selector; it reports capture readiness, receiver URL, and archive materialization state.<br>Operational singleton over the local runtime and configured receiver. | Human status chips and API status JSON include freshness/readiness, not hidden censorship.<br>Status links to daemon health, receiver state, source roots, and follow-up actions when unavailable. | `daemon`<br>`web`<br>`docs` |
+ 
+@@ -40,12 +40,12 @@ The matrix is rendered from `ACTION_CONTRACTS`, the same source used by `polylog
+ | `continue` | `selection` / `query_result_set` | `singleton` | `safe` | `human`<br>`json` | `terminal`<br>`stdout`<br>`clipboard`<br>`file`<br>`api`<br>`mcp` | polylogue find QUERY then select | `read`<br>`mark` |
+ | `select` | `selection` / `query_result_set` | `singleton` | `safe` | `human`<br>`json` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | — | `read`<br>`continue`<br>`analyze`<br>`mark`<br>`delete` |
+ | `mark` | `selection` / `query_result_set` | `explicit_multi` | `mutating` | `human`<br>`json` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | polylogue find QUERY then select | `read`<br>`analyze` |
++| `judge` | `candidate` / `assertion_candidate` | `explicit_multi` | `mutating` | `human`<br>`json` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | polylogue judge --review | `read`<br>`judge` |
+ | `analyze` | `selection` / `query_result_set` | `any` | `safe` | `human`<br>`json`<br>`ndjson` | `terminal`<br>`stdout`<br>`file`<br>`api`<br>`mcp` | — | `select`<br>`read` |
+ | `delete` | `selection` / `query_result_set` | `destructive_multi` | `destructive` | `human`<br>`json` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | polylogue find QUERY then select<br>confirm: `polylogue find QUERY then delete --dry-run` | `find` |
+ | `import` | `path` / `path` | `singleton` | `mutating` | `human` | `terminal`<br>`stdout`<br>`api` | — | `ops`<br>`read`<br>`analyze` |
+ | `config` | `config` / `config` | `any` | `operational` | `human`<br>`json` | `terminal`<br>`stdout` | — | `ops` |
+ | `ops` | `runtime` / `runtime` | `any` | `operational` | `human` | `terminal`<br>`stdout`<br>`api` | — | `find`<br>`read` |
+-| `mark candidates` | selected session target_ref / candidate assertion id | `list scoped candidates or singleton candidate judgment` | `mutating` | `human`<br>`json` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | polylogue find EXACT_REF then mark candidates list --target-ref REF | `read`<br>`mark candidates list` |
+ 
+ ## Action-Unit Evidence
+ 
+@@ -57,8 +57,8 @@ Action units are the evidence grain for query-action execution. They define the
+ | `read` | session/message/block target_ref plus read-view payload | read --view messages/raw/context uses shared CLI and HTTP read-view profiles; exact refs read the selected session payload. | Zero matches return no target; many matches require --all/--first/bounded export; unsupported formats/views fail instead of widening. |
+ | `continue` | ContextImage seed_refs and read_views | continue --format json records seed_refs, redaction policy, assertions, candidates, and context segments. | Ambiguous query results require selection before continuation. |
+ | `analyze` | query-scoped stats/facet rows | analyze --facets --format json exposes scoped/global buckets plus family_status labels, deferred state, and omitted/noisy counts. | Unsupported grouping/format combinations fail loudly; deferred facet families are marked deferred rather than displayed as authoritative empties. |
+-| `mark` | user overlay operation over selected session refs | mark commands emit operation receipts and persist session tags, stars, pins, archive marks, and notes. | Multi-match mutations require --all or --first; assertion candidates stay under mark candidates. |
+-| `mark candidates` | candidate assertion id plus judgment operation | mark candidates list/accept/reject/defer/supersede routes through candidate assertion review. | Candidate confidence is never admission authority; human judgment command is required. |
++| `mark` | user overlay operation over selected session refs | mark commands emit operation receipts and persist session tags, stars, pins, archive marks, and notes. | Multi-match mutations require --all or --first; assertion candidates stay under root `polylogue judge`. |
++| `judge` | candidate assertion id plus judgment operation | root judge list/review/accept/reject/defer/supersede routes through the canonical candidate lifecycle. | Candidate confidence is never admission authority; human judgment command is required. |
+ | `delete` | session ids and dry-run mutation preview | delete --dry-run returns affected session ids/counts before any destructive operation. | Actual deletion requires --yes and explicit multi-match scope. |
+ | `browser capture status` | daemon/browser-capture readiness state | web status strip and daemon JSON surface capture freshness, receiver availability, and next action. | Capture status does not silently import or redact; mutations remain operator-triggered. |
+ 
+@@ -85,7 +85,7 @@ The family meanings stay separate: provider `origins` describe archive/source pr
+ 
+ ## Completion Contract
+ 
+-Shell completions are part of the workflow contract. They must cover `find QUERY then ACTION`, the action verbs (`select`, `read`, `continue`, `analyze`, `mark`, `delete`), read views, destinations and view-scoped formats, mutating/destructive guards (`mark --all|--first`, `delete --dry-run|--yes|--all`), `mark candidates` subcommands, and `continue --candidates` options. Unsupported query syntax must fail loudly and must not be completed as broad FTS.
++Shell completions are part of the workflow contract. They must cover `find QUERY then ACTION`, the action verbs (`select`, `read`, `continue`, `analyze`, `mark`, `delete`), read views, destinations and view-scoped formats, mutating/destructive guards (`mark --all|--first`, `delete --dry-run|--yes|--all`), root `judge` options, and `continue --candidates` options. Unsupported query syntax must fail loudly and must not be completed as broad FTS.
+ 
+ ## Daemon and Browser Workbench Contract
+ 
+@@ -104,7 +104,7 @@ The following commands are parametrized tests over `polylogue demo seed --with-o
+ | `continue-context-json` | `find-then-successor-context` | `polylogue find id:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6 then continue --format json` | `json_object` | `spec` is object<br>`spec.seed_refs` is array<br>`spec.unit_queries` is array<br>`segments` is array | `session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6`<br>`"unit_queries"` |
+ | `continue-json` | `find-then-continue` | `polylogue find id:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6 then continue --format json` | `json_object` | `spec` is object<br>`spec.seed_refs` is array<br>`segments` is array | `session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6`<br>`"purpose": "continue"` |
+ | `analyze-facets-json` | `find-then-analyze-facets` | `polylogue find pytest then analyze --facets --format json` | `json_object` | `scoped_to_query` is boolean<br>`scoped` is object<br>`global` is object<br>`scoped.origins` is object<br>`family_status` is object<br>`deferred_families` is object | `"claude-code-session"`<br>`"codex-session"` |
+-| `mark-candidates-list-json` | `candidate-assertion-review` | `polylogue find id:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6 then mark candidates list --format json` | `json_object` | `items` is array<br>`total` is integer<br>`statuses` is array | `"statuses"`<br>`"candidate"` |
++| `judge-review-json` | `candidate-assertion-review` | `polylogue judge --target-ref session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6 --review --format json` | `json_object` | `mode` is string<br>`items` is array<br>`items.0.evidence_previews` is array<br>`total` is integer<br>`candidate_statuses` is array | `"evidence_previews"`<br>`"candidate"` |
+ | `delete-dry-run-json` | `resolve-ref-drilldown` | `polylogue find id:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6 then delete --dry-run` | `json_object` | `status` is string<br>`session_ids` is array<br>`session_count` is integer | `"status": "preview"`<br>`claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6` |
+ 
+ ## Regeneration and Verification
+diff --git a/docs/search.md b/docs/search.md
+index afe67ce0244deaae2a99d02b1107d83912eb2356..fa10e72c77e0e96af72b01bc74b6490729a4aa21 100644
+--- a/docs/search.md
++++ b/docs/search.md
+@@ -401,18 +401,19 @@ keeps pending candidates separate from already judged lifecycle rows:
+ 
+ ```bash
+ polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
+-polylogue mark candidates list --target-ref session:codex-session:abc123 --format json
+-polylogue mark candidates review --target-ref session:codex-session:abc123 --format json
++polylogue judge --target-ref session:codex-session:abc123 --list --format json
++polylogue judge --target-ref session:codex-session:abc123 --review --format json
++polylogue judge --status --format json
+ ```
+ 
+-The judgment workflow lives under `polylogue mark candidates` and writes
+-back into the same `user.db` assertion substrate:
++The sole public judgment workflow is root `polylogue judge`; it writes through
++the existing lifecycle authority into the same `user.db` assertion substrate:
+ 
+ ```bash
+-polylogue mark candidates accept assertion:candidate-id --reason "confirmed by transcript" --format json
+-polylogue mark candidates reject assertion:candidate-id --reason "unsupported by evidence" --format json
+-polylogue mark candidates defer assertion:candidate-id --reason "needs another source" --format json
+-polylogue mark candidates supersede assertion:candidate-id --kind summary --body "replacement claim" --format json
++polylogue judge --accept assertion:candidate-id --reason "confirmed by transcript" --format json
++polylogue judge --reject assertion:candidate-id --reason "unsupported by evidence" --format json
++polylogue judge --defer assertion:candidate-id --reason "needs another source" --format json
++polylogue judge --supersede assertion:candidate-id --replacement-kind summary --body "replacement claim" --format json
+ ```
+ 
+ The closed assertion status vocabulary is `active`, `candidate`, `accepted`,
+@@ -422,12 +423,22 @@ fail at the typed boundary instead of being rendered as generic strings.
+ candidate assertion ref and whose `supersedes` lineage points at the candidate.
+ `reject` writes `status:rejected`, and `defer` writes `status:deferred`; both
+ preserve a judgment assertion with the reason and leave a durable lifecycle
+-record. Judged candidates remain in `mark candidates review` with disabled
++record. Judged candidates remain in `polylogue judge --review` with disabled
+ action reasons such as `candidate_already_accepted`, `candidate_already_rejected`,
+-`candidate_deferred`, or `candidate_superseded`, while `mark candidates list`
+-only shows candidates still awaiting judgment. No candidate assertion is
+-injected into compiled context unless a later surface asks for candidates
+-explicitly.
++`candidate_deferred`, or `candidate_superseded`, while `polylogue judge --list`
++only shows candidates still awaiting judgment. Review rows disclose the claim
++summary, source identity, candidate age, total evidence count, and up to five
++bounded evidence previews; unresolved or failed references are represented as
++explicit per-reference states rather than failing the whole review. No candidate
++assertion is injected into compiled context unless a later surface asks for
++candidates explicitly.
++
++`polylogue judge --status` is a non-destructive queue-health query. It reports
++pending counts and age, lifecycle/kind/source breakdowns, producer-run state,
++scheduler heartbeat, convergence debt, and retention outcome. An empty queue is
++healthy only when a recent successful producer run and fresh heartbeat are both
++observable; otherwise it remains `empty-unverified`. Candidates older than 60
++days remain durable and visible as retained backlog.
+ 
+ Pending candidate judgments also appear in the operator debt cockpit:
+ 
+diff --git a/polylogue/api/archive.py b/polylogue/api/archive.py
+index 438e5f899864ad966efa35da1126160c0ed2188e..9c7e885131fdd1764147ec96cfe1d98efe4d16aa 100644
+--- a/polylogue/api/archive.py
++++ b/polylogue/api/archive.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import builtins
++import hashlib
+ import json
+ import logging
+ import sqlite3
+@@ -33,7 +34,13 @@ from polylogue.context.compiler import (
+ from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
+ from polylogue.core.errors import PolylogueError
+ from polylogue.core.json import JSONDocument
+-from polylogue.core.refs import EvidenceRef, ObjectRef, parse_delegation_edge_object_id, parse_public_ref
++from polylogue.core.refs import (
++    EvidenceRef,
++    ObjectRef,
++    normalize_object_ref_text,
++    parse_delegation_edge_object_id,
++    parse_public_ref,
++)
+ from polylogue.core.timestamps import parse_archive_datetime
+ from polylogue.core.types import SessionId
+ from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
+@@ -58,6 +65,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
+     ArchiveMessageRow,
+     ArchiveSessionEnvelope,
+ )
++from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+ from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
+ from polylogue.surfaces.chronicle import (
+     ChronicleProjectionPayload,
+@@ -120,8 +128,11 @@ if TYPE_CHECKING:
+     from polylogue.surfaces.payloads import (
+         ArchiveDebtListPayload,
+         AssertionBulkJudgmentPayload,
++        AssertionCandidateQueueHealthPayload,
++        AssertionCandidateQueueState,
+         AssertionCandidateReviewListPayload,
+         AssertionClaimPayload,
++        AssertionEvidenceResolutionState,
+         AssertionJudgmentResultPayload,
+         BulkTagMutationResult,
+         DeleteSessionResult,
+@@ -1049,7 +1060,7 @@ def _archive_list_assertion_claims(
+     if not user_db.exists():
+         return []
+     try:
+-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
++        conn = open_readonly_connection(user_db)
+         conn.row_factory = sqlite3.Row
+         try:
+             if kinds is None:
+@@ -1090,7 +1101,7 @@ def _archive_get_context_delivery(
+     if not user_db.exists():
+         return None
+     try:
+-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
++        conn = open_readonly_connection(user_db)
+         conn.row_factory = sqlite3.Row
+         try:
+             receipt = read_context_delivery(conn, snapshot_ref)
+@@ -1230,7 +1241,7 @@ def _archive_list_assertion_candidate_reviews(
+     if not user_db.exists():
+         return []
+     try:
+-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
++        conn = open_readonly_connection(user_db)
+         conn.row_factory = sqlite3.Row
+         try:
+             return list_assertion_candidate_reviews(
+@@ -1246,6 +1257,220 @@ def _archive_list_assertion_candidate_reviews(
+         return []
+ 
+ 
++def _archive_assertion_candidate_queue_health(
++    config: Config,
++    *,
++    now_ms: int | None = None,
++) -> AssertionCandidateQueueHealthPayload:
++    """Project queue depth, retention, producer telemetry, and scheduler health."""
++
++    from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
++    from polylogue.storage.sqlite.archive_tiers.user_write import (
++        ASSERTION_CANDIDATE_JUDGMENT_KINDS,
++        ASSERTION_CANDIDATE_REVIEW_STATUSES,
++    )
++    from polylogue.surfaces.payloads import AssertionCandidateQueueHealthPayload
++
++    observed_at_ms = int(datetime.now(UTC).timestamp() * 1000) if now_ms is None else now_ms
++    archive_root = _active_archive_root(config)
++    user_db = archive_root / "user.db"
++    if not user_db.exists():
++        return AssertionCandidateQueueHealthPayload(
++            state="unavailable",
++            observed_at_ms=observed_at_ms,
++            pending_count=0,
++            caveats=("user.db is not initialized",),
++        )
++
++    kind_values = tuple(kind.value for kind in ASSERTION_CANDIDATE_JUDGMENT_KINDS)
++    review_status_values = tuple(status.value for status in ASSERTION_CANDIDATE_REVIEW_STATUSES)
++    kind_placeholders = ",".join("?" for _ in kind_values)
++    status_placeholders = ",".join("?" for _ in review_status_values)
++    try:
++        conn = open_readonly_connection(user_db)
++        conn.row_factory = sqlite3.Row
++        try:
++            table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assertions'").fetchone()
++            if table is None:
++                raise sqlite3.OperationalError("assertions table is unavailable")
++            status_counts = {
++                str(row[0]): int(row[1])
++                for row in conn.execute(
++                    f"""
++                    SELECT status, COUNT(*)
++                    FROM assertions
++                    WHERE kind IN ({kind_placeholders})
++                      AND status IN ({status_placeholders})
++                    GROUP BY status
++                    ORDER BY status
++                    """,
++                    (*kind_values, *review_status_values),
++                )
++            }
++            kind_counts = {
++                str(row[0]): int(row[1])
++                for row in conn.execute(
++                    f"""
++                    SELECT kind, COUNT(*)
++                    FROM assertions
++                    WHERE kind IN ({kind_placeholders}) AND status = ?
++                    GROUP BY kind
++                    ORDER BY kind
++                    """,
++                    (*kind_values, AssertionStatus.CANDIDATE.value),
++                )
++            }
++            source_counts = {
++                str(row[0]): int(row[1])
++                for row in conn.execute(
++                    f"""
++                    SELECT COALESCE(author_kind, 'unknown') || ':' || COALESCE(author_ref, 'unknown'), COUNT(*)
++                    FROM assertions
++                    WHERE kind IN ({kind_placeholders}) AND status = ?
++                    GROUP BY author_kind, author_ref
++                    ORDER BY COUNT(*) DESC, author_kind, author_ref
++                    """,
++                    (*kind_values, AssertionStatus.CANDIDATE.value),
++                )
++            }
++            age_cutoff_ms = observed_at_ms - 60 * 24 * 60 * 60 * 1000
++            aggregate = conn.execute(
++                f"""
++                SELECT COUNT(*), MIN(created_at_ms), MAX(created_at_ms),
++                       SUM(CASE WHEN created_at_ms < ? THEN 1 ELSE 0 END)
++                FROM assertions
++                WHERE kind IN ({kind_placeholders}) AND status = ?
++                """,
++                (age_cutoff_ms, *kind_values, AssertionStatus.CANDIDATE.value),
++            ).fetchone()
++        finally:
++            conn.close()
++    except sqlite3.Error as exc:
++        return AssertionCandidateQueueHealthPayload(
++            state="unavailable",
++            observed_at_ms=observed_at_ms,
++            pending_count=0,
++            caveats=(f"queue read failed: {exc}",),
++        )
++
++    pending_count = int(aggregate[0] or 0) if aggregate is not None else 0
++    oldest_pending_at_ms = int(aggregate[1]) if aggregate is not None and aggregate[1] is not None else None
++    newest_pending_at_ms = int(aggregate[2]) if aggregate is not None and aggregate[2] is not None else None
++    stale_pending_count = int(aggregate[3] or 0) if aggregate is not None else 0
++
++    producer_status: str | None = None
++    producer_observed_at_ms: int | None = None
++    producer_debt_count = 0
++    scheduler_state: Literal["fresh", "stale", "stopped", "unknown"] = "unknown"
++    scheduler_heartbeat_at_ms: int | None = None
++    caveats: list[str] = []
++    ops_db = archive_root / "ops.db"
++    if not ops_db.exists():
++        caveats.append("ops.db is unavailable; producer and scheduler health are unverified")
++    else:
++        try:
++            ops_conn = open_readonly_connection(ops_db)
++            try:
++                if ops_conn.execute(
++                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_stage_events'"
++                ).fetchone():
++                    producer_row = ops_conn.execute(
++                        """
++                        SELECT status, observed_at_ms
++                        FROM daemon_stage_events
++                        WHERE stage = 'standing-queries'
++                        ORDER BY observed_at_ms DESC, rowid DESC
++                        LIMIT 1
++                        """
++                    ).fetchone()
++                    if producer_row is not None:
++                        producer_status = str(producer_row[0])
++                        producer_observed_at_ms = int(producer_row[1])
++                if ops_conn.execute(
++                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
++                ).fetchone():
++                    debt_row = ops_conn.execute(
++                        """
++                        SELECT COUNT(*) FROM convergence_debt
++                        WHERE stage = 'standing-queries' AND status IN ('failed', 'deferred')
++                        """
++                    ).fetchone()
++                    producer_debt_count = int(debt_row[0] or 0) if debt_row is not None else 0
++                if ops_conn.execute(
++                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_lifecycle'"
++                ).fetchone():
++                    lifecycle_row = ops_conn.execute(
++                        """
++                        SELECT stopped_at_ms, last_heartbeat_at_ms
++                        FROM daemon_lifecycle
++                        ORDER BY started_at_ms DESC
++                        LIMIT 1
++                        """
++                    ).fetchone()
++                    if lifecycle_row is not None:
++                        scheduler_heartbeat_at_ms = int(lifecycle_row[1])
++                        if lifecycle_row[0] is not None:
++                            scheduler_state = "stopped"
++                        elif observed_at_ms - scheduler_heartbeat_at_ms <= (
++                            DAEMON_HEARTBEAT_STALE_AFTER_SECONDS * 1000
++                        ):
++                            scheduler_state = "fresh"
++                        else:
++                            scheduler_state = "stale"
++            finally:
++                ops_conn.close()
++        except sqlite3.Error as exc:
++            caveats.append(f"ops telemetry read failed: {exc}")
++
++    producer_age_ms = None if producer_observed_at_ms is None else max(0, observed_at_ms - producer_observed_at_ms)
++    heartbeat_age_ms = None if scheduler_heartbeat_at_ms is None else max(0, observed_at_ms - scheduler_heartbeat_at_ms)
++    successful_producer_statuses = {"completed", "done", "ok", "success", "succeeded"}
++    failed_producer_statuses = {"error", "failed", "interrupted"}
++    producer_fresh = (
++        producer_status in successful_producer_statuses
++        and producer_age_ms is not None
++        and producer_age_ms <= 24 * 60 * 60 * 1000
++    )
++
++    state: AssertionCandidateQueueState
++    if producer_debt_count or producer_status in failed_producer_statuses or scheduler_state in {"stale", "stopped"}:
++        state = "producer-stalled"
++    elif stale_pending_count:
++        state = "stale-pending"
++    elif pending_count:
++        state = "pending"
++    elif producer_fresh and scheduler_state == "fresh":
++        state = "healthy-empty"
++    else:
++        state = "empty-unverified"
++        if producer_status is None:
++            caveats.append("no successful standing-queries producer event is observable")
++        if scheduler_state != "fresh":
++            caveats.append("a fresh scheduler heartbeat is not observable")
++
++    return AssertionCandidateQueueHealthPayload(
++        state=state,
++        observed_at_ms=observed_at_ms,
++        pending_count=pending_count,
++        status_counts=status_counts,
++        kind_counts=kind_counts,
++        source_counts=source_counts,
++        oldest_pending_at_ms=oldest_pending_at_ms,
++        newest_pending_at_ms=newest_pending_at_ms,
++        oldest_pending_age_ms=None if oldest_pending_at_ms is None else max(0, observed_at_ms - oldest_pending_at_ms),
++        stale_pending_count=stale_pending_count,
++        retention_outcome="retained-visible" if stale_pending_count else "none",
++        producer_status=producer_status,
++        producer_observed_at_ms=producer_observed_at_ms,
++        producer_age_ms=producer_age_ms,
++        scheduler_state=scheduler_state,
++        scheduler_heartbeat_at_ms=scheduler_heartbeat_at_ms,
++        scheduler_heartbeat_age_ms=heartbeat_age_ms,
++        producer_debt_count=producer_debt_count,
++        caveats=tuple(dict.fromkeys(caveats)),
++    )
++
++
+ def _archive_judge_assertion_candidate(
+     config: Config,
+     *,
+@@ -1266,7 +1491,7 @@ def _archive_judge_assertion_candidate(
+     if not user_db.exists():
+         raise ValueError("assertion user tier is not initialized")
+     try:
+-        conn = sqlite3.connect(user_db)
++        conn = open_connection(user_db)
+         conn.row_factory = sqlite3.Row
+         try:
+             result = judge_assertion_candidate(
+@@ -1298,17 +1523,34 @@ def _archive_capture_assertion_candidate(
+     cwd: Path | None = None,
+     author_ref: str = "user:local",
+     author_kind: str = "user",
++    idempotency_key: str | None = None,
+ ) -> Any:
+     """Write one terminal-captured assertion through the user-tier gate."""
+ 
+     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
++    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
+ 
+     normalized_body = body_text.strip()
+     if not normalized_body:
+         raise ValueError("note text cannot be empty")
+-
+-    assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
++    normalized_author_ref = normalize_object_ref_text(author_ref)
++    normalized_author_kind = author_kind.strip().lower()
++    if not normalized_author_kind:
++        raise ValueError("author_kind cannot be empty")
++
++    normalized_idempotency_key = None if idempotency_key is None else idempotency_key.strip()
++    if idempotency_key is not None and not normalized_idempotency_key:
++        raise ValueError("idempotency_key cannot be empty")
++    if normalized_idempotency_key is not None and len(normalized_idempotency_key) > 240:
++        raise ValueError("idempotency_key exceeds 240 characters")
++
++    if normalized_idempotency_key is None:
++        assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
++    else:
++        identity = hashlib.sha256(
++            f"{normalized_author_ref}\0{normalized_idempotency_key}".encode("utf-8", errors="surrogatepass")
++        ).hexdigest()
++        assertion_id = f"assertion-terminal-note:{identity}"
+     resolved_refs: list[str] = []
+     with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
+         for ref in refs:
+@@ -1337,10 +1579,57 @@ def _archive_capture_assertion_candidate(
+         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
+         user_db = archive.user_db_path
+ 
++    fingerprint_document = {
++        "author_kind": normalized_author_kind,
++        "author_ref": normalized_author_ref,
++        "body_text": normalized_body,
++        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
++        "kind": kind.value,
++        "scope_refs": normalized_scope_refs,
++        "target_ref": target_ref,
++    }
++    capture_fingerprint = hashlib.sha256(
++        json.dumps(
++            fingerprint_document,
++            ensure_ascii=False,
++            sort_keys=True,
++            separators=(",", ":"),
++        ).encode("utf-8", errors="surrogatepass")
++    ).hexdigest()
++
+     try:
+-        conn = sqlite3.connect(user_db)
++        conn = open_connection(user_db)
+         conn.row_factory = sqlite3.Row
+         try:
++            # The key lookup and first write share one reservation. Without
++            # this, two changed captures racing on the same key could both
++            # observe absence and the later writer would overwrite history.
++            conn.execute("BEGIN IMMEDIATE")
++            existing = read_assertion_envelope(conn, assertion_id)
++            if existing is not None:
++                existing_value = existing.value if isinstance(existing.value, dict) else {}
++                existing_scope_refs = existing_value.get("scope_refs")
++                existing_document = {
++                    "author_kind": existing.author_kind,
++                    "author_ref": existing.author_ref,
++                    "body_text": existing.body_text,
++                    "evidence_refs": existing.evidence_refs,
++                    "kind": existing.kind.value,
++                    "scope_refs": existing_scope_refs if isinstance(existing_scope_refs, list) else [],
++                    "target_ref": existing.target_ref,
++                }
++                existing_fingerprint = hashlib.sha256(
++                    json.dumps(
++                        existing_document,
++                        ensure_ascii=False,
++                        sort_keys=True,
++                        separators=(",", ":"),
++                    ).encode("utf-8", errors="surrogatepass")
++                ).hexdigest()
++                if existing_fingerprint == capture_fingerprint:
++                    conn.commit()
++                    return existing
++                raise ValueError("idempotency_key conflicts with a different assertion candidate capture")
+             envelope = upsert_assertion(
+                 conn,
+                 assertion_id=assertion_id,
+@@ -1354,8 +1643,8 @@ def _archive_capture_assertion_candidate(
+                     "unanchored": not bool(resolved_refs),
+                 },
+                 body_text=normalized_body,
+-                author_ref=author_ref,
+-                author_kind=author_kind,
++                author_ref=normalized_author_ref,
++                author_kind=normalized_author_kind,
+                 evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+                 status=AssertionStatus.CANDIDATE,
+                 context_policy={"inject": False, "promotion_required": True},
+@@ -1381,7 +1670,7 @@ def _archive_judge_assertion_candidates(
+     if not user_db.exists():
+         raise ValueError("assertion user tier is not initialized")
+     try:
+-        conn = sqlite3.connect(user_db)
++        conn = open_connection(user_db)
+         conn.row_factory = sqlite3.Row
+         try:
+             result = judge_assertion_candidates(conn, items)
+@@ -1415,7 +1704,7 @@ def _archive_emit_pathology_assertions(
+         raise ValueError("assertion user tier is not initialized")
+     emitted = 0
+     try:
+-        conn = sqlite3.connect(user_db)
++        conn = open_connection(user_db)
+         conn.row_factory = sqlite3.Row
+         try:
+             for session_id, findings in findings_by_session.items():
+@@ -2389,7 +2678,10 @@ class PolylogueArchiveMixin:
+         """List candidate assertion review state separately from active claims."""
+ 
+         from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CANDIDATE_REVIEW_STATUSES
+-        from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
++        from polylogue.surfaces.payloads import (
++            AssertionCandidateReviewListPayload,
++            AssertionEvidencePreviewPayload,
++        )
+ 
+         candidate_statuses = ASSERTION_CANDIDATE_REVIEW_STATUSES if statuses is None else statuses
+         review_rows = cast(
+@@ -2402,13 +2694,66 @@ class PolylogueArchiveMixin:
+                 limit=limit,
+             ),
+         )
++        evidence_previews: dict[str, tuple[AssertionEvidencePreviewPayload, ...]] = {}
++        for review in review_rows:
++            previews: list[AssertionEvidencePreviewPayload] = []
++            for evidence_ref in review.candidate.evidence_refs[:5]:
++                try:
++                    resolution = await self.resolve_ref(evidence_ref)
++                except Exception as exc:
++                    previews.append(
++                        AssertionEvidencePreviewPayload(
++                            ref=evidence_ref,
++                            state="error",
++                            reason=str(exc)[:300],
++                        )
++                    )
++                    continue
++                caveat = next(iter(resolution.caveats), None)
++                diagnostic = " ".join(
++                    value for value in (caveat, resolution.summary, resolution.payload_kind) if value
++                ).lower()
++                evidence_state: AssertionEvidenceResolutionState
++                if resolution.resolved:
++                    evidence_state = "resolved"
++                elif "unsupported" in diagnostic:
++                    evidence_state = "unsupported"
++                elif "pending" in diagnostic or resolution.payload_kind == "pending":
++                    evidence_state = "pending"
++                else:
++                    evidence_state = "missing"
++                previews.append(
++                    AssertionEvidencePreviewPayload(
++                        ref=evidence_ref,
++                        state=evidence_state,
++                        kind=resolution.kind,
++                        title=None if resolution.title is None else resolution.title[:200],
++                        excerpt=None if resolution.summary is None else resolution.summary[:600],
++                        reason=None if resolution.resolved else (caveat or "reference did not resolve")[:300],
++                        open_commands=tuple(
++                            action.command
++                            for action in resolution.actions
++                            if action.enabled and action.command is not None
++                        )[:3],
++                        open_hrefs=tuple(
++                            action.href for action in resolution.actions if action.enabled and action.href is not None
++                        )[:3],
++                    )
++                )
++            evidence_previews[review.candidate.assertion_id] = tuple(previews)
+         return AssertionCandidateReviewListPayload.from_envelopes(
+             review_rows,
+             limit=limit if limit is not None else len(review_rows),
+             target_ref=target_ref,
+             candidate_statuses=candidate_statuses,
++            evidence_previews=evidence_previews,
+         )
+ 
++    async def assertion_candidate_queue_health(self) -> AssertionCandidateQueueHealthPayload:
++        """Return a non-destructive health projection for the judgment queue."""
++
++        return _archive_assertion_candidate_queue_health(self.config)
++
+     async def judge_assertion_candidate(
+         self,
+         *,
+@@ -2448,6 +2793,7 @@ class PolylogueArchiveMixin:
+         cwd: Path | None = None,
+         author_ref: str = "user:local",
+         author_kind: str = "user",
++        idempotency_key: str | None = None,
+     ) -> AssertionClaimPayload:
+         """Capture a terminal assertion as a non-injected candidate for review."""
+ 
+@@ -2462,6 +2808,7 @@ class PolylogueArchiveMixin:
+             cwd=cwd,
+             author_ref=author_ref,
+             author_kind=author_kind,
++            idempotency_key=idempotency_key,
+         )
+         return AssertionClaimPayload.from_envelope(envelope)
+ 
+@@ -3276,7 +3623,7 @@ class PolylogueArchiveMixin:
+                 PublicRefResolutionPayload,
+                 _unresolved_ref_payload(ref, "assertion not found", normalized_ref=normalized_ref, kind="assertion"),
+             )
+-        with closing(sqlite3.connect(user_db)) as conn:
++        with closing(open_readonly_connection(user_db)) as conn:
+             conn.row_factory = sqlite3.Row
+             envelope = read_assertion_envelope(conn, object_ref.object_id)
+         if envelope is None:
+@@ -3320,7 +3667,7 @@ class PolylogueArchiveMixin:
+                 PublicRefResolutionPayload,
+                 _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
+             )
+-        with closing(sqlite3.connect(user_db)) as conn:
++        with closing(open_readonly_connection(user_db)) as conn:
+             conn.row_factory = sqlite3.Row
+             provenance = compute_finding_provenance(conn, object_ref.object_id)
+         if provenance is None:
+diff --git a/polylogue/cli/click_app.py b/polylogue/cli/click_app.py
+index dd7e4ba5f36f2c5709685946654e3f5740f424a4..94911e95fe4defef0ef7a311a8896e67304cb085 100644
+--- a/polylogue/cli/click_app.py
++++ b/polylogue/cli/click_app.py
+@@ -518,7 +518,7 @@ def find_help() -> None:
+         explicit selection, `--first`, or an action-specific multi flag.
+ 
+         Action ownership: `mark` changes selected session overlays;
+-        `mark candidates` reviews assertion candidates; `analyze --facets`
++        root `polylogue judge` reviews assertion candidates; `analyze --facets`
+         reports named aggregate families and marks deferred families honestly.
+     """
+ 
+@@ -530,7 +530,7 @@ _QUERY_VERB_HELP: dict[str, str] = {
+     "analyze": "Analyze matched sessions and named facet families.",
+     "continue": "Resume a session or compile successor context as JSON.",
+     "delete": "Delete matched sessions.",
+-    "mark": "Mark selected sessions; review candidates under mark candidates.",
++    "mark": "Mark selected sessions with tags, notes, and durable marks.",
+     "read": "Read matched sessions (route to view/destination).",
+     "select": "Select one matched session or print candidate identities.",
+ }
+diff --git a/polylogue/cli/command_inventory.py b/polylogue/cli/command_inventory.py
+index a833af5fe1f83ceff3430ebcdba9e24020f3c96e..303d7bc37452f48a90a99686098bbbdbd5becffa 100644
+--- a/polylogue/cli/command_inventory.py
++++ b/polylogue/cli/command_inventory.py
+@@ -35,8 +35,11 @@ class RootCommandRoleSection:
+ ROOT_COMMAND_ROLE_SECTIONS: tuple[RootCommandRoleSection, ...] = (
+     RootCommandRoleSection(
+         title="Search, read, and action workflows",
+-        commands=("find", "read", "select", "mark", "note", "analyze", "facets", "delete", "continue"),
+-        footer="Use `find QUERY then ACTION`; `facets` is the direct archive aggregate command.",
++        commands=("find", "read", "select", "mark", "note", "judge", "analyze", "facets", "delete", "continue"),
++        footer=(
++            "Use `find QUERY then ACTION`; root `judge` owns assertion-candidate review; "
++            "`facets` is the direct archive aggregate command."
++        ),
+     ),
+     RootCommandRoleSection(
+         title="Setup, import, and evidence",
+diff --git a/polylogue/cli/commands/judge.py b/polylogue/cli/commands/judge.py
+index 201a8edf03ba6f315864d28e4d2a32f73a3fcb5e..8edce83fc8b02439bd1bc507876cc7752ad9a115 100644
+--- a/polylogue/cli/commands/judge.py
++++ b/polylogue/cli/commands/judge.py
+@@ -1,4 +1,4 @@
+-"""Terminal triage for candidate assertion claims."""
++"""Canonical terminal triage for the assertion-candidate lifecycle."""
+ 
+ from __future__ import annotations
+ 
+@@ -13,11 +13,13 @@ import click
+ from polylogue.api.sync.bridge import run_coroutine_sync
+ from polylogue.archive.query.spec import QuerySpecError, parse_query_date
+ from polylogue.cli.shared.types import AppEnv
+-from polylogue.core.enums import AssertionKind
++from polylogue.core.enums import AssertionKind, AssertionStatus
+ from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
+ from polylogue.surfaces.payloads import (
+     AssertionBulkJudgmentPayload,
+-    AssertionClaimListPayload,
++    AssertionCandidateQueueHealthPayload,
++    AssertionCandidateReviewItemPayload,
++    AssertionCandidateReviewListPayload,
+     AssertionClaimPayload,
+     serialize_surface_payload,
+ )
+@@ -29,16 +31,47 @@ class JudgeCandidateRow:
+     kind: str
+     target_ref: str
+     body: str
+-    evidence_refs: tuple[str, ...]
++    evidence_refs: tuple[str, ...] = ()
++    review_status: str = "pending"
++    evidence_lines: tuple[str, ...] = ()
+ 
+     @classmethod
+     def from_claim(cls, claim: AssertionClaimPayload) -> JudgeCandidateRow:
++        """Compatibility constructor for callers that already hold a claim."""
++
+         return cls(
+             assertion_id=claim.assertion_id,
+             kind=claim.kind.value,
+             target_ref=claim.target_ref,
+             body=str(claim.body_text or claim.value or ""),
+             evidence_refs=claim.evidence_refs,
++            evidence_lines=tuple(f"unresolved {ref}" for ref in claim.evidence_refs[:5]),
++        )
++
++    @classmethod
++    def from_review(cls, item: AssertionCandidateReviewItemPayload) -> JudgeCandidateRow:
++        evidence_lines = tuple(
++            " ".join(
++                part
++                for part in (
++                    preview.state,
++                    preview.ref,
++                    preview.title,
++                    preview.excerpt,
++                    preview.open_commands[0] if preview.open_commands else None,
++                )
++                if part
++            )
++            for preview in item.evidence_previews
++        )
++        return cls(
++            assertion_id=item.candidate.assertion_id,
++            kind=item.candidate.kind.value,
++            target_ref=item.candidate.target_ref,
++            body=item.claim_summary,
++            evidence_refs=item.candidate.evidence_refs,
++            review_status=item.review_status,
++            evidence_lines=evidence_lines,
+         )
+ 
+     @property
+@@ -47,7 +80,7 @@ class JudgeCandidateRow:
+ 
+     @property
+     def label(self) -> str:
+-        return f"{self.kind:<20} {self.target_ref:<36} {self.first_line[:80]}"
++        return f"{self.review_status:<10} {self.kind:<20} {self.target_ref:<36} {self.first_line[:80]}"
+ 
+     @property
+     def first_line(self) -> str:
+@@ -55,8 +88,12 @@ class JudgeCandidateRow:
+ 
+     @property
+     def preview(self) -> str:
+-        evidence = "\n".join(self.evidence_refs[:5]) or "(no evidence refs)"
+-        return f"{self.ref}\nkind: {self.kind}\ntarget: {self.target_ref}\n\n{self.body}\n\nevidence:\n{evidence}"
++        evidence = "\n".join(self.evidence_lines or tuple(f"unresolved {ref}" for ref in self.evidence_refs[:5]))
++        evidence = evidence or "(no evidence refs)"
++        return (
++            f"{self.ref}\nstatus: {self.review_status}\nkind: {self.kind}\n"
++            f"target: {self.target_ref}\n\n{self.body}\n\nevidence:\n{evidence}"
++        )
+ 
+ 
+ def _choose_candidate(rows: Sequence[JudgeCandidateRow]) -> JudgeCandidateRow | None:
+@@ -93,34 +130,53 @@ def _choose_candidate(rows: Sequence[JudgeCandidateRow]) -> JudgeCandidateRow |
+     return next((row for row in rows if row.assertion_id == selected_id), None)
+ 
+ 
+-def _render_rows(rows: Sequence[JudgeCandidateRow]) -> None:
+-    if not rows:
+-        click.echo("No pending assertion candidates.")
++def _render_rows(items: Sequence[AssertionCandidateReviewItemPayload]) -> None:
++    if not items:
++        click.echo("No assertion candidate review rows found.")
+         return
+-    for row in rows:
+-        click.echo(f"{row.assertion_id:<36} {row.kind:<20} {row.target_ref} {row.first_line[:100]}")
++    for item in items:
++        age_hours = item.age_ms / (60 * 60 * 1000)
++        click.echo(
++            f"{item.candidate.assertion_id:<36} {item.review_status:<10} "
++            f"{item.candidate.kind.value:<20} {item.candidate.target_ref} "
++            f"age={age_hours:.1f}h {item.claim_summary[:100]}"
++        )
++        if not item.evidence_previews and item.evidence_total_count:
++            click.echo(f"  evidence: {item.evidence_total_count} refs; previews unavailable")
++        for preview in item.evidence_previews:
++            detail = preview.title or preview.excerpt or preview.reason or ""
++            click.echo(f"  evidence[{preview.state}]: {preview.ref} {detail}".rstrip())
++            for command in preview.open_commands[:1]:
++                click.echo(f"    open: {command}")
++        if item.evidence_omitted_count:
++            click.echo(f"  evidence: {item.evidence_omitted_count} additional refs omitted")
+ 
+ 
+-def _filter_candidates(
+-    claims: Sequence[AssertionClaimPayload],
+-    *,
+-    kind_filter: str | None,
+-    since: str | None,
+-) -> list[AssertionClaimPayload]:
+-    """Apply the terminal queue's kind and lower-time filters locally."""
+-
+-    filtered = list(claims)
+-    if kind_filter is not None:
+-        filtered = [claim for claim in filtered if claim.kind.value == kind_filter]
+-    if since is None:
+-        return filtered
++def _parse_time_bound(field: str, value: str | None) -> int | None:
++    if value is None:
++        return None
+     try:
+-        lower = parse_query_date("since", since)
++        parsed = parse_query_date(field, value)
+     except QuerySpecError as exc:
+         raise click.UsageError(str(exc)) from exc
+-    assert lower is not None
+-    lower_ms = int(lower.timestamp() * 1000)
+-    return [claim for claim in filtered if claim.created_at_ms >= lower_ms]
++    assert parsed is not None
++    return int(parsed.timestamp() * 1000)
++
++
++def _filter_reviews(
++    items: Sequence[AssertionCandidateReviewItemPayload],
++    *,
++    since: str | None,
++    until: str | None,
++) -> list[AssertionCandidateReviewItemPayload]:
++    lower_ms = _parse_time_bound("since", since)
++    upper_ms = _parse_time_bound("until", until)
++    return [
++        item
++        for item in items
++        if (lower_ms is None or item.candidate.created_at_ms >= lower_ms)
++        and (upper_ms is None or item.candidate.created_at_ms <= upper_ms)
++    ]
+ 
+ 
+ def _judge(
+@@ -129,6 +185,7 @@ def _judge(
+     refs: Sequence[str],
+     decision: str,
+     reason: str | None,
++    actor_ref: str,
+     inject: bool,
+     replacement_body_text: str | None = None,
+     replacement_kind: str | None = None,
+@@ -140,6 +197,7 @@ def _judge(
+                     candidate_ref=ref,
+                     decision=decision,
+                     reason=reason,
++                    actor_ref=actor_ref,
+                     inject=inject,
+                     replacement_body_text=replacement_body_text,
+                     replacement_kind=replacement_kind,
+@@ -156,133 +214,290 @@ def _edit_and_accept(
+     selected: JudgeCandidateRow,
+     edited_body: str,
+     inject: bool,
++    actor_ref: str = "user:local",
++    reason: str = "operator edited candidate",
+ ) -> AssertionBulkJudgmentPayload:
+-    """Promote an edited candidate without overriding its lifecycle kind."""
++    """Supersede edited text while preserving the candidate's promoted claim kind.
++
++    The lifecycle authority derives the promoted kind from candidate provenance
++    when ``replacement_kind`` is omitted. Passing a wrapper kind such as
++    ``transform_candidate`` here would incorrectly promote that wrapper.
++    """
+ 
+     return _judge(
+         env,
+         refs=(selected.ref,),
+         decision="supersede",
+-        reason="operator edited candidate",
++        reason=reason,
++        actor_ref=actor_ref,
+         inject=inject,
+         replacement_body_text=edited_body,
+     )
+ 
+ 
++def _emit_bulk_result(payload: AssertionBulkJudgmentPayload, decision: str, output_format: str) -> None:
++    if output_format == "json":
++        click.echo(serialize_surface_payload(payload, exclude_none=True))
++        return
++    click.echo(
++        f"{payload.applied_count} {decision}, {payload.idempotent_count} unchanged, {payload.failed_count} failed"
++    )
++    for item in payload.items:
++        if item.error:
++            click.echo(f"  {item.candidate_ref}: {item.error}")
++
++
++def _render_queue_health(payload: AssertionCandidateQueueHealthPayload, output_format: str) -> None:
++    if output_format == "json":
++        click.echo(serialize_surface_payload(payload, exclude_none=True))
++        return
++    click.echo(f"Assertion candidate queue: {payload.state}")
++    click.echo(f"  pending: {payload.pending_count}")
++    if payload.oldest_pending_age_ms is not None:
++        click.echo(f"  oldest age: {payload.oldest_pending_age_ms / (24 * 60 * 60 * 1000):.1f}d")
++    if payload.kind_counts:
++        click.echo("  kinds: " + ", ".join(f"{key}={value}" for key, value in payload.kind_counts.items()))
++    click.echo(
++        f"  producer: {payload.producer_status or 'unobserved'}; "
++        f"scheduler: {payload.scheduler_state}; debt: {payload.producer_debt_count}"
++    )
++    click.echo(f"  retention: {payload.retention_outcome}")
++    for caveat in payload.caveats:
++        click.echo(f"  caveat: {caveat}")
++
++
+ @click.command("judge")
+-@click.option("--list", "list_only", is_flag=True, help="List the pending queue without judging.")
++@click.option("--list", "list_only", is_flag=True, help="List pending candidates without judging.")
++@click.option("--review", is_flag=True, help="List durable review history, not only pending candidates.")
++@click.option("--status", "show_status", is_flag=True, help="Show non-destructive queue and producer health.")
+ @click.option("--accept", "accept_refs", multiple=True, help="Accept one or more candidate assertion refs.")
+ @click.option("--reject", "reject_refs", multiple=True, help="Reject one or more candidate assertion refs.")
++@click.option("--defer", "defer_refs", multiple=True, help="Durably defer one or more candidate assertion refs.")
++@click.option("--supersede", "supersede_refs", multiple=True, help="Supersede one or more candidate assertion refs.")
+ @click.option(
+     "--accept-all-of-kind",
+     is_flag=True,
+-    help="Accept every pending candidate selected by --kind and --since.",
++    help="Accept every pending candidate selected by --kind and time/target filters.",
+ )
++@click.option("--target-ref", default=None, help="Limit review rows to one target object ref.")
+ @click.option("--kind", "kind_filter", type=click.Choice([kind.value for kind in AssertionKind]), default=None)
+-@click.option("--since", default=None, help="Daily-triage lower timestamp bound (ISO or relative date).")
++@click.option(
++    "--candidate-status",
++    "candidate_statuses",
++    multiple=True,
++    type=click.Choice(
++        [
++            AssertionStatus.CANDIDATE.value,
++            AssertionStatus.ACCEPTED.value,
++            AssertionStatus.REJECTED.value,
++            AssertionStatus.DEFERRED.value,
++            AssertionStatus.SUPERSEDED.value,
++        ]
++    ),
++)
++@click.option("--since", default=None, help="Lower candidate creation-time bound (ISO or relative date).")
++@click.option("--until", default=None, help="Upper candidate creation-time bound (ISO or relative date).")
++@click.option("--limit", type=click.IntRange(min=1, max=500), default=50, show_default=True)
+ @click.option("--reason", default=None)
+-@click.option("--inject", is_flag=True, help="Authorize injection for accepted candidates.")
+-@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text", show_default=True)
++@click.option("--actor-ref", default="user:local", show_default=True)
++@click.option("--inject", is_flag=True, help="Authorize injection for accepted/superseding assertions.")
++@click.option("--replacement-kind", type=click.Choice([kind.value for kind in AssertionKind]), default=None)
++@click.option("--body", "replacement_body_text", default=None, help="Replacement body for --supersede.")
++@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
++@click.option(
++    "--format",
++    "output_format",
++    type=click.Choice(["text", "json"]),
++    default=None,
++    help="Output format (default: text).",
++)
+ @click.pass_obj
+ def judge_command(
+     env: AppEnv,
+     list_only: bool,
++    review: bool,
++    show_status: bool,
+     accept_refs: tuple[str, ...],
+     reject_refs: tuple[str, ...],
++    defer_refs: tuple[str, ...],
++    supersede_refs: tuple[str, ...],
+     accept_all_of_kind: bool,
++    target_ref: str | None,
+     kind_filter: str | None,
++    candidate_statuses: tuple[str, ...],
+     since: str | None,
++    until: str | None,
++    limit: int,
+     reason: str | None,
++    actor_ref: str,
+     inject: bool,
+-    output_format: str,
++    replacement_kind: str | None,
++    replacement_body_text: str | None,
++    output_format: str | None,
+ ) -> None:
+-    """Interactively triage candidate assertions through the normal lifecycle."""
++    """Review and judge assertions through the sole public operator lifecycle."""
+ 
+-    if accept_refs and reject_refs or accept_all_of_kind and (accept_refs or reject_refs):
++    output_format = output_format or "text"
++    action_groups = [accept_refs, reject_refs, defer_refs, supersede_refs]
++    action_count = sum(bool(group) for group in action_groups) + int(accept_all_of_kind)
++    if action_count > 1:
+         raise click.UsageError("choose one judgment action for one invocation")
++    if show_status and (action_count or list_only or review):
++        raise click.UsageError("--status cannot be combined with review or judgment actions")
+     if accept_all_of_kind and kind_filter is None:
+         raise click.UsageError("--accept-all-of-kind requires --kind")
+-    if accept_refs or reject_refs:
+-        decision = "accept" if accept_refs else "reject"
++    if supersede_refs and (replacement_kind is None or replacement_body_text is None):
++        raise click.UsageError("--supersede requires --replacement-kind and --body")
++    if not supersede_refs and (replacement_kind is not None or replacement_body_text is not None):
++        raise click.UsageError("--replacement-kind and --body are only valid with --supersede")
++    if inject and (reject_refs or defer_refs):
++        raise click.UsageError("--inject is only valid for accept or supersede judgments")
++
++    if show_status:
++        health = run_coroutine_sync(env.polylogue.assertion_candidate_queue_health())
++        _render_queue_health(health, output_format)
++        return
++
++    direct_actions = (
++        ("accept", accept_refs),
++        ("reject", reject_refs),
++        ("defer", defer_refs),
++        ("supersede", supersede_refs),
++    )
++    for decision, refs in direct_actions:
++        if not refs:
++            continue
+         bulk_payload = _judge(
+             env,
+-            refs=accept_refs or reject_refs,
++            refs=refs,
+             decision=decision,
+             reason=reason,
+-            inject=inject if decision == "accept" else False,
+-        )
+-        if output_format == "json":
+-            click.echo(serialize_surface_payload(bulk_payload, exclude_none=True))
+-            return
+-        click.echo(
+-            f"{bulk_payload.applied_count} {decision}ed, {bulk_payload.idempotent_count} unchanged, "
+-            f"{bulk_payload.failed_count} failed"
++            actor_ref=actor_ref,
++            inject=inject if decision in {"accept", "supersede"} else False,
++            replacement_kind=replacement_kind if decision == "supersede" else None,
++            replacement_body_text=replacement_body_text if decision == "supersede" else None,
+         )
++        _emit_bulk_result(bulk_payload, decision, output_format)
+         return
+ 
+     kinds = None if kind_filter is None else (AssertionKind.from_string(kind_filter),)
+-    # ``since`` has no storage pushdown yet.  Read the selected kind before
+-    # applying that local time predicate so a page of older rows cannot hide
+-    # recent daily-triage work.  The interactive/list view remains bounded
+-    # after filtering; an explicit bulk action intentionally consumes all.
+-    candidate_limit = None if since is not None or accept_all_of_kind else 50
+-    claims = run_coroutine_sync(env.polylogue.list_assertion_candidates(kinds=kinds, limit=candidate_limit))
+-    claims = _filter_candidates(claims, kind_filter=kind_filter, since=since)
++    statuses: Sequence[str | AssertionStatus]
++    if candidate_statuses:
++        statuses = candidate_statuses
++    elif review:
++        statuses = (
++            AssertionStatus.CANDIDATE,
++            AssertionStatus.ACCEPTED,
++            AssertionStatus.REJECTED,
++            AssertionStatus.DEFERRED,
++            AssertionStatus.SUPERSEDED,
++        )
++    else:
++        statuses = (AssertionStatus.CANDIDATE,)
++
++    read_limit = None if since is not None or until is not None or accept_all_of_kind else limit
++    review_payload = run_coroutine_sync(
++        env.polylogue.list_assertion_candidate_reviews(
++            target_ref=target_ref,
++            kinds=kinds,
++            statuses=statuses,
++            limit=read_limit,
++        )
++    )
++    filtered = _filter_reviews(review_payload.items, since=since, until=until)
++
+     if accept_all_of_kind:
+-        bulk_payload = _judge(
++        bulk = _judge(
+             env,
+-            refs=tuple(f"assertion:{claim.assertion_id}" for claim in claims),
++            refs=tuple(item.candidate_ref for item in filtered),
+             decision="accept",
+             reason=reason,
++            actor_ref=actor_ref,
+             inject=inject,
+         )
+-        if output_format == "json":
+-            click.echo(serialize_surface_payload(bulk_payload, exclude_none=True))
+-            return
+-        click.echo(
+-            f"{bulk_payload.applied_count} accepted, {bulk_payload.idempotent_count} unchanged, "
+-            f"{bulk_payload.failed_count} failed"
+-        )
++        _emit_bulk_result(bulk, "accept", output_format)
+         return
+-    claims = claims[:50]
+-    rows = [JudgeCandidateRow.from_claim(claim) for claim in claims]
++
++    filtered = filtered[:limit]
++    visible_payload = AssertionCandidateReviewListPayload(
++        items=tuple(filtered),
++        total=len(filtered),
++        limit=limit,
++        target_ref=target_ref,
++        candidate_statuses=tuple(AssertionStatus.from_string(status) for status in statuses),
++    )
+     if output_format == "json":
+-        list_payload = AssertionClaimListPayload(items=tuple(claims), total=len(rows), limit=50)
+-        click.echo(serialize_surface_payload(list_payload, exclude_none=True))
++        click.echo(serialize_surface_payload(visible_payload, exclude_none=True))
+         return
+-    if list_only or not sys.stdin.isatty() or not sys.stdout.isatty():
+-        _render_rows(rows)
++    if review or list_only or not sys.stdin.isatty() or not sys.stdout.isatty():
++        _render_rows(filtered)
+         return
++
++    rows = [JudgeCandidateRow.from_review(item) for item in filtered if item.review_status == "pending"]
+     selected = _choose_candidate(rows)
+     if selected is None:
+-        _render_rows(rows)
++        _render_rows(filtered)
+         return
+-    action = click.prompt("Judge [a]ccept/[r]eject/[e]dit-and-accept/[s]kip", default="s")
+-    if action == "s":
+-        click.echo("Skipped.")
++    action = click.prompt("Judge [a]ccept/[r]eject/[d]efer/[e]dit-and-accept/[s]kip", default="s")
++    if action in {"s", "d"}:
++        durable_reason = reason or ("operator skipped interactive review" if action == "s" else None)
++        _judge(
++            env,
++            refs=(selected.ref,),
++            decision="defer",
++            reason=durable_reason,
++            actor_ref=actor_ref,
++            inject=False,
++        )
++        click.echo("Deferred.")
+         return
+     if action == "r":
+-        _judge(env, refs=(selected.ref,), decision="reject", reason=click.prompt("Reason", default=""), inject=False)
++        rejection_reason = reason or click.prompt("Reason", default="")
++        _judge(
++            env,
++            refs=(selected.ref,),
++            decision="reject",
++            reason=rejection_reason,
++            actor_ref=actor_ref,
++            inject=False,
++        )
+         click.echo("Rejected.")
+         return
+     if action == "e":
+         edited = click.edit(selected.body, extension=".md")
+         if edited is None:
+-            click.echo("Skipped; editor closed without saving.")
++            _judge(
++                env,
++                refs=(selected.ref,),
++                decision="defer",
++                reason="operator closed editor without saving",
++                actor_ref=actor_ref,
++                inject=False,
++            )
++            click.echo("Deferred; editor closed without saving.")
+             return
+         _edit_and_accept(
+             env,
+             selected=selected,
+             edited_body=edited,
+             inject=inject,
++            actor_ref=actor_ref,
++            reason=reason or "operator edited candidate",
+         )
+         click.echo("Edited candidate promoted.")
+         return
+     if action == "a":
+-        _judge(env, refs=(selected.ref,), decision="accept", reason=None, inject=inject)
++        _judge(
++            env,
++            refs=(selected.ref,),
++            decision="accept",
++            reason=reason,
++            actor_ref=actor_ref,
++            inject=inject,
++        )
+         click.echo("Accepted.")
+         return
+-    raise click.UsageError("judge action must be a, r, e, or s")
++    raise click.UsageError("judge action must be a, r, d, e, or s")
+ 
+ 
+-__all__ = ["JudgeCandidateRow", "judge_command"]
++__all__ = ["JudgeCandidateRow", "_edit_and_accept", "judge_command"]
+diff --git a/polylogue/cli/commands/note.py b/polylogue/cli/commands/note.py
+index 5e66835fdec119248a2ec9152a40cae7dcee9074..8f5db3a9910a0660bd496ecbfd6fbdf07b3a6c99 100644
+--- a/polylogue/cli/commands/note.py
++++ b/polylogue/cli/commands/note.py
+@@ -47,6 +47,11 @@ def _stdin_note() -> str:
+ @click.option("--repo", default=None, help="Attach repository scope (accepts repo:NAME or NAME).")
+ @click.option("--topic", default=None, help="Attach topic scope (accepts insight:NAME or NAME).")
+ @click.option("--kind", "kind_name", type=click.Choice(_KIND_NAMES), default="note", show_default=True)
++@click.option(
++    "--idempotency-key",
++    default=None,
++    help="Caller-scoped retry key; exact replays return the original lifecycle row.",
++)
+ @click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
+ def note_command(
+     text: str | None,
+@@ -55,6 +60,7 @@ def note_command(
+     repo: str | None,
+     topic: str | None,
+     kind_name: str,
++    idempotency_key: str | None,
+     output_format: str,
+ ) -> None:
+     """Capture one terminal memory candidate; judgment remains a separate step."""
+@@ -72,6 +78,7 @@ def note_command(
+                 refs=refs,
+                 scope_refs=_scope_refs(repo, topic),
+                 cwd=Path.cwd(),
++                idempotency_key=idempotency_key,
+             )
+ 
+     try:
+diff --git a/polylogue/cli/commands/status.py b/polylogue/cli/commands/status.py
+index 0c8cd4e43ab626e078754b973b6beee825762702..752f9e0166c475eaeeacfc6bf181dc722aeecfd0 100644
+--- a/polylogue/cli/commands/status.py
++++ b/polylogue/cli/commands/status.py
+@@ -375,6 +375,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
+         "user",
+         "reads candidate assertion review rows through user.db",
+     ),
++    "assertion_candidate_queue_health": (
++        "archive_routed",
++        "user",
++        "reads candidate queue health from durable user.db and operations telemetry",
++    ),
+     "list_assertion_claims": ("archive_routed", "user", "reads assertion claims through user.db"),
+     "list_assertion_claim_payloads": ("archive_routed", "user", "reads assertion claim payload DTOs through user.db"),
+     "list_blackboard_notes": ("archive_routed", "user", "reads blackboard notes through user.db"),
+@@ -2384,6 +2389,9 @@ def _show_direct_status(
+             _render_archive_facade_routes(env, _archive_facade_route_status())
+             _render_archive_cli_routes(env, _archive_cli_route_status())
+             _render_archive_runtime_paths(env, _archive_runtime_path_status())
++            from polylogue.daemon.status import assertion_candidate_queue_status_summary
++
++            _render_assertion_candidate_queue(env, assertion_candidate_queue_status_summary())
+         env.ui.console.print(f"  Sessions: {convs:,}")
+         env.ui.console.print(f"  Messages: {msgs:,}")
+         env.ui.console.print(f"  Raw records: {raw:,}")
+@@ -2444,6 +2452,21 @@ def _render_archive_readiness(env: AppEnv, readiness: dict[str, Any]) -> None:
+         env.ui.console.print(f"    +{len(blocked_surfaces) - 5} more blocked surfaces")
+ 
+ 
++def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> None:
++    """Render the same queue-health product used by root judge and daemon JSON."""
++
++    state = str(queue.get("state") or "unavailable")
++    pending = _safe_int(queue.get("pending_count"))
++    color = "green" if state == "healthy-empty" else "yellow"
++    if state in {"producer-stalled", "stale-pending", "unavailable"}:
++        color = "red"
++    line = f"  Assertion candidate queue: [{color}]{state}, {pending} pending[/{color}]"
++    oldest_age = queue.get("oldest_pending_age_ms")
++    if isinstance(oldest_age, int | float):
++        line += f", oldest={float(oldest_age) / (24 * 60 * 60 * 1000):.1f}d"
++    env.ui.console.print(line)
++
++
+ def _render_sqlite_maintenance(env: AppEnv, status: dict[str, Any]) -> None:
+     wal_bytes = _safe_int(status.get("total_wal_bytes"))
+     planner_tiers = [str(tier) for tier in status.get("tiers_with_planner_stats") or []]
+diff --git a/polylogue/cli/query_group.py b/polylogue/cli/query_group.py
+index b864108480936322d88ea0ff833f441631741433..7bd840bff43e5df96def08138faf07371b70e7a4 100644
+--- a/polylogue/cli/query_group.py
++++ b/polylogue/cli/query_group.py
+@@ -62,14 +62,6 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
+             arg = args[index]
+             via_then = True
+         if arg in VERB_NAMES:
+-            if (
+-                arg == "mark"
+-                and index + 1 < len(args)
+-                and args[index + 1] == "candidates"
+-                and not explicit_query
+-                and not query_terms
+-            ):
+-                return args, (), True, explicit_query
+             # After an explicit `find`, a verb word sitting in query position —
+             # no `then`, nothing collected yet — is the search term itself:
+             # `find read` searches for "read", it does not run the read action.
+diff --git a/polylogue/cli/query_verbs.py b/polylogue/cli/query_verbs.py
+index b834f3632636653bc7e7a638a69fc068df457ef6..3a814318d7e089e1a4268a6983321adfea5d3743 100644
+--- a/polylogue/cli/query_verbs.py
++++ b/polylogue/cli/query_verbs.py
+@@ -9,7 +9,7 @@ from __future__ import annotations
+ import json
+ import shlex
+ import subprocess
+-from collections.abc import Awaitable, Sequence
++from collections.abc import Awaitable
+ from typing import TYPE_CHECKING, Any, TypeVar, cast
+ 
+ import click
+@@ -30,7 +30,6 @@ from polylogue.archive.viewport import (
+ from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, read_view_option_names
+ from polylogue.cli.shared.types import AppEnv
+ from polylogue.cli.verb_names import VERB_NAMES
+-from polylogue.core.enums import AssertionStatus
+ 
+ _FACET_TERMINAL_BUCKET_LIMIT = 12
+ _FACET_TERMINAL_IDF_LIMIT = 12
+@@ -1601,7 +1600,7 @@ def mark_verb(
+ ) -> None:
+     """Mark query-result sessions with tags, notes, or durable marks.
+ 
+-    This owns session overlays only. Use `mark candidates` for assertion-candidate review;
++    This owns session overlays only. Use root `polylogue judge` for assertion-candidate review;
+     target-ref/web annotations are separate surfaces, not hidden here.
+ 
+     \b
+@@ -1621,7 +1620,7 @@ def mark_verb(
+         polylogue find id:abc then mark --pin
+         polylogue find 'repo:polylogue since:7d' then mark --tag-add sprint --all
+     """
+-    import uuid
++    import hashlib
+ 
+     from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
+ 
+@@ -1678,7 +1677,8 @@ def mark_verb(
+             if do_unarchive:
+                 await poly.remove_mark(sid, "archive")
+             if note_text is not None:
+-                annotation_id = f"note-{uuid.uuid4().hex[:16]}"
++                digest = hashlib.sha256(f"{sid}\0{note_text}".encode("utf-8", errors="surrogatepass")).hexdigest()
++                annotation_id = f"note-{digest}"
+                 await poly.save_annotation(annotation_id, sid, note_text)
+ 
+     run_coroutine_sync(_apply_marks())
+@@ -1722,235 +1722,6 @@ def mark_verb(
+         click.echo("No mark operations specified.")
+ 
+ 
+-@mark_verb.group("candidates")
+-def mark_candidates_group() -> None:
+-    """Review assertion candidates for a selected session or target ref.
+-
+-    Candidate commands own review state and claim judgment: review, list,
+-    accept, reject, defer, or supersede candidate assertions. They do not apply ordinary session tags,
+-    stars, pins, archive marks, or notes.
+-    """
+-
+-
+-@mark_candidates_group.command("list")
+-@click.option("--target-ref", default=None, help="Limit candidates to one target object ref.")
+-@click.option("--limit", "-l", type=int, default=50, show_default=True)
+-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+-@click.pass_obj
+-def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
+-    """List candidate assertion claims."""
+-    items = run_coroutine_sync(env.polylogue.list_assertion_candidates(target_ref=target_ref, limit=limit))
+-    if output_format == "json":
+-        from polylogue.surfaces.payloads import AssertionClaimListPayload
+-
+-        payload = AssertionClaimListPayload(
+-            items=tuple(items), total=len(items), limit=limit, statuses=(AssertionStatus.CANDIDATE,)
+-        )
+-        click.echo(serialize_surface_payload(payload, exclude_none=True))
+-        return
+-    if not items:
+-        click.echo("No candidate assertions found.")
+-        return
+-    for item in items:
+-        detail = item.body_text or (json.dumps(item.value, sort_keys=True) if item.value is not None else "")
+-        click.echo(f"{item.assertion_id:<32} {item.kind:<20} {item.target_ref} {detail}")
+-
+-
+-@mark_candidates_group.command("review")
+-@click.option("--target-ref", default=None, help="Limit candidate review rows to one target object ref.")
+-@click.option("--limit", "-l", type=int, default=50, show_default=True)
+-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+-@click.pass_obj
+-def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
+-    """List candidate assertion review state and disabled actions."""
+-    from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
+-
+-    payload = run_coroutine_sync(env.polylogue.list_assertion_candidate_reviews(target_ref=target_ref, limit=limit))
+-    if not isinstance(payload, AssertionCandidateReviewListPayload):
+-        payload = AssertionCandidateReviewListPayload.from_envelopes(
+-            payload,
+-            limit=limit,
+-            target_ref=target_ref,
+-        )
+-    if output_format == "json":
+-        click.echo(serialize_surface_payload(payload, exclude_none=True))
+-        return
+-    if not payload.items:
+-        click.echo("No assertion candidate review rows found.")
+-        return
+-    for item in payload.items:
+-        disabled = sorted(
+-            {
+-                action.availability.disabled_reason
+-                for action in item.action_affordances
+-                if action.availability.disabled_reason
+-            }
+-        )
+-        detail = item.candidate.body_text or (
+-            json.dumps(item.candidate.value, sort_keys=True) if item.candidate.value is not None else ""
+-        )
+-        suffix = f" disabled={','.join(disabled)}" if disabled else ""
+-        click.echo(
+-            f"{item.candidate.assertion_id:<32} {item.review_status:<10} "
+-            f"{item.candidate.kind:<20} {item.candidate.target_ref} {detail}{suffix}"
+-        )
+-
+-
+-@mark_candidates_group.command("accept")
+-@click.argument("candidate_refs", nargs=-1, required=True)
+-@click.option("--reason", default=None)
+-@click.option("--actor-ref", default="user:local", show_default=True)
+-@click.option("--inject", is_flag=True, help="Authorize context injection for accepted candidates.")
+-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+-@click.pass_obj
+-def accept_mark_candidate_command(
+-    env: AppEnv,
+-    candidate_refs: tuple[str, ...],
+-    reason: str | None,
+-    actor_ref: str,
+-    inject: bool,
+-    output_format: str | None,
+-) -> None:
+-    """Accept a candidate assertion into an active assertion."""
+-    _emit_candidate_judgment(
+-        env,
+-        candidate_refs=candidate_refs,
+-        decision="accept",
+-        reason=reason,
+-        actor_ref=actor_ref,
+-        inject=inject,
+-        output_format=output_format,
+-    )
+-
+-
+-@mark_candidates_group.command("reject")
+-@click.argument("candidate_refs", nargs=-1, required=True)
+-@click.option("--reason", required=True)
+-@click.option("--actor-ref", default="user:local", show_default=True)
+-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+-@click.pass_obj
+-def reject_mark_candidate_command(
+-    env: AppEnv,
+-    candidate_refs: tuple[str, ...],
+-    reason: str,
+-    actor_ref: str,
+-    output_format: str | None,
+-) -> None:
+-    """Reject a candidate assertion with a durable reason."""
+-    _emit_candidate_judgment(
+-        env,
+-        candidate_refs=candidate_refs,
+-        decision="reject",
+-        reason=reason,
+-        actor_ref=actor_ref,
+-        output_format=output_format,
+-    )
+-
+-
+-@mark_candidates_group.command("defer")
+-@click.argument("candidate_refs", nargs=-1, required=True)
+-@click.option("--reason", default=None)
+-@click.option("--actor-ref", default="user:local", show_default=True)
+-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+-@click.pass_obj
+-def defer_mark_candidate_command(
+-    env: AppEnv,
+-    candidate_refs: tuple[str, ...],
+-    reason: str | None,
+-    actor_ref: str,
+-    output_format: str | None,
+-) -> None:
+-    """Record a durable candidate assertion deferral."""
+-    _emit_candidate_judgment(
+-        env,
+-        candidate_refs=candidate_refs,
+-        decision="defer",
+-        reason=reason,
+-        actor_ref=actor_ref,
+-        output_format=output_format,
+-    )
+-
+-
+-@mark_candidates_group.command("supersede")
+-@click.argument("candidate_refs", nargs=-1, required=True)
+-@click.option("--kind", "replacement_kind", required=True, help="Kind for the replacement active assertion.")
+-@click.option("--body", "replacement_body_text", required=True, help="Body text for the replacement assertion.")
+-@click.option("--reason", default=None)
+-@click.option("--actor-ref", default="user:local", show_default=True)
+-@click.option("--inject", is_flag=True, help="Authorize context injection for promoted replacements.")
+-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+-@click.pass_obj
+-def supersede_mark_candidate_command(
+-    env: AppEnv,
+-    candidate_refs: tuple[str, ...],
+-    replacement_kind: str,
+-    replacement_body_text: str,
+-    reason: str | None,
+-    actor_ref: str,
+-    inject: bool,
+-    output_format: str | None,
+-) -> None:
+-    """Supersede a candidate with an explicit active assertion."""
+-    _emit_candidate_judgment(
+-        env,
+-        candidate_refs=candidate_refs,
+-        decision="supersede",
+-        reason=reason,
+-        actor_ref=actor_ref,
+-        inject=inject,
+-        output_format=output_format,
+-        replacement_kind=replacement_kind,
+-        replacement_body_text=replacement_body_text,
+-    )
+-
+-
+-def _emit_candidate_judgment(
+-    env: AppEnv,
+-    *,
+-    candidate_refs: Sequence[str],
+-    decision: str,
+-    reason: str | None,
+-    actor_ref: str,
+-    output_format: str | None,
+-    replacement_kind: str | None = None,
+-    replacement_body_text: str | None = None,
+-    inject: bool = False,
+-) -> None:
+-    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
+-
+-    payload = run_coroutine_sync(
+-        env.polylogue.judge_assertion_candidates(
+-            items=tuple(
+-                ArchiveAssertionBulkJudgmentItemEnvelope(
+-                    candidate_ref=candidate_ref,
+-                    decision=decision,
+-                    reason=reason,
+-                    actor_ref=actor_ref,
+-                    inject=inject,
+-                    replacement_kind=replacement_kind,
+-                    replacement_body_text=replacement_body_text,
+-                )
+-                for candidate_ref in candidate_refs
+-            )
+-        )
+-    )
+-    if output_format == "json":
+-        click.echo(serialize_surface_payload(payload, exclude_none=True))
+-        return
+-    for item in payload.items:
+-        if item.result is None:
+-            click.echo(f"{decision}: {item.candidate_ref} -> failed ({item.error or 'unknown error'})")
+-            continue
+-        result_ref = item.result.judgment.resulting_assertion_ref or "no active assertion"
+-        click.echo(f"{decision}: {item.result.candidate.assertion_id} -> {result_ref} ({item.outcome})")
+-
+-
+ @click.group("analyze", invoke_without_command=True, no_args_is_help=False)
+ @click.option("--count", "count_only", is_flag=True, help="Print only the matched-session count.")
+ @click.option(
+diff --git a/polylogue/daemon/status.py b/polylogue/daemon/status.py
+index ae00f36690a256f1c8a3d3b2561f7b5d15391b71..acfb41c41a49530f93d4a828a3d24093e73d1aa2 100644
+--- a/polylogue/daemon/status.py
++++ b/polylogue/daemon/status.py
+@@ -2244,6 +2244,7 @@ def daemon_status_payload(
+         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
+     )
+     archive_debt = _archive_debt_status_summary() if include_archive_debt else _excluded_archive_debt_status_summary()
++    assertion_candidate_queue = assertion_candidate_queue_status_summary()
+ 
+     return json_document(
+         {
+@@ -2267,6 +2268,7 @@ def daemon_status_payload(
+             "disk_free_bytes": status.disk_free_bytes,
+             "archive_storage": status.archive_storage.model_dump(),
+             "archive_debt": archive_debt,
++            "assertion_candidate_queue": assertion_candidate_queue,
+             "quick_check_result": "unknown",
+             "quick_check_age_s": None,
+             "watcher_roots": [str(s.root) for s in watch_sources],
+@@ -2304,6 +2306,27 @@ def daemon_status_payload(
+     )
+ 
+ 
++def assertion_candidate_queue_status_summary() -> dict[str, object]:
++    """Return the shared judgment-queue health product for status surfaces."""
++
++    try:
++        from polylogue.api.archive import _archive_assertion_candidate_queue_health
++        from polylogue.config import Config
++        from polylogue.paths import render_root
++
++        payload = _archive_assertion_candidate_queue_health(
++            Config(archive_root=archive_root(), render_root=render_root(), sources=[])
++        )
++        return cast(dict[str, object], payload.model_dump(mode="json"))
++    except Exception as exc:
++        return {
++            "mode": "assertion-candidate-queue-health",
++            "state": "unavailable",
++            "pending_count": 0,
++            "caveats": [f"queue health unavailable: {exc}"],
++        }
++
++
+ def _archive_debt_status_summary() -> dict[str, object]:
+     """Return a bounded status link to the unified archive-debt surface."""
+     try:
+@@ -2365,6 +2388,20 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
+         if storage.get("archive_root_matches_configured") is False:
+             line += f"; active root {storage.get('archive_root', 'unknown')}"
+         lines.append(line)
++    queue = payload.get("assertion_candidate_queue")
++    if isinstance(queue, dict):
++        lines.append(
++            f"Assertion candidate queue: {queue.get('state', 'unavailable')}, {queue.get('pending_count', 0)} pending"
++        )
++        oldest_age = queue.get("oldest_pending_age_ms")
++        if isinstance(oldest_age, int | float):
++            lines.append(f"  oldest candidate: {float(oldest_age) / (24 * 60 * 60 * 1000):.1f}d")
++        lines.append(
++            "  producer: "
++            f"{queue.get('producer_status') or 'unobserved'}; "
++            f"scheduler: {queue.get('scheduler_state', 'unknown')}; "
++            f"debt: {queue.get('producer_debt_count', 0)}"
++        )
+     live = payload.get("live")
+     if isinstance(live, dict):
+         lines.append(f"Live sources: {live.get('existing_source_count', 0)}/{live.get('source_count', 0)} available")
+diff --git a/polylogue/mcp/server_mutation_tools.py b/polylogue/mcp/server_mutation_tools.py
+index 748cc0d61808a92e60a6f53da5bad13c677c42d9..57ea228658c7dc9ce43a2f90b014c8557e4a8b5c 100644
+--- a/polylogue/mcp/server_mutation_tools.py
++++ b/polylogue/mcp/server_mutation_tools.py
+@@ -47,6 +47,7 @@ def register_mutation_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+         refs: list[str] | None = None,
+         scope_refs: list[str] | None = None,
+         cwd: str | None = None,
++        idempotency_key: str | None = None,
+     ) -> str:
+         """Capture a terminal-equivalent assertion candidate for later judgment."""
+ 
+@@ -66,6 +67,7 @@ def register_mutation_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+                     cwd=Path(cwd) if cwd is not None else None,
+                     author_ref=author_ref,
+                     author_kind="agent",
++                    idempotency_key=idempotency_key,
+                 )
+             except ValueError as exc:
+                 return hooks.error_json(str(exc), code="invalid_candidate_capture")
+diff --git a/polylogue/operations/action_contracts.py b/polylogue/operations/action_contracts.py
+index 98699adf3670543e757647fedb247219ad48e2e5..e8c57d1c70de5fb265070e185f861430c615b4bf 100644
+--- a/polylogue/operations/action_contracts.py
++++ b/polylogue/operations/action_contracts.py
+@@ -112,6 +112,7 @@ PUBLIC_ACTION_FLOOR: tuple[tuple[str, ...], ...] = (
+     ("read",),
+     ("continue",),
+     ("mark",),
++    ("judge",),
+     ("analyze",),
+     ("delete",),
+     ("import",),
+@@ -196,6 +197,25 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
+         destination_support=("terminal", "stdout", "api", "mcp"),
+         next_actions=("read", "analyze"),
+     ),
++    CliActionContract(
++        path=("judge",),
++        effect="write",
++        input_unit="assertion_candidate",
++        cardinality="explicit_multi",
++        formats=frozenset({"human", "json"}),
++        default_format="human",
++        # ``judge`` has list, review, status, and bulk-decision JSON products.
++        # It therefore cannot truthfully claim the generic MutationResultPayload
++        # envelope used by query-first mark/delete/import.
++        machine_envelope="item",
++        requires_daemon=False,
++        guards=("explicit_candidate_ref_for_mutation", "authenticated_injection_opt_in"),
++        target="candidate",
++        safety_level="mutating",
++        selection_command="polylogue judge --review",
++        destination_support=("terminal", "stdout", "api", "mcp"),
++        next_actions=("read", "judge"),
++    ),
+     CliActionContract(
+         path=("analyze",),
+         effect="read",
+diff --git a/polylogue/product/workflows.py b/polylogue/product/workflows.py
+index 12d3c731aa1227ac738f6d6ef4e0778af0ceec90..77193b15fa7b4bd3b2003bba0223e5e402f3f8a9 100644
+--- a/polylogue/product/workflows.py
++++ b/polylogue/product/workflows.py
+@@ -201,17 +201,17 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
+         id="candidate-assertion-review",
+         title="Review candidate assertions",
+         intent="List, accept, reject, defer, or supersede model-produced assertion candidates through explicit judgment commands.",
+-        query_shape="find EXACT_REF then mark candidates list|accept|reject|defer|supersede",
+-        action_sequence="find → mark candidates",
+-        action_paths=(("find",), ("mark",)),
++        query_shape="polylogue judge --target-ref REF --list|--accept|--reject|--defer|--supersede",
++        action_sequence="judge",
++        action_paths=(("judge",),),
+         read_views=(),
+-        selector_policy="`mark candidates` owns assertion-candidate review for a selected session or target ref; ordinary `mark` owns session overlays.",
++        selector_policy="Root `polylogue judge` owns assertion-candidate review; ordinary `mark` owns session overlays selected by query.",
+         cardinality_policy="Candidate list may be scoped to a selected target; each accept/reject/defer/supersede mutation names one candidate id and one target/session scope.",
+         safety_policy="mutating; changes are explicit user overlay operations with accept/reject/defer/supersede verbs.",
+         output_policy="Human summaries and JSON candidate lists/operation receipts.",
+         evidence_policy="Candidate rows include target refs, evidence refs, claim class, status, and judgment operation trace.",
+         surfaces=("cli", "daemon", "completion", "docs"),
+-        cli_example="polylogue find id:claude-code-session:... then mark candidates list --format json",
++        cli_example="polylogue judge --target-ref session:claude-code-session:... --review --format json",
+     ),
+     QueryActionWorkflow(
+         id="resolve-ref-drilldown",
+@@ -251,18 +251,7 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
+ QUERY_ACTION_WORKFLOW_BY_ID: dict[str, QueryActionWorkflow] = {entry.id: entry for entry in QUERY_ACTION_WORKFLOWS}
+ 
+ 
+-PRODUCT_VERB_MATRIX_EXTRA_ROWS: tuple[ProductVerbMatrixRow, ...] = (
+-    ProductVerbMatrixRow(
+-        action_id="mark candidates",
+-        target_input="selected session target_ref / candidate assertion id",
+-        cardinality="list scoped candidates or singleton candidate judgment",
+-        safety="mutating",
+-        formats=("human", "json"),
+-        destinations=("terminal", "stdout", "api", "mcp"),
+-        selection_confirmation="polylogue find EXACT_REF then mark candidates list --target-ref REF",
+-        next_actions=("read", "mark candidates list"),
+-    ),
+-)
++PRODUCT_VERB_MATRIX_EXTRA_ROWS: tuple[ProductVerbMatrixRow, ...] = ()
+ 
+ 
+ ACTION_UNIT_EVIDENCE: tuple[ActionUnitEvidence, ...] = (
+@@ -294,12 +283,12 @@ ACTION_UNIT_EVIDENCE: tuple[ActionUnitEvidence, ...] = (
+         action_id="mark",
+         evidence_unit="user overlay operation over selected session refs",
+         evidence_surface="mark commands emit operation receipts and persist session tags, stars, pins, archive marks, and notes.",
+-        negative_guard="Multi-match mutations require --all or --first; assertion candidates stay under mark candidates.",
++        negative_guard="Multi-match mutations require --all or --first; assertion candidates stay under root `polylogue judge`.",
+     ),
+     ActionUnitEvidence(
+-        action_id="mark candidates",
++        action_id="judge",
+         evidence_unit="candidate assertion id plus judgment operation",
+-        evidence_surface="mark candidates list/accept/reject/defer/supersede routes through candidate assertion review.",
++        evidence_surface="root judge list/review/accept/reject/defer/supersede routes through the canonical candidate lifecycle.",
+         negative_guard="Candidate confidence is never admission authority; human judgment command is required.",
+     ),
+     ActionUnitEvidence(
+@@ -443,28 +432,28 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
+         required_affordance_ids=("analyze",),
+     ),
+     ExecutableWorkflowGoldenPath(
+-        id="mark-candidates-list-json",
++        id="judge-review-json",
+         workflow_id="candidate-assertion-review",
+-        description="Candidate review lists pending candidate assertions through an explicit judgment surface.",
++        description="Root judge lists durable candidate history with bounded evidence disclosure.",
+         command=(
+-            "find",
+-            f"id:{DEMO_CLAUDE_CODE_SESSION_ID}",
+-            "then",
+-            "mark",
+-            "candidates",
+-            "list",
++            "judge",
++            "--target-ref",
++            f"session:{DEMO_CLAUDE_CODE_SESSION_ID}",
++            "--review",
+             "--format",
+             "json",
+         ),
+-        action_path=("mark",),
++        action_path=("judge",),
+         output_kind="json_object",
+         json_expectations=(
++            JsonExpectation(("mode",), "string"),
+             JsonExpectation(("items",), "array"),
++            JsonExpectation(("items", 0, "evidence_previews"), "array"),
+             JsonExpectation(("total",), "integer"),
+-            JsonExpectation(("statuses",), "array"),
++            JsonExpectation(("candidate_statuses",), "array"),
+         ),
+-        stdout_contains=('"statuses"', '"candidate"'),
+-        required_affordance_ids=("mark",),
++        stdout_contains=('"evidence_previews"', '"candidate"'),
++        required_affordance_ids=("judge",),
+     ),
+     ExecutableWorkflowGoldenPath(
+         id="delete-dry-run-json",
+diff --git a/polylogue/storage/sqlite/archive_tiers/archive.py b/polylogue/storage/sqlite/archive_tiers/archive.py
+index 9738881bfe905b3268113dd1a50fb6519b0274c2..bfd30bdbef201553ba9aebf8c40259d55a629ed9 100644
+--- a/polylogue/storage/sqlite/archive_tiers/archive.py
++++ b/polylogue/storage/sqlite/archive_tiers/archive.py
+@@ -238,6 +238,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
+ from polylogue.storage.sqlite.connection_profile import (
+     READ_CONNECTION_PRAGMA_STATEMENTS,
+     WRITE_CONNECTION_PRAGMA_STATEMENTS,
++    open_readonly_connection,
+ )
+ from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
+ from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
+@@ -4435,8 +4436,8 @@ class ArchiveStore:
+             _archive_profile_rows_debt(self._conn),
+             _archive_profile_counts_debt(self._conn),
+             _archive_materialization_debt(self._conn),
+-            _archive_source_raw_link_debt(self._conn, self.source_db_path),
+-            _archive_user_overlay_debt(self._conn, self.user_db_path),
++            _archive_source_raw_link_debt(self.index_db_path, self.source_db_path),
++            _archive_user_overlay_debt(self.index_db_path, self.user_db_path),
+         ]
+         insights.sort(key=lambda insight: (insight.category, insight.debt_name))
+         if category is not None:
+@@ -11797,24 +11798,28 @@ def _archive_materialization_debt(conn: sqlite3.Connection) -> ArchiveDebtInsigh
+     )
+ 
+ 
+-def _archive_source_raw_link_debt(conn: sqlite3.Connection, source_db_path: Path) -> ArchiveDebtInsight:
+-    raw_links = _count_scalar(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
+-    if not source_db_path.exists():
+-        issue_count = raw_links
+-        detail = (
+-            "archive sessions have no source raw links"
+-            if raw_links == 0
+-            else f"source.db missing while {raw_links:,} sessions carry raw_id links"
+-        )
+-        return _archive_debt(
+-            name="archive_source_raw_links",
+-            category="source_ingest",
+-            issue_count=issue_count,
+-            detail=detail,
+-        )
+-    source_uri = f"file:{source_db_path}?mode=ro"
+-    conn.execute("ATTACH DATABASE ? AS source_debt", (source_uri,))
+-    try:
++def _archive_source_raw_link_debt(index_db_path: Path, source_db_path: Path) -> ArchiveDebtInsight:
++    # Cross-tier debt reads use a dedicated connection.  The long-lived
++    # ArchiveStore connection may already own a transaction; attaching and
++    # detaching on that connection can fail with ``database ... is locked``.
++    # Closing this short-lived connection releases the attached schema and all
++    # statement cursors as one lifetime, so no DETACH race is possible.
++    with closing(open_readonly_connection(index_db_path)) as conn:
++        raw_links = _count_scalar(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
++        if not source_db_path.exists():
++            issue_count = raw_links
++            detail = (
++                "archive sessions have no source raw links"
++                if raw_links == 0
++                else f"source.db missing while {raw_links:,} sessions carry raw_id links"
++            )
++            return _archive_debt(
++                name="archive_source_raw_links",
++                category="source_ingest",
++                issue_count=issue_count,
++                detail=detail,
++            )
++        conn.execute("ATTACH DATABASE ? AS source_debt", (f"file:{source_db_path}?mode=ro",))
+         missing = _count_scalar(
+             conn,
+             """
+@@ -11826,8 +11831,6 @@ def _archive_source_raw_link_debt(conn: sqlite3.Connection, source_db_path: Path
+               )
+             """,
+         )
+-    finally:
+-        conn.execute("DETACH DATABASE source_debt")
+     detail = "archive source raw links resolve" if missing == 0 else f"{missing:,} sessions reference missing raw rows"
+     return _archive_debt(
+         name="archive_source_raw_links",
+@@ -11837,7 +11840,7 @@ def _archive_source_raw_link_debt(conn: sqlite3.Connection, source_db_path: Path
+     )
+ 
+ 
+-def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) -> ArchiveDebtInsight:
++def _archive_user_overlay_debt(index_db_path: Path, user_db_path: Path) -> ArchiveDebtInsight:
+     if not user_db_path.exists():
+         return _archive_debt(
+             name="archive_user_overlay_orphans",
+@@ -11845,8 +11848,8 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) ->
+             issue_count=0,
+             detail="archive user tier absent; no overlay orphan check needed",
+         )
+-    conn.execute("ATTACH DATABASE ? AS user_debt", (f"file:{user_db_path}?mode=ro",))
+-    try:
++    with closing(open_readonly_connection(index_db_path)) as conn:
++        conn.execute("ATTACH DATABASE ? AS user_debt", (f"file:{user_db_path}?mode=ro",))
+         checks = (
+             "SELECT COUNT(*) FROM user_debt.assertions u "
+             "WHERE u.target_ref LIKE 'session:%' "
+@@ -11869,8 +11872,6 @@ def _archive_user_overlay_debt(conn: sqlite3.Connection, user_db_path: Path) ->
+             "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = substr(u.target_ref, 9))",
+         )
+         issue_count = sum(_count_scalar(conn, sql) for sql in checks)
+-    finally:
+-        conn.execute("DETACH DATABASE user_debt")
+     detail = (
+         "archive user overlays resolve to index sessions"
+         if issue_count == 0
+diff --git a/polylogue/storage/sqlite/archive_tiers/user_write.py b/polylogue/storage/sqlite/archive_tiers/user_write.py
+index 15a07547b1205022a2dd5e4f88b84ad9a2c6df01..b9bd9e127c1da6f213b8026a1e8641f9c3b1ed84 100644
+--- a/polylogue/storage/sqlite/archive_tiers/user_write.py
++++ b/polylogue/storage/sqlite/archive_tiers/user_write.py
+@@ -9,9 +9,11 @@ Writer module: user.
+ from __future__ import annotations
+ 
+ import hashlib
++import itertools
+ import json
+ import sqlite3
+-from collections.abc import Mapping, Sequence
++from collections.abc import Iterator, Mapping, Sequence
++from contextlib import contextmanager
+ from dataclasses import dataclass
+ from datetime import UTC, datetime
+ from typing import TYPE_CHECKING, Final
+@@ -25,6 +27,7 @@ from polylogue.core.assertions import (
+ from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+ from polylogue.core.json import JSONValue
+ from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
++from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE
+ from polylogue.storage.table_existence import table_exists as _table_exists
+ 
+ if TYPE_CHECKING:
+@@ -58,6 +61,60 @@ _ASSERTION_TERMINAL_JUDGED_STATUSES: Final[frozenset[AssertionStatus]] = frozens
+ #: shape existing candidate writers (transform/pathology) already set by hand.
+ _ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"inject": False, "promotion_required": True}
+ 
++_ASSERTION_WRITE_SAVEPOINTS = itertools.count()
++
++
++def _configure_assertion_write_connection(conn: sqlite3.Connection) -> None:
++    """Apply the shared lock/FK profile needed by assertion writers.
++
++    ``PRAGMA foreign_keys`` cannot be changed once a transaction is active, so
++    nested callers rely on the canonical connection factory while standalone
++    callers are normalized here. ``busy_timeout`` is safe in either state and
++    keeps direct/test connections aligned with the production write profile.
++    """
++
++    if not conn.in_transaction:
++        conn.execute("PRAGMA foreign_keys = ON")
++    conn.execute(f"PRAGMA busy_timeout = {WRITE_CONNECTION_PROFILE.busy_timeout_ms}")
++
++
++@contextmanager
++def _assertion_write_transaction(conn: sqlite3.Connection) -> Iterator[None]:
++    """Own one immediate write transaction, or isolate work in a savepoint.
++
++    The zero-row ``UPDATE`` is intentional. A savepoint nested under a deferred
++    caller transaction does not itself reserve the SQLite writer slot; this
++    no-op write upgrades that transaction *before* any preserve/read decision.
++    That closes the judgment-preservation TOCTOU window without committing or
++    rolling back work owned by the caller.
++    """
++
++    _configure_assertion_write_connection(conn)
++    if not conn.in_transaction:
++        conn.execute("BEGIN IMMEDIATE")
++        try:
++            yield
++        except BaseException:
++            conn.rollback()
++            raise
++        else:
++            conn.commit()
++        return
++
++    savepoint = f"assertion_write_{next(_ASSERTION_WRITE_SAVEPOINTS)}"
++    conn.execute(f"SAVEPOINT {savepoint}")
++    try:
++        # Force a RESERVED lock before a preservation read even when the outer
++        # transaction was opened implicitly/deferred by the caller.
++        conn.execute("UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 0")
++        yield
++    except BaseException:
++        conn.execute(f"ROLLBACK TO {savepoint}")
++        conn.execute(f"RELEASE {savepoint}")
++        raise
++    else:
++        conn.execute(f"RELEASE {savepoint}")
++
+ 
+ def _default_context_policy() -> dict[str, JSONValue]:
+     return dict(ASSERTION_DEFAULT_CONTEXT_POLICY)
+@@ -710,9 +767,13 @@ def upsert_recall_pack(
+     recall_pack_id: str | None = None,
+     now_ms: int | None = None,
+ ) -> ArchiveRecallPackEnvelope:
+-    """Insert-or-update one recall-pack assertion."""
++    """Insert-or-update one recall pack by stable name identity.
++
++    A caller-provided id remains authoritative. Without one, changing a named
++    pack updates that logical pack instead of appending a content-hash sibling.
++    """
+     timestamp = now_ms if now_ms is not None else _now_ms()
+-    resolved_id = recall_pack_id or _deterministic_id("recall-pack", name, _json_dumps(payload))
++    resolved_id = recall_pack_id or _deterministic_id("recall-pack", name)
+     upsert_assertion(
+         conn,
+         assertion_id=assertion_id_for_recall_pack(resolved_id),
+@@ -1052,17 +1113,7 @@ def upsert_assertion(
+     per-call-site deliberately; it is never inferred from ``kind``/
+     ``author_kind`` inside this function.
+     """
+-    conn.execute("PRAGMA foreign_keys = ON")
+     timestamp = now_ms if now_ms is not None else _now_ms()
+-    existing = conn.execute(
+-        "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
+-        (assertion_id,),
+-    ).fetchone()
+-    created_at_ms = int(existing[0]) if existing is not None else timestamp
+-    existing_status = (
+-        _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
+-    )
+-
+     normalized_target_ref = normalize_object_ref_text(target_ref)
+     normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
+     normalized_author_ref = (
+@@ -1079,74 +1130,87 @@ def upsert_assertion(
+     resolved_author_kind = _normalize_assertion_author_kind(author_kind)
+     resolved_context_policy = _normalize_assertion_context_policy(context_policy)
+ 
+-    if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
+-        if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
+-            resolved_status = existing_status
+-        else:
+-            resolved_status = AssertionStatus.CANDIDATE
+-            resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
+-
+-    resolved_context_policy = constrain_assertion_context_policy(
+-        resolved_context_policy,
+-        author_kind=resolved_author_kind,
+-        author_ref=normalized_author_ref,
+-        status=resolved_status,
+-    )
+-
+     evidence_refs_json = _dumps_optional(normalized_evidence_refs)
+     supersedes_json = _dumps_optional(list(supersedes or ()))
+ 
+-    conn.execute(
+-        """
+-        INSERT INTO assertions (
+-            assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
+-            author_ref, author_kind, evidence_refs_json, status, visibility, confidence,
+-            staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms
+-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+-        ON CONFLICT(assertion_id) DO UPDATE SET
+-            scope_ref = excluded.scope_ref,
+-            target_ref = excluded.target_ref,
+-            key = excluded.key,
+-            kind = excluded.kind,
+-            value_json = excluded.value_json,
+-            body_text = excluded.body_text,
+-            author_ref = excluded.author_ref,
+-            author_kind = excluded.author_kind,
+-            evidence_refs_json = excluded.evidence_refs_json,
+-            status = excluded.status,
+-            visibility = excluded.visibility,
+-            confidence = excluded.confidence,
+-            staleness_json = excluded.staleness_json,
+-            context_policy_json = excluded.context_policy_json,
+-            supersedes_json = excluded.supersedes_json,
+-            updated_at_ms = excluded.updated_at_ms
+-        """,
+-        (
+-            assertion_id,
+-            normalized_scope_ref,
+-            normalized_target_ref,
+-            key,
+-            resolved_kind.value,
+-            _dumps_optional(resolved_value.as_json_value()),
+-            body_text,
+-            normalized_author_ref,
+-            resolved_author_kind,
+-            evidence_refs_json,
+-            resolved_status.value,
+-            resolved_visibility.value,
+-            confidence,
+-            _dumps_optional(
+-                None if resolved_staleness is None else resolved_staleness.as_json_document(),
++    # The preservation read and the write are one SQLite write transaction.
++    # BEGIN IMMEDIATE (or the nested write reservation in the helper) prevents
++    # an operator judgment from landing between these two operations.
++    with _assertion_write_transaction(conn):
++        existing = conn.execute(
++            "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
++            (assertion_id,),
++        ).fetchone()
++        created_at_ms = int(existing[0]) if existing is not None else timestamp
++        existing_status = (
++            _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
++        )
++
++        if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
++            if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
++                resolved_status = existing_status
++            else:
++                resolved_status = AssertionStatus.CANDIDATE
++                resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
++
++        resolved_context_policy = constrain_assertion_context_policy(
++            resolved_context_policy,
++            author_kind=resolved_author_kind,
++            author_ref=normalized_author_ref,
++            status=resolved_status,
++        )
++
++        conn.execute(
++            """
++            INSERT INTO assertions (
++                assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
++                author_ref, author_kind, evidence_refs_json, status, visibility, confidence,
++                staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms
++            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++            ON CONFLICT(assertion_id) DO UPDATE SET
++                scope_ref = excluded.scope_ref,
++                target_ref = excluded.target_ref,
++                key = excluded.key,
++                kind = excluded.kind,
++                value_json = excluded.value_json,
++                body_text = excluded.body_text,
++                author_ref = excluded.author_ref,
++                author_kind = excluded.author_kind,
++                evidence_refs_json = excluded.evidence_refs_json,
++                status = excluded.status,
++                visibility = excluded.visibility,
++                confidence = excluded.confidence,
++                staleness_json = excluded.staleness_json,
++                context_policy_json = excluded.context_policy_json,
++                supersedes_json = excluded.supersedes_json,
++                updated_at_ms = excluded.updated_at_ms
++            """,
++            (
++                assertion_id,
++                normalized_scope_ref,
++                normalized_target_ref,
++                key,
++                resolved_kind.value,
++                _dumps_optional(resolved_value.as_json_value()),
++                body_text,
++                normalized_author_ref,
++                resolved_author_kind,
++                evidence_refs_json,
++                resolved_status.value,
++                resolved_visibility.value,
++                confidence,
++                _dumps_optional(
++                    None if resolved_staleness is None else resolved_staleness.as_json_document(),
++                ),
++                _dumps_optional(resolved_context_policy.as_json_document()),
++                supersedes_json,
++                created_at_ms,
++                timestamp,
+             ),
+-            _dumps_optional(resolved_context_policy.as_json_document()),
+-            supersedes_json,
+-            created_at_ms,
+-            timestamp,
+-        ),
+-    )
+-    envelope = read_assertion_envelope(conn, assertion_id)
+-    assert envelope is not None
+-    return envelope
++        )
++        envelope = read_assertion_envelope(conn, assertion_id)
++        assert envelope is not None
++        return envelope
+ 
+ 
+ def upsert_transform_candidate_assertions(
+@@ -1634,7 +1698,37 @@ def judge_assertion_candidate(
+     replacement_value: object | None = None,
+     now_ms: int | None = None,
+ ) -> ArchiveAssertionJudgmentEnvelope:
+-    """Record an explicit operator judgment for one candidate assertion."""
++    """Record one judgment atomically through the canonical lifecycle authority."""
++
++    with _assertion_write_transaction(conn):
++        return _judge_assertion_candidate_locked(
++            conn,
++            candidate_ref=candidate_ref,
++            decision=decision,
++            reason=reason,
++            actor_ref=actor_ref,
++            inject=inject,
++            replacement_kind=replacement_kind,
++            replacement_body_text=replacement_body_text,
++            replacement_value=replacement_value,
++            now_ms=now_ms,
++        )
++
++
++def _judge_assertion_candidate_locked(
++    conn: sqlite3.Connection,
++    *,
++    candidate_ref: str,
++    decision: str,
++    reason: str | None = None,
++    actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
++    inject: bool = False,
++    replacement_kind: str | AssertionKind | None = None,
++    replacement_body_text: str | None = None,
++    replacement_value: object | None = None,
++    now_ms: int | None = None,
++) -> ArchiveAssertionJudgmentEnvelope:
++    """Apply one judgment while the caller owns the SQLite writer slot."""
+ 
+     normalized_decision = decision.strip().lower()
+     if normalized_decision not in {"accept", "reject", "defer", "supersede"}:
+diff --git a/polylogue/surfaces/payloads.py b/polylogue/surfaces/payloads.py
+index 333b4be7e7f3ed167e47ae3adc999cac0498f46b..51dc4dd44595081794d6e09cc2d21847592b4901 100644
+--- a/polylogue/surfaces/payloads.py
++++ b/polylogue/surfaces/payloads.py
+@@ -1810,6 +1810,32 @@ AssertionCandidateReviewStatus: TypeAlias = Literal[
+     "blocked",
+ ]
+ 
++AssertionEvidenceResolutionState: TypeAlias = Literal[
++    "resolved",
++    "missing",
++    "unsupported",
++    "pending",
++    "error",
++]
++
++
++class AssertionEvidencePreviewPayload(SurfacePayloadModel):
++    """Bounded resolution preview for one ref presented during judgment."""
++
++    ref: str
++    state: AssertionEvidenceResolutionState
++    kind: str | None = None
++    title: str | None = None
++    excerpt: str | None = None
++    reason: str | None = None
++    open_commands: tuple[str, ...] = ()
++    open_hrefs: tuple[str, ...] = ()
++
++    @field_validator("ref")
++    @classmethod
++    def _validate_evidence_ref(cls, value: str) -> str:
++        return normalize_public_ref_text(value)
++
+ 
+ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
+     """One candidate assertion row with explicit review action state."""
+@@ -1818,6 +1844,14 @@ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
+     review_status: AssertionCandidateReviewStatus
+     candidate: AssertionClaimPayload
+     latest_judgment: AssertionJudgmentPayload | None = None
++    claim_summary: str = ""
++    source_ref: str | None = None
++    source_kind: str | None = None
++    age_ms: int = 0
++    evidence_previews: tuple[AssertionEvidencePreviewPayload, ...] = ()
++    evidence_total_count: int = 0
++    evidence_omitted_count: int = 0
++    evidence_resolution: Literal["none", "resolved", "partial", "unresolved"] = "none"
+     action_affordances: tuple[ActionAffordancePayload, ...]
+ 
+     @field_validator("candidate_ref")
+@@ -1829,6 +1863,9 @@ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
+     def from_envelope(
+         cls,
+         envelope: ArchiveAssertionCandidateReviewEnvelope,
++        *,
++        evidence_previews: Sequence[AssertionEvidencePreviewPayload] = (),
++        now_ms: int | None = None,
+     ) -> AssertionCandidateReviewItemPayload:
+         candidate = AssertionClaimPayload.from_envelope(envelope.candidate)
+         latest_judgment = (
+@@ -1838,11 +1875,31 @@ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
+         )
+         candidate_ref = f"assertion:{envelope.candidate.assertion_id}"
+         review_status = _candidate_review_status(envelope.candidate.status)
++        timestamp = int(datetime.now(UTC).timestamp() * 1000) if now_ms is None else now_ms
++        previews = tuple(evidence_previews[:5])
++        total_evidence = len(envelope.candidate.evidence_refs)
++        resolved_count = sum(preview.state == "resolved" for preview in previews)
++        if total_evidence == 0:
++            evidence_resolution: Literal["none", "resolved", "partial", "unresolved"] = "none"
++        elif resolved_count == total_evidence and len(previews) == total_evidence:
++            evidence_resolution = "resolved"
++        elif resolved_count:
++            evidence_resolution = "partial"
++        else:
++            evidence_resolution = "unresolved"
+         return cls(
+             candidate_ref=candidate_ref,
+             review_status=review_status,
+             candidate=candidate,
+             latest_judgment=latest_judgment,
++            claim_summary=_assertion_claim_summary(envelope.candidate),
++            source_ref=envelope.candidate.author_ref,
++            source_kind=envelope.candidate.author_kind,
++            age_ms=max(0, timestamp - envelope.candidate.created_at_ms),
++            evidence_previews=previews,
++            evidence_total_count=total_evidence,
++            evidence_omitted_count=max(0, total_evidence - len(previews)),
++            evidence_resolution=evidence_resolution,
+             action_affordances=assertion_candidate_review_affordances(
+                 candidate_ref=candidate_ref,
+                 disabled_reasons=_candidate_review_disabled_reasons(envelope.candidate.status),
+@@ -1874,8 +1931,18 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
+         limit: int,
+         target_ref: str | None = None,
+         candidate_statuses: Sequence[str | AssertionStatus] | None = None,
++        evidence_previews: Mapping[str, Sequence[AssertionEvidencePreviewPayload]] | None = None,
++        now_ms: int | None = None,
+     ) -> AssertionCandidateReviewListPayload:
+-        items = tuple(AssertionCandidateReviewItemPayload.from_envelope(envelope) for envelope in envelopes)
++        preview_map = evidence_previews or {}
++        items = tuple(
++            AssertionCandidateReviewItemPayload.from_envelope(
++                envelope,
++                evidence_previews=preview_map.get(envelope.candidate.assertion_id, ()),
++                now_ms=now_ms,
++            )
++            for envelope in envelopes
++        )
+         return cls(
+             items=items,
+             total=len(items),
+@@ -1887,6 +1954,55 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
+         )
+ 
+ 
++AssertionCandidateQueueState: TypeAlias = Literal[
++    "healthy-empty",
++    "empty-unverified",
++    "pending",
++    "stale-pending",
++    "producer-stalled",
++    "unavailable",
++]
++
++
++class AssertionCandidateQueueHealthPayload(SurfacePayloadModel):
++    """Read-only health projection for the durable judgment queue."""
++
++    mode: Literal["assertion-candidate-queue-health"] = "assertion-candidate-queue-health"
++    state: AssertionCandidateQueueState
++    observed_at_ms: int
++    pending_count: int
++    status_counts: dict[str, int] = Field(default_factory=dict)
++    kind_counts: dict[str, int] = Field(default_factory=dict)
++    source_counts: dict[str, int] = Field(default_factory=dict)
++    oldest_pending_at_ms: int | None = None
++    newest_pending_at_ms: int | None = None
++    oldest_pending_age_ms: int | None = None
++    stale_pending_count: int = 0
++    retention_outcome: Literal["none", "retained-visible"] = "none"
++    producer_stage: str = "standing-queries"
++    producer_status: str | None = None
++    producer_observed_at_ms: int | None = None
++    producer_age_ms: int | None = None
++    scheduler_state: Literal["fresh", "stale", "stopped", "unknown"] = "unknown"
++    scheduler_heartbeat_at_ms: int | None = None
++    scheduler_heartbeat_age_ms: int | None = None
++    producer_debt_count: int = 0
++    caveats: tuple[str, ...] = ()
++
++
++def _assertion_claim_summary(envelope: ArchiveAssertionEnvelope) -> str:
++    """Return a deterministic one-line claim summary bounded for review UIs."""
++
++    if envelope.body_text:
++        raw = envelope.body_text
++    elif envelope.value is not None:
++        raw = json.dumps(envelope.value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++    else:
++        raw = envelope.key or envelope.kind.value
++    collapsed = " ".join(raw.split())
++    return collapsed if len(collapsed) <= 480 else f"{collapsed[:477].rstrip()}..."
++
++
+ def _candidate_review_status(status: AssertionStatus) -> AssertionCandidateReviewStatus:
+     if status is AssertionStatus.CANDIDATE:
+         return "pending"
+@@ -3536,6 +3652,10 @@ __all__ = [
+     "AssertionCandidateReviewItemPayload",
+     "AssertionCandidateReviewListPayload",
+     "AssertionCandidateReviewStatus",
++    "AssertionCandidateQueueHealthPayload",
++    "AssertionCandidateQueueState",
++    "AssertionEvidencePreviewPayload",
++    "AssertionEvidenceResolutionState",
+     "AssertionClaimListPayload",
+     "AssertionClaimPayload",
+     "AssertionJudgmentPayload",
+diff --git a/tests/unit/api/test_assertion_candidate_evidence_disclosure.py b/tests/unit/api/test_assertion_candidate_evidence_disclosure.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..28f8742c11a93d7b502b7c7116f409aaee0bf5b7
+--- /dev/null
++++ b/tests/unit/api/test_assertion_candidate_evidence_disclosure.py
+@@ -0,0 +1,138 @@
++"""Evidence-disclosure contracts for candidate judgment review.
++
++The tests traverse the production facade and resolver rather than fabricating
++review rows. Anti-vacuity: dropping evidence resolution, removing the five-ref
++bound, or allowing one resolver failure to abort the list makes these tests
++fail.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from pathlib import Path
++
++import pytest
++
++from polylogue import Polylogue
++from polylogue.archive.message.roles import Role
++from polylogue.core.enums import AssertionKind, BlockType, Provider
++from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
++from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
++
++
++def _seed_candidate(root: Path) -> tuple[str, str]:
++    with ArchiveStore(root) as archive:
++        session_id = archive.write_parsed(
++            ParsedSession(
++                source_name=Provider.CODEX,
++                provider_session_id="evidence-review",
++                title="Evidence review source",
++                messages=[
++                    ParsedMessage(
++                        provider_message_id="m1",
++                        role=Role.USER,
++                        text="The evidence-bearing source message",
++                        blocks=[
++                            ParsedContentBlock(
++                                type=BlockType.TEXT,
++                                text="The evidence-bearing source message",
++                            )
++                        ],
++                    )
++                ],
++            )
++        )
++    evidence_refs = (
++        f"session:{session_id}",
++        "session:missing-evidence",
++        "workspace:evidence-review",
++        "query:evidence-review",
++        "assertion:missing-evidence",
++        "repo:polylogue",
++        "run:missing-evidence",
++    )
++    with sqlite3.connect(root / "user.db") as conn:
++        upsert_assertion(
++            conn,
++            assertion_id="candidate-evidence-review",
++            target_ref=f"session:{session_id}",
++            kind=AssertionKind.LESSON,
++            body_text=("Evidence disclosure must remain bounded and explicit. " * 20),
++            author_ref="agent:standing-queries",
++            author_kind="agent",
++            evidence_refs=evidence_refs,
++            status="candidate",
++            now_ms=1_700_000_000_000,
++        )
++    return session_id, "assertion:candidate-evidence-review"
++
++
++async def test_review_discloses_bounded_typed_evidence_previews(tmp_path: Path) -> None:
++    session_id, candidate_ref = _seed_candidate(tmp_path)
++    archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
++    try:
++        payload = await archive.list_assertion_candidate_reviews(
++            target_ref=f"session:{session_id}",
++            statuses=("candidate",),
++            limit=20,
++        )
++    finally:
++        await archive.close()
++
++    assert payload.total == 1
++    item = payload.items[0]
++    assert item.candidate_ref == candidate_ref
++    assert item.review_status == "pending"
++    assert item.source_ref == "agent:standing-queries"
++    assert item.source_kind == "agent"
++    assert len(item.claim_summary) == 480
++    assert item.claim_summary.endswith("...")
++    assert item.age_ms > 0
++    assert item.evidence_total_count == 7
++    assert item.evidence_omitted_count == 2
++    assert len(item.evidence_previews) == 5
++    assert [preview.state for preview in item.evidence_previews] == [
++        "resolved",
++        "missing",
++        "unsupported",
++        "pending",
++        "missing",
++    ]
++    assert item.evidence_resolution == "partial"
++    resolved = item.evidence_previews[0]
++    assert resolved.ref == f"session:{session_id}"
++    assert resolved.title == "Evidence review source"
++    assert resolved.excerpt == "1 messages"
++    assert resolved.open_commands
++    assert "polylogue find id:" in resolved.open_commands[0]
++
++
++async def test_one_evidence_resolution_failure_degrades_only_that_preview(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    session_id, _ = _seed_candidate(tmp_path)
++    archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
++    original_resolve = archive.resolve_ref
++
++    async def flaky_resolve(ref: str):
++        if ref == "query:evidence-review":
++            raise RuntimeError("resolver unavailable")
++        return await original_resolve(ref)
++
++    monkeypatch.setattr(archive, "resolve_ref", flaky_resolve)
++    try:
++        payload = await archive.list_assertion_candidate_reviews(
++            target_ref=f"session:{session_id}",
++            statuses=("candidate",),
++            limit=20,
++        )
++    finally:
++        await archive.close()
++
++    item = payload.items[0]
++    assert item.evidence_previews[3].state == "error"
++    assert item.evidence_previews[3].reason == "resolver unavailable"
++    assert item.evidence_previews[0].state == "resolved"
++    assert payload.total == 1
+diff --git a/tests/unit/api/test_assertion_candidate_queue_health.py b/tests/unit/api/test_assertion_candidate_queue_health.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8f8974d7c9ee0d70ab6f5d14e44057906b71afb
+--- /dev/null
++++ b/tests/unit/api/test_assertion_candidate_queue_health.py
+@@ -0,0 +1,147 @@
++"""Queue-health contracts for the canonical assertion judgment lifecycle.
++
++The tests exercise the real user/ops tier schemas and the production health
++projection.  Anti-vacuity: treating every empty queue as healthy makes the
++first test fail; deleting old candidates makes the retention test fail; and
++ignoring producer debt makes the stalled-producer test fail.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from pathlib import Path
++
++from polylogue import Polylogue
++from polylogue.api.archive import _archive_assertion_candidate_queue_health
++from polylogue.config import Config
++from polylogue.core.enums import AssertionKind
++from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
++from polylogue.storage.sqlite.archive_tiers.ops_write import (
++    add_convergence_debt,
++    record_daemon_lifecycle_start,
++    record_daemon_stage_event,
++)
++from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
++from polylogue.surfaces.payloads import AssertionCandidateQueueHealthPayload
++
++_DAY_MS = 24 * 60 * 60 * 1000
++
++
++def _config(root: Path) -> Config:
++    return Config(
++        archive_root=root,
++        render_root=root / "render",
++        sources=[],
++        db_path=root / "index.db",
++    )
++
++
++def _initialize(root: Path) -> Config:
++    initialize_active_archive_root(root)
++    return _config(root)
++
++
++def test_empty_queue_is_unverified_without_producer_and_scheduler_evidence(tmp_path: Path) -> None:
++    config = _initialize(tmp_path)
++
++    health = _archive_assertion_candidate_queue_health(config, now_ms=1_800_000_000_000)
++
++    assert health.state == "empty-unverified"
++    assert health.pending_count == 0
++    assert health.scheduler_state == "unknown"
++    assert any("producer" in caveat for caveat in health.caveats)
++    assert any("heartbeat" in caveat for caveat in health.caveats)
++
++
++def test_empty_queue_is_healthy_only_after_fresh_producer_and_heartbeat(tmp_path: Path) -> None:
++    config = _initialize(tmp_path)
++    now_ms = 1_800_000_000_000
++    with sqlite3.connect(tmp_path / "ops.db") as conn:
++        record_daemon_stage_event(
++            conn,
++            stage="standing-queries",
++            status="completed",
++            observed_at_ms=now_ms - 60_000,
++        )
++        record_daemon_lifecycle_start(conn, run_id="queue-health", started_at_ms=now_ms - 30_000)
++
++    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
++
++    assert health.state == "healthy-empty"
++    assert health.pending_count == 0
++    assert health.producer_status == "completed"
++    assert health.scheduler_state == "fresh"
++    assert health.caveats == ()
++
++
++def test_old_pending_candidates_remain_durable_and_visible(tmp_path: Path) -> None:
++    config = _initialize(tmp_path)
++    now_ms = 1_800_000_000_000
++    created_at_ms = now_ms - 61 * _DAY_MS
++    with sqlite3.connect(tmp_path / "user.db") as conn:
++        upsert_assertion(
++            conn,
++            assertion_id="candidate-old",
++            target_ref="session:queue-health",
++            kind=AssertionKind.LESSON,
++            body_text="A retained old judgment candidate",
++            author_ref="agent:standing-queries",
++            author_kind="agent",
++            status="candidate",
++            now_ms=created_at_ms,
++        )
++
++    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
++
++    assert health.state == "stale-pending"
++    assert health.pending_count == 1
++    assert health.stale_pending_count == 1
++    assert health.oldest_pending_at_ms == created_at_ms
++    assert health.oldest_pending_age_ms == 61 * _DAY_MS
++    assert health.retention_outcome == "retained-visible"
++    assert health.kind_counts == {"lesson": 1}
++    assert health.source_counts == {"agent:agent:standing-queries": 1}
++    with sqlite3.connect(tmp_path / "user.db") as conn:
++        assert conn.execute("SELECT status FROM assertions WHERE assertion_id = 'candidate-old'").fetchone() == (
++            "candidate",
++        )
++
++
++def test_producer_failure_or_debt_overrides_empty_queue(tmp_path: Path) -> None:
++    config = _initialize(tmp_path)
++    now_ms = 1_800_000_000_000
++    with sqlite3.connect(tmp_path / "ops.db") as conn:
++        record_daemon_stage_event(
++            conn,
++            stage="standing-queries",
++            status="completed",
++            observed_at_ms=now_ms - 60_000,
++        )
++        record_daemon_lifecycle_start(conn, run_id="queue-health", started_at_ms=now_ms - 30_000)
++        add_convergence_debt(
++            conn,
++            stage="standing-queries",
++            target_type="session",
++            target_id="session:failed-producer",
++            status="failed",
++            last_error="candidate capture failed",
++            created_at_ms=now_ms - 20_000,
++        )
++
++    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
++
++    assert health.state == "producer-stalled"
++    assert health.pending_count == 0
++    assert health.producer_debt_count == 1
++
++
++async def test_queue_health_is_queryable_through_polylogue_facade(tmp_path: Path) -> None:
++    config = _initialize(tmp_path)
++    archive = Polylogue(archive_root=config.archive_root, db_path=config.db_path)
++    try:
++        health = await archive.assertion_candidate_queue_health()
++    finally:
++        await archive.close()
++
++    assert isinstance(health, AssertionCandidateQueueHealthPayload)
++    assert health.mode == "assertion-candidate-queue-health"
+diff --git a/tests/unit/api/test_facade_contracts.py b/tests/unit/api/test_facade_contracts.py
+index 828802db9ad6246a9bf78395d078b6a16e88abb1..aebed5f648cfa539789452c6d52839118a1eb4cf 100644
+--- a/tests/unit/api/test_facade_contracts.py
++++ b/tests/unit/api/test_facade_contracts.py
+@@ -248,6 +248,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
+         "correlate_hermes_context_deliveries",
+         "reconcile_hermes_session_lifecycle",
+         "list_assertion_candidate_reviews",
++        "assertion_candidate_queue_health",
+         "judge_assertion_candidate",
+         "judge_assertion_candidates",
+         "capture_assertion_candidate",
+diff --git a/tests/unit/cli/__snapshots__/test_help_snapshots.ambr b/tests/unit/cli/__snapshots__/test_help_snapshots.ambr
+index 897fc0d540d667a77e093cd936dabdb3c81e490f..31ba07e0563ae897fae6cc94a67765ecfd6a7aee 100644
+--- a/tests/unit/cli/__snapshots__/test_help_snapshots.ambr
++++ b/tests/unit/cli/__snapshots__/test_help_snapshots.ambr
+@@ -148,14 +148,15 @@
+       find      Search the archive, then optionally run an...
+       read      Read matched sessions (route to view/destination).
+       select    Select one matched session or print candidate identities.
+-      mark      Mark selected sessions; review candidates under mark candidates.
++      mark      Mark selected sessions with tags, notes, and durable marks.
+       note      Capture a terminal memory candidate.
++      judge     Interactively triage candidate assertions.
+       analyze   Analyze matched sessions and named facet families.
+       facets    Show global or scoped archive facet families.
+       delete    Delete matched sessions.
+       continue  Resume a session or compile successor context as JSON.
+-      Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
+-      command.
++      Use `find QUERY then ACTION`; root `judge` owns assertion-candidate review;
++      `facets` is the direct archive aggregate command.
+   
+     Setup, import, and evidence:
+       config    Show resolved Polylogue configuration with...
+@@ -181,7 +182,6 @@
+   
+     Other commands:
+       annotations  Import typed annotation batches.
+-      judge        Interactively triage candidate assertions.
+   
+   '''
+ # ---
+diff --git a/tests/unit/cli/__snapshots__/test_terminal_snapshots.ambr b/tests/unit/cli/__snapshots__/test_terminal_snapshots.ambr
+index b07e304830dc85a712983edbac0bc98f55a50208..0b470efc46eb3224a3375d40fc44b72662ecdd8b 100644
+--- a/tests/unit/cli/__snapshots__/test_terminal_snapshots.ambr
++++ b/tests/unit/cli/__snapshots__/test_terminal_snapshots.ambr
+@@ -216,14 +216,15 @@
+       find      Search the archive, then optionally run an...
+       read      Read matched sessions (route to view<PATH>).
+       select    Select one matched session or print candidate identities.
+-      mark      Mark selected sessions; review candidates under mark candidates.
++      mark      Mark selected sessions with tags, notes, and durable marks.
+       note      Capture a terminal memory candidate.
++      judge     Interactively triage candidate assertions.
+       analyze   Analyze matched sessions and named facet families.
+       facets    Show global or scoped archive facet families.
+       delete    Delete matched sessions.
+       continue  Resume a session or compile successor context as JSON.
+-      Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
+-      command.
++      Use `find QUERY then ACTION`; root `judge` owns assertion-candidate
++      review; `facets` is the direct archive aggregate command.
+     Setup, import, and evidence:
+       config    Show resolved Polylogue configuration with...
+       init      Detect chat sources and write a starter polylogue.toml.
+@@ -245,7 +246,6 @@
+       maintenance stays under `ops`.
+     Other commands:
+       annotations  Import typed annotation batches.
+-      judge        Interactively triage candidate assertions.
+   '''
+ # ---
+ # name: TestTerminalDimensions.test_help_at_narrow_width
+@@ -469,16 +469,18 @@
+                 view<PATH>).
+       select    Select one matched session or print candidate
+                 identities.
+-      mark      Mark selected sessions; review candidates
+-                under mark candidates.
++      mark      Mark selected sessions with tags, notes, and
++                durable marks.
+       note      Capture a terminal memory candidate.
++      judge     Interactively triage candidate assertions.
+       analyze   Analyze matched sessions and named facet
+                 families.
+       facets    Show global or scoped archive facet families.
+       delete    Delete matched sessions.
+       continue  Resume a session or compile successor context
+                 as JSON.
+-      Use `find QUERY then ACTION`; `facets` is the direct
++      Use `find QUERY then ACTION`; root `judge` owns
++      assertion-candidate review; `facets` is the direct
+       archive aggregate command.
+     Setup, import, and evidence:
+       config    Show resolved Polylogue configuration with...
+@@ -503,7 +505,6 @@
+       ops status`; deeper maintenance stays under `ops`.
+     Other commands:
+       annotations  Import typed annotation batches.
+-      judge        Interactively triage candidate assertions.
+   '''
+ # ---
+ # name: TestTerminalDimensions.test_help_at_wide_width
+@@ -647,14 +648,15 @@
+       find      Search the archive, then optionally run an...
+       read      Read matched sessions (route to view<PATH>).
+       select    Select one matched session or print candidate identities.
+-      mark      Mark selected sessions; review candidates under mark candidates.
++      mark      Mark selected sessions with tags, notes, and durable marks.
+       note      Capture a terminal memory candidate.
++      judge     Interactively triage candidate assertions.
+       analyze   Analyze matched sessions and named facet families.
+       facets    Show global or scoped archive facet families.
+       delete    Delete matched sessions.
+       continue  Resume a session or compile successor context as JSON.
+-      Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
+-      command.
++      Use `find QUERY then ACTION`; root `judge` owns assertion-candidate
++      review; `facets` is the direct archive aggregate command.
+     Setup, import, and evidence:
+       config    Show resolved Polylogue configuration with...
+       init      Detect chat sources and write a starter polylogue.toml.
+@@ -676,6 +678,5 @@
+       maintenance stays under `ops`.
+     Other commands:
+       annotations  Import typed annotation batches.
+-      judge        Interactively triage candidate assertions.
+   '''
+ # ---
+diff --git a/tests/unit/cli/test_assertion_candidates.py b/tests/unit/cli/test_assertion_candidates.py
+index 708c0b98a8b85fb8cde134826c9853d3bdec247c..21d1f925b6417451651a56196b6c60a2f8afb033 100644
+--- a/tests/unit/cli/test_assertion_candidates.py
++++ b/tests/unit/cli/test_assertion_candidates.py
+@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
+ 
+ from click.testing import CliRunner
+ 
+-from polylogue.cli.query_verbs import mark_candidates_group
++from polylogue.cli.commands.judge import judge_command
++from polylogue.cli.query_verbs import mark_verb
+ from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+ from polylogue.surfaces.action_affordances import assertion_candidate_review_affordances
+ from polylogue.surfaces.payloads import (
+@@ -15,6 +16,7 @@ from polylogue.surfaces.payloads import (
+     AssertionCandidateReviewItemPayload,
+     AssertionCandidateReviewListPayload,
+     AssertionClaimPayload,
++    AssertionEvidencePreviewPayload,
+     AssertionJudgmentPayload,
+     AssertionJudgmentResultPayload,
+ )
+@@ -36,35 +38,78 @@ def _claim(status: AssertionStatus = AssertionStatus.CANDIDATE) -> AssertionClai
+     )
+ 
+ 
++def _review_item(status: AssertionStatus = AssertionStatus.CANDIDATE) -> AssertionCandidateReviewItemPayload:
++    review_status = {
++        AssertionStatus.CANDIDATE: "pending",
++        AssertionStatus.ACCEPTED: "accepted",
++        AssertionStatus.REJECTED: "rejected",
++        AssertionStatus.DEFERRED: "deferred",
++        AssertionStatus.SUPERSEDED: "superseded",
++    }[status]
++    disabled = (
++        None
++        if status is AssertionStatus.CANDIDATE
++        else {
++            "accept": f"candidate_{review_status}",
++            "reject": f"candidate_{review_status}",
++            "defer": f"candidate_{review_status}",
++            "supersede": f"candidate_{review_status}",
++        }
++    )
++    return AssertionCandidateReviewItemPayload(
++        candidate_ref="assertion:candidate-cli-1",
++        review_status=review_status,
++        candidate=_claim(status=status),
++        claim_summary="Keep candidate review explicit.",
++        source_ref="agent:producer",
++        source_kind="agent",
++        age_ms=2_000,
++        evidence_previews=(
++            AssertionEvidencePreviewPayload(
++                ref="session:cli",
++                state="resolved",
++                kind="session",
++                title="CLI evidence session",
++                excerpt="Evidence supporting the candidate.",
++                open_commands=("polylogue read session:cli",),
++            ),
++        ),
++        evidence_total_count=1,
++        evidence_resolution="resolved",
++        action_affordances=assertion_candidate_review_affordances(
++            candidate_ref="assertion:candidate-cli-1",
++            disabled_reasons=disabled,
++        ),
++    )
++
++
+ def test_candidates_list_emits_shared_json_payload() -> None:
+-    env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidates=AsyncMock(return_value=[_claim()])))
++    payload = AssertionCandidateReviewListPayload(
++        items=(_review_item(),),
++        total=1,
++        limit=50,
++        candidate_statuses=(AssertionStatus.CANDIDATE,),
++    )
++    env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidate_reviews=AsyncMock(return_value=payload)))
+ 
+-    result = CliRunner().invoke(mark_candidates_group, ["list", "--format", "json"], obj=env, catch_exceptions=False)
++    result = CliRunner().invoke(judge_command, ["--list", "--format", "json"], obj=env, catch_exceptions=False)
+ 
+     assert result.exit_code == 0
+-    payload = json.loads(result.output)
+-    assert payload["total"] == 1
+-    assert payload["statuses"] == ["candidate"]
+-    assert payload["items"][0]["assertion_id"] == "candidate-cli-1"
+-    env.polylogue.list_assertion_candidates.assert_awaited_once_with(target_ref=None, limit=50)
++    rendered = json.loads(result.output)
++    assert rendered["mode"] == "assertion-candidate-review-list"
++    assert rendered["items"][0]["claim_summary"] == "Keep candidate review explicit."
++    assert rendered["items"][0]["evidence_previews"][0]["state"] == "resolved"
++    assert rendered["items"][0]["evidence_previews"][0]["open_commands"] == ["polylogue read session:cli"]
++    env.polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(
++        target_ref=None,
++        kinds=None,
++        statuses=(AssertionStatus.CANDIDATE,),
++        limit=50,
++    )
+ 
+ 
+ def test_candidates_review_emits_status_and_disabled_action_reasons() -> None:
+-    item = AssertionCandidateReviewItemPayload(
+-        candidate_ref="assertion:candidate-cli-1",
+-        review_status="deferred",
+-        candidate=_claim(status=AssertionStatus.DEFERRED),
+-        latest_judgment=None,
+-        action_affordances=assertion_candidate_review_affordances(
+-            candidate_ref="assertion:candidate-cli-1",
+-            disabled_reasons={
+-                "accept": "candidate_deferred",
+-                "reject": "candidate_deferred",
+-                "defer": "candidate_deferred",
+-                "supersede": "candidate_deferred",
+-            },
+-        ),
+-    )
++    item = _review_item(AssertionStatus.DEFERRED)
+     payload = AssertionCandidateReviewListPayload(
+         items=(item,),
+         total=1,
+@@ -74,15 +119,12 @@ def test_candidates_review_emits_status_and_disabled_action_reasons() -> None:
+     )
+     env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidate_reviews=AsyncMock(return_value=payload)))
+ 
+-    result = CliRunner().invoke(mark_candidates_group, ["review", "--format", "json"], obj=env, catch_exceptions=False)
++    result = CliRunner().invoke(judge_command, ["--review", "--format", "json"], obj=env, catch_exceptions=False)
+ 
+     assert result.exit_code == 0
+     rendered = json.loads(result.output)
+-    assert rendered["mode"] == "assertion-candidate-review-list"
+     assert rendered["durable_assertions_excluded"] is True
+-    assert rendered["candidate_statuses"] == ["candidate", "deferred"]
+     assert rendered["items"][0]["review_status"] == "deferred"
+-    assert rendered["items"][0]["candidate"]["status"] == "deferred"
+     disabled = {
+         action["id"]: action["availability"]["disabled_reason"] for action in rendered["items"][0]["action_affordances"]
+     }
+@@ -92,7 +134,6 @@ def test_candidates_review_emits_status_and_disabled_action_reasons() -> None:
+         "assertion_candidate.defer": "candidate_deferred",
+         "assertion_candidate.supersede": "candidate_deferred",
+     }
+-    env.polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(target_ref=None, limit=50)
+ 
+ 
+ def test_candidates_accept_emits_bulk_judgment_payload() -> None:
+@@ -130,8 +171,8 @@ def test_candidates_accept_emits_bulk_judgment_payload() -> None:
+     env = SimpleNamespace(polylogue=SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload)))
+ 
+     result = CliRunner().invoke(
+-        mark_candidates_group,
+-        ["accept", "assertion:candidate-cli-1", "--reason", "confirmed", "--format", "json"],
++        judge_command,
++        ["--accept", "assertion:candidate-cli-1", "--reason", "confirmed", "--format", "json"],
+         obj=env,
+         catch_exceptions=False,
+     )
+@@ -139,8 +180,12 @@ def test_candidates_accept_emits_bulk_judgment_payload() -> None:
+     assert result.exit_code == 0
+     rendered = json.loads(result.output)
+     assert rendered["items"][0]["result"]["judgment"]["decision"] == "accept"
+-    assert rendered["items"][0]["result"]["resulting_assertion"]["kind"] == "decision"
+     call = env.polylogue.judge_assertion_candidates.await_args.kwargs
+-    assert len(call["items"]) == 1
+     assert call["items"][0].candidate_ref == "assertion:candidate-cli-1"
+     assert call["items"][0].inject is False
++
++
++def test_mark_candidates_public_group_is_retired() -> None:
++    """The query-first mark workflow no longer registers a second lifecycle."""
++
++    assert "candidates" not in mark_verb.commands
+diff --git a/tests/unit/cli/test_cli_action_contracts.py b/tests/unit/cli/test_cli_action_contracts.py
+index 1ad515f01f8c1d3f46dc0507fa0762777162f702..a7ab4d24c1404e8f6afc54b44763064f30975cd1 100644
+--- a/tests/unit/cli/test_cli_action_contracts.py
++++ b/tests/unit/cli/test_cli_action_contracts.py
+@@ -31,8 +31,10 @@ from tests.infra.app_env import make_app_env
+ SCHEMAS_DIR = Path("docs/schemas/cli-output")
+ 
+ GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
++    "authenticated_injection_opt_in": "test_judge_injection_requires_explicit_flag",
+     "daemon_accepts_schedule": "test_import_contract_guard_requires_daemon_acceptance",
+     "dry_run_or_yes_required": "test_delete_contract_guard_refuses_plain_forceless_delete",
++    "explicit_candidate_ref_for_mutation": "test_judge_mutation_requires_candidate_ref",
+     "explicit_query_intent": "test_virtual_find_counterpart_is_query_parser_keyword",
+     "file_destination_requires_out": "test_read_contract_guard_requires_out_for_file_destination",
+     "path_exists_or_demo": "test_import_contract_guard_rejects_missing_source_path",
+@@ -513,8 +515,8 @@ def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[
+     assert payload["session_ids"] == ["session-1"]
+ 
+ 
+-def test_explicit_mark_candidates_terms_remain_query_text() -> None:
+-    """`find mark candidates` searches those words instead of dispatching `mark candidates`."""
++def test_retired_mark_candidates_terms_remain_query_text() -> None:
++    """The retired phrase remains searchable when explicitly introduced by `find`."""
+     click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
+         cli,
+         ["find", "mark", "candidates"],
+diff --git a/tests/unit/cli/test_completion_matrix.py b/tests/unit/cli/test_completion_matrix.py
+index d1477103712e3a6c9c391d8d85386d33577f1dbc..d5938f3bb3e4bc66f5ea049bdca46d2c1ae0131d 100644
+--- a/tests/unit/cli/test_completion_matrix.py
++++ b/tests/unit/cli/test_completion_matrix.py
+@@ -708,7 +708,7 @@ def test_query_action_mutating_guard_completion_per_shell(
+         ["find", "id:abc", "then", "continue"],
+         ["find", "id:abc", "then", "delete"],
+         ["find", "id:abc", "then", "mark"],
+-        ["find", "id:abc", "then", "mark", "candidates", "list"],
++        ["judge"],
+         ["analyze", "usage"],
+         ["analyze", "insights", "profiles"],
+     ],
+@@ -733,21 +733,31 @@ def test_query_action_json_alias_completion_per_shell(
+ 
+ 
+ @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+-def test_query_action_mark_candidates_completion_per_shell(
++def test_root_judge_completion_per_shell(
+     shell: str,
+     comp_cls: type[ShellComplete],
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+-    """``mark candidates`` subcommands complete inside the query-action grammar."""
++    """The canonical root judge exposes review, health, and decision options."""
+ 
+     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+ 
+-    items = dict(_run_completion(shell, comp_cls, ["find", "id:abc", "then", "mark", "candidates"]))
++    items = dict(_run_completion_for_partial(shell, comp_cls, ["judge"], "--"))
+ 
+-    assert {"list", "accept", "reject", "defer", "supersede"}.issubset(items)
++    assert {
++        "--list",
++        "--review",
++        "--status",
++        "--accept",
++        "--reject",
++        "--defer",
++        "--supersede",
++        "--format",
++        "--json",
++    }.issubset(items)
+ 
+ 
+ @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+diff --git a/tests/unit/cli/test_deterministic_output.py b/tests/unit/cli/test_deterministic_output.py
+index 1a96db693530f5a65eba26427e3ab417d94320ae..e1095a92d57d4889b80c1829920b7a0cd7dabd20 100644
+--- a/tests/unit/cli/test_deterministic_output.py
++++ b/tests/unit/cli/test_deterministic_output.py
+@@ -149,7 +149,7 @@ _PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
+     ("continue",),
+     ("stats",),
+     ("mark",),
+-    ("mark", "candidates"),
++    ("judge",),
+ )
+ _PLAIN_CMD_IDS = [" ".join(args) if args else "root" for args in _PLAIN_COMMANDS]
+ 
+@@ -185,16 +185,14 @@ class TestJsonOutputValidity:
+         assert "status" in parsed
+ 
+     def test_candidate_assertions_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
+-        """polylogue mark candidates list --format json produces parseable JSON."""
++        """polylogue judge --list --format json produces parseable JSON."""
+         runner = CliRunner()
+-        result = runner.invoke(
+-            cli, ["--plain", "mark", "candidates", "list", "--format", "json"], catch_exceptions=False
+-        )
++        result = runner.invoke(cli, ["--plain", "judge", "--list", "--format", "json"], catch_exceptions=False)
+         assert result.exit_code == 0
+         parsed = _extract_json(result.output)
+         assert isinstance(parsed, dict)
+         assert "items" in parsed
+-        assert parsed["statuses"] == ["candidate"]
++        assert parsed["candidate_statuses"] == ["candidate"]
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -235,7 +233,7 @@ class TestJsonEnvelopeParametrized:
+         "cmd_args",
+         [
+             ["ops", "doctor", "--format", "json"],
+-            ["mark", "candidates", "list", "--format", "json"],
++            ["judge", "--list", "--format", "json"],
+         ],
+         ids=["ops-doctor", "candidate-assertions"],
+     )
+@@ -254,7 +252,7 @@ class TestJsonEnvelopeParametrized:
+         "cmd_args",
+         [
+             ["ops", "doctor", "--format", "json"],
+-            ["mark", "candidates", "list", "--format", "json"],
++            ["judge", "--list", "--format", "json"],
+         ],
+         ids=["ops-doctor", "candidate-assertions"],
+     )
+@@ -276,17 +274,17 @@ class TestJsonEnvelopeParametrized:
+     @pytest.mark.parametrize(
+         "cmd_args,expected_error",
+         [
+-            (["mark", "candidates", "list", "--format", "yaml"], "Invalid value for '--format'"),
++            (["judge", "--list", "--format", "yaml"], "Invalid value for '--format'"),
+         ],
+         ids=["candidate-assertions-yaml-rejected"],
+     )
+-    def test_json_only_commands_reject_other_formats(
++    def test_machine_output_commands_reject_unknown_formats(
+         self: object,
+         cli_workspace: dict[str, Path],
+         cmd_args: list[str],
+         expected_error: str,
+     ) -> None:
+-        """JSON-only commands reject non-json formats with a clear Click error."""
++        """Machine-output commands reject unknown formats with a clear Click error."""
+         runner = CliRunner()
+         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
+         assert result.exit_code != 0
+@@ -336,14 +334,14 @@ class TestJsonDeterminism:
+         assert parsed[0] == parsed[1]
+ 
+     def test_candidate_assertions_json_deterministic(self: object, cli_workspace: dict[str, Path]) -> None:
+-        """Two mark candidates list --format json runs produce identical output."""
++        """Two root judge list JSON runs produce identical output."""
+         runner = CliRunner()
+         outputs: list[str] = []
+ 
+         for _ in range(2):
+             result = runner.invoke(
+                 cli,
+-                ["--plain", "mark", "candidates", "list", "--format", "json"],
++                ["--plain", "judge", "--list", "--format", "json"],
+                 catch_exceptions=False,
+             )
+             assert result.exit_code == 0
+diff --git a/tests/unit/cli/test_judge_command.py b/tests/unit/cli/test_judge_command.py
+index d6f079c69a89b8be898b39ca11a1043123d0ed48..8f682a321553df9c7be41a97cc7e9f0ee4075b42 100644
+--- a/tests/unit/cli/test_judge_command.py
++++ b/tests/unit/cli/test_judge_command.py
+@@ -34,6 +34,34 @@ def _candidate() -> AssertionClaimPayload:
+     )
+ 
+ 
++def test_judge_mutation_requires_candidate_ref() -> None:
++    """A decision option cannot be parsed without its explicit candidate ref."""
++
++    invocation = CliRunner().invoke(judge_command, ["--accept"])
++
++    assert invocation.exit_code == 2
++    assert "requires an argument" in invocation.output
++
++
++def test_judge_injection_requires_explicit_flag() -> None:
++    """Acceptance defaults to non-injecting unless the operator opts in."""
++
++    payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
++    polylogue = SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload))
++    env = cast(AppEnv, SimpleNamespace(polylogue=polylogue))
++
++    invocation = CliRunner().invoke(
++        judge_command,
++        ["--accept", "assertion:candidate-judge-1", "--format", "json"],
++        obj=env,
++        catch_exceptions=False,
++    )
++
++    assert invocation.exit_code == 0
++    item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
++    assert item.inject is False
++
++
+ def test_judge_noninteractive_accept_uses_bulk_lifecycle_payload() -> None:
+     candidate = _candidate()
+     result = AssertionJudgmentResultPayload(
+@@ -98,10 +126,24 @@ def test_judge_edit_preserves_the_candidate_lifecycle_kind() -> None:
+ 
+ def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
+     finding = _candidate()
+-    decision = finding.model_copy(update={"assertion_id": "candidate-decision-1", "kind": AssertionKind.DECISION})
+     payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
++    from polylogue.surfaces.action_affordances import assertion_candidate_review_affordances
++    from polylogue.surfaces.payloads import AssertionCandidateReviewItemPayload, AssertionCandidateReviewListPayload
++
++    review_item = AssertionCandidateReviewItemPayload(
++        candidate_ref="assertion:candidate-judge-1",
++        review_status="pending",
++        candidate=finding,
++        action_affordances=assertion_candidate_review_affordances(candidate_ref="assertion:candidate-judge-1"),
++    )
++    review_payload = AssertionCandidateReviewListPayload(
++        items=(review_item,),
++        total=1,
++        limit=1,
++        candidate_statuses=(AssertionStatus.CANDIDATE,),
++    )
+     polylogue = SimpleNamespace(
+-        list_assertion_candidates=AsyncMock(return_value=[finding, decision]),
++        list_assertion_candidate_reviews=AsyncMock(return_value=review_payload),
+         judge_assertion_candidates=AsyncMock(return_value=payload),
+     )
+     env = SimpleNamespace(polylogue=polylogue)
+@@ -117,4 +159,9 @@ def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
+     assert json.loads(invocation.output)["applied_count"] == 0
+     items = polylogue.judge_assertion_candidates.await_args.kwargs["items"]
+     assert [item.candidate_ref for item in items] == ["assertion:candidate-judge-1"]
+-    polylogue.list_assertion_candidates.assert_awaited_once_with(kinds=(AssertionKind.FINDING,), limit=None)
++    polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(
++        target_ref=None,
++        kinds=(AssertionKind.FINDING,),
++        statuses=(AssertionStatus.CANDIDATE,),
++        limit=None,
++    )
+diff --git a/tests/unit/cli/test_note.py b/tests/unit/cli/test_note.py
+index 8d0252a8d5ad32c8ab1fd479e08e05127b504589..9e00c1e8daf2726dd5f12c95ec6fd1f0d326a92a 100644
+--- a/tests/unit/cli/test_note.py
++++ b/tests/unit/cli/test_note.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ import asyncio
+ import json
+ import os
++import sqlite3
+ from pathlib import Path
+ from typing import cast
+ 
+@@ -172,3 +173,133 @@ def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(cli_works
+     assert reviews.items[0].candidate.status is AssertionStatus.CANDIDATE
+     assert blackboard_before_judgment == []
+     assert blackboard_after_judgment == [payload["assertion_id"]]
++
++
++def test_terminal_note_idempotency_survives_root_judgment_canary_route(
++    cli_workspace: dict[str, Path],
++) -> None:
++    """Production CLI capture -> root judge -> replay preserves one lifecycle.
++
++    Anti-vacuity: random capture ids, overwriting a terminal candidate on
++    replay, bypassing root ``judge``, or omitting the promotion evidence and
++    context policy makes this test fail.
++    """
++
++    session = SessionBuilder(cli_workspace["db_path"], "terminal-note-canary").provider("codex")
++    session.save()
++    session_ref = f"session:{session.native_session_id()}"
++    key = "mrxt-operator-canary"
++    capture_args = [
++        "Operator observed WAL reservation preserving judgment state",
++        "--kind",
++        "lesson",
++        "--ref",
++        session_ref,
++        "--idempotency-key",
++        key,
++    ]
++
++    first = _capture(cli_workspace, capture_args)
++    before_judgment_retry = _capture(cli_workspace, capture_args)
++    assert before_judgment_retry["assertion_id"] == first["assertion_id"]
++    candidate_ref = f"assertion:{first['assertion_id']}"
++
++    judged = CliRunner().invoke(
++        cli,
++        [
++            "--plain",
++            "judge",
++            "--accept",
++            candidate_ref,
++            "--reason",
++            "genuine operator canary acceptance",
++            "--actor-ref",
++            "user:operator",
++            "--format",
++            "json",
++        ],
++        catch_exceptions=False,
++    )
++    assert judged.exit_code == 0, judged.output
++    judgment_payload = json.loads(judged.output)
++    assert judgment_payload["applied_count"] == 1
++    item = judgment_payload["items"][0]
++    assert item["outcome"] == "applied"
++    resulting_ref = item["result"]["judgment"]["resulting_assertion_ref"]
++    assert resulting_ref.startswith("assertion:")
++
++    after_judgment_retry = _capture(cli_workspace, capture_args)
++    assert after_judgment_retry["assertion_id"] == first["assertion_id"]
++    assert after_judgment_retry["status"] == "accepted"
++
++    changed = CliRunner().invoke(
++        cli,
++        [
++            "--plain",
++            "note",
++            "Changed content must conflict",
++            "--kind",
++            "lesson",
++            "--ref",
++            session_ref,
++            "--idempotency-key",
++            key,
++            "--format",
++            "json",
++        ],
++        catch_exceptions=False,
++    )
++    assert changed.exit_code == 1
++    assert "idempotency_key conflicts" in changed.output
++
++    async def verify_surfaces() -> tuple[AssertionCandidateReviewListPayload, object, object]:
++        async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
++            reviews = await poly.list_assertion_candidate_reviews(
++                target_ref=session_ref,
++                statuses=("accepted",),
++            )
++            candidate_resolution = await poly.resolve_ref(candidate_ref)
++            result_resolution = await poly.resolve_ref(resulting_ref)
++            return reviews, candidate_resolution, result_resolution
++
++    reviews, candidate_resolution, result_resolution = asyncio.run(verify_surfaces())
++    assert [review.candidate_ref for review in reviews.items] == [candidate_ref]
++    review = reviews.items[0]
++    assert review.latest_judgment is not None
++    assert review.latest_judgment.decision == "accept"
++    assert review.latest_judgment.resulting_assertion_ref == resulting_ref
++    assert candidate_resolution.resolved is True
++    assert result_resolution.resolved is True
++
++    with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
++        conn.row_factory = sqlite3.Row
++        rows = conn.execute(
++            """
++            SELECT assertion_id, kind, status, evidence_refs_json,
++                   context_policy_json, supersedes_json, value_json
++            FROM assertions
++            WHERE assertion_id = ?
++               OR target_ref = ?
++               OR assertion_id = ?
++            ORDER BY kind, assertion_id
++            """,
++            (first["assertion_id"], candidate_ref, resulting_ref.removeprefix("assertion:")),
++        ).fetchall()
++
++    candidate_rows = [row for row in rows if row["assertion_id"] == first["assertion_id"]]
++    judgment_rows = [row for row in rows if row["kind"] == "judgment"]
++    result_rows = [row for row in rows if row["assertion_id"] == resulting_ref.removeprefix("assertion:")]
++    assert len(candidate_rows) == 1
++    assert candidate_rows[0]["status"] == "accepted"
++    assert len(judgment_rows) == 1
++    assert len(result_rows) == 1
++    result = result_rows[0]
++    assert result["kind"] == "lesson"
++    assert result["status"] == "active"
++    assert json.loads(result["context_policy_json"]) == {"inject": False}
++    assert json.loads(result["supersedes_json"]) == [candidate_ref]
++    assert json.loads(result["evidence_refs_json"]) == [session_ref, candidate_ref]
++    judgment_value = json.loads(judgment_rows[0]["value_json"])
++    assert judgment_value["candidate_ref"] == candidate_ref
++    assert judgment_value["resulting_assertion_ref"] == resulting_ref
++    assert judgment_value["inject_authorized"] is False
+diff --git a/tests/unit/mcp/test_assertion_judgment_tools.py b/tests/unit/mcp/test_assertion_judgment_tools.py
+index 6721eecfd5db1d90085a9ff7cb45e4229c044cc2..f057fcb2037ca9b6095df8c78c66f1b0db6fa722 100644
+--- a/tests/unit/mcp/test_assertion_judgment_tools.py
++++ b/tests/unit/mcp/test_assertion_judgment_tools.py
+@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
+ 
+ from polylogue.mcp.server import build_server
+ from polylogue.mcp.server_support import MCPRole
+-from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
++from polylogue.surfaces.payloads import (
++    AssertionBulkJudgmentPayload,
++    AssertionCandidateReviewListPayload,
++)
+ from tests.infra.mcp import MCPServerUnderTest, invoke_surface
+ 
+ 
+@@ -92,3 +95,65 @@ def test_mcp_bulk_judgment_rejects_invalid_supersede_replacement_fields() -> Non
+ 
+     assert json.loads(result)["code"] == "invalid_assertion_judgment"
+     poly.judge_assertion_candidates.assert_not_awaited()
++
++
++def test_mcp_review_serializes_evidence_disclosure_fields() -> None:
++    """The read-capability adapter preserves the facade's evidence projection."""
++
++    payload = AssertionCandidateReviewListPayload.model_validate(
++        {
++            "items": [
++                {
++                    "candidate_ref": "assertion:candidate-1",
++                    "review_status": "pending",
++                    "candidate": {
++                        "assertion_id": "candidate-1",
++                        "target_ref": "session:source-1",
++                        "kind": "lesson",
++                        "body_text": "Bounded claim",
++                        "author_ref": "agent:producer",
++                        "author_kind": "agent",
++                        "evidence_refs": ["session:source-1"],
++                        "status": "candidate",
++                        "created_at_ms": 1,
++                        "updated_at_ms": 1,
++                    },
++                    "claim_summary": "Bounded claim",
++                    "source_ref": "agent:producer",
++                    "source_kind": "agent",
++                    "age_ms": 5,
++                    "evidence_previews": [
++                        {
++                            "ref": "session:source-1",
++                            "state": "resolved",
++                            "kind": "session",
++                            "title": "Source",
++                            "excerpt": "1 messages",
++                            "open_commands": ["polylogue find id:source-1 then read --format json"],
++                        }
++                    ],
++                    "evidence_total_count": 1,
++                    "evidence_omitted_count": 0,
++                    "evidence_resolution": "resolved",
++                    "action_affordances": [],
++                }
++            ],
++            "total": 1,
++            "limit": 20,
++            "candidate_statuses": ["candidate"],
++        }
++    )
++    poly = MagicMock()
++    poly.list_assertion_candidate_reviews = AsyncMock(return_value=payload)
++    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
++        server = cast(MCPServerUnderTest, build_server(role="read"))
++        tool = server._tool_manager._tools["list_assertion_candidate_reviews"]
++        result = invoke_surface(tool.fn, target_ref="session:source-1", limit=20)
++
++    decoded = json.loads(result)
++    item = decoded["items"][0]
++    assert item["claim_summary"] == "Bounded claim"
++    assert item["evidence_total_count"] == 1
++    assert item["evidence_resolution"] == "resolved"
++    assert item["evidence_previews"][0]["state"] == "resolved"
++    assert item["evidence_previews"][0]["open_commands"]
+diff --git a/tests/unit/mcp/test_candidate_capture_tool.py b/tests/unit/mcp/test_candidate_capture_tool.py
+index cccb4cf577e1361d6ad9ef7f065d6ea27f0d53a2..53b1d686374d57e5257e307fe467256f85fa8f52 100644
+--- a/tests/unit/mcp/test_candidate_capture_tool.py
++++ b/tests/unit/mcp/test_candidate_capture_tool.py
+@@ -56,6 +56,7 @@ def test_capture_candidate_returns_the_shared_assertion_payload(mcp_server: MCPS
+         cwd=None,
+         author_ref="agent:codex-session:demo",
+         author_kind="agent",
++        idempotency_key=None,
+     )
+ 
+ 
+diff --git a/tests/unit/product/test_query_action_workflows.py b/tests/unit/product/test_query_action_workflows.py
+index 61a5e2ed9945ff8baa28856fd6797cd2716ba650..bfc692177635e7b0e1ce26004e3dff3a7c1b2ae7 100644
+--- a/tests/unit/product/test_query_action_workflows.py
++++ b/tests/unit/product/test_query_action_workflows.py
+@@ -144,9 +144,8 @@ def test_product_workflow_doc_is_registry_backed() -> None:
+     for workflow in QUERY_ACTION_WORKFLOWS:
+         assert f"`{workflow.id}`" in document
+         assert workflow.title in document
+-    required_verbs = {"select", "read", "continue", "analyze", "mark", "mark candidates", "delete"}
+-    extra_verbs = {row.action_id for row in PRODUCT_VERB_MATRIX_EXTRA_ROWS}
+-    assert "mark candidates" in extra_verbs
++    required_verbs = {"select", "read", "continue", "analyze", "mark", "judge", "delete"}
++    assert PRODUCT_VERB_MATRIX_EXTRA_ROWS == ()
+     for action_id in required_verbs:
+         assert f"| `{action_id}` |" in document
+     for golden in EXECUTABLE_WORKFLOW_GOLDEN_PATHS:
+diff --git a/tests/unit/storage/test_archive_tiers_assertion_write_through.py b/tests/unit/storage/test_archive_tiers_assertion_write_through.py
+index 45f7f2badb36be894bf57093d9b8ee5d868c27e4..d75042f43981957f70a2420f5b03997de0dbcd59 100644
+--- a/tests/unit/storage/test_archive_tiers_assertion_write_through.py
++++ b/tests/unit/storage/test_archive_tiers_assertion_write_through.py
+@@ -144,6 +144,24 @@ def test_annotation_write_through_mirrors_assertion(tmp_path: Path) -> None:
+     assert again[0].assertion_id == mirrored[0].assertion_id
+ 
+ 
++def test_annotation_without_explicit_id_is_retry_safe_but_append_on_change(tmp_path: Path) -> None:
++    """Content-addressed annotation identity converges exact retries only."""
++
++    conn = _connect(tmp_path / "user.db")
++    try:
++        first = upsert_annotation(conn, "message", "msg-identity", "first body", now_ms=1_000)
++        retry = upsert_annotation(conn, "message", "msg-identity", "first body", now_ms=2_000)
++        changed = upsert_annotation(conn, "message", "msg-identity", "changed body", now_ms=3_000)
++
++        rows = list_assertions_for_target(conn, "message:msg-identity", kind=AssertionKind.ANNOTATION)
++        assert retry.annotation_id == first.annotation_id
++        assert changed.annotation_id != first.annotation_id
++        assert {row.body_text for row in rows} == {"first body", "changed body"}
++        assert len(rows) == 2
++    finally:
++        conn.close()
++
++
+ def test_block_target_overlays_mirror_to_block_assertions(tmp_path: Path) -> None:
+     conn = _connect(tmp_path / "user.db")
+ 
+@@ -406,6 +424,28 @@ def test_user_overlay_reads_project_assertion_envelopes(tmp_path: Path) -> None:
+     assert workspace_read.updated_at_ms == 1_700_000_035_000
+ 
+ 
++def test_recall_pack_without_explicit_id_updates_stable_name_identity(tmp_path: Path) -> None:
++    """A named recall pack updates rather than appending a payload-hash sibling."""
++
++    conn = _connect(tmp_path / "user.db")
++    try:
++        first = upsert_recall_pack(conn, "handoff", {"sessions": ["a"]}, now_ms=1_000)
++        updated = upsert_recall_pack(conn, "handoff", {"sessions": ["a", "b"]}, now_ms=2_000)
++
++        assert updated.recall_pack_id == first.recall_pack_id
++        assert updated.created_at_ms == 1_000
++        assert updated.updated_at_ms == 2_000
++        assert updated.payload == {"sessions": ["a", "b"]}
++        rows = list_assertions_for_target(
++            conn,
++            f"recall_pack:{first.recall_pack_id}",
++            kind=AssertionKind.RECALL_PACK,
++        )
++        assert len(rows) == 1
++    finally:
++        conn.close()
++
++
+ def test_blackboard_note_read_projects_assertion(tmp_path: Path) -> None:
+     conn = _connect(tmp_path / "user.db")
+ 
+diff --git a/tests/unit/storage/test_archive_tiers_assertions.py b/tests/unit/storage/test_archive_tiers_assertions.py
+index bf0c223f782321e0c4fed2c7cd9b8d6d20bca360..c6b3012a76e4cc1307c8e1640e591d940fd0890c 100644
+--- a/tests/unit/storage/test_archive_tiers_assertions.py
++++ b/tests/unit/storage/test_archive_tiers_assertions.py
+@@ -2,6 +2,8 @@ from __future__ import annotations
+ 
+ import json
+ import sqlite3
++import threading
++import time
+ from pathlib import Path
+ 
+ import pytest
+@@ -1636,3 +1638,157 @@ def test_upsert_findings_rejects_incomplete_delta_and_unresolved_ref_shapes(tmp_
+             upsert_findings_as_assertions(conn, [malformed_ref])
+     finally:
+         conn.close()
++
++
++def test_upsert_assertion_write_reservation_prevents_judgment_reversion(tmp_path: Path) -> None:
++    """The 41ow interleaving cannot land a judgment between preserve/read and write.
++
++    This exercises the production ``upsert_assertion`` transaction and
++    ``judge_assertion_candidate`` authority over two real SQLite connections.
++    Replacing ``BEGIN IMMEDIATE`` with a deferred transaction makes the
++    operator complete while the automated writer is paused and leaves the
++    candidate reverted, so the test is anti-vacuous for the lock mechanism.
++    """
++
++    db_path = tmp_path / "user.db"
++    seed = _connect(db_path)
++    seed.execute("PRAGMA journal_mode = WAL")
++    upsert_assertion(
++        seed,
++        assertion_id="candidate-race-41ow",
++        target_ref="session:race-41ow",
++        kind=AssertionKind.FINDING,
++        body_text="original candidate",
++        author_ref="agent:producer",
++        author_kind="agent",
++        now_ms=1_000,
++    )
++    seed.close()
++
++    automated = sqlite3.connect(db_path, timeout=5.0, check_same_thread=False)
++    operator = sqlite3.connect(db_path, timeout=5.0, check_same_thread=False)
++    automated.row_factory = sqlite3.Row
++    operator.row_factory = sqlite3.Row
++    automated_at_insert = threading.Event()
++    release_automated = threading.Event()
++    operator_done = threading.Event()
++    errors: list[BaseException] = []
++    blocked_once = False
++
++    def pause_before_automated_insert(
++        action: int, arg1: str | None, _arg2: str | None, _db: str | None, _trigger: str | None
++    ) -> int:
++        nonlocal blocked_once
++        if action == sqlite3.SQLITE_INSERT and arg1 == "assertions" and not blocked_once:
++            blocked_once = True
++            automated_at_insert.set()
++            if not release_automated.wait(5.0):
++                errors.append(TimeoutError("automated writer was not released"))
++        return sqlite3.SQLITE_OK
++
++    automated.set_authorizer(pause_before_automated_insert)
++
++    def replay_candidate() -> None:
++        try:
++            upsert_assertion(
++                automated,
++                assertion_id="candidate-race-41ow",
++                target_ref="session:race-41ow",
++                kind=AssertionKind.FINDING,
++                body_text="automated replay",
++                author_ref="agent:producer",
++                author_kind="agent",
++                now_ms=3_000,
++            )
++        except BaseException as exc:  # pragma: no cover - assertion reports thread failure
++            errors.append(exc)
++
++    def accept_candidate() -> None:
++        try:
++            judge_assertion_candidate(
++                operator,
++                candidate_ref="assertion:candidate-race-41ow",
++                decision="accept",
++                reason="operator confirmed evidence",
++                actor_ref="user:operator",
++                now_ms=2_000,
++            )
++        except BaseException as exc:  # pragma: no cover - assertion reports thread failure
++            errors.append(exc)
++        finally:
++            operator_done.set()
++
++    automated_thread = threading.Thread(target=replay_candidate)
++    operator_thread = threading.Thread(target=accept_candidate)
++    try:
++        automated_thread.start()
++        assert automated_at_insert.wait(3.0)
++        operator_thread.start()
++        time.sleep(0.2)
++        assert not operator_done.is_set(), "operator must wait behind the automated writer reservation"
++        release_automated.set()
++        automated_thread.join(5.0)
++        operator_thread.join(5.0)
++
++        assert not automated_thread.is_alive()
++        assert not operator_thread.is_alive()
++        assert errors == []
++        final = read_assertion_envelope(operator, "candidate-race-41ow")
++        assert final is not None
++        assert final.status is AssertionStatus.ACCEPTED
++        assert final.body_text == "automated replay"
++        latest = user_write.read_latest_candidate_judgment(operator, final.assertion_id)
++        assert latest is not None
++        assert latest.value["decision"] == "accept"
++    finally:
++        release_automated.set()
++        automated_thread.join(1.0)
++        operator_thread.join(1.0)
++        automated.close()
++        operator.close()
++
++
++def test_upsert_assertion_owned_transaction_rolls_back_on_write_failure(tmp_path: Path) -> None:
++    """A failed standalone upsert cannot leave an owned transaction or partial row."""
++
++    conn = _connect(tmp_path / "user.db")
++    try:
++        upsert_assertion(
++            conn,
++            assertion_id="candidate-rollback-41ow",
++            target_ref="session:rollback-41ow",
++            kind=AssertionKind.FINDING,
++            body_text="before",
++            author_kind="agent",
++            now_ms=1_000,
++        )
++        conn.execute(
++            """
++            CREATE TRIGGER fail_candidate_rollback_41ow
++            BEFORE UPDATE ON assertions
++            WHEN NEW.assertion_id = 'candidate-rollback-41ow'
++            BEGIN
++                SELECT RAISE(ABORT, 'forced 41ow rollback');
++            END
++            """
++        )
++        conn.commit()
++
++        with pytest.raises(sqlite3.IntegrityError, match="forced 41ow rollback"):
++            upsert_assertion(
++                conn,
++                assertion_id="candidate-rollback-41ow",
++                target_ref="session:rollback-41ow",
++                kind=AssertionKind.FINDING,
++                body_text="after",
++                author_kind="agent",
++                now_ms=2_000,
++            )
++
++        assert not conn.in_transaction
++        preserved = read_assertion_envelope(conn, "candidate-rollback-41ow")
++        assert preserved is not None
++        assert preserved.body_text == "before"
++        assert preserved.updated_at_ms == 1_000
++    finally:
++        conn.close()

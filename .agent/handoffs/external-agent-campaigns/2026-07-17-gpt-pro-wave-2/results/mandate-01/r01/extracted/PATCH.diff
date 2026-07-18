@@ -1,0 +1,3635 @@
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index ff588aeb1c2f48a2a42f7ca0d6ea26a317eba8e5..502e38db0480944a5952550038fc9cc1a2f0cdd5 100644
+GIT binary patch
+delta 333
+zcmezRg=4}ujtyT0r*pnxl$iX0pL6mBLHWu1-S{W-3#V>gDfDCoqxs~Ig%Xn&?Bv|M
+ze)oMfAa~<N$;l7ia!$^Cq%isXPi-JAAf207l3J9Rn3GwRTBKJ{$)x}UIr+&}3Km9_
+z73F{?gVhUgA=FJ)JgqZ1;Sty7zmH~%O_xh%gcw@;Q*`tBpa0~i%f&KEOiz$v<lO#F
+zlF@~Aa{GFz=>e*YLfhly87Ht!PSlkIaiyl;P-PUDF6YFkG<|~-qtNtPbw-ZuxoV7i
+z5}8blr*AA`l$>rbk&%7+gHA@)?ExK(N^Fc4Xu{KD`WX4A|DMdKHJzuQQG^ZR?&%jZ
+wfTn}=ZU>4Ab4-r)k(@S_QGC1qbjCM5la2NRUB|^FK3!ggNpyR?3ez`H0LI{aHvj+t
+
+delta 278
+zcmbR6jpOSVjtyT0r{`ueN=$yh&pG*mp#0?hZv2z^g;O`L6ne5^asi*@<OMr9H?QA)
+zUv2uUE=H-zAKr3K{_{v+a^)j|>3TmHl_n=V;+lN^G2e8p*NpNY+0Ex3r;0HeP7eI8
+zI9cMCC`=LO<Qu=FH*fg0Lw>sMc}9ut4N{E0tkXA@GfGWgpvWk+{ii(R1h&bBNs?gh
+z^uMZ%9NYJ(F>)j^8Cy(Oyu%0-?`7oK{<?!viEXMNkekrK$UFUeA0z+t+3ZZp(+@N-
+zvQN+HXOv_#pKch-D7Ae-Kcf`KWW^G&N{;ChrZcK+|397ade7vdn-bFx@H2@|-=)F?
+ScAw#N2X!X4?SZOH`$YjDQf_Df
+
+diff --git a/docs/topology-status.md b/docs/topology-status.md
+index 8916ec4731be16b5a5c521c733dbe01cf827bfdd..2c4acc8ba636f22424d048054da844366bc3f529 100644
+GIT binary patch
+delta 26
+icmca3a7SRnLl#D}$&Xn27)>V^vZ^tfZl1w<gb4tP7YSVe
+
+delta 26
+icmca3a7SRnLl#EU$&Xn27)>S@vZ^tfY@We-gb4tO^9fo2
+
+diff --git a/polylogue/archive/artifact_taxonomy/models.py b/polylogue/archive/artifact_taxonomy/models.py
+index 7e766034e..289dcc0a5 100644
+--- a/polylogue/archive/artifact_taxonomy/models.py
++++ b/polylogue/archive/artifact_taxonomy/models.py
+@@ -17,6 +17,7 @@ class ArtifactKind(StrEnum):
+     WORKFLOW_JOURNAL = "workflow_journal"
+     AGENT_TRANSCRIPT = "agent_transcript"
+     ADOPT_MANIFEST = "adopt_manifest"
++    COORDINATOR_SESSION_STREAM = "coordinator_session_stream"
+     SESSION_INDEX = "session_index"
+     BRIDGE_POINTER = "bridge_pointer"
+     METADATA_DOCUMENT = "metadata_document"
+diff --git a/polylogue/daemon/convergence_stages.py b/polylogue/daemon/convergence_stages.py
+index 314a08815..916e6490e 100644
+--- a/polylogue/daemon/convergence_stages.py
++++ b/polylogue/daemon/convergence_stages.py
+@@ -21,9 +21,11 @@ from pathlib import Path
+ from typing import TYPE_CHECKING
+ 
+ from polylogue.config import load_polylogue_config
++from polylogue.core.enums import Provider
+ from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
+ from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
+ from polylogue.logging import get_logger
++from polylogue.sources.origin_specs import artifact_rule_for_path
+ from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
+ from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+ from polylogue.storage.source_sessions import (
+@@ -321,6 +323,74 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
+     )
+ 
+ 
++# ── Stage: Claude Workflow evidence ──────────────────────────────
++
++
++def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
++    """Rebuild Claude Workflow graphs after any admitted family member changes."""
++
++    def archive_root() -> Path:
++        active_index = _active_archive_index_path(db_path)
++        return (active_index or db_path).parent
++
++    def relevant(path: Path) -> bool:
++        return artifact_rule_for_path(Provider.CLAUDE_CODE, str(path)) is not None
++
++    def check(path: Path) -> bool:
++        if not relevant(path):
++            return False
++        try:
++            from polylogue.insights.claude_workflow_materializer import (
++                claude_workflow_materialization_needed,
++            )
++
++            return claude_workflow_materialization_needed(archive_root())
++        except FileNotFoundError:
++            return False
++        except Exception:
++            logger.warning("claude-workflow freshness probe failed", exc_info=True)
++            return True
++
++    def execute(path: Path) -> StageExecuteReturn:
++        if not relevant(path):
++            return True
++        try:
++            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
++
++            summary = materialize_claude_workflow_archive(archive_root())
++            logger.info(
++                "claude-workflow: materialized runs=%d calls=%d attempts=%d gaps=%d",
++                summary.run_count,
++                summary.call_count,
++                summary.attempt_count,
++                len(summary.gaps),
++            )
++            return True
++        except Exception:
++            logger.warning("claude-workflow: materialization failed", exc_info=True)
++            return False
++
++    def check_many(paths: Sequence[Path]) -> set[Path]:
++        candidates = {path for path in paths if relevant(path)}
++        if not candidates:
++            return set()
++        return candidates if check(next(iter(candidates))) else set()
++
++    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
++        candidates = [path for path in paths if relevant(path)]
++        return True if not candidates else execute(candidates[0])
++
++    return ConvergenceStage(
++        name="claude_workflow",
++        description="Rebuild evidence-backed Claude Workflow topology from current raw authority",
++        check=check,
++        execute=execute,
++        check_many=check_many,
++        execute_many=execute_many,
++        cpu_bound=False,
++    )
++
++
+ # ── Stage: insights ────────────────────────────────────────────────
+ 
+ 
+@@ -711,6 +781,7 @@ def make_default_convergence_stages(
+         (
+             make_fts_stage(db_path),
+             make_embed_stage(db_path),
++            make_claude_workflow_stage(db_path),
+             make_insights_stage(db_path),
+             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
+         )
+@@ -1792,6 +1863,7 @@ def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequenc
+ 
+ 
+ __all__ = [
++    "make_claude_workflow_stage",
+     "make_default_convergence_stages",
+     "make_embed_stage",
+     "make_fts_stage",
+diff --git a/polylogue/insights/claude_workflow_evidence.py b/polylogue/insights/claude_workflow_evidence.py
+index 2590ae705..9d2e40a89 100644
+--- a/polylogue/insights/claude_workflow_evidence.py
++++ b/polylogue/insights/claude_workflow_evidence.py
+@@ -1,168 +1,765 @@
+-"""Project admitted Claude Workflow artifacts into the generic evidence graph.
++"""Project admitted Claude Workflow evidence into the generic work graph.
+ 
+-This adapter has no knowledge of session-parent topology: every membership edge
+-comes from a coordinator invocation or an admitted workflow artifact.
++The adapter is deliberately topology-blind.  A Claude Code child session joins a
++Workflow run only when an admitted journal/sidecar fact explicitly identifies
++its transcript.  Raw artifact revisions are cited with ``artifact:raw:<raw_id>``
++ObjectRefs; message/session evidence continues to use ``EvidenceRef``.
+ """
+ 
+ from __future__ import annotations
+ 
+-from collections.abc import Callable, Iterable, Mapping
++import hashlib
++import json
++from collections import defaultdict
++from collections.abc import Iterable, Mapping
++from dataclasses import dataclass
++from pathlib import PurePosixPath
+ 
+ from polylogue.core.refs import EvidenceRef, ObjectRef
+-from polylogue.insights.work_evidence import WorkEvidenceEdge, WorkEvidenceGraph, WorkEvidenceNode
++from polylogue.insights.work_evidence import (
++    WorkEvidenceAssociationState,
++    WorkEvidenceEdge,
++    WorkEvidenceGraph,
++    WorkEvidenceNode,
++    WorkEvidenceSourceRef,
++)
+ from polylogue.sources.parsers.base_models import ParsedSessionEvent
+ from polylogue.sources.parsers.claude.orchestration import ClaudeOrchestrationArtifact, ClaudeOrchestrationFact
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class ClaudeWorkflowCoordinatorInvocation:
++    """One parsed Workflow tool-use event and its exact message evidence."""
++
++    session_id: str
++    event: ParsedSessionEvent
++    evidence_ref: EvidenceRef
++    occurred_at_ms: int | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class ClaudeWorkflowSessionEvidence:
++    """A current transcript artifact and its optional indexed-session binding."""
++
++    source_path: str
++    raw_artifact_ref: ObjectRef
++    session_id: str | None
++    session_evidence_ref: EvidenceRef | None
++    prompt_evidence_ref: EvidenceRef | None = None
++    prompt_material_origin: str | None = None
++    association_state: WorkEvidenceAssociationState = "resolved"
++    detail: str | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class ClaudeWorkflowPromptEvidence:
++    """Authorship/material-origin evidence for a coordinator prompt."""
++
++    session_id: str
++    evidence_ref: EvidenceRef
++    material_origin: str
++
++
++_STATE_RANK: Mapping[WorkEvidenceAssociationState, int] = {
++    "resolved": 0,
++    "superseded": 1,
++    "unresolved": 2,
++    "ambiguous": 3,
++    "contradicted": 4,
++}
++
++_PROVENANCE_FIELDS = (
++    "taskId",
++    "task_id",
++    "resumeFromRunId",
++    "resume_from_run_id",
++    "workflow",
++    "workflowName",
++    "workflow_name",
++    "name",
++    "scriptPath",
++    "script_path",
++    "scriptHash",
++    "script_hash",
++    "phases",
++    "labels",
++    "agentId",
++    "agent_id",
++    "attemptId",
++    "attempt_id",
++    "contentKey",
++    "content_key",
++    "phase",
++    "progress",
++    "model",
++    "status",
++    "timing",
++    "startedAt",
++    "started_at",
++    "completedAt",
++    "completed_at",
++    "tokens",
++    "tools",
++    "transcriptPath",
++    "transcript_path",
++    "metaPath",
++    "meta_path",
++    "result",
++    "results",
++    "structuredResult",
++    "structured_result",
++    "finalResult",
++    "final_result",
++    "entrypoint",
++    "adoptedSessionId",
++    "adopted_session_id",
++    "error",
++)
++
++
+ def project_claude_workflow_evidence(
+     *,
+     graph_id: str,
++    run_id: str,
+     corpus_snapshot_ref: ObjectRef,
+     artifacts: Iterable[ClaudeOrchestrationArtifact],
+-    coordinator_events: Iterable[ParsedSessionEvent],
+-    coordinator_evidence: EvidenceRef,
+-    evidence_for_path: Callable[[str], EvidenceRef | None],
++    artifact_evidence: Mapping[str, ObjectRef],
++    coordinator_invocations: Iterable[ClaudeWorkflowCoordinatorInvocation] = (),
++    session_evidence: Iterable[ClaudeWorkflowSessionEvidence] = (),
++    coordinator_prompt_evidence: Iterable[ClaudeWorkflowPromptEvidence] = (),
+ ) -> WorkEvidenceGraph:
+-    """Create a generic graph from direct Claude Workflow evidence only.
++    """Build one replaceable graph for a single provider-reported Workflow run.
+ 
+-    Missing evidence-bearing counterparts remain absent/unresolved; this never
+-    promotes an arbitrary child session to a Workflow attempt.
++    Membership is admitted only from Workflow invocation payloads, journal
++    records, sidecar metadata, and explicit transcript paths.  Parent/child
++    session topology is intentionally not an input to this function.
+     """
++
++    artifacts = tuple(artifacts)
++    invocations = tuple(
++        item
++        for item in coordinator_invocations
++        if item.event.event_type == "claude_workflow_invocation"
++        and _string(item.event.payload, "runId", "run_id", "workflowRunId", "workflow_run_id") == run_id
++    )
++    sessions = tuple(session_evidence)
++    invocation_session_ids = {item.session_id for item in invocations}
++    prompts = tuple(
++        prompt for prompt in coordinator_prompt_evidence if prompt.session_id in invocation_session_ids
++    )
++
+     nodes: dict[str, WorkEvidenceNode] = {}
+     edges: dict[str, WorkEvidenceEdge] = {}
+ 
+-    def evidence(path: str) -> EvidenceRef:
+-        return evidence_for_path(path) or coordinator_evidence
+-
+-    def add_node(kind: str, object_id: str, label: str, source: EvidenceRef, *, state: str = "resolved") -> ObjectRef:
+-        ref_kind = {
+-            "run": "run",
+-            "invocation": "work-invocation",
+-            "call": "work-call",
+-            "attempt": "work-attempt",
+-            "session-segment": "work-session-segment",
+-            "structured-result": "work-result",
+-            "artifact": "artifact",
+-        }[kind]
+-        ref = ObjectRef(kind=ref_kind, object_id=object_id)  # type: ignore[arg-type]
+-        nodes.setdefault(
+-            ref.format(),
+-            WorkEvidenceNode(
++    def merge_state(
++        left: WorkEvidenceAssociationState,
++        right: WorkEvidenceAssociationState,
++    ) -> WorkEvidenceAssociationState:
++        return left if _STATE_RANK[left] >= _STATE_RANK[right] else right
++
++    def merge_refs(
++        left: tuple[WorkEvidenceSourceRef, ...],
++        right: Iterable[WorkEvidenceSourceRef],
++    ) -> tuple[WorkEvidenceSourceRef, ...]:
++        by_format = {ref.format(): ref for ref in left}
++        for ref in right:
++            by_format.setdefault(ref.format(), ref)
++        return tuple(by_format[key] for key in sorted(by_format))
++
++    def add_node(
++        *,
++        ref: ObjectRef,
++        kind: str,
++        label: str,
++        evidence_refs: Iterable[WorkEvidenceSourceRef],
++        state: WorkEvidenceAssociationState = "resolved",
++        occurred_at_ms: int | None = None,
++        claim_text: str | None = None,
++    ) -> ObjectRef:
++        refs = tuple(evidence_refs)
++        if not refs:
++            raise ValueError(f"{ref.format()} has no source evidence")
++        key = ref.format()
++        existing = nodes.get(key)
++        if existing is None:
++            nodes[key] = WorkEvidenceNode(
+                 ref=ref,
+                 kind=kind,  # type: ignore[arg-type]
+                 label=label,
+-                evidence_refs=(source,),
++                evidence_refs=refs,
+                 corpus_snapshot_ref=corpus_snapshot_ref,
+                 authority="provider",
+                 confidence=1.0,
+-                association_state=state,  # type: ignore[arg-type]
+-            ),
+-        )
++                occurred_at_ms=occurred_at_ms,
++                association_state=state,
++                claim_text=claim_text,
++            )
++        else:
++            nodes[key] = existing.model_copy(
++                update={
++                    "evidence_refs": merge_refs(existing.evidence_refs, refs),
++                    "association_state": merge_state(existing.association_state, state),
++                    "occurred_at_ms": (
++                        existing.occurred_at_ms if existing.occurred_at_ms is not None else occurred_at_ms
++                    ),
++                }
++            )
+         return ref
+ 
+     def add_edge(
+-        kind: str, source: ObjectRef, target: ObjectRef, source_evidence: EvidenceRef, *, state: str = "resolved"
++        *,
++        kind: str,
++        source_ref: ObjectRef,
++        target_ref: ObjectRef,
++        evidence_refs: Iterable[WorkEvidenceSourceRef],
++        state: WorkEvidenceAssociationState = "resolved",
++        occurred_at_ms: int | None = None,
+     ) -> None:
+-        edge_id = f"claude:{kind}:{source.format()}->{target.format()}"
+-        ref = ObjectRef(kind="work-edge", object_id=edge_id)
+-        edges.setdefault(
+-            ref.format(),
+-            WorkEvidenceEdge(
+-                ref=ref,
++        refs = tuple(evidence_refs)
++        if not refs:
++            raise ValueError(f"edge {source_ref.format()} -> {target_ref.format()} has no source evidence")
++        seed = "\0".join((kind, source_ref.format(), target_ref.format()))
++        edge_ref = ObjectRef(kind="work-edge", object_id=f"claude:{hashlib.sha256(seed.encode()).hexdigest()[:32]}")
++        key = edge_ref.format()
++        existing = edges.get(key)
++        if existing is None:
++            edges[key] = WorkEvidenceEdge(
++                ref=edge_ref,
+                 kind=kind,  # type: ignore[arg-type]
+-                source_ref=source,
+-                target_ref=target,
+-                evidence_refs=(source_evidence,),
++                source_ref=source_ref,
++                target_ref=target_ref,
++                evidence_refs=refs,
+                 corpus_snapshot_ref=corpus_snapshot_ref,
+                 authority="provider",
+                 confidence=1.0,
+-                association_state=state,  # type: ignore[arg-type]
+-            ),
++                occurred_at_ms=occurred_at_ms,
++                association_state=state,
++            )
++        else:
++            edges[key] = existing.model_copy(
++                update={
++                    "evidence_refs": merge_refs(existing.evidence_refs, refs),
++                    "association_state": merge_state(existing.association_state, state),
++                    "occurred_at_ms": (
++                        existing.occurred_at_ms if existing.occurred_at_ms is not None else occurred_at_ms
++                    ),
++                }
++            )
++
++    def set_node_state(ref: ObjectRef, state: WorkEvidenceAssociationState) -> None:
++        existing = nodes[ref.format()]
++        nodes[ref.format()] = existing.model_copy(
++            update={"association_state": merge_state(existing.association_state, state)}
+         )
+ 
+-    runs: dict[str, ObjectRef] = {}
+-    calls: dict[tuple[str, str], ObjectRef] = {}
++    def add_claim(
++        *,
++        subject_ref: ObjectRef,
++        field: str,
++        value: object,
++        evidence_refs: Iterable[WorkEvidenceSourceRef],
++        state: WorkEvidenceAssociationState = "resolved",
++        occurred_at_ms: int | None = None,
++    ) -> ObjectRef:
++        refs = tuple(evidence_refs)
++        rendered = _render(value)
++        text = f"Claude Workflow {field}: {rendered}"
++        seed = "\0".join((subject_ref.format(), field, rendered, *(ref.format() for ref in refs)))
++        claim_ref = ObjectRef(kind="work-claim", object_id=f"claude:{hashlib.sha256(seed.encode()).hexdigest()[:32]}")
++        add_node(
++            ref=claim_ref,
++            kind="claim",
++            label=field,
++            evidence_refs=refs,
++            state=state,
++            occurred_at_ms=occurred_at_ms,
++            claim_text=text,
++        )
++        add_edge(
++            kind="claimed" if state == "resolved" else "unresolved",
++            source_ref=subject_ref,
++            target_ref=claim_ref,
++            evidence_refs=refs,
++            state=state,
++            occurred_at_ms=occurred_at_ms,
++        )
++        return claim_ref
+ 
+-    def run_ref(run_id: str, source: EvidenceRef) -> ObjectRef:
+-        return runs.setdefault(
+-            run_id, add_node("run", f"claude-workflow:{run_id}", f"Claude Workflow {run_id}", source)
++    artifact_refs: dict[str, ObjectRef] = {}
++    for artifact in artifacts:
++        normalized = _normalize_path(artifact.source_path)
++        raw_ref = artifact_evidence.get(normalized) or artifact_evidence.get(artifact.source_path)
++        if raw_ref is None:
++            raise ValueError(f"missing raw-artifact evidence for {artifact.source_path}")
++        if raw_ref.kind != "artifact":
++            raise ValueError("Claude Workflow artifact evidence must use artifact ObjectRefs")
++        state: WorkEvidenceAssociationState = "unresolved" if artifact.parse_error else "resolved"
++        artifact_refs[normalized] = add_node(
++            ref=raw_ref,
++            kind="artifact",
++            label=f"Claude {artifact.kind}: {PurePosixPath(normalized).name}",
++            evidence_refs=(raw_ref,),
++            state=state,
+         )
++        if artifact.parse_error:
++            add_claim(
++                subject_ref=raw_ref,
++                field="artifact parse gap",
++                value=artifact.parse_error,
++                evidence_refs=(raw_ref,),
++                state="unresolved",
++            )
+ 
+-    for event in coordinator_events:
+-        if event.event_type != "claude_workflow_invocation":
+-            continue
+-        payload = event.payload
+-        run_id = _string(payload, "runId", "run_id")
+-        if run_id is None:
++    run_evidence: list[WorkEvidenceSourceRef] = []
++    for artifact in artifacts:
++        raw_ref = artifact_refs[_normalize_path(artifact.source_path)]
++        if any(fact.run_id == run_id for fact in artifact.facts):
++            run_evidence.append(raw_ref)
++    run_evidence.extend(item.evidence_ref for item in invocations)
++    if not run_evidence:
++        raise ValueError(f"run {run_id!r} has no admitted source evidence")
++
++    run_ref = add_node(
++        ref=ObjectRef(kind="run", object_id=f"claude-workflow:{run_id}"),
++        kind="run",
++        label=f"Claude Workflow {run_id}",
++        evidence_refs=run_evidence,
++    )
++
++    run_snapshot_seen = False
++    journal_seen = False
++    journal_facts: list[tuple[ClaudeOrchestrationFact, ObjectRef]] = []
++    sidecar_facts: list[tuple[ClaudeOrchestrationFact, ObjectRef]] = []
++
++    for artifact in artifacts:
++        normalized = _normalize_path(artifact.source_path)
++        artifact_ref = artifact_refs[normalized]
++        relevant_facts = tuple(fact for fact in artifact.facts if fact.run_id == run_id)
++        if not relevant_facts:
+             continue
+-        run = run_ref(run_id, coordinator_evidence)
+-        invocation = add_node(
+-            "invocation",
+-            f"claude-workflow:{run_id}:{event.source_message_provider_id}",
+-            "Workflow invocation",
+-            coordinator_evidence,
++        add_edge(kind="mentioned", source_ref=run_ref, target_ref=artifact_ref, evidence_refs=(artifact_ref,))
++        if artifact.kind == "workflow_run_snapshot":
++            run_snapshot_seen = True
++        elif artifact.kind == "workflow_journal":
++            journal_seen = True
++        for fact in relevant_facts:
++            if fact.kind == "workflow_journal_entry":
++                journal_facts.append((fact, artifact_ref))
++            elif fact.kind == "agent_sidecar_meta":
++                sidecar_facts.append((fact, artifact_ref))
++            target = run_ref
++            for field in _PROVENANCE_FIELDS:
++                if field in fact.payload:
++                    add_claim(
++                        subject_ref=target,
++                        field=field,
++                        value=fact.payload[field],
++                        evidence_refs=(artifact_ref,),
++                    )
++
++    if not run_snapshot_seen:
++        add_claim(
++            subject_ref=run_ref,
++            field="coverage gap",
++            value="missing workflow run snapshot",
++            evidence_refs=run_evidence,
++            state="unresolved",
++        )
++    if not journal_seen:
++        add_claim(
++            subject_ref=run_ref,
++            field="coverage gap",
++            value="missing workflow journal",
++            evidence_refs=run_evidence,
++            state="unresolved",
++        )
++
++    previous_invocation: ObjectRef | None = None
++    invocation_refs: list[ObjectRef] = []
++    for ordinal, invocation in enumerate(invocations, start=1):
++        provider_id = invocation.event.source_message_provider_id or f"event-{ordinal}"
++        invocation_ref = add_node(
++            ref=ObjectRef(
++                kind="work-invocation",
++                object_id=f"claude-workflow:{run_id}:invocation:{invocation.session_id}:{provider_id}",
++            ),
++            kind="invocation",
++            label=f"Workflow invocation {ordinal}",
++            evidence_refs=(invocation.evidence_ref,),
++            occurred_at_ms=invocation.occurred_at_ms,
++        )
++        invocation_refs.append(invocation_ref)
++        add_edge(
++            kind="invoked",
++            source_ref=run_ref,
++            target_ref=invocation_ref,
++            evidence_refs=(invocation.evidence_ref,),
++            occurred_at_ms=invocation.occurred_at_ms,
+         )
+-        add_edge("invoked", run, invocation, coordinator_evidence)
+-        resumed = _string(payload, "resumeFromRunId", "resume_from_run_id")
+-        if resumed is not None:
+-            add_edge("resumed", run, run_ref(resumed, coordinator_evidence), coordinator_evidence)
++        resumed = _string(invocation.event.payload, "resumeFromRunId", "resume_from_run_id")
++        if resumed and previous_invocation is not None:
++            add_edge(
++                kind="resumed",
++                source_ref=invocation_ref,
++                target_ref=previous_invocation,
++                evidence_refs=(invocation.evidence_ref,),
++                occurred_at_ms=invocation.occurred_at_ms,
++            )
++        for field in _PROVENANCE_FIELDS:
++            if field in invocation.event.payload:
++                add_claim(
++                    subject_ref=invocation_ref,
++                    field=field,
++                    value=invocation.event.payload[field],
++                    evidence_refs=(invocation.evidence_ref,),
++                    occurred_at_ms=invocation.occurred_at_ms,
++                )
++        previous_invocation = invocation_ref
++
++    for prompt in prompts:
++        subject = next(
++            (
++                ref
++                for ref, invocation in zip(invocation_refs, invocations, strict=False)
++                if invocation.session_id == prompt.session_id
++            ),
++            run_ref,
++        )
++        add_claim(
++            subject_ref=subject,
++            field="coordinator prompt material origin",
++            value=prompt.material_origin,
++            evidence_refs=(prompt.evidence_ref,),
++            state="resolved" if prompt.material_origin == "human_authored" else "contradicted",
++        )
++
++    calls: dict[str, ObjectRef] = {}
++    call_evidence: dict[str, list[WorkEvidenceSourceRef]] = defaultdict(list)
++    call_has_result: set[str] = set()
++    call_unresolved: set[str] = set()
++    attempts: dict[str, ObjectRef] = {}
++    attempt_facts: dict[str, list[tuple[ClaudeOrchestrationFact, ObjectRef]]] = defaultdict(list)
++    call_attempt_order: dict[str, list[str]] = defaultdict(list)
++
++    for fact, raw_ref in journal_facts:
++        if fact.content_key is None:
++            add_claim(
++                subject_ref=run_ref,
++                field="journal coverage gap",
++                value=f"line {fact.source_line or 0} has no content key",
++                evidence_refs=(raw_ref,),
++                state="unresolved",
++            )
++            continue
++        content_key = fact.content_key
++        call_evidence[content_key].append(raw_ref)
++        call_ref = calls.get(content_key)
++        if call_ref is None:
++            call_ref = add_node(
++                ref=ObjectRef(kind="work-call", object_id=f"claude-workflow:{run_id}:call:{content_key}"),
++                kind="call",
++                label=content_key,
++                evidence_refs=(raw_ref,),
++            )
++            calls[content_key] = call_ref
++            add_edge(kind="invoked", source_ref=run_ref, target_ref=call_ref, evidence_refs=(raw_ref,))
++        else:
++            add_node(ref=call_ref, kind="call", label=content_key, evidence_refs=(raw_ref,))
++
++        if bool(fact.payload.get("unresolved")):
++            call_unresolved.add(content_key)
++        attempt_id = fact.attempt_id
++        attempt_ref: ObjectRef | None = None
++        if attempt_id is not None:
++            attempt_ref = attempts.get(attempt_id)
++            if attempt_ref is None:
++                attempt_ref = add_node(
++                    ref=ObjectRef(kind="work-attempt", object_id=f"claude-workflow:{run_id}:attempt:{attempt_id}"),
++                    kind="attempt",
++                    label=attempt_id,
++                    evidence_refs=(raw_ref,),
++                )
++                attempts[attempt_id] = attempt_ref
++            else:
++                add_node(ref=attempt_ref, kind="attempt", label=attempt_id, evidence_refs=(raw_ref,))
++            attempt_facts[attempt_id].append((fact, raw_ref))
++            if attempt_id not in call_attempt_order[content_key]:
++                prior = call_attempt_order[content_key][-1] if call_attempt_order[content_key] else None
++                call_attempt_order[content_key].append(attempt_id)
++                add_edge(kind="invoked", source_ref=call_ref, target_ref=attempt_ref, evidence_refs=(raw_ref,))
++                if prior is not None:
++                    add_edge(
++                        kind="retried",
++                        source_ref=attempt_ref,
++                        target_ref=attempts[prior],
++                        evidence_refs=(raw_ref,),
++                    )
++        if fact.is_result:
++            call_has_result.add(content_key)
++            result_seed = f"{content_key}:{fact.source_line or 0}:{_render(fact.payload)}"
++            result_ref = add_node(
++                ref=ObjectRef(
++                    kind="work-result",
++                    object_id=(
++                        f"claude-workflow:{run_id}:result:"
++                        f"{hashlib.sha256(result_seed.encode()).hexdigest()[:24]}"
++                    ),
++                ),
++                kind="structured-result",
++                label=f"Workflow result for {content_key}",
++                evidence_refs=(raw_ref,),
++            )
++            add_edge(
++                kind="produced",
++                source_ref=attempt_ref or call_ref,
++                target_ref=result_ref,
++                evidence_refs=(raw_ref,),
++            )
++        provenance_target = attempt_ref or call_ref
++        for field in _PROVENANCE_FIELDS:
++            if field in fact.payload:
++                add_claim(
++                    subject_ref=provenance_target,
++                    field=field,
++                    value=fact.payload[field],
++                    evidence_refs=(raw_ref,),
++                )
+ 
++    # Final structured result is distinct from the 65 journal result records.
+     for artifact in artifacts:
+-        artifact_evidence = evidence(artifact.source_path)
+-        artifact_ref = add_node("artifact", f"claude-artifact:{artifact.source_path}", artifact.kind, artifact_evidence)
++        if artifact.kind != "workflow_run_snapshot":
++            continue
++        raw_ref = artifact_refs[_normalize_path(artifact.source_path)]
+         for fact in artifact.facts:
+-            _project_fact(fact, artifact_ref, artifact_evidence, run_ref, calls, add_node, add_edge)
++            if fact.run_id != run_id:
++                continue
++            for field in ("finalResult", "final_result"):
++                if field not in fact.payload:
++                    continue
++                final_seed = _render(fact.payload[field])
++                final_ref = add_node(
++                    ref=ObjectRef(
++                        kind="work-result",
++                        object_id=(
++                            f"claude-workflow:{run_id}:final:"
++                            f"{hashlib.sha256(final_seed.encode()).hexdigest()[:24]}"
++                        ),
++                    ),
++                    kind="structured-result",
++                    label="Workflow final result",
++                    evidence_refs=(raw_ref,),
++                )
++                add_edge(kind="produced", source_ref=run_ref, target_ref=final_ref, evidence_refs=(raw_ref,))
++
++    for content_key, call_ref in calls.items():
++        if content_key not in call_has_result or content_key in call_unresolved:
++            set_node_state(call_ref, "unresolved")
++            refs = call_evidence[content_key]
++            add_claim(
++                subject_ref=call_ref,
++                field="coverage gap",
++                value="content key has no completed result",
++                evidence_refs=refs,
++                state="unresolved",
++            )
++
++    sidecars_by_key: dict[str, list[tuple[ClaudeOrchestrationFact, ObjectRef]]] = defaultdict(list)
++    sidecars_by_path: dict[str, tuple[ClaudeOrchestrationFact, ObjectRef]] = {}
++    for fact, raw_ref in sidecar_facts:
++        for key in (fact.attempt_id, fact.agent_id):
++            if key:
++                sidecars_by_key[key].append((fact, raw_ref))
++        sidecars_by_path[_normalize_path(fact.source_path)] = (fact, raw_ref)
++
++    session_by_path: dict[str, list[ClaudeWorkflowSessionEvidence]] = defaultdict(list)
++    for session in sessions:
++        session_by_path[_normalize_path(session.source_path)].append(session)
++
++    linked_session_ids: set[str] = set()
++    for attempt_id, attempt_ref in attempts.items():
++        facts = attempt_facts[attempt_id]
++        source_refs: list[WorkEvidenceSourceRef] = [raw_ref for _fact, raw_ref in facts]
++        explicit_meta = next((fact.meta_path for fact, _raw_ref in facts if fact.meta_path), None)
++        sidecar_candidates: list[tuple[ClaudeOrchestrationFact, ObjectRef]] = []
++        if explicit_meta:
++            sidecar_candidates.extend(_path_fact_candidates(explicit_meta, sidecars_by_path))
++        if not sidecar_candidates:
++            sidecar_candidates.extend(sidecars_by_key.get(attempt_id, ()))
++        if not sidecar_candidates:
++            for fact, _raw_ref in facts:
++                if fact.agent_id:
++                    sidecar_candidates.extend(sidecars_by_key.get(fact.agent_id, ()))
++        sidecar_candidates = _dedupe_fact_pairs(sidecar_candidates)
++        if not sidecar_candidates:
++            add_claim(
++                subject_ref=attempt_ref,
++                field="coverage gap",
++                value="missing paired agent metadata sidecar",
++                evidence_refs=source_refs,
++                state="unresolved",
++            )
++            set_node_state(attempt_ref, "unresolved")
++            continue
++        if len(sidecar_candidates) > 1:
++            side_refs = [raw_ref for _fact, raw_ref in sidecar_candidates]
++            add_claim(
++                subject_ref=attempt_ref,
++                field="coverage gap",
++                value="ambiguous paired agent metadata sidecar",
++                evidence_refs=(*source_refs, *side_refs),
++                state="ambiguous",
++            )
++            set_node_state(attempt_ref, "ambiguous")
++            continue
++        sidecar_fact, sidecar_ref = sidecar_candidates[0]
++        source_refs.append(sidecar_ref)
++        for field in _PROVENANCE_FIELDS:
++            if field in sidecar_fact.payload:
++                add_claim(
++                    subject_ref=attempt_ref,
++                    field=field,
++                    value=sidecar_fact.payload[field],
++                    evidence_refs=(sidecar_ref,),
++                )
++
++        transcript_reference = next((fact.transcript_path for fact, _raw_ref in facts if fact.transcript_path), None)
++        transcript_reference = transcript_reference or sidecar_fact.transcript_path
++        if not transcript_reference:
++            add_claim(
++                subject_ref=attempt_ref,
++                field="coverage gap",
++                value="metadata has no transcript reference",
++                evidence_refs=source_refs,
++                state="unresolved",
++            )
++            set_node_state(attempt_ref, "unresolved")
++            continue
++        transcript_candidates = _path_session_candidates(transcript_reference, session_by_path)
++        if not transcript_candidates:
++            add_claim(
++                subject_ref=attempt_ref,
++                field="coverage gap",
++                value=f"missing transcript {transcript_reference}",
++                evidence_refs=source_refs,
++                state="unresolved",
++            )
++            set_node_state(attempt_ref, "unresolved")
++            continue
++        if len(transcript_candidates) > 1:
++            refs = [candidate.raw_artifact_ref for candidate in transcript_candidates]
++            add_claim(
++                subject_ref=attempt_ref,
++                field="coverage gap",
++                value=f"ambiguous transcript reference {transcript_reference}",
++                evidence_refs=(*source_refs, *refs),
++                state="ambiguous",
++            )
++            set_node_state(attempt_ref, "ambiguous")
++            continue
++        transcript = transcript_candidates[0]
++        transcript_refs: list[WorkEvidenceSourceRef] = [transcript.raw_artifact_ref]
++        if transcript.session_evidence_ref is not None:
++            transcript_refs.append(transcript.session_evidence_ref)
++        if transcript.prompt_evidence_ref is not None:
++            transcript_refs.append(transcript.prompt_evidence_ref)
++        state = transcript.association_state
++        if transcript.session_id is None or transcript.session_evidence_ref is None:
++            state = merge_state(state, "unresolved")
++        if state != "resolved":
++            add_claim(
++                subject_ref=attempt_ref,
++                field="coverage gap",
++                value=transcript.detail or f"transcript {transcript_reference} is not uniquely indexed",
++                evidence_refs=(*source_refs, *transcript_refs),
++                state=state,
++            )
++            set_node_state(attempt_ref, state)
++            continue
++        assert transcript.session_id is not None
++        segment_ref = add_node(
++            ref=ObjectRef(
++                kind="work-session-segment",
++                object_id=f"claude-workflow:{run_id}:attempt:{attempt_id}:session:{transcript.session_id}",
++            ),
++            kind="session-segment",
++            label=f"Attempt transcript {attempt_id}",
++            evidence_refs=transcript_refs,
++        )
++        linked_session_ids.add(transcript.session_id)
++        add_edge(
++            kind="represented_by",
++            source_ref=attempt_ref,
++            target_ref=segment_ref,
++            evidence_refs=(*source_refs, *transcript_refs),
++        )
++        if transcript.prompt_evidence_ref is not None and transcript.prompt_material_origin is not None:
++            state = "resolved" if transcript.prompt_material_origin == "generated_context_pack" else "contradicted"
++            add_claim(
++                subject_ref=segment_ref,
++                field="worker prompt material origin",
++                value=transcript.prompt_material_origin,
++                evidence_refs=(transcript.prompt_evidence_ref,),
++                state=state,
++            )
+ 
+     return WorkEvidenceGraph(
+         graph_id=graph_id,
+         corpus_snapshot_ref=corpus_snapshot_ref,
+-        nodes=tuple(nodes.values()),
+-        edges=tuple(edges.values()),
++        nodes=tuple(nodes[key] for key in sorted(nodes)),
++        edges=tuple(edges[key] for key in sorted(edges)),
+     )
+ 
+ 
+-def _project_fact(
+-    fact: ClaudeOrchestrationFact,
+-    artifact_ref: ObjectRef,
+-    evidence: EvidenceRef,
+-    run_ref: Callable[[str, EvidenceRef], ObjectRef],
+-    calls: dict[tuple[str, str], ObjectRef],
+-    add_node: Callable[..., ObjectRef],
+-    add_edge: Callable[..., None],
+-) -> None:
+-    if fact.run_id is None:
+-        return
+-    run = run_ref(fact.run_id, evidence)
+-    add_edge("mentioned", run, artifact_ref, evidence)
+-    resumed = _string(fact.payload, "resumeFromRunId", "resume_from_run_id")
+-    if resumed is not None:
+-        add_edge("resumed", run, run_ref(resumed, evidence), evidence)
+-    if fact.kind != "workflow_journal_entry" or fact.content_key is None:
+-        return
+-    key = (fact.run_id, fact.content_key)
+-    call = calls.get(key)
+-    if call is None:
+-        call = add_node(
+-            "call",
+-            f"claude-workflow:{fact.run_id}:call:{fact.content_key}",
+-            fact.content_key,
+-            evidence,
+-            state="unresolved" if fact.payload.get("unresolved") else "resolved",
+-        )
+-        calls[key] = call
+-    add_edge("invoked", run, call, evidence, state="unresolved" if fact.payload.get("unresolved") else "resolved")
+-    attempt_id = _string(fact.payload, "attemptId", "attempt") or fact.agent_id
+-    if attempt_id is not None:
+-        attempt = add_node("attempt", f"claude-workflow:{fact.run_id}:attempt:{attempt_id}", attempt_id, evidence)
+-        add_edge("invoked", call, attempt, evidence)
+-    if "structuredResult" in fact.payload or "result" in fact.payload:
+-        result = add_node(
+-            "structured-result",
+-            f"claude-workflow:{fact.run_id}:result:{fact.content_key}:{fact.source_line or 0}",
+-            "Workflow structured result",
+-            evidence,
+-        )
+-        add_edge("produced", call, result, evidence)
++def _normalize_path(value: str) -> str:
++    normalized = value.replace("\\", "/")
++    while "//" in normalized:
++        normalized = normalized.replace("//", "/")
++    return normalized
++
++
++def _path_fact_candidates(
++    reference: str,
++    candidates: Mapping[str, tuple[ClaudeOrchestrationFact, ObjectRef]],
++) -> list[tuple[ClaudeOrchestrationFact, ObjectRef]]:
++    normalized = _normalize_path(reference)
++    exact = candidates.get(normalized)
++    if exact is not None:
++        return [exact]
++    suffix = "/" + normalized.lstrip("/")
++    return [value for path, value in candidates.items() if path.endswith(suffix)]
++
++
++def _path_session_candidates(
++    reference: str,
++    candidates: Mapping[str, list[ClaudeWorkflowSessionEvidence]],
++) -> list[ClaudeWorkflowSessionEvidence]:
++    normalized = _normalize_path(reference)
++    exact = candidates.get(normalized)
++    if exact:
++        return list(exact)
++    suffix = "/" + normalized.lstrip("/")
++    resolved = [item for path, values in candidates.items() if path.endswith(suffix) for item in values]
++    if resolved:
++        return resolved
++    # Provider metadata sometimes records only ``agent-*.jsonl``.  A basename
++    # match is accepted only when unique; duplicate basenames remain ambiguous.
++    if "/" not in normalized:
++        return [
++            item
++            for path, values in candidates.items()
++            if PurePosixPath(path).name == normalized
++            for item in values
++        ]
++    return []
++
++
++def _dedupe_fact_pairs(
++    values: Iterable[tuple[ClaudeOrchestrationFact, ObjectRef]],
++) -> list[tuple[ClaudeOrchestrationFact, ObjectRef]]:
++    deduped: dict[str, tuple[ClaudeOrchestrationFact, ObjectRef]] = {}
++    for fact, ref in values:
++        deduped.setdefault(ref.format(), (fact, ref))
++    return [deduped[key] for key in sorted(deduped)]
+ 
+ 
+ def _string(payload: Mapping[str, object], *keys: str) -> str | None:
+@@ -173,4 +770,16 @@ def _string(payload: Mapping[str, object], *keys: str) -> str | None:
+     return None
+ 
+ 
+-__all__ = ["project_claude_workflow_evidence"]
++def _render(value: object) -> str:
++    try:
++        return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
++    except TypeError:
++        return repr(value)
++
++
++__all__ = [
++    "ClaudeWorkflowCoordinatorInvocation",
++    "ClaudeWorkflowPromptEvidence",
++    "ClaudeWorkflowSessionEvidence",
++    "project_claude_workflow_evidence",
++]
+diff --git a/polylogue/insights/claude_workflow_materializer.py b/polylogue/insights/claude_workflow_materializer.py
+new file mode 100644
+index 000000000..71452b378
+--- /dev/null
++++ b/polylogue/insights/claude_workflow_materializer.py
+@@ -0,0 +1,828 @@
++"""Production materialization for admitted Claude Code Workflow artifacts.
++
++``source.db`` remains the authority: mutable files retain every raw revision and
++``raw_artifacts`` points at the currently observed revision.  This module reads
++that authority plus already-indexed Claude sessions/events, then atomically
++replaces only ``claude-workflow:*`` graphs in the generic work-evidence tables.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import sqlite3
++from collections import Counter
++from collections.abc import Iterable, Mapping, Sequence
++from dataclasses import asdict, dataclass
++from pathlib import Path, PurePosixPath
++
++from polylogue.core.enums import Origin, Provider
++from polylogue.core.refs import EvidenceRef, ObjectRef
++from polylogue.insights.claude_workflow_evidence import (
++    ClaudeWorkflowCoordinatorInvocation,
++    ClaudeWorkflowPromptEvidence,
++    ClaudeWorkflowSessionEvidence,
++    project_claude_workflow_evidence,
++)
++from polylogue.insights.work_evidence import WorkEvidenceGraph
++from polylogue.sources.origin_specs import artifact_rule_for_path
++from polylogue.sources.parsers.base_models import ParsedSessionEvent
++from polylogue.sources.parsers.claude.orchestration import (
++    ClaudeOrchestrationArtifact,
++    ClaudeOrchestrationFact,
++    parse_claude_orchestration_artifact,
++)
++from polylogue.storage.artifacts.inspection import artifact_observation_id
++from polylogue.storage.blob_store import BlobStore
++
++CLAUDE_WORKFLOW_MATERIALIZER_VERSION = 1
++_GRAPH_PREFIX = "claude-workflow:"
++_FACT_KINDS = frozenset(
++    {
++        "workflow_run_snapshot",
++        "workflow_journal",
++        "agent_sidecar_meta",
++        "adopt_manifest",
++    }
++)
++_SESSION_KINDS = frozenset({"agent_transcript", "coordinator_session_stream"})
++
++
++@dataclass(frozen=True, slots=True)
++class ClaudeWorkflowMaterializationSummary:
++    """Quantified result of one source-to-derived materialization pass."""
++
++    semantic_version: int
++    corpus_snapshot_ref: str
++    current_artifact_count: int
++    retained_raw_revision_count: int
++    artifact_counts: dict[str, int]
++    graph_count: int
++    run_count: int
++    coordinator_invocation_count: int
++    call_count: int
++    attempt_count: int
++    linked_session_count: int
++    metadata_sidecar_count: int
++    journal_result_count: int
++    final_result_count: int
++    unresolved_call_count: int
++    excluded_session_count: int
++    generated_prompt_count: int
++    human_prompt_count: int
++    gaps: tuple[str, ...]
++
++    def as_dict(self) -> dict[str, object]:
++        return asdict(self)
++
++
++@dataclass(frozen=True, slots=True)
++class ClaudeWorkflowReparsePlan:
++    """Bounded semantic-reparse implications without reading private live data."""
++
++    semantic_version: int
++    current_artifacts: int
++    retained_raw_revisions_preserved: int
++    projector_only_raw_artifact_reads: int
++    coordinator_event_rows_reused: int
++    indexed_session_bindings_reused: int
++    session_parser_raw_reads_if_authorship_or_event_semantics_change: int
++    graphs_atomically_replaced: int
++    stale: bool
++
++    def as_dict(self) -> dict[str, object]:
++        return asdict(self)
++
++
++@dataclass(frozen=True, slots=True)
++class _RawArtifact:
++    artifact_id: str
++    raw_id: str
++    source_path: str
++    source_index: int
++    artifact_kind: str
++    blob_hash: str
++    acquired_at_ms: int
++
++    @property
++    def evidence_ref(self) -> ObjectRef:
++        return ObjectRef(kind="artifact", object_id=f"raw:{self.raw_id}")
++
++
++@dataclass(frozen=True, slots=True)
++class _PreparedInputs:
++    raw_artifacts: tuple[_RawArtifact, ...]
++    parsed_artifacts: tuple[ClaudeOrchestrationArtifact, ...]
++    artifact_evidence: dict[str, ObjectRef]
++    coordinator_invocations: tuple[ClaudeWorkflowCoordinatorInvocation, ...]
++    session_evidence: tuple[ClaudeWorkflowSessionEvidence, ...]
++    coordinator_prompts: tuple[ClaudeWorkflowPromptEvidence, ...]
++    run_ids: tuple[str, ...]
++    corpus_snapshot_ref: ObjectRef
++    retained_raw_revision_count: int
++    existing_graph_refs: dict[str, str]
++
++
++def materialize_claude_workflow_archive(archive_root: Path) -> ClaudeWorkflowMaterializationSummary:
++    """Rebuild all Claude Workflow graphs from current retained authority."""
++
++    archive_root = Path(archive_root)
++    prepared = _prepare_inputs(archive_root)
++    graphs: list[WorkEvidenceGraph] = []
++    for run_id in prepared.run_ids:
++        run_artifacts = _artifacts_for_run(run_id, prepared.parsed_artifacts)
++        graph = project_claude_workflow_evidence(
++            graph_id=f"{_GRAPH_PREFIX}{run_id}",
++            run_id=run_id,
++            corpus_snapshot_ref=prepared.corpus_snapshot_ref,
++            artifacts=run_artifacts,
++            artifact_evidence=prepared.artifact_evidence,
++            coordinator_invocations=prepared.coordinator_invocations,
++            session_evidence=prepared.session_evidence,
++            coordinator_prompt_evidence=prepared.coordinator_prompts,
++        )
++        graphs.append(graph)
++
++    _replace_graph_family(archive_root / "index.db", graphs)
++    return _summarize(prepared, graphs)
++
++
++def claude_workflow_materialization_needed(archive_root: Path) -> bool:
++    """Return whether current source/index evidence differs from stored graphs."""
++
++    prepared = _prepare_inputs(Path(archive_root))
++    expected = {f"{_GRAPH_PREFIX}{run_id}": prepared.corpus_snapshot_ref.format() for run_id in prepared.run_ids}
++    return expected != prepared.existing_graph_refs
++
++
++def claude_workflow_reparse_plan(archive_root: Path) -> ClaudeWorkflowReparsePlan:
++    """Quantify projector-only and parser-semantic rebuild scopes."""
++
++    prepared = _prepare_inputs(Path(archive_root))
++    counts = Counter(item.artifact_kind for item in prepared.raw_artifacts)
++    expected = {f"{_GRAPH_PREFIX}{run_id}": prepared.corpus_snapshot_ref.format() for run_id in prepared.run_ids}
++    return ClaudeWorkflowReparsePlan(
++        semantic_version=CLAUDE_WORKFLOW_MATERIALIZER_VERSION,
++        current_artifacts=len(prepared.raw_artifacts),
++        retained_raw_revisions_preserved=prepared.retained_raw_revision_count,
++        projector_only_raw_artifact_reads=sum(counts[kind] for kind in _FACT_KINDS),
++        coordinator_event_rows_reused=len(prepared.coordinator_invocations),
++        indexed_session_bindings_reused=sum(item.session_id is not None for item in prepared.session_evidence),
++        session_parser_raw_reads_if_authorship_or_event_semantics_change=sum(counts[kind] for kind in _SESSION_KINDS),
++        graphs_atomically_replaced=len(prepared.run_ids),
++        stale=expected != prepared.existing_graph_refs,
++    )
++
++
++def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
++    source_db = archive_root / "source.db"
++    index_db = archive_root / "index.db"
++    if not source_db.exists() or not index_db.exists():
++        raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
++
++    with sqlite3.connect(source_db) as source_conn:
++        source_conn.row_factory = sqlite3.Row
++        source_conn.execute("PRAGMA foreign_keys = ON")
++        _ensure_current_artifact_inventory(source_conn)
++        source_conn.commit()
++        raw_artifacts = _load_current_artifacts(source_conn)
++        retained_revisions = _count_retained_revisions(source_conn)
++
++    blob_store = BlobStore(archive_root / "blob")
++    parsed: list[ClaudeOrchestrationArtifact] = []
++    artifact_evidence: dict[str, ObjectRef] = {}
++    for raw in raw_artifacts:
++        artifact_evidence[_normalize_path(raw.source_path)] = raw.evidence_ref
++        if raw.artifact_kind not in _FACT_KINDS:
++            continue
++        try:
++            payload = blob_store.read_all(raw.blob_hash)
++            value = parse_claude_orchestration_artifact(raw.source_path, payload)
++            if value is None:
++                value = ClaudeOrchestrationArtifact(
++                    kind=raw.artifact_kind,
++                    source_path=raw.source_path,
++                    parse_policy="fact",
++                    facts=(),
++                    parse_error="OriginSpec rule was unavailable during materialization",
++                )
++        except Exception as exc:
++            fallback_fact = _path_identity_fact(raw)
++            value = ClaudeOrchestrationArtifact(
++                kind=raw.artifact_kind,
++                source_path=raw.source_path,
++                parse_policy="fact",
++                facts=(fallback_fact,) if fallback_fact is not None else (),
++                parse_error=f"{type(exc).__name__}: {exc}",
++            )
++        parsed.append(value)
++
++    with sqlite3.connect(index_db) as index_conn:
++        index_conn.row_factory = sqlite3.Row
++        coordinator_invocations = _load_coordinator_invocations(index_conn, raw_artifacts)
++        sessions = _load_session_evidence(index_conn, raw_artifacts)
++        coordinator_prompts = _load_coordinator_prompts(index_conn, coordinator_invocations)
++        existing_graph_refs = _load_existing_graph_refs(index_conn)
++
++    run_ids = _run_ids(parsed, coordinator_invocations)
++    corpus_snapshot_ref = _corpus_snapshot(
++        raw_artifacts,
++        coordinator_invocations,
++        sessions,
++        coordinator_prompts,
++    )
++    return _PreparedInputs(
++        raw_artifacts=raw_artifacts,
++        parsed_artifacts=tuple(parsed),
++        artifact_evidence=artifact_evidence,
++        coordinator_invocations=coordinator_invocations,
++        session_evidence=sessions,
++        coordinator_prompts=coordinator_prompts,
++        run_ids=run_ids,
++        corpus_snapshot_ref=corpus_snapshot_ref,
++        retained_raw_revision_count=retained_revisions,
++        existing_graph_refs=existing_graph_refs,
++    )
++
++
++def _ensure_current_artifact_inventory(conn: sqlite3.Connection) -> None:
++    """Refresh current pointers for OriginSpec-declared Claude artifacts.
++
++    Canonical configured acquisition already writes these rows.  The same
++    source-tier invariant is repaired here for daemon/direct raw writers so all
++    production routes converge on one inventory rather than a Workflow-only
++    registry.
++    """
++
++    rows = conn.execute(
++        """
++        WITH ranked AS (
++            SELECT rowid AS raw_rowid, *,
++                   ROW_NUMBER() OVER (
++                       PARTITION BY origin, source_path, source_index
++                       ORDER BY acquired_at_ms DESC, rowid DESC
++                   ) AS revision_rank
++            FROM raw_sessions
++            WHERE origin = ?
++        )
++        SELECT * FROM ranked WHERE revision_rank = 1
++        ORDER BY source_path, source_index
++        """,
++        (Origin.CLAUDE_CODE_SESSION.value,),
++    ).fetchall()
++    for row in rows:
++        rule = artifact_rule_for_path(Provider.CLAUDE_CODE, str(row["source_path"]))
++        if rule is None:
++            continue
++        existing = conn.execute(
++            """
++            SELECT artifact_id, first_observed_at_ms
++            FROM raw_artifacts
++            WHERE origin = ? AND source_path = ? AND source_index = ?
++            """,
++            (row["origin"], row["source_path"], row["source_index"]),
++        ).fetchone()
++        source_name = str(row["capture_mode"] or Provider.CLAUDE_CODE.value)
++        observation_id = (
++            str(existing["artifact_id"])
++            if existing is not None
++            else artifact_observation_id(
++                source_name=source_name,
++                source_path=str(row["source_path"]),
++                source_index=int(row["source_index"]),
++            )
++        )
++        first_observed = int(existing["first_observed_at_ms"]) if existing is not None else int(row["acquired_at_ms"])
++        support_status = "supported_parseable" if rule.parse_policy == "session" else "recognized_unparsed"
++        conn.execute(
++            """
++            INSERT INTO raw_artifacts(
++                artifact_id, raw_id, origin, source_path, source_index,
++                artifact_kind, support_status, classification_reason,
++                parse_as_session, schema_eligible, malformed_jsonl_lines,
++                decode_error, cohort_id, link_group_key, sidecar_agent_type,
++                first_observed_at_ms, last_observed_at_ms
++            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, ?)
++            ON CONFLICT(artifact_id) DO UPDATE SET
++                raw_id = excluded.raw_id,
++                artifact_kind = excluded.artifact_kind,
++                support_status = excluded.support_status,
++                classification_reason = excluded.classification_reason,
++                parse_as_session = excluded.parse_as_session,
++                schema_eligible = excluded.schema_eligible,
++                link_group_key = excluded.link_group_key,
++                last_observed_at_ms = excluded.last_observed_at_ms
++            """,
++            (
++                observation_id,
++                row["raw_id"],
++                row["origin"],
++                row["source_path"],
++                row["source_index"],
++                rule.kind,
++                support_status,
++                f"OriginSpec Claude artifact rule: {rule.coverage_role}",
++                int(rule.parse_policy == "session"),
++                int(rule.parse_policy == "session"),
++                _agent_link_group(str(row["source_path"])),
++                first_observed,
++                int(row["acquired_at_ms"]),
++            ),
++        )
++
++
++def _load_current_artifacts(conn: sqlite3.Connection) -> tuple[_RawArtifact, ...]:
++    rows = conn.execute(
++        """
++        SELECT a.artifact_id, a.raw_id, a.source_path, a.source_index,
++               a.artifact_kind, lower(hex(r.blob_hash)) AS blob_hash,
++               r.acquired_at_ms
++        FROM raw_artifacts AS a
++        JOIN raw_sessions AS r ON r.raw_id = a.raw_id
++        WHERE a.origin = ?
++          AND a.artifact_kind IN (
++              'workflow_run_snapshot', 'workflow_journal', 'agent_transcript',
++              'agent_sidecar_meta', 'adopt_manifest', 'coordinator_session_stream'
++          )
++        ORDER BY a.source_path, a.source_index
++        """,
++        (Origin.CLAUDE_CODE_SESSION.value,),
++    ).fetchall()
++    return tuple(
++        _RawArtifact(
++            artifact_id=str(row["artifact_id"]),
++            raw_id=str(row["raw_id"]),
++            source_path=str(row["source_path"]),
++            source_index=int(row["source_index"]),
++            artifact_kind=str(row["artifact_kind"]),
++            blob_hash=str(row["blob_hash"]),
++            acquired_at_ms=int(row["acquired_at_ms"]),
++        )
++        for row in rows
++    )
++
++
++def _count_retained_revisions(conn: sqlite3.Connection) -> int:
++    rows = conn.execute(
++        """
++        SELECT source_path
++        FROM raw_sessions
++        WHERE origin = ?
++        """,
++        (Origin.CLAUDE_CODE_SESSION.value,),
++    ).fetchall()
++    return sum(artifact_rule_for_path(Provider.CLAUDE_CODE, str(row["source_path"])) is not None for row in rows)
++
++
++def _load_session_evidence(
++    conn: sqlite3.Connection,
++    raw_artifacts: Sequence[_RawArtifact],
++) -> tuple[ClaudeWorkflowSessionEvidence, ...]:
++    evidence: list[ClaudeWorkflowSessionEvidence] = []
++    for raw in raw_artifacts:
++        if raw.artifact_kind != "agent_transcript":
++            continue
++        rows = conn.execute(
++            """
++            SELECT session_id
++            FROM sessions
++            WHERE raw_id = ? AND origin = ?
++            ORDER BY session_id
++            """,
++            (raw.raw_id, Origin.CLAUDE_CODE_SESSION.value),
++        ).fetchall()
++        if len(rows) != 1:
++            state = "unresolved" if not rows else "ambiguous"
++            detail = (
++                "transcript has no indexed session"
++                if not rows
++                else f"transcript maps to {len(rows)} indexed sessions"
++            )
++            evidence.append(
++                ClaudeWorkflowSessionEvidence(
++                    source_path=raw.source_path,
++                    raw_artifact_ref=raw.evidence_ref,
++                    session_id=None,
++                    session_evidence_ref=None,
++                    association_state=state,
++                    detail=detail,
++                )
++            )
++            continue
++        session_id = str(rows[0]["session_id"])
++        prompt = conn.execute(
++            """
++            SELECT message_id, material_origin
++            FROM messages
++            WHERE session_id = ? AND role = 'user'
++            ORDER BY position, variant_index
++            LIMIT 1
++            """,
++            (session_id,),
++        ).fetchone()
++        evidence.append(
++            ClaudeWorkflowSessionEvidence(
++                source_path=raw.source_path,
++                raw_artifact_ref=raw.evidence_ref,
++                session_id=session_id,
++                session_evidence_ref=EvidenceRef(session_id=session_id),
++                prompt_evidence_ref=(
++                    EvidenceRef(session_id=session_id, message_id=str(prompt["message_id"]))
++                    if prompt is not None
++                    else None
++                ),
++                prompt_material_origin=str(prompt["material_origin"]) if prompt is not None else None,
++            )
++        )
++    return tuple(evidence)
++
++
++def _load_coordinator_invocations(
++    conn: sqlite3.Connection,
++    raw_artifacts: Sequence[_RawArtifact],
++) -> tuple[ClaudeWorkflowCoordinatorInvocation, ...]:
++    raw_ids = tuple(raw.raw_id for raw in raw_artifacts if raw.artifact_kind == "coordinator_session_stream")
++    if not raw_ids:
++        return ()
++    placeholders = ",".join("?" for _ in raw_ids)
++    rows = conn.execute(
++        f"""
++        SELECT e.session_id, e.source_message_id, e.source_message_provider_id,
++               e.payload_json, e.occurred_at_ms
++        FROM session_events AS e
++        JOIN sessions AS s ON s.session_id = e.session_id
++        WHERE s.raw_id IN ({placeholders})
++          AND e.event_type = 'claude_workflow_invocation'
++        ORDER BY e.occurred_at_ms, e.session_id, e.position
++        """,
++        raw_ids,
++    ).fetchall()
++    values: list[ClaudeWorkflowCoordinatorInvocation] = []
++    for row in rows:
++        payload = json.loads(str(row["payload_json"] or "{}"))
++        if not isinstance(payload, dict):
++            continue
++        session_id = str(row["session_id"])
++        message_id = row["source_message_id"]
++        evidence_ref = EvidenceRef(
++            session_id=session_id,
++            message_id=str(message_id) if message_id is not None else None,
++        )
++        values.append(
++            ClaudeWorkflowCoordinatorInvocation(
++                session_id=session_id,
++                event=ParsedSessionEvent(
++                    event_type="claude_workflow_invocation",
++                    payload=payload,
++                    source_message_provider_id=(
++                        str(row["source_message_provider_id"])
++                        if row["source_message_provider_id"] is not None
++                        else None
++                    ),
++                ),
++                evidence_ref=evidence_ref,
++                occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
++            )
++        )
++    return tuple(values)
++
++
++def _load_coordinator_prompts(
++    conn: sqlite3.Connection,
++    invocations: Sequence[ClaudeWorkflowCoordinatorInvocation],
++) -> tuple[ClaudeWorkflowPromptEvidence, ...]:
++    values: list[ClaudeWorkflowPromptEvidence] = []
++    for session_id in sorted({item.session_id for item in invocations}):
++        row = conn.execute(
++            """
++            SELECT message_id, material_origin
++            FROM messages
++            WHERE session_id = ? AND role = 'user'
++            ORDER BY position, variant_index
++            LIMIT 1
++            """,
++            (session_id,),
++        ).fetchone()
++        if row is None:
++            continue
++        values.append(
++            ClaudeWorkflowPromptEvidence(
++                session_id=session_id,
++                evidence_ref=EvidenceRef(session_id=session_id, message_id=str(row["message_id"])),
++                material_origin=str(row["material_origin"]),
++            )
++        )
++    return tuple(values)
++
++
++def _load_existing_graph_refs(conn: sqlite3.Connection) -> dict[str, str]:
++    try:
++        rows = conn.execute(
++            "SELECT graph_id, corpus_snapshot_ref FROM work_evidence_graphs WHERE graph_id LIKE ? ORDER BY graph_id",
++            (f"{_GRAPH_PREFIX}%",),
++        ).fetchall()
++    except sqlite3.OperationalError:
++        return {}
++    return {str(row["graph_id"]): str(row["corpus_snapshot_ref"]) for row in rows}
++
++
++def _run_ids(
++    artifacts: Iterable[ClaudeOrchestrationArtifact],
++    invocations: Iterable[ClaudeWorkflowCoordinatorInvocation],
++) -> tuple[str, ...]:
++    values = {
++        fact.run_id
++        for artifact in artifacts
++        for fact in artifact.facts
++        if fact.run_id is not None
++    }
++    values.update(
++        run_id
++        for item in invocations
++        if (run_id := _string(item.event.payload, "runId", "run_id", "workflowRunId", "workflow_run_id"))
++    )
++    return tuple(sorted(values))
++
++
++def _artifacts_for_run(
++    run_id: str,
++    artifacts: Sequence[ClaudeOrchestrationArtifact],
++) -> tuple[ClaudeOrchestrationArtifact, ...]:
++    directly_scoped = [artifact for artifact in artifacts if any(fact.run_id == run_id for fact in artifact.facts)]
++    journal_facts = [
++        fact
++        for artifact in directly_scoped
++        for fact in artifact.facts
++        if fact.kind == "workflow_journal_entry"
++    ]
++    keys = {
++        value
++        for fact in journal_facts
++        for value in (fact.attempt_id, fact.agent_id)
++        if value is not None
++    }
++    meta_paths = {_normalize_path(path) for fact in journal_facts if (path := fact.meta_path)}
++    selected = list(directly_scoped)
++    for artifact in artifacts:
++        if artifact in selected or artifact.kind != "agent_sidecar_meta":
++            continue
++        normalized = _normalize_path(artifact.source_path)
++        facts = artifact.facts
++        if normalized in meta_paths or any(
++            value in keys
++            for fact in facts
++            for value in (fact.attempt_id, fact.agent_id)
++            if value is not None
++        ):
++            selected.append(artifact)
++    return tuple(sorted(selected, key=lambda item: (_normalize_path(item.source_path), item.kind)))
++
++
++def _corpus_snapshot(
++    raw_artifacts: Sequence[_RawArtifact],
++    invocations: Sequence[ClaudeWorkflowCoordinatorInvocation],
++    sessions: Sequence[ClaudeWorkflowSessionEvidence],
++    prompts: Sequence[ClaudeWorkflowPromptEvidence],
++) -> ObjectRef:
++    payload = {
++        "semantic_version": CLAUDE_WORKFLOW_MATERIALIZER_VERSION,
++        "artifacts": [
++            (item.artifact_id, item.raw_id, item.artifact_kind, _normalize_path(item.source_path), item.blob_hash)
++            for item in raw_artifacts
++        ],
++        "invocations": [
++            (
++                item.session_id,
++                item.evidence_ref.format(),
++                item.event.source_message_provider_id,
++                item.event.payload,
++            )
++            for item in invocations
++        ],
++        "sessions": [
++            (
++                _normalize_path(item.source_path),
++                item.raw_artifact_ref.format(),
++                item.session_id,
++                item.session_evidence_ref.format() if item.session_evidence_ref else None,
++                item.prompt_evidence_ref.format() if item.prompt_evidence_ref else None,
++                item.prompt_material_origin,
++                item.association_state,
++            )
++            for item in sessions
++        ],
++        "prompts": [(item.session_id, item.evidence_ref.format(), item.material_origin) for item in prompts],
++    }
++    canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
++    digest = hashlib.sha256(canonical.encode()).hexdigest()
++    return ObjectRef(
++        kind="context-snapshot",
++        object_id=f"claude-workflow-v{CLAUDE_WORKFLOW_MATERIALIZER_VERSION}:{digest}",
++    )
++
++
++def _replace_graph_family(index_db: Path, graphs: Sequence[WorkEvidenceGraph]) -> None:
++    conn = sqlite3.connect(index_db)
++    try:
++        conn.execute("PRAGMA foreign_keys = ON")
++        conn.execute("BEGIN IMMEDIATE")
++        conn.execute("DELETE FROM work_evidence_graphs WHERE graph_id LIKE ?", (f"{_GRAPH_PREFIX}%",))
++        for graph in graphs:
++            conn.execute(
++                "INSERT INTO work_evidence_graphs(graph_id, corpus_snapshot_ref) VALUES (?, ?)",
++                (graph.graph_id, graph.corpus_snapshot_ref.format()),
++            )
++            conn.executemany(
++                """
++                INSERT INTO work_evidence_nodes(
++                    graph_id, node_ref, node_kind, label, evidence_refs_json, corpus_snapshot_ref,
++                    authority, confidence, occurred_at_ms, actor_ref, execution_context_id,
++                    execution_context_known_json, execution_context_unknown_json,
++                    execution_context_addressed, association_state, claim_text
++                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                """,
++                [
++                    (
++                        graph.graph_id,
++                        node.ref.format(),
++                        node.kind,
++                        node.label,
++                        json.dumps([ref.format() for ref in node.evidence_refs], separators=(",", ":")),
++                        node.corpus_snapshot_ref.format(),
++                        node.authority,
++                        node.confidence,
++                        node.occurred_at_ms,
++                        node.actor_ref.format() if node.actor_ref else None,
++                        node.execution_context_ref.context_id if node.execution_context_ref else None,
++                        (
++                            json.dumps(list(node.execution_context_ref.known_fields))
++                            if node.execution_context_ref
++                            else "[]"
++                        ),
++                        (
++                            json.dumps(list(node.execution_context_ref.unknown_fields))
++                            if node.execution_context_ref
++                            else "[]"
++                        ),
++                        int(node.execution_context_ref.content_addressed) if node.execution_context_ref else None,
++                        node.association_state,
++                        node.claim_text,
++                    )
++                    for node in graph.nodes
++                ],
++            )
++            conn.executemany(
++                """
++                INSERT INTO work_evidence_edges(
++                    graph_id, edge_ref, edge_kind, source_ref, target_ref, evidence_refs_json,
++                    corpus_snapshot_ref, authority, confidence, occurred_at_ms, association_state
++                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                """,
++                [
++                    (
++                        graph.graph_id,
++                        edge.ref.format(),
++                        edge.kind,
++                        edge.source_ref.format(),
++                        edge.target_ref.format(),
++                        json.dumps([ref.format() for ref in edge.evidence_refs], separators=(",", ":")),
++                        edge.corpus_snapshot_ref.format(),
++                        edge.authority,
++                        edge.confidence,
++                        edge.occurred_at_ms,
++                        edge.association_state,
++                    )
++                    for edge in graph.edges
++                ],
++            )
++        conn.commit()
++    except BaseException:
++        conn.rollback()
++        raise
++    finally:
++        conn.close()
++
++
++def _summarize(
++    prepared: _PreparedInputs,
++    graphs: Sequence[WorkEvidenceGraph],
++) -> ClaudeWorkflowMaterializationSummary:
++    nodes = [node for graph in graphs for node in graph.nodes]
++    kind_counts = Counter(node.kind for node in nodes)
++    current_counts = Counter(item.artifact_kind for item in prepared.raw_artifacts)
++    relevant_sidecars = {
++        _normalize_path(artifact.source_path)
++        for run_id in prepared.run_ids
++        for artifact in _artifacts_for_run(run_id, prepared.parsed_artifacts)
++        if artifact.kind == "agent_sidecar_meta"
++    }
++    journal_results = sum(
++        fact.is_result
++        for artifact in prepared.parsed_artifacts
++        if artifact.kind == "workflow_journal"
++        for fact in artifact.facts
++    )
++    final_results = sum(
++        any(field in fact.payload for field in ("finalResult", "final_result"))
++        for artifact in prepared.parsed_artifacts
++        if artifact.kind == "workflow_run_snapshot"
++        for fact in artifact.facts
++    )
++    linked_session_ids = {
++        node.ref.object_id.rsplit(":session:", 1)[-1]
++        for node in nodes
++        if node.kind == "session-segment" and ":session:" in node.ref.object_id
++    }
++    indexed_agent_sessions = {item.session_id for item in prepared.session_evidence if item.session_id is not None}
++    gaps = tuple(
++        sorted(
++            {
++                node.claim_text or node.label
++                for node in nodes
++                if node.kind == "claim" and node.association_state in {"unresolved", "ambiguous", "contradicted"}
++            }
++        )
++    )
++    return ClaudeWorkflowMaterializationSummary(
++        semantic_version=CLAUDE_WORKFLOW_MATERIALIZER_VERSION,
++        corpus_snapshot_ref=prepared.corpus_snapshot_ref.format(),
++        current_artifact_count=len(prepared.raw_artifacts),
++        retained_raw_revision_count=prepared.retained_raw_revision_count,
++        artifact_counts=dict(sorted(current_counts.items())),
++        graph_count=len(graphs),
++        run_count=kind_counts["run"],
++        coordinator_invocation_count=kind_counts["invocation"],
++        call_count=kind_counts["call"],
++        attempt_count=kind_counts["attempt"],
++        linked_session_count=kind_counts["session-segment"],
++        metadata_sidecar_count=len(relevant_sidecars),
++        journal_result_count=journal_results,
++        final_result_count=final_results,
++        unresolved_call_count=sum(
++            node.kind == "call" and node.association_state != "resolved" for node in nodes
++        ),
++        excluded_session_count=len(indexed_agent_sessions - linked_session_ids),
++        generated_prompt_count=sum(
++            node.kind == "claim"
++            and node.claim_text is not None
++            and "worker prompt material origin" in node.claim_text
++            and "generated_context_pack" in node.claim_text
++            for node in nodes
++        ),
++        human_prompt_count=sum(
++            prompt.material_origin == "human_authored" for prompt in prepared.coordinator_prompts
++        ),
++        gaps=gaps,
++    )
++
++
++def _path_identity_fact(raw: _RawArtifact) -> ClaudeOrchestrationFact | None:
++    normalized = _normalize_path(raw.source_path)
++    if raw.artifact_kind == "workflow_run_snapshot":
++        run_id = PurePosixPath(normalized).stem
++    elif raw.artifact_kind == "workflow_journal":
++        run_id = PurePosixPath(normalized).parent.name
++    else:
++        return None
++    return ClaudeOrchestrationFact(
++        kind=raw.artifact_kind,
++        source_path=raw.source_path,
++        source_line=None,
++        run_id=run_id,
++        agent_id=None,
++        content_key=None,
++        payload={},
++    )
++
++
++def _agent_link_group(source_path: str) -> str | None:
++    normalized = _normalize_path(source_path).lower()
++    for suffix in (".meta.json", ".jsonl", ".ndjson"):
++        if normalized.endswith(suffix) and PurePosixPath(normalized).name.startswith("agent-"):
++            return normalized[: -len(suffix)]
++    return None
++
++
++def _normalize_path(value: str) -> str:
++    normalized = value.replace("\\", "/")
++    while "//" in normalized:
++        normalized = normalized.replace("//", "/")
++    return normalized
++
++
++def _string(payload: Mapping[str, object], *keys: str) -> str | None:
++    for key in keys:
++        value = payload.get(key)
++        if isinstance(value, str) and value:
++            return value
++    return None
++
++
++__all__ = [
++    "CLAUDE_WORKFLOW_MATERIALIZER_VERSION",
++    "ClaudeWorkflowMaterializationSummary",
++    "ClaudeWorkflowReparsePlan",
++    "claude_workflow_materialization_needed",
++    "claude_workflow_reparse_plan",
++    "materialize_claude_workflow_archive",
++]
+diff --git a/polylogue/insights/work_evidence.py b/polylogue/insights/work_evidence.py
+index 468392e8f..fb75a4358 100644
+--- a/polylogue/insights/work_evidence.py
++++ b/polylogue/insights/work_evidence.py
+@@ -8,7 +8,7 @@ state update on an external object.
+ 
+ from __future__ import annotations
+ 
+-from typing import Final, Literal
++from typing import Final, Literal, TypeAlias
+ 
+ from pydantic import Field, model_validator
+ 
+@@ -43,6 +43,32 @@ WorkEvidenceEdgeKind = Literal[
+ ]
+ WorkEvidenceAuthority = Literal["provider", "operator", "inferred", "unknown"]
+ WorkEvidenceAssociationState = Literal["resolved", "unresolved", "ambiguous", "contradicted", "superseded"]
++WorkEvidenceSourceRef: TypeAlias = EvidenceRef | ObjectRef
++
++
++def parse_work_evidence_source_ref(value: str) -> WorkEvidenceSourceRef:
++    """Parse a durable graph evidence pointer.
++
++    Message/session evidence keeps the established ``EvidenceRef`` string form.
++    Source-tier evidence uses an ``artifact:`` ObjectRef, which lets derived
++    graphs cite retained raw revisions without fabricating a session message.
++    """
++
++    if value.startswith("artifact:"):
++        ref = ObjectRef.parse(value)
++        if ref.kind != "artifact":
++            raise ValueError("raw work-evidence refs must use artifact ObjectRef kind")
++        return ref
++    return EvidenceRef.parse(value)
++
++
++def _validate_source_refs(refs: tuple[WorkEvidenceSourceRef, ...]) -> None:
++    if not refs:
++        raise ValueError("work-evidence records require source evidence")
++    for ref in refs:
++        if isinstance(ref, ObjectRef) and ref.kind != "artifact":
++            raise ValueError("ObjectRef work evidence must use artifact kind")
++
+ 
+ _NODE_REF_KINDS: Final[dict[WorkEvidenceNodeKind, frozenset[str]]] = {
+     "run": frozenset({"run"}),
+@@ -65,7 +91,7 @@ class WorkEvidenceNode(ArchiveInsightModel):
+     ref: ObjectRef
+     kind: WorkEvidenceNodeKind
+     label: str
+-    evidence_refs: tuple[EvidenceRef, ...]
++    evidence_refs: tuple[WorkEvidenceSourceRef, ...]
+     corpus_snapshot_ref: ObjectRef
+     authority: WorkEvidenceAuthority = "unknown"
+     confidence: float = Field(ge=0.0, le=1.0)
+@@ -82,8 +108,7 @@ class WorkEvidenceNode(ArchiveInsightModel):
+             raise ValueError(f"{self.kind} nodes require a {expected} ref, not {self.ref.kind}")
+         if not self.label.strip():
+             raise ValueError("work-evidence node label cannot be empty")
+-        if not self.evidence_refs:
+-            raise ValueError("work-evidence nodes require source evidence")
++        _validate_source_refs(self.evidence_refs)
+         if self.kind == "claim" and not (self.claim_text and self.claim_text.strip()):
+             raise ValueError("claim nodes require claim_text")
+         if self.kind != "claim" and self.claim_text is not None:
+@@ -104,7 +129,7 @@ class WorkEvidenceEdge(ArchiveInsightModel):
+     kind: WorkEvidenceEdgeKind
+     source_ref: ObjectRef
+     target_ref: ObjectRef
+-    evidence_refs: tuple[EvidenceRef, ...]
++    evidence_refs: tuple[WorkEvidenceSourceRef, ...]
+     corpus_snapshot_ref: ObjectRef
+     authority: WorkEvidenceAuthority = "unknown"
+     confidence: float = Field(ge=0.0, le=1.0)
+@@ -117,8 +142,7 @@ class WorkEvidenceEdge(ArchiveInsightModel):
+             raise ValueError("work-evidence edges require a work-edge ref")
+         if self.source_ref == self.target_ref:
+             raise ValueError("work-evidence edges cannot self-reference")
+-        if not self.evidence_refs:
+-            raise ValueError("work-evidence edges require source evidence")
++        _validate_source_refs(self.evidence_refs)
+         return self
+ 
+ 
+@@ -208,6 +232,8 @@ __all__ = [
+     "WorkEvidenceNode",
+     "WorkEvidenceNodeKind",
+     "WorkEvidenceTraversal",
++    "WorkEvidenceSourceRef",
++    "parse_work_evidence_source_ref",
+     "node_from_projected_run",
+     "session_segment_from_observed_events",
+ ]
+diff --git a/polylogue/pipeline/payload_types.py b/polylogue/pipeline/payload_types.py
+index d94b3d734..d27bfb8f8 100644
+--- a/polylogue/pipeline/payload_types.py
++++ b/polylogue/pipeline/payload_types.py
+@@ -99,6 +99,7 @@ class ParseBatchObservationSummary(TypedDict, total=False):
+ class IngestDiagnostics(TypedDict, total=False):
+     acquisition: AcquireDiagnostics
+     batch_observations: ParseBatchObservationSummary
++    claude_workflow: dict[str, object]
+ 
+ 
+ class MaterializeStageObservation(TypedDict, total=False):
+diff --git a/polylogue/pipeline/services/archive_ingest.py b/polylogue/pipeline/services/archive_ingest.py
+index 4ec3bb170..bb0821787 100644
+--- a/polylogue/pipeline/services/archive_ingest.py
++++ b/polylogue/pipeline/services/archive_ingest.py
+@@ -9,6 +9,7 @@ from datetime import UTC, datetime
+ from pathlib import Path
+ from typing import Any
+ 
++from polylogue.archive.artifact_taxonomy import classify_artifact_path
+ from polylogue.config import Source
+ from polylogue.core.enums import Provider
+ from polylogue.core.sources import origin_from_provider
+@@ -143,6 +144,11 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
+     shared_raw_ids: dict[tuple[str, str, int, str], str] = {}
+ 
+     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
++        counters["raw_rows"] += _admit_non_session_origin_artifacts(
++            archive,
++            sources,
++            acquired_at_ms=acquired_at_ms,
++        )
+ 
+         async def write_pair(
+             source: Source,
+@@ -322,6 +328,27 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
+ 
+     raw_rows_written = counters["raw_rows"]
+     index_rows_written = counters["index_rows"]
++    if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
++        try:
++            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
++
++            workflow_summary = materialize_claude_workflow_archive(archive_root)
++            result.batch_observations.append(
++                {
++                    "claude_workflow_materialization": True,
++                    **workflow_summary.as_dict(),
++                }
++            )
++        except Exception as exc:
++            logger.error("Claude Workflow materialization failed after direct archive ingest", exc_info=True)
++            result.batch_observations.append(
++                {
++                    "claude_workflow_materialization": True,
++                    "failed": True,
++                    "error": f"{type(exc).__name__}: {exc}",
++                }
++            )
++
+     result.batch_observations.append(
+         {
+             "primary_ingest_store": "archive_file_set",
+@@ -341,6 +368,46 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
+     return result
+ 
+ 
++def _admit_non_session_origin_artifacts(
++    archive: ArchiveStore,
++    sources: list[Source],
++    *,
++    acquired_at_ms: int,
++) -> int:
++    """Retain configured OriginSpec fact artifacts skipped by session parsing."""
++
++    admitted = 0
++    for source in sources:
++        if Provider.from_string(source.name) is not Provider.CLAUDE_CODE:
++            continue
++        walk = _setup_source_walk(
++            source,
++            cursor_state=None,
++            include_mtime=False,
++            known_mtimes=None,
++            discover_sidecars=True,
++        )
++        if walk is None:
++            continue
++        for path in walk.paths_to_process:
++            candidate = path[0] if isinstance(path, tuple) else path
++            classification = classify_artifact_path(candidate, provider=source.name)
++            if classification is None or classification.parse_as_session:
++                continue
++            try:
++                archive.write_raw_payload(
++                    provider=Provider.CLAUDE_CODE,
++                    payload=Path(candidate).read_bytes(),
++                    source_path=str(candidate),
++                    source_index=0,
++                    acquired_at_ms=acquired_at_ms,
++                )
++                admitted += 1
++            except Exception:
++                logger.error("Failed to admit configured Claude fact artifact %s", candidate, exc_info=True)
++    return admitted
++
++
+ def _record_post_commit_upkeep(archive_root: Path, result: ParseResult, *, reason: str) -> None:
+     """Run bounded archive-tier upkeep after a direct archive ingest commit.
+ 
+diff --git a/polylogue/pipeline/services/parsing_workflow.py b/polylogue/pipeline/services/parsing_workflow.py
+index 7d0dee59c..ce42ef7aa 100644
+--- a/polylogue/pipeline/services/parsing_workflow.py
++++ b/polylogue/pipeline/services/parsing_workflow.py
+@@ -8,10 +8,12 @@ already decoded for parsing anyway).
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import time
+ from collections.abc import Iterable, Iterator
+ from typing import TYPE_CHECKING
+ 
++from polylogue.core.enums import Provider
+ from polylogue.logging import get_logger
+ from polylogue.pipeline.ingest_support import PARSE_STAGES
+ from polylogue.pipeline.payload_types import ParseBatchObservation, ParseBatchObservationSummary
+@@ -273,6 +275,19 @@ async def ingest_sources(
+             failures=parse_result.parse_failures,
+         )
+ 
++    workflow_diagnostics: dict[str, object] | None = None
++    if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
++        t0 = time.perf_counter()
++        try:
++            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
++
++            summary = await asyncio.to_thread(materialize_claude_workflow_archive, service.archive_root)
++            workflow_diagnostics = summary.as_dict()
++        except Exception as exc:
++            logger.error("Claude Workflow materialization failed after configured ingest", exc_info=True)
++            workflow_diagnostics = {"failed": True, "error": f"{type(exc).__name__}: {exc}"}
++        timings["claude_workflow"] = time.perf_counter() - t0
++
+     total_s = time.perf_counter() - t_total
+     logger.info(
+         "ingest_complete",
+@@ -280,16 +295,20 @@ async def ingest_sources(
+         **{f"{k}_s": round(v, 2) for k, v in timings.items()},
+     )
+ 
++    diagnostics = {
++        "acquisition": acquire_result.diagnostics,
++        "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
++    }
++    if workflow_diagnostics is not None:
++        diagnostics["claude_workflow"] = workflow_diagnostics
++
+     return IngestResult(
+         acquire_result=acquire_result,
+         validation_result=None,
+         parse_result=parse_result,
+         parse_raw_ids=parse_raw_ids,
+         timings=timings,
+-        diagnostics={
+-            "acquisition": acquire_result.diagnostics,
+-            "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
+-        },
++        diagnostics=diagnostics,
+     )
+ 
+ 
+diff --git a/polylogue/sources/live/batch.py b/polylogue/sources/live/batch.py
+index ca9887176..425d578eb 100644
+--- a/polylogue/sources/live/batch.py
++++ b/polylogue/sources/live/batch.py
+@@ -110,6 +110,7 @@ from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_
+ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
+ from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
+ from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
++from polylogue.sources.origin_specs import artifact_rule_for_path
+ from polylogue.sources.parsers import hermes_state
+ from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+ from polylogue.sources.source_acquisition_components import (
+@@ -1256,6 +1257,7 @@ class LiveBatchProcessor:
+                 failed.append(path)
+                 continue
+             captured_file_observations[path] = _file_observation(stat)
++            origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
+             if heartbeat is not None:
+                 heartbeat(
+                     "full_file_scan",
+@@ -1320,6 +1322,46 @@ class LiveBatchProcessor:
+                         current_path=path,
+                         source_payload_read_bytes=source_payload_read_bytes,
+                     )
++            elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
++                provider = fallback_provider
++                source_name = provider.value
++                if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
++                    try:
++                        if heartbeat is not None:
++                            heartbeat(
++                                "full_blob_copy",
++                                current_path=path,
++                                source_payload_read_bytes=source_payload_read_bytes,
++                            )
++                        raw_id, blob_size = blob_store.write_from_path(
++                            path,
++                            heartbeat=_blob_copy_heartbeat(
++                                heartbeat,
++                                path=path,
++                                source_payload_read_bytes=source_payload_read_bytes,
++                            ),
++                        )
++                        blob_publication_receipt_id = blob_store.receipt_id(raw_id)
++                    except OSError:
++                        failed.append(path)
++                        continue
++                    source_payload_read_bytes += blob_size
++                else:
++                    try:
++                        payload = path.read_bytes()
++                    except OSError:
++                        failed.append(path)
++                        continue
++                    raw_id, blob_size = blob_store.write_from_bytes(payload)
++                    blob_publication_receipt_id = blob_store.receipt_id(raw_id)
++                    raw_payloads[raw_id] = payload
++                    source_payload_read_bytes += len(payload)
++                if heartbeat is not None:
++                    heartbeat(
++                        "full_blob_copy",
++                        current_path=path,
++                        source_payload_read_bytes=source_payload_read_bytes,
++                    )
+             elif path.suffix.lower() == ".jsonl":
+                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+                 source_name = provider.value
+@@ -1630,6 +1672,16 @@ class LiveBatchProcessor:
+                         )
+                         source_write_name = "full.source_raw_write"
+                     record_timings[source_write_name] = time.perf_counter() - source_write_started
++                    artifact_rule = artifact_rule_for_path(provider, record.source_path)
++                    if artifact_rule is not None and artifact_rule.parse_policy != "session":
++                        # OriginSpec fact artifacts are valid raw authority even
++                        # though provider session parsing intentionally returns
++                        # no sessions.  Admit the raw revision and let the
++                        # convergence materializer project it into generic work
++                        # evidence instead of treating it as a failed JSON file.
++                        result.raw_ids[record.raw_id] = source_raw_id
++                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
++                        continue
+                     if not _captured_jsonl_ends_at_record_boundary(
+                         source_path=record.source_path,
+                         required=record.requires_complete_record_boundary,
+diff --git a/polylogue/sources/live/watcher.py b/polylogue/sources/live/watcher.py
+index 0ddfd25b0..95f3604fc 100644
+--- a/polylogue/sources/live/watcher.py
++++ b/polylogue/sources/live/watcher.py
+@@ -1115,8 +1115,15 @@ def default_sources() -> tuple[WatchSource, ...]:
+         hermes_sessions_path,
+     )
+ 
++    from polylogue.core.enums import Provider
++    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
++
+     return (
+-        WatchSource(name="claude-code", root=claude_code_path()),
++        WatchSource(
++            name="claude-code",
++            root=claude_code_path(),
++            suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
++        ),
+         WatchSource(name="codex", root=codex_path()),
+         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
+         WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json", ".db", ".sqlite", ".sqlite3")),
+diff --git a/polylogue/sources/origin_specs.py b/polylogue/sources/origin_specs.py
+index 64d6f06e5..aaa09f9e9 100644
+--- a/polylogue/sources/origin_specs.py
++++ b/polylogue/sources/origin_specs.py
+@@ -45,6 +45,7 @@ class OriginArtifactRule:
+     parser_path: str | None
+     coverage_role: str
+     fidelity_note: str
++    path_suffixes: tuple[str, ...]
+ 
+     def matches(self, source_path: str) -> bool:
+         return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
+@@ -130,6 +131,12 @@ class OriginSpecRegistry:
+             for rule in spec.artifact_rules:
+                 if rule.parse_policy != "raw-only" and rule.parser_path is None:
+                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires a parser binding")
++                if not rule.path_suffixes:
++                    raise ValueError(f"{spec.origin.value}: {rule.kind} requires acquisition suffixes")
++                if any(not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.path_suffixes):
++                    raise ValueError(
++                        f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes"
++                    )
+         elif spec.parser_paths or spec.stream_parser_path is not None:
+             raise ValueError(f"{spec.origin.value}: non-executable origin cannot declare a parser binding")
+         self._kernel.register(spec.declaration)
+@@ -250,6 +257,7 @@ def _claude_code_spec() -> OriginSpec:
+                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                 coverage_role="run_snapshot",
+                 fidelity_note="Authoritative mutable workflow run snapshot; every observed revision is retained.",
++                path_suffixes=(".json",),
+             ),
+             OriginArtifactRule(
+                 kind="workflow_journal",
+@@ -257,7 +265,10 @@ def _claude_code_spec() -> OriginSpec:
+                 parse_policy="fact",
+                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                 coverage_role="journal",
+-                fidelity_note="Append-only workflow journal; content keys and unresolved references remain provider evidence.",
++                fidelity_note=(
++                    "Append-only workflow journal; content keys and unresolved references remain provider evidence."
++                ),
++                path_suffixes=(".jsonl",),
+             ),
+             OriginArtifactRule(
+                 kind="agent_transcript",
+@@ -266,6 +277,7 @@ def _claude_code_spec() -> OriginSpec:
+                 parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+                 coverage_role="attempt_transcript",
+                 fidelity_note="Attempt transcript is a session only when provider workflow evidence links it to a run.",
++                path_suffixes=(".jsonl", ".ndjson"),
+             ),
+             OriginArtifactRule(
+                 kind="agent_sidecar_meta",
+@@ -274,6 +286,7 @@ def _claude_code_spec() -> OriginSpec:
+                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                 coverage_role="attempt_meta",
+                 fidelity_note="Agent metadata never fabricates a transcript pair; missing peers are coverage gaps.",
++                path_suffixes=(".json",),
+             ),
+             OriginArtifactRule(
+                 kind="adopt_manifest",
+@@ -282,6 +295,19 @@ def _claude_code_spec() -> OriginSpec:
+                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                 coverage_role="adopt_manifest",
+                 fidelity_note="Recovery manifest preserves resume/adoption evidence without asserting completed work.",
++                path_suffixes=(".json",),
++            ),
++            OriginArtifactRule(
++                kind="coordinator_session_stream",
++                path_pattern=r"(?:^|/)projects/[^/]+/[^/]+\.(?:jsonl|ndjson)$",
++                parse_policy="session",
++                parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
++                coverage_role="coordinator_invocation_stream",
++                fidelity_note=(
++                    "Coordinator streams retain authored prompts and Workflow tool-use events; "
++                    "child topology alone never establishes run membership."
++                ),
++                path_suffixes=(".jsonl", ".ndjson"),
+             ),
+         ),
+     )
+@@ -299,6 +325,26 @@ def artifact_rule_for_path(provider: Provider, source_path: str) -> OriginArtifa
+     return None
+ 
+ 
++def artifact_suffixes_for_provider(
++    provider: Provider,
++    *,
++    defaults: tuple[str, ...] = (),
++) -> tuple[str, ...]:
++    """Project live-acquisition suffixes from the owning OriginSpec rules.
++
++    Acquisition may add a generic default, but provider artifact families must
++    not maintain a second suffix inventory beside OriginSpec.
++    """
++
++    suffixes = list(defaults)
++    for spec in ORIGIN_SPECS:
++        if provider not in spec.provider_wires:
++            continue
++        for rule in spec.artifact_rules:
++            suffixes.extend(rule.path_suffixes)
++    return tuple(dict.fromkeys(suffix.lower() for suffix in suffixes))
++
++
+ def _chatgpt_spec() -> OriginSpec:
+     origin = Origin.CHATGPT_EXPORT
+     return OriginSpec(
+@@ -789,5 +835,6 @@ __all__ = [
+     "OriginSpecRegistry",
+     "origin_specs",
+     "artifact_rule_for_path",
++    "artifact_suffixes_for_provider",
+     "validate_dispatch_precedence",
+ ]
+diff --git a/polylogue/sources/parsers/claude/orchestration.py b/polylogue/sources/parsers/claude/orchestration.py
+index dc00e792f..6431243ae 100644
+--- a/polylogue/sources/parsers/claude/orchestration.py
++++ b/polylogue/sources/parsers/claude/orchestration.py
+@@ -1,10 +1,9 @@
+ """Claude Code Workflow artifact admission and evidence-preserving parsing.
+ 
+-Workflow artifacts are not synthetic sessions.  This module parses their
+-provider-native fields into fact-shaped values with a source-path provenance
+-handle, while the generic work-evidence adapter decides how to materialize
+-them.  Missing counterpart artifacts are reported as gaps rather than paired
+-by filename wishful thinking.
++Workflow fact artifacts remain source-tier authorities rather than synthetic
++sessions.  This module parses provider-native fields while retaining the source
++path and line that support each fact.  Association and graph materialization
++are separate: missing peers become coverage debt instead of filename guesses.
+ """
+ 
+ from __future__ import annotations
+@@ -18,6 +17,69 @@ from pathlib import Path
+ from polylogue.core.enums import Provider
+ from polylogue.sources.origin_specs import artifact_rule_for_path
+ 
++_DOCUMENT_FIELDS = frozenset(
++    {
++        "runId",
++        "run_id",
++        "workflowRunId",
++        "workflow_run_id",
++        "taskId",
++        "task_id",
++        "resumeFromRunId",
++        "resume_from_run_id",
++        "workflow",
++        "workflowName",
++        "workflow_name",
++        "name",
++        "scriptPath",
++        "script_path",
++        "scriptHash",
++        "script_hash",
++        "phases",
++        "labels",
++        "status",
++        "phase",
++        "progress",
++        "model",
++        "timing",
++        "startedAt",
++        "started_at",
++        "completedAt",
++        "completed_at",
++        "tokens",
++        "tools",
++        "result",
++        "results",
++        "structuredResult",
++        "structured_result",
++        "finalResult",
++        "final_result",
++        "agentId",
++        "agent_id",
++        "sessionId",
++        "session_id",
++        "attempt",
++        "attemptId",
++        "attempt_id",
++        "contentKey",
++        "content_key",
++        "callKey",
++        "call_key",
++        "transcriptPath",
++        "transcript_path",
++        "metaPath",
++        "meta_path",
++        "attributionAgent",
++        "attribution_agent",
++        "entrypoint",
++        "adoptedSessionId",
++        "adopted_session_id",
++        "unresolved",
++        "error",
++    }
++)
++_JOURNAL_FIELDS = _DOCUMENT_FIELDS | frozenset({"type", "event", "key", "ordinal", "retryOf", "retry_of"})
++
+ 
+ def _string(value: object) -> str | None:
+     return value if isinstance(value, str) and value else None
+@@ -30,9 +92,16 @@ def _first_string(payload: Mapping[str, object], *keys: str) -> str | None:
+     return None
+ 
+ 
++def _agent_id_from_path(source_path: str) -> str | None:
++    name = Path(source_path).name
++    if not name.startswith("agent-"):
++        return None
++    return name.removesuffix(".meta.json").removesuffix(".jsonl").removesuffix(".ndjson")
++
++
+ @dataclass(frozen=True, slots=True)
+ class ClaudeOrchestrationFact:
+-    """One provider-native fact plus direct raw-artifact provenance."""
++    """One provider-native fact plus its direct raw-artifact location."""
+ 
+     kind: str
+     source_path: str
+@@ -42,6 +111,25 @@ class ClaudeOrchestrationFact:
+     content_key: str | None
+     payload: dict[str, object]
+ 
++    @property
++    def attempt_id(self) -> str | None:
++        return _first_string(self.payload, "attemptId", "attempt_id", "attempt") or self.agent_id
++
++    @property
++    def transcript_path(self) -> str | None:
++        return _first_string(self.payload, "transcriptPath", "transcript_path")
++
++    @property
++    def meta_path(self) -> str | None:
++        return _first_string(self.payload, "metaPath", "meta_path")
++
++    @property
++    def is_result(self) -> bool:
++        return any(
++            key in self.payload
++            for key in ("structuredResult", "structured_result", "result", "finalResult", "final_result")
++        )
++
+ 
+ @dataclass(frozen=True, slots=True)
+ class ClaudeOrchestrationArtifact:
+@@ -49,23 +137,25 @@ class ClaudeOrchestrationArtifact:
+     source_path: str
+     parse_policy: str
+     facts: tuple[ClaudeOrchestrationFact, ...]
++    parse_error: str | None = None
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+ class ClaudeOrchestrationCoverage:
+     artifact_counts: dict[str, int]
+     paired_agent_ids: tuple[str, ...]
++    run_ids: tuple[str, ...]
+     gaps: tuple[str, ...]
+ 
+ 
+ def parse_claude_orchestration_artifact(
+-    source_path: str, payload: bytes | str | object
++    source_path: str,
++    payload: bytes | str | object,
+ ) -> ClaudeOrchestrationArtifact | None:
+-    """Parse one declared Claude orchestration artifact without inventing links.
++    """Parse one OriginSpec-declared Claude orchestration artifact.
+ 
+-    ``source_path`` itself is the raw-evidence handle.  Callers retain the raw
+-    revision and attach its raw id when these facts cross the work-graph
+-    boundary; this parser intentionally does not guess one.
++    The source path is kept as the evidence locator.  The archive materializer
++    attaches the retained raw revision ObjectRef; this parser never invents one.
+     """
+ 
+     rule = artifact_rule_for_path(Provider.CLAUDE_CODE, source_path)
+@@ -87,7 +177,7 @@ def parse_claude_orchestration_artifact(
+ 
+ 
+ def inventory_claude_orchestration_artifacts(paths: Iterable[str | Path]) -> ClaudeOrchestrationCoverage:
+-    """Inventory declared workflow members and report only evidence-backed gaps."""
++    """Inventory declared members and report only evidence-backed gaps."""
+ 
+     artifacts: list[tuple[str, str]] = []
+     transcripts: set[str] = set()
+@@ -102,9 +192,11 @@ def inventory_claude_orchestration_artifacts(paths: Iterable[str | Path]) -> Cla
+         artifacts.append((rule.kind, source_path))
+         name = Path(source_path).name
+         if rule.kind == "agent_transcript":
+-            transcripts.add(name.removesuffix(".jsonl").removesuffix(".ndjson"))
++            if agent_id := _agent_id_from_path(source_path):
++                transcripts.add(agent_id)
+         elif rule.kind == "agent_sidecar_meta":
+-            metas.add(name.removesuffix(".meta.json"))
++            if agent_id := _agent_id_from_path(source_path):
++                metas.add(agent_id)
+         elif rule.kind == "workflow_run_snapshot":
+             runs.add(name.removesuffix(".json"))
+         elif rule.kind == "workflow_journal":
+@@ -118,6 +210,7 @@ def inventory_claude_orchestration_artifacts(paths: Iterable[str | Path]) -> Cla
+     return ClaudeOrchestrationCoverage(
+         artifact_counts=dict(sorted(Counter(kind for kind, _ in artifacts).items())),
+         paired_agent_ids=tuple(sorted(transcripts & metas)),
++        run_ids=tuple(sorted(runs | journals)),
+         gaps=tuple(gaps),
+     )
+ 
+@@ -133,74 +226,43 @@ def _decode(payload: bytes | str | object, *, jsonl: bool) -> object:
+ 
+ 
+ def _document_fact(kind: str, source_path: str, payload: Mapping[str, object]) -> ClaudeOrchestrationFact:
+-    run_id = _first_string(payload, "runId", "run_id", "workflowRunId", "id")
++    fallback_run_id = Path(source_path).stem if kind == "workflow_run_snapshot" else None
++    run_id = _first_string(
++        payload,
++        "runId",
++        "run_id",
++        "workflowRunId",
++        "workflow_run_id",
++        "id",
++    ) or fallback_run_id
+     agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
+-    retained = {
+-        key: value
+-        for key, value in payload.items()
+-        if key
+-        in {
+-            "runId",
+-            "run_id",
+-            "workflowRunId",
+-            "taskId",
+-            "task_id",
+-            "resumeFromRunId",
+-            "resume_from_run_id",
+-            "workflow",
+-            "workflowName",
+-            "name",
+-            "scriptPath",
+-            "scriptHash",
+-            "phases",
+-            "labels",
+-            "status",
+-            "model",
+-            "timing",
+-            "tokens",
+-            "tools",
+-            "result",
+-            "structuredResult",
+-            "agentId",
+-            "sessionId",
+-        }
+-    }
+-    return ClaudeOrchestrationFact(kind, source_path, None, run_id, agent_id, None, retained)
++    if kind == "agent_sidecar_meta":
++        agent_id = agent_id or _agent_id_from_path(source_path)
++    content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
++    retained = {key: value for key, value in payload.items() if key in _DOCUMENT_FIELDS}
++    return ClaudeOrchestrationFact(kind, source_path, None, run_id, agent_id, content_key, retained)
+ 
+ 
+ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) -> ClaudeOrchestrationFact:
+-    run_id = _first_string(payload, "runId", "run_id", "workflowRunId") or Path(source_path).parent.name
++    run_id = _first_string(
++        payload,
++        "runId",
++        "run_id",
++        "workflowRunId",
++        "workflow_run_id",
++    ) or Path(source_path).parent.name
+     agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
+     content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
+-    retained = {
+-        key: value
+-        for key, value in payload.items()
+-        if key
+-        in {
+-            "type",
+-            "event",
+-            "callKey",
+-            "call_key",
+-            "contentKey",
+-            "content_key",
+-            "attempt",
+-            "attemptId",
+-            "agentId",
+-            "model",
+-            "status",
+-            "phase",
+-            "progress",
+-            "timing",
+-            "tokens",
+-            "tools",
+-            "result",
+-            "structuredResult",
+-            "unresolved",
+-            "transcriptPath",
+-            "metaPath",
+-        }
+-    }
+-    return ClaudeOrchestrationFact("workflow_journal_entry", source_path, line, run_id, agent_id, content_key, retained)
++    retained = {key: value for key, value in payload.items() if key in _JOURNAL_FIELDS}
++    return ClaudeOrchestrationFact(
++        "workflow_journal_entry",
++        source_path,
++        line,
++        run_id,
++        agent_id,
++        content_key,
++        retained,
++    )
+ 
+ 
+ __all__ = [
+diff --git a/polylogue/storage/sqlite/queries/work_evidence.py b/polylogue/storage/sqlite/queries/work_evidence.py
+index 08b393a0a..d138a441a 100644
+--- a/polylogue/storage/sqlite/queries/work_evidence.py
++++ b/polylogue/storage/sqlite/queries/work_evidence.py
+@@ -7,7 +7,7 @@ from typing import cast
+ 
+ import aiosqlite
+ 
+-from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef
++from polylogue.core.refs import ActorRef, ExecutionContextRef, ObjectRef
+ from polylogue.insights.work_evidence import (
+     WorkEvidenceAssociationState,
+     WorkEvidenceAuthority,
+@@ -17,6 +17,7 @@ from polylogue.insights.work_evidence import (
+     WorkEvidenceNode,
+     WorkEvidenceNodeKind,
+     WorkEvidenceTraversal,
++    parse_work_evidence_source_ref,
+ )
+ from polylogue.storage.query_models import WorkEvidenceTraversalQuery
+ 
+@@ -46,7 +47,7 @@ def _node_from_row(row: aiosqlite.Row) -> WorkEvidenceNode:
+         ref=ObjectRef.parse(str(row["node_ref"])),
+         kind=cast(WorkEvidenceNodeKind, str(row["node_kind"])),
+         label=str(row["label"]),
+-        evidence_refs=tuple(EvidenceRef.parse(value) for value in _json_array(row["evidence_refs_json"])),
++        evidence_refs=tuple(parse_work_evidence_source_ref(value) for value in _json_array(row["evidence_refs_json"])),
+         corpus_snapshot_ref=ObjectRef.parse(str(row["corpus_snapshot_ref"])),
+         authority=cast(WorkEvidenceAuthority, str(row["authority"])),
+         confidence=float(row["confidence"]),
+@@ -64,7 +65,7 @@ def _edge_from_row(row: aiosqlite.Row) -> WorkEvidenceEdge:
+         kind=cast(WorkEvidenceEdgeKind, str(row["edge_kind"])),
+         source_ref=ObjectRef.parse(str(row["source_ref"])),
+         target_ref=ObjectRef.parse(str(row["target_ref"])),
+-        evidence_refs=tuple(EvidenceRef.parse(value) for value in _json_array(row["evidence_refs_json"])),
++        evidence_refs=tuple(parse_work_evidence_source_ref(value) for value in _json_array(row["evidence_refs_json"])),
+         corpus_snapshot_ref=ObjectRef.parse(str(row["corpus_snapshot_ref"])),
+         authority=cast(WorkEvidenceAuthority, str(row["authority"])),
+         confidence=float(row["confidence"]),
+diff --git a/tests/integration/test_claude_workflow_admission.py b/tests/integration/test_claude_workflow_admission.py
+new file mode 100644
+index 000000000..d60757aa3
+--- /dev/null
++++ b/tests/integration/test_claude_workflow_admission.py
+@@ -0,0 +1,402 @@
++"""End-to-end Claude Workflow admission through configured source ingestion.
++
++Production dependencies exercised:
++- configured source walk and OriginSpec path classification;
++- raw source/blob persistence and current ``raw_artifacts`` pointers;
++- Claude session/event/authorship parsing;
++- source-tier Workflow fact parsing;
++- generic work-evidence graph replacement.
++
++Anti-vacuity mutations: removing any Claude OriginSpec artifact rule changes the
++224-member inventory; removing event extraction changes the four invocations;
++using parent/child topology admits the 38 unrelated transcripts; dropping raw
++ObjectRef evidence violates the non-empty evidence assertions; removing a
++metadata member must degrade one attempt instead of fabricating a pair.
++"""
++
++from __future__ import annotations
++
++import json
++import sqlite3
++from pathlib import Path
++
++import pytest
++
++from polylogue.config import Source
++from polylogue.core.enums import Provider
++from polylogue.insights.claude_workflow_materializer import (
++    claude_workflow_materialization_needed,
++    claude_workflow_reparse_plan,
++    materialize_claude_workflow_archive,
++)
++from polylogue.pipeline.services.archive_ingest import parse_sources_archive
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
++
++RUN_ID = "wf_54d4fb2e-841"
++ATTEMPT_COUNT = 91
++UNRELATED_COUNT = 38
++
++
++@pytest.mark.asyncio
++async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_rebuilds(
++    workspace_env: dict[str, Path],
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """The mandate fixture traverses the production configured-source route."""
++
++    archive_root = workspace_env["archive_root"]
++    claude_root, run_path, first_meta_path = _write_fixture(workspace_env["data_root"] / ".claude")
++    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
++
++    result = await parse_sources_archive(
++        archive_root,
++        [Source(name=Provider.CLAUDE_CODE.value, path=claude_root)],
++    )
++    assert result.parse_failures == 0
++
++    summary = materialize_claude_workflow_archive(archive_root)
++    assert summary.current_artifact_count == 224
++    assert summary.retained_raw_revision_count == 224
++    assert summary.artifact_counts == {
++        "adopt_manifest": 1,
++        "agent_sidecar_meta": 91,
++        "agent_transcript": 129,
++        "coordinator_session_stream": 1,
++        "workflow_journal": 1,
++        "workflow_run_snapshot": 1,
++    }
++    assert summary.graph_count == summary.run_count == 1
++    assert summary.coordinator_invocation_count == 4
++    assert summary.call_count == 50
++    assert summary.attempt_count == 91
++    assert summary.linked_session_count == 91
++    assert summary.metadata_sidecar_count == 91
++    assert summary.journal_result_count == 65
++    assert summary.final_result_count == 1
++    assert summary.unresolved_call_count == 1
++    assert summary.excluded_session_count == 38
++    assert summary.generated_prompt_count == 91
++    assert summary.human_prompt_count == 1
++
++    with sqlite3.connect(archive_root / "source.db") as source_conn:
++        assert source_conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0] == 224
++        assert source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 224
++    with sqlite3.connect(archive_root / "index.db") as index_conn:
++        assert index_conn.execute(
++            "SELECT COUNT(*) FROM sessions WHERE origin = 'claude-code-session'"
++        ).fetchone()[0] == 130
++        node_counts = dict(
++            index_conn.execute(
++                """
++                SELECT node_kind, COUNT(*)
++                FROM work_evidence_nodes
++                WHERE graph_id = ?
++                GROUP BY node_kind
++                """,
++                (f"claude-workflow:{RUN_ID}",),
++            ).fetchall()
++        )
++        assert {
++            kind: node_counts.get(kind, 0)
++            for kind in (
++                "artifact",
++                "attempt",
++                "call",
++                "invocation",
++                "run",
++                "session-segment",
++                "structured-result",
++            )
++        } == {
++            "artifact": 94,
++            "attempt": 91,
++            "call": 50,
++            "invocation": 4,
++            "run": 1,
++            "session-segment": 91,
++            "structured-result": 66,
++        }
++        assert index_conn.execute(
++            """
++            SELECT COUNT(*)
++            FROM work_evidence_nodes
++            WHERE graph_id = ? AND evidence_refs_json = '[]'
++            """,
++            (f"claude-workflow:{RUN_ID}",),
++        ).fetchone()[0] == 0
++        assert index_conn.execute(
++            """
++            SELECT COUNT(*)
++            FROM work_evidence_edges
++            WHERE graph_id = ? AND evidence_refs_json = '[]'
++            """,
++            (f"claude-workflow:{RUN_ID}",),
++        ).fetchone()[0] == 0
++        assert index_conn.execute(
++            """
++            SELECT COUNT(*)
++            FROM work_evidence_nodes
++            WHERE graph_id = ? AND (node_ref LIKE '%unrelated%' OR label LIKE '%unrelated%')
++            """,
++            (f"claude-workflow:{RUN_ID}",),
++        ).fetchone()[0] == 0
++        evidence_values = [
++            value
++            for (payload,) in index_conn.execute(
++                "SELECT evidence_refs_json FROM work_evidence_nodes WHERE graph_id = ?",
++                (f"claude-workflow:{RUN_ID}",),
++            )
++            for value in json.loads(payload)
++        ]
++        assert any(value.startswith("artifact:raw:") for value in evidence_values)
++
++    plan = claude_workflow_reparse_plan(archive_root)
++    assert plan.projector_only_raw_artifact_reads == 94
++    assert plan.session_parser_raw_reads_if_authorship_or_event_semantics_change == 130
++    assert plan.indexed_session_bindings_reused == 129
++    assert plan.graphs_atomically_replaced == 1
++    assert plan.retained_raw_revisions_preserved == 224
++    assert plan.stale is False
++
++    old_snapshot = summary.corpus_snapshot_ref
++    revised_run = _run_snapshot(final_value="final result revision two")
++    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
++        archive.write_raw_payload(
++            provider=Provider.CLAUDE_CODE,
++            payload=json.dumps(revised_run, sort_keys=True).encode(),
++            source_path=str(run_path),
++            source_index=0,
++            acquired_at_ms=2_000_000_000_000,
++        )
++
++    assert claude_workflow_materialization_needed(archive_root) is True
++    revised = materialize_claude_workflow_archive(archive_root)
++    assert revised.current_artifact_count == 224
++    assert revised.retained_raw_revision_count == 225
++    assert revised.graph_count == 1
++    assert revised.final_result_count == 1
++    assert revised.corpus_snapshot_ref != old_snapshot
++    assert claude_workflow_materialization_needed(archive_root) is False
++
++    with sqlite3.connect(archive_root / "source.db") as source_conn:
++        assert source_conn.execute(
++            "SELECT COUNT(*) FROM raw_sessions WHERE source_path = ?",
++            (str(run_path),),
++        ).fetchone()[0] == 2
++        current_raw = source_conn.execute(
++            "SELECT raw_id FROM raw_artifacts WHERE source_path = ?",
++            (str(run_path),),
++        ).fetchone()[0]
++        assert current_raw == source_conn.execute(
++            """
++            SELECT raw_id FROM raw_sessions
++            WHERE source_path = ?
++            ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
++            """,
++            (str(run_path),),
++        ).fetchone()[0]
++    with sqlite3.connect(archive_root / "index.db") as index_conn:
++        assert index_conn.execute(
++            "SELECT COUNT(*) FROM work_evidence_graphs WHERE graph_id LIKE 'claude-workflow:%'"
++        ).fetchone()[0] == 1
++        assert index_conn.execute(
++            """
++            SELECT COUNT(*) FROM work_evidence_nodes
++            WHERE graph_id = ? AND corpus_snapshot_ref != ?
++            """,
++            (f"claude-workflow:{RUN_ID}", revised.corpus_snapshot_ref),
++        ).fetchone()[0] == 0
++
++    # Representative source-loss mutation: delete one retained metadata member.
++    # The attempt must become explicit coverage debt and its transcript must not
++    # be admitted through filename or parent-child inference.
++    with sqlite3.connect(archive_root / "source.db") as source_conn:
++        source_conn.execute("PRAGMA foreign_keys = ON")
++        source_conn.execute(
++            "DELETE FROM raw_artifacts WHERE source_path = ?",
++            (str(first_meta_path),),
++        )
++        source_conn.execute(
++            "DELETE FROM raw_sessions WHERE source_path = ?",
++            (str(first_meta_path),),
++        )
++        source_conn.commit()
++    degraded = materialize_claude_workflow_archive(archive_root)
++    assert degraded.metadata_sidecar_count == 90
++    assert degraded.linked_session_count == 90
++    assert any("missing paired agent metadata sidecar" in gap for gap in degraded.gaps)
++
++
++def _write_fixture(claude_root: Path) -> tuple[Path, Path, Path]:
++    project = claude_root / "projects" / "fixture-project"
++    subagents = project / "subagents"
++    workflow_dir = subagents / "workflows" / RUN_ID
++    workflows = project / "workflows"
++    jobs = project / "jobs" / "coordinator-session"
++    for directory in (subagents, workflow_dir, workflows, jobs):
++        directory.mkdir(parents=True, exist_ok=True)
++
++    coordinator_path = project / "coordinator-session.jsonl"
++    coordinator_records: list[dict[str, object]] = [
++        {
++            "type": "user",
++            "uuid": "coordinator-direct-prompt",
++            "sessionId": "coordinator-session",
++            "timestamp": "2026-07-18T00:00:00Z",
++            "message": {"role": "user", "content": "Run the admitted Workflow fixture."},
++        }
++    ]
++    for ordinal in range(4):
++        tool_input: dict[str, object] = {
++            "runId": RUN_ID,
++            "taskId": "task-mandate-01",
++            "workflowName": "admission-proof",
++            "scriptPath": "/repo/scripts/workflow.py",
++            "scriptHash": "sha256:fixture-script",
++            "phases": ["plan", "execute", "collect"],
++            "labels": ["mandate", "synthetic"],
++        }
++        if ordinal:
++            tool_input["resumeFromRunId"] = RUN_ID
++        coordinator_records.append(
++            {
++                "type": "assistant",
++                "uuid": f"coordinator-invocation-{ordinal}",
++                "sessionId": "coordinator-session",
++                "timestamp": f"2026-07-18T00:0{ordinal + 1}:00Z",
++                "message": {
++                    "role": "assistant",
++                    "content": [
++                        {
++                            "type": "tool_use",
++                            "id": f"workflow-tool-{ordinal}",
++                            "name": "Workflow",
++                            "input": tool_input,
++                        }
++                    ],
++                },
++            }
++        )
++    _write_jsonl(coordinator_path, coordinator_records)
++
++    journal_records: list[dict[str, object]] = []
++    first_meta_path: Path | None = None
++    for ordinal in range(ATTEMPT_COUNT):
++        attempt_id = f"attempt-{ordinal:03d}"
++        content_key = f"call-{ordinal % 50:02d}"
++        transcript_path = subagents / f"agent-{attempt_id}.jsonl"
++        meta_path = subagents / f"agent-{attempt_id}.meta.json"
++        first_meta_path = first_meta_path or meta_path
++        _write_jsonl(
++            transcript_path,
++            [
++                {
++                    "type": "user",
++                    "uuid": f"worker-prompt-{ordinal:03d}",
++                    "sessionId": f"agent-session-{ordinal:03d}",
++                    "timestamp": "2026-07-18T01:00:00Z",
++                    "message": {"role": "user", "content": f"Generated task pack for {content_key}."},
++                }
++            ],
++        )
++        meta_path.write_text(
++            json.dumps(
++                {
++                    "runId": RUN_ID,
++                    "attemptId": attempt_id,
++                    "agentId": attempt_id,
++                    "contentKey": content_key,
++                    "transcriptPath": str(transcript_path),
++                    "model": "claude-sonnet-fixture",
++                    "status": "completed",
++                    "phase": "execute",
++                    "progress": 100,
++                    "timing": {"startedAt": ordinal * 10, "completedAt": ordinal * 10 + 5},
++                    "tokens": {"input": 100 + ordinal, "output": 20 + ordinal},
++                    "tools": ["Read", "Write"],
++                },
++                sort_keys=True,
++            ),
++            encoding="utf-8",
++        )
++        journal_records.append(
++            {
++                "runId": RUN_ID,
++                "event": "attempt_started",
++                "contentKey": content_key,
++                "attemptId": attempt_id,
++                "agentId": attempt_id,
++                "metaPath": str(meta_path),
++                "transcriptPath": str(transcript_path),
++                "phase": "execute",
++                "status": "completed",
++                "unresolved": content_key == "call-49",
++            }
++        )
++
++    for result_ordinal, content_index in enumerate([*range(49), *range(16)]):
++        journal_records.append(
++            {
++                "runId": RUN_ID,
++                "event": "result",
++                "contentKey": f"call-{content_index:02d}",
++                "attemptId": f"attempt-{content_index:03d}",
++                "structuredResult": {"ok": True, "ordinal": result_ordinal},
++                "status": "completed",
++            }
++        )
++    _write_jsonl(workflow_dir / "journal.jsonl", journal_records)
++
++    for ordinal in range(UNRELATED_COUNT):
++        _write_jsonl(
++            subagents / f"agent-unrelated-{ordinal:03d}.jsonl",
++            [
++                {
++                    "type": "user",
++                    "uuid": f"unrelated-prompt-{ordinal:03d}",
++                    "sessionId": f"unrelated-session-{ordinal:03d}",
++                    "timestamp": "2026-07-18T02:00:00Z",
++                    "message": {"role": "user", "content": "Unrelated coordinator child."},
++                }
++            ],
++        )
++
++    run_path = workflows / f"{RUN_ID}.json"
++    run_path.write_text(
++        json.dumps(_run_snapshot(final_value="final result revision one"), sort_keys=True),
++        encoding="utf-8",
++    )
++    (jobs / "adopt.json").write_text(
++        json.dumps(
++            {
++                "runId": RUN_ID,
++                "resumeFromRunId": RUN_ID,
++                "adoptedSessionId": "coordinator-session",
++                "entrypoint": "resume",
++                "status": "adopted",
++            },
++            sort_keys=True,
++        ),
++        encoding="utf-8",
++    )
++    assert first_meta_path is not None
++    return claude_root, run_path, first_meta_path
++
++
++def _run_snapshot(*, final_value: str) -> dict[str, object]:
++    return {
++        "runId": RUN_ID,
++        "taskId": "task-mandate-01",
++        "workflowName": "admission-proof",
++        "scriptPath": "/repo/scripts/workflow.py",
++        "scriptHash": "sha256:fixture-script",
++        "phases": ["plan", "execute", "collect"],
++        "labels": ["mandate", "synthetic"],
++        "status": "completed_with_gap",
++        "finalResult": {"status": "complete", "value": final_value},
++    }
++
++
++def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text("".join(json.dumps(record, sort_keys=True) + "\n" for record in records), encoding="utf-8")
+diff --git a/tests/unit/daemon/test_convergence_stages.py b/tests/unit/daemon/test_convergence_stages.py
+index 3817fb653..fdf5fb869 100644
+--- a/tests/unit/daemon/test_convergence_stages.py
++++ b/tests/unit/daemon/test_convergence_stages.py
+@@ -885,7 +885,7 @@ def test_default_convergence_stages_always_register_embed_stage(
+ 
+     stage_names = [stage.name for stage in make_default_convergence_stages(tmp_path / "archive.sqlite")]
+ 
+-    assert stage_names == ["fts", "embed", "insights", "standing-queries"]
++    assert stage_names == ["fts", "embed", "claude_workflow", "insights", "standing-queries"]
+ 
+ 
+ def test_embed_stage_is_noop_when_disabled(
+diff --git a/tests/unit/insights/test_claude_workflow_evidence.py b/tests/unit/insights/test_claude_workflow_evidence.py
+index 0c1381907..2a28529fe 100644
+--- a/tests/unit/insights/test_claude_workflow_evidence.py
++++ b/tests/unit/insights/test_claude_workflow_evidence.py
+@@ -1,57 +1,241 @@
+ from __future__ import annotations
+ 
+ from polylogue.core.refs import EvidenceRef, ObjectRef
+-from polylogue.insights.claude_workflow_evidence import project_claude_workflow_evidence
++from polylogue.insights.claude_workflow_evidence import (
++    ClaudeWorkflowCoordinatorInvocation,
++    ClaudeWorkflowPromptEvidence,
++    ClaudeWorkflowSessionEvidence,
++    project_claude_workflow_evidence,
++)
+ from polylogue.sources.parsers.base_models import ParsedSessionEvent
+ from polylogue.sources.parsers.claude.orchestration import ClaudeOrchestrationArtifact, ClaudeOrchestrationFact
+ 
++RUN_ID = "wf_54d4fb2e-841"
+ 
+-def test_claude_projection_uses_provider_facts_not_child_topology() -> None:
+-    evidence = EvidenceRef(session_id="claude-code-session:coordinator", message_id="m1", block_index=0)
+-    artifact = ClaudeOrchestrationArtifact(
+-        kind="workflow_journal",
+-        source_path="/workflows/wf_54/journal.jsonl",
+-        parse_policy="fact",
+-        facts=tuple(
++
++def test_claude_projection_uses_provider_references_not_child_topology() -> None:
++    """Provider paths and journal references admit attempts; parent topology cannot.
++
++    Production dependency: the projector consumes OriginSpec-parsed facts plus
++    raw artifact and indexed-message evidence. Anti-vacuity mutation: accepting
++    every supplied child session would add the 38 ``unrelated`` sessions;
++    removing sidecar/transcript matching would drop all 91 represented segments.
++    """
++
++    journal_path = f"/fixture/subagents/workflows/{RUN_ID}/journal.jsonl"
++    run_path = f"/fixture/workflows/{RUN_ID}.json"
++    adopt_path = "/fixture/jobs/coordinator/adopt.json"
++    journal_facts: list[ClaudeOrchestrationFact] = []
++    sidecars: list[ClaudeOrchestrationArtifact] = []
++    sessions: list[ClaudeWorkflowSessionEvidence] = []
++
++    for index in range(91):
++        attempt_id = f"attempt-{index:03d}"
++        content_key = f"call-{index % 50:02d}"
++        transcript_path = f"/fixture/subagents/agent-{attempt_id}.jsonl"
++        meta_path = f"/fixture/subagents/agent-{attempt_id}.meta.json"
++        journal_facts.append(
+             ClaudeOrchestrationFact(
+                 kind="workflow_journal_entry",
+-                source_path="/workflows/wf_54/journal.jsonl",
+-                source_line=index,
+-                run_id="wf_54",
+-                agent_id=f"agent-{index}",
+-                content_key=f"call-{index % 50}",
++                source_path=journal_path,
++                source_line=index + 1,
++                run_id=RUN_ID,
++                agent_id=attempt_id,
++                content_key=content_key,
+                 payload={
+-                    "attemptId": f"attempt-{index}",
+-                    **({"structuredResult": {"ok": True}} if index < 65 else {}),
+-                    **({"unresolved": True} if index == 49 else {}),
++                    "attemptId": attempt_id,
++                    "agentId": attempt_id,
++                    "contentKey": content_key,
++                    "metaPath": meta_path,
++                    "transcriptPath": transcript_path,
++                    "status": "completed",
++                    **({"structuredResult": {"ok": True, "ordinal": index}} if index < 65 else {}),
++                    **({"unresolved": True} if content_key == "call-49" else {}),
+                 },
+             )
+-            for index in range(91)
++        )
++        sidecars.append(
++            ClaudeOrchestrationArtifact(
++                kind="agent_sidecar_meta",
++                source_path=meta_path,
++                parse_policy="fact",
++                facts=(
++                    ClaudeOrchestrationFact(
++                        kind="agent_sidecar_meta",
++                        source_path=meta_path,
++                        source_line=None,
++                        run_id=RUN_ID,
++                        agent_id=attempt_id,
++                        content_key=content_key,
++                        payload={
++                            "runId": RUN_ID,
++                            "attemptId": attempt_id,
++                            "agentId": attempt_id,
++                            "contentKey": content_key,
++                            "transcriptPath": transcript_path,
++                            "model": "claude-sonnet-fixture",
++                            "status": "completed",
++                            "timing": {"startedAt": index * 10, "completedAt": index * 10 + 5},
++                            "tokens": {"input": 100 + index, "output": 20 + index},
++                            "tools": ["Read", "Write"],
++                        },
++                    ),
++                ),
++            )
++        )
++        session_id = f"claude-code-session:agent-{index:03d}"
++        sessions.append(
++            ClaudeWorkflowSessionEvidence(
++                source_path=transcript_path,
++                raw_artifact_ref=ObjectRef(kind="artifact", object_id=f"raw:transcript-{index:03d}"),
++                session_id=session_id,
++                session_evidence_ref=EvidenceRef(session_id=session_id),
++                prompt_evidence_ref=EvidenceRef(session_id=session_id, message_id=f"prompt-{index:03d}"),
++                prompt_material_origin="generated_context_pack",
++            )
++        )
++
++    for index in range(38):
++        session_id = f"claude-code-session:unrelated-{index:03d}"
++        sessions.append(
++            ClaudeWorkflowSessionEvidence(
++                source_path=f"/fixture/subagents/agent-unrelated-{index:03d}.jsonl",
++                raw_artifact_ref=ObjectRef(kind="artifact", object_id=f"raw:unrelated-{index:03d}"),
++                session_id=session_id,
++                session_evidence_ref=EvidenceRef(session_id=session_id),
++            )
++        )
++
++    artifacts = [
++        ClaudeOrchestrationArtifact(
++            kind="workflow_run_snapshot",
++            source_path=run_path,
++            parse_policy="fact",
++            facts=(
++                ClaudeOrchestrationFact(
++                    kind="workflow_run_snapshot",
++                    source_path=run_path,
++                    source_line=None,
++                    run_id=RUN_ID,
++                    agent_id=None,
++                    content_key=None,
++                    payload={
++                        "runId": RUN_ID,
++                        "taskId": "task-mandate-01",
++                        "workflowName": "admission-proof",
++                        "scriptPath": "/repo/scripts/workflow.py",
++                        "phases": ["plan", "execute", "collect"],
++                        "labels": ["mandate", "synthetic"],
++                        "status": "completed_with_gap",
++                        "finalResult": {"status": "complete", "value": "fixture final"},
++                    },
++                ),
++            ),
++        ),
++        ClaudeOrchestrationArtifact(
++            kind="workflow_journal",
++            source_path=journal_path,
++            parse_policy="fact",
++            facts=tuple(journal_facts),
+         ),
++        ClaudeOrchestrationArtifact(
++            kind="adopt_manifest",
++            source_path=adopt_path,
++            parse_policy="fact",
++            facts=(
++                ClaudeOrchestrationFact(
++                    kind="adopt_manifest",
++                    source_path=adopt_path,
++                    source_line=None,
++                    run_id=RUN_ID,
++                    agent_id="coordinator",
++                    content_key=None,
++                    payload={"runId": RUN_ID, "resumeFromRunId": RUN_ID, "status": "adopted"},
++                ),
++            ),
++        ),
++        *sidecars,
++    ]
++    artifact_evidence = {
++        artifact.source_path: ObjectRef(kind="artifact", object_id=f"raw:fact-{index:03d}")
++        for index, artifact in enumerate(artifacts)
++    }
++    coordinator_evidence = EvidenceRef(
++        session_id="claude-code-session:coordinator",
++        message_id="coordinator-message",
+     )
+-    events = tuple(
+-        ParsedSessionEvent(
+-            event_type="claude_workflow_invocation",
+-            timestamp=None,
+-            source_message_provider_id=f"invoke-{index}",
+-            payload={"runId": "wf_54", **({"resumeFromRunId": "wf_53"} if index == 3 else {})},
++    invocations = tuple(
++        ClaudeWorkflowCoordinatorInvocation(
++            session_id="claude-code-session:coordinator",
++            event=ParsedSessionEvent(
++                event_type="claude_workflow_invocation",
++                source_message_provider_id=f"invoke-{index}",
++                payload={
++                    "runId": RUN_ID,
++                    "taskId": "task-mandate-01",
++                    "workflowName": "admission-proof",
++                    **({"resumeFromRunId": RUN_ID} if index else {}),
++                },
++            ),
++            evidence_ref=coordinator_evidence,
+         )
+         for index in range(4)
+     )
++
+     graph = project_claude_workflow_evidence(
+-        graph_id="fixture",
++        graph_id=f"claude-workflow:{RUN_ID}",
++        run_id=RUN_ID,
+         corpus_snapshot_ref=ObjectRef(kind="context-snapshot", object_id="fixture"),
+-        artifacts=(artifact,),
+-        coordinator_events=events,
+-        coordinator_evidence=evidence,
+-        evidence_for_path=lambda _path: evidence,
++        artifacts=artifacts,
++        artifact_evidence=artifact_evidence,
++        coordinator_invocations=invocations,
++        session_evidence=sessions,
++        coordinator_prompt_evidence=(
++            ClaudeWorkflowPromptEvidence(
++                session_id="claude-code-session:coordinator",
++                evidence_ref=EvidenceRef(
++                    session_id="claude-code-session:coordinator",
++                    message_id="direct-prompt",
++                ),
++                material_origin="human_authored",
++            ),
++        ),
+     )
+ 
+-    assert sum(node.kind == "invocation" for node in graph.nodes) == 4
+-    assert sum(node.kind == "call" for node in graph.nodes) == 50
+-    assert sum(node.kind == "attempt" for node in graph.nodes) == 91
+-    assert sum(node.kind == "structured-result" for node in graph.nodes) == 65
+-    assert all("unrelated-child" not in node.ref.object_id for node in graph.nodes)
+-    assert any(edge.kind == "resumed" for edge in graph.edges)
+-    assert any(edge.kind == "unresolved" for edge in graph.edges) is False
+-    assert any(node.association_state == "unresolved" for node in graph.nodes)
++    counts = {kind: sum(node.kind == kind for node in graph.nodes) for kind in {
++        "artifact", "attempt", "call", "invocation", "run", "session-segment", "structured-result"
++    }}
++    assert counts == {
++        "artifact": 94,
++        "attempt": 91,
++        "call": 50,
++        "invocation": 4,
++        "run": 1,
++        "session-segment": 91,
++        "structured-result": 66,
++    }
++    assert all("unrelated" not in node.ref.object_id for node in graph.nodes)
++    assert sum(edge.kind == "resumed" for edge in graph.edges) == 3
++    assert sum(node.kind == "call" and node.association_state == "unresolved" for node in graph.nodes) == 1
++    assert sum(
++        node.kind == "claim"
++        and node.claim_text is not None
++        and "worker prompt material origin" in node.claim_text
++        and "generated_context_pack" in node.claim_text
++        for node in graph.nodes
++    ) == 91
++    assert any(
++        node.kind == "claim"
++        and node.association_state == "resolved"
++        and node.claim_text is not None
++        and "coordinator prompt material origin" in node.claim_text
++        and "human_authored" in node.claim_text
++        for node in graph.nodes
++    )
++    assert all(node.evidence_refs for node in graph.nodes)
++    assert all(edge.evidence_refs for edge in graph.edges)
++    assert any(
++        isinstance(ref, ObjectRef) and ref.kind == "artifact"
++        for node in graph.nodes
++        for ref in node.evidence_refs
++    )
+diff --git a/tests/unit/insights/test_work_evidence.py b/tests/unit/insights/test_work_evidence.py
+index 9e4ab76f3..3083f5278 100644
+--- a/tests/unit/insights/test_work_evidence.py
++++ b/tests/unit/insights/test_work_evidence.py
+@@ -137,7 +137,9 @@ def _graph() -> WorkEvidenceGraph:
+     result = _node("structured-result", "result:1")
+     original_claim = _node("claim", "claim:1", claim_text="task completed")
+     corrected_claim = _node("claim", "claim:2", claim_text="task completed with residual scope")
+-    artifact = _node("artifact", "archive:result.json")
++    artifact = _node("artifact", "archive:result.json").model_copy(
++        update={"evidence_refs": (ObjectRef(kind="artifact", object_id="raw:artifact-result"),)}
++    )
+     nodes = (
+         run,
+         actor_node,
+@@ -205,6 +207,11 @@ async def test_codex_agent_task_graph_round_trips_and_traverses_bidirectionally(
+             focal_ref="actor:agent:codex",
+             direction="incoming",
+         )
++        artifact_traversal = await repository.traverse_work_evidence(
++            graph_id=graph.graph_id,
++            focal_ref="artifact:archive:result.json",
++            direction="incoming",
++        )
+ 
+     assert traversal is not None
+     assert {node.ref.object_id for node in traversal.nodes} >= {
+@@ -218,6 +225,9 @@ async def test_codex_agent_task_graph_round_trips_and_traverses_bidirectionally(
+     assert [(edge.kind, edge.source_ref.object_id) for edge in incoming.edges] == [("invoked", "codex:invoke:1")]
+     assert actor_traversal is not None
+     assert [(edge.kind, edge.source_ref.kind) for edge in actor_traversal.edges] == [("mentioned", "run")]
++    assert artifact_traversal is not None
++    stored_artifact = next(node for node in artifact_traversal.nodes if node.kind == "artifact")
++    assert stored_artifact.evidence_refs == (ObjectRef(kind="artifact", object_id="raw:artifact-result"),)
+ 
+ 
+ def test_graph_preserves_many_to_many_retries_resumes_and_unresolved_associations() -> None:
+diff --git a/tests/unit/sources/test_artifact_taxonomy.py b/tests/unit/sources/test_artifact_taxonomy.py
+index 3203e58aa..0c86f3b06 100644
+--- a/tests/unit/sources/test_artifact_taxonomy.py
++++ b/tests/unit/sources/test_artifact_taxonomy.py
+@@ -33,6 +33,7 @@ def test_claude_workflow_artifacts_follow_origin_spec_path_rules() -> None:
+         "/tmp/.claude/projects/x/subagents/agent-a.jsonl": (ArtifactKind.AGENT_TRANSCRIPT, True),
+         "/tmp/.claude/projects/x/subagents/agent-a.meta.json": (ArtifactKind.AGENT_SIDECAR_META, False),
+         "/tmp/.claude/projects/x/jobs/session-a/adopt.json": (ArtifactKind.ADOPT_MANIFEST, False),
++        "/tmp/.claude/projects/x/coordinator.jsonl": (ArtifactKind.COORDINATOR_SESSION_STREAM, True),
+     }
+ 
+     for path, (kind, parse_as_session) in cases.items():
+diff --git a/tests/unit/sources/test_live_watcher.py b/tests/unit/sources/test_live_watcher.py
+index 6d6bdf28f..daa57df7b 100644
+--- a/tests/unit/sources/test_live_watcher.py
++++ b/tests/unit/sources/test_live_watcher.py
+@@ -1373,6 +1373,132 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
+     assert metrics.succeeded_file_count == 1
+ 
+ 
++@pytest.mark.asyncio
++async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
++    workspace_env: dict[str, Path],
++) -> None:
++    """A Workflow snapshot is raw authority, not a failed zero-session JSON file."""
++
++    root = workspace_env["data_root"] / "claude-projects"
++    run_path = root / "fixture" / "workflows" / "wf_live_fact.json"
++    run_path.parent.mkdir(parents=True)
++    run_path.write_text(
++        json.dumps(
++            {
++                "runId": "wf_live_fact",
++                "taskId": "live-fact-admission",
++                "status": "running",
++            }
++        ),
++        encoding="utf-8",
++    )
++    db_path = workspace_env["archive_root"] / "index.db"
++    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
++    cursor = CursorStore(db_path)
++    processor = LiveBatchProcessor(
++        archive,
++        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
++        cursor=cursor,
++        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
++    )
++
++    try:
++        metrics = await processor.ingest_files([run_path], emit_event=False)
++
++        assert metrics.succeeded_file_count == 1
++        assert metrics.failed_file_count == 0
++        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
++            assert conn.execute(
++                "SELECT COUNT(*) FROM raw_sessions WHERE source_path = ?",
++                (str(run_path),),
++            ).fetchone()[0] == 1
++
++        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
++
++        summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
++        assert summary.current_artifact_count == 1
++        assert summary.artifact_counts == {"workflow_run_snapshot": 1}
++        assert summary.run_count == 1
++        assert any("missing workflow journal" in gap for gap in summary.gaps)
++    finally:
++        await archive.close()
++
++
++@pytest.mark.asyncio
++async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
++    workspace_env: dict[str, Path],
++) -> None:
++    """A growing Workflow journal retains full raw revisions and advances its current pointer."""
++
++    root = workspace_env["data_root"] / "claude-projects"
++    run_id = "wf_live_journal"
++    run_path = root / "fixture" / "workflows" / f"{run_id}.json"
++    journal_path = root / "fixture" / "subagents" / "workflows" / run_id / "journal.jsonl"
++    run_path.parent.mkdir(parents=True)
++    journal_path.parent.mkdir(parents=True)
++    run_path.write_text(json.dumps({"runId": run_id, "status": "running"}), encoding="utf-8")
++    _write_jsonl(
++        journal_path,
++        [
++            {
++                "runId": run_id,
++                "event": "attempt_started",
++                "contentKey": "call-00",
++                "attemptId": "attempt-00",
++            }
++        ],
++    )
++    db_path = workspace_env["archive_root"] / "index.db"
++    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
++    cursor = CursorStore(db_path)
++    processor = LiveBatchProcessor(
++        archive,
++        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
++        cursor=cursor,
++        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
++    )
++
++    try:
++        first = await processor.ingest_files([run_path, journal_path], emit_event=False)
++        with journal_path.open("a", encoding="utf-8") as handle:
++            handle.write(
++                json.dumps(
++                    {
++                        "runId": run_id,
++                        "event": "result",
++                        "contentKey": "call-00",
++                        "attemptId": "attempt-00",
++                        "structuredResult": {"ok": True},
++                    },
++                    sort_keys=True,
++                )
++                + "\n"
++            )
++        second = await processor.ingest_files([journal_path], emit_event=False)
++
++        assert first.succeeded_file_count == 2
++        assert second.succeeded_file_count == 1
++        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
++            assert conn.execute(
++                "SELECT COUNT(*) FROM raw_sessions WHERE source_path = ?",
++                (str(journal_path),),
++            ).fetchone()[0] == 2
++
++        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
++
++        summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
++        assert summary.current_artifact_count == 2
++        assert summary.retained_raw_revision_count == 3
++        assert summary.artifact_counts == {
++            "workflow_journal": 1,
++            "workflow_run_snapshot": 1,
++        }
++        assert summary.call_count == 1
++        assert summary.journal_result_count == 1
++    finally:
++        await archive.close()
++
++
+ @pytest.mark.asyncio
+ async def test_live_append_merges_tail_visible_through_public_archive_read(workspace_env: dict[str, Path]) -> None:
+     root = workspace_env["data_root"] / "claude-projects"
+@@ -2231,6 +2357,16 @@ def test_inbox_source_accepts_zip_and_archive_formats() -> None:
+     assert ".ndjson" in inbox.suffixes
+ 
+ 
++def test_claude_default_source_projects_originspec_suffixes() -> None:
++    """Claude live admission must follow the OriginSpec artifact contract."""
++    from polylogue.sources.live.watcher import default_sources
++
++    claude = next(source for source in default_sources() if source.name == "claude-code")
++    assert set(claude.suffixes) == {".json", ".jsonl", ".ndjson"}
++    assert claude.accepts(claude.root / "workflows" / "wf.json")
++    assert claude.accepts(claude.root / "project" / "session.jsonl")
++
++
+ def test_browser_capture_spool_is_default_json_source(
+     monkeypatch: pytest.MonkeyPatch,
+     tmp_path: Path,
+diff --git a/tests/unit/sources/test_origin_specs.py b/tests/unit/sources/test_origin_specs.py
+index 24da733e8..4e46e3cad 100644
+--- a/tests/unit/sources/test_origin_specs.py
++++ b/tests/unit/sources/test_origin_specs.py
+@@ -12,6 +12,7 @@ from polylogue.sources.origin_specs import (
+     ORIGIN_SPEC_REGISTRY,
+     ORIGIN_SPECS,
+     OriginSpecRegistry,
++    artifact_suffixes_for_provider,
+     validate_dispatch_precedence,
+ )
+ 
+@@ -36,7 +37,9 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
+         "agent_transcript",
+         "agent_sidecar_meta",
+         "adopt_manifest",
++        "coordinator_session_stream",
+     }
++    assert artifact_suffixes_for_provider(Provider.CLAUDE_CODE) == (".json", ".jsonl", ".ndjson")
+     assert claude.detector_tightness == 60
+     assert chatgpt.detector_tightness == 70
+     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")
