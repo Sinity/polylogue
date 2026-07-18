@@ -294,7 +294,7 @@ Do not infer roadmap state from GitHub Issues.
 - Rebuilding derived tiers is not free: embedding backfill can call an external provider. Check estimated cost first with `polylogue ops embed preflight --max-sessions 10 --format json`.
 - Cost output is an evidence model, not a billing reconciliation. Run `polylogue analyze usage --detail full --format json --limit 0` to see missing-model coverage, provider-vs-catalog-vs-subscription-credit lanes, and caveats side by side.
 - Polylogue does not reconstruct an ambient desktop timeline (window focus, independent shell history, browser-tab activity) — the archive schema has no tables for those domains today: `grep -h "CREATE TABLE" polylogue/storage/sqlite/archive_tiers/*.py | grep -iE "window|focus|shell_history|browser_tab|activitywatch" | wc -l` returns `0`.
-- `grok-export` is a reserved origin token with no wired parser; browser capture is a proposed capture mode, not an accepted-complete package.
+- `grok-export` is a reserved origin token with no wired parser. Browser capture (`polylogued browser-capture serve`, see [Browser Capture](docs/browser-capture.md)) is operational and opt-in today; only its entry in the provider-completeness registry is classified `proposed` rather than complete — that is a fidelity/documentation-coverage classification, not a statement that the feature does not work.
 - Polylogue is pre-1.0. There is no long-term-support branch — check `polylogue --version` and the release channel before depending on a documented surface.
 
 ## Development
