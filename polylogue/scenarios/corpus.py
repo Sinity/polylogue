@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.json import JSONValue
 from polylogue.insights.authored_payloads import (
     PayloadDict,
     PayloadMap,
@@ -27,6 +28,7 @@ from .specs import ScenarioSpec
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
     from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
+    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion
 
 
 def _coerce_optional_float(value: object) -> float | None:
@@ -829,6 +831,169 @@ def _resolve_existing_demo_session(archive: object, session_id: str) -> str | No
         return None
 
 
+def claim_vs_evidence_findings() -> tuple[FindingAssertion, ...]:
+    """Return the three public claim-vs-evidence FINDING seeds from the 2026-07-04 packet.
+
+    The return annotation stays storage-neutral at module import time; callers
+    receive ``FindingAssertion`` instances.  Values are copied from the
+    snapshot's sanitized ``.agent/demos/claim-vs-evidence`` report, while the
+    actual support status remains a live 37t.14 verdict rather than a seed.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, PublicClaimDeclaration
+
+    report_ref = "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json"
+    public_summary_ref = "file:.agent/demos/claim-vs-evidence/public-summary.json"
+    finding_doc_ref = "file:docs/findings/claim-vs-evidence.md"
+
+    def finding(
+        *,
+        claim_key: str,
+        body_text: str,
+        statistic: Mapping[str, JSONValue],
+        public_claim: PublicClaimDeclaration,
+    ) -> FindingAssertion:
+        return FindingAssertion(
+            claim_key=claim_key,
+            target_ref="analysis:claim-vs-evidence-2026-07-04",
+            body_text=body_text,
+            finding_kind="claim-vs-evidence",
+            statistic=statistic,
+            n=5_000,
+            query_ref=f"{report_ref}#definition",
+            result_set_ref=f"{report_ref}#totals",
+            detector_ref="run:claim-vs-evidence-2026-07-04",
+            evidence_refs=(report_ref, public_summary_ref, finding_doc_ref),
+            confidence=None,
+            source_epoch="2026-07-04T08:55:53.667311+00:00",
+            evaluation_ref=f"{report_ref}#calibration",
+            frame_ref=f"{report_ref}#sample_frame",
+            public_claim=public_claim,
+        )
+
+    public_refs = (finding_doc_ref, public_summary_ref, report_ref)
+    return (
+        finding(
+            claim_key="finding.silent-proceed-lower-bound",
+            body_text=(
+                "In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures "
+                "were followed by silent continuation on the next assistant turn, a 24.1% lower bound."
+            ),
+            statistic={
+                "op": "lower_bound",
+                "value": 0.241,
+                "unit": "ratio",
+                "numerator": 1_205,
+                "denominator": 5_000,
+                "ambiguous": 3_375,
+            },
+            public_claim=PublicClaimDeclaration(
+                publication=(
+                    "In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures "
+                    "were followed by silent continuation on the next assistant turn, a 24.1% lower bound."
+                ),
+                scope=(
+                    "One private archive; an origin-stratified 5,000-row sample from a 42,033-row "
+                    "structured-failure frame; next assistant turn only."
+                ),
+                caveat=(
+                    "This is not a population estimate; 3,375 rows remained ambiguous, and support must be "
+                    "recomputed when the evidence epoch, definition, or frame changes."
+                ),
+                public_evidence_refs=public_refs,
+                disclosure="public",
+            ),
+        ),
+        finding(
+            claim_key="finding.handler-class-split",
+            body_text=(
+                "The same sample's silent-continuation lower bounds were 22.3% for consequential handlers, "
+                "27.1% for benign-recovery handlers, and 53.9% for other handlers."
+            ),
+            statistic={
+                "op": "breakdown",
+                "value": {
+                    "consequential": {
+                        "failed_outcomes": 4_175,
+                        "silent_proceed": 930,
+                        "ambiguous": 2_842,
+                        "silent_rate_lower_bound": 0.22275449101796407,
+                    },
+                    "benign_recovery": {
+                        "failed_outcomes": 634,
+                        "silent_proceed": 172,
+                        "ambiguous": 455,
+                        "silent_rate_lower_bound": 0.27129337539432175,
+                    },
+                    "other": {
+                        "failed_outcomes": 191,
+                        "silent_proceed": 103,
+                        "ambiguous": 78,
+                        "silent_rate_lower_bound": 0.5392670157068062,
+                    },
+                },
+                "unit": "structured_failures",
+            },
+            public_claim=PublicClaimDeclaration(
+                publication=(
+                    "In that sample, the silent-continuation lower bound was 22.3% for consequential "
+                    "handlers, 27.1% for benign-recovery handlers, and 53.9% for other handlers."
+                ),
+                scope=(
+                    "The same 5,000 sampled failures, partitioned by the packet's explicit handler-class "
+                    "methodology: 4,175 consequential, 634 benign-recovery, and 191 other."
+                ),
+                caveat=(
+                    "The classes are method-defined tool-name groups, not severity labels; each group retains "
+                    "a large or material ambiguous remainder."
+                ),
+                public_evidence_refs=public_refs,
+                disclosure="public",
+            ),
+        ),
+        finding(
+            claim_key="finding.per-origin-inspection-counts",
+            body_text=(
+                "The bounded origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven "
+                "Claude AI structured failures."
+            ),
+            statistic={
+                "op": "breakdown",
+                "value": {
+                    "claude-code-session": {
+                        "inspected": 3_752,
+                        "requested": 3_752,
+                        "frame_total": 31_555,
+                    },
+                    "codex-session": {
+                        "inspected": 1_241,
+                        "requested": 1_241,
+                        "frame_total": 10_429,
+                    },
+                    "claude-ai-export": {"inspected": 7, "requested": 7, "frame_total": 49},
+                },
+                "unit": "structured_failures",
+            },
+            public_claim=PublicClaimDeclaration(
+                publication=(
+                    "The origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven "
+                    "Claude AI structured failures from origin frames of 31,555, 10,429, and 49 respectively."
+                ),
+                scope=(
+                    "The 2026-07-04 bounded sample frame, selected deterministically by origin, session, "
+                    "tool, and result-message identifiers."
+                ),
+                caveat=(
+                    "These are inspection and frame counts, not provider prevalence estimates; the archive's "
+                    "origin mix and the bounded allocation determine them."
+                ),
+                public_evidence_refs=public_refs,
+                disclosure="public",
+            ),
+        ),
+    )
+
+
 def seed_demo_user_overlays(
     archive_root: Path,
     *,
@@ -850,6 +1015,7 @@ def seed_demo_user_overlays(
         list_assertions_for_target,
         upsert_assertion,
         upsert_blackboard_note,
+        upsert_findings_as_assertions,
         upsert_mark,
         upsert_saved_view,
     )
@@ -928,6 +1094,11 @@ def seed_demo_user_overlays(
             context_policy={"inject": False, "demo": True},
             now_ms=now_ms + 4_000,
         )
+        finding_assertions = upsert_findings_as_assertions(
+            conn,
+            claim_vs_evidence_findings(),
+            now_ms=now_ms + 5_000,
+        )
         assertions = list_assertions_for_target(conn, f"session:{DEMO_CLAUDE_CODE_SESSION_ID}")
         conn.commit()
     finally:
@@ -939,7 +1110,14 @@ def seed_demo_user_overlays(
         mark_id=mark.mark_id,
         note_id=note.note_id,
         saved_view_id=saved_view.view_id,
-        assertion_ids=tuple(dict.fromkeys(assertion.assertion_id for assertion in assertions)),
+        assertion_ids=tuple(
+            dict.fromkeys(
+                [
+                    *(assertion.assertion_id for assertion in assertions),
+                    *(assertion.assertion_id for assertion in finding_assertions),
+                ]
+            )
+        ),
     )
 
 

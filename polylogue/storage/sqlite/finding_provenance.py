@@ -10,18 +10,30 @@ against live user-tier storage, and reports an honest current/stale/unknown
 staleness verdict. It does not (yet) carry a code SHA or corpus-datasheet
 hash -- those require build-info threading that is out of scope here and
 tracked as a named follow-up (see the module docstring in
-``polylogue.surfaces.payloads.FindingProvenancePayload``).
+``polylogue.surfaces.payloads.FindingProvenancePayload``).  This legacy
+current/stale helper is not the 37t.14 evidence-integrity authority and is not
+used to compute public-claim support.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from polylogue.core.enums import AssertionKind
 from polylogue.core.refs import ObjectRef
-from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope, read_assertion_envelope
+from polylogue.insights.measurement.public_claims import (
+    PublicClaimDisclosure,
+    PublicClaimPresetName,
+    PublicFindingInput,
+)
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveAssertionEnvelope,
+    list_assertion_claims,
+    read_assertion_envelope,
+    read_latest_candidate_judgment,
+)
 from polylogue.storage.sqlite.query_objects import get_query, get_result_set
 
 StalenessVerdict = Literal["current", "stale", "unknown"]
@@ -126,9 +138,116 @@ def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def list_public_finding_inputs(conn: sqlite3.Connection) -> tuple[PublicFindingInput, ...]:
+    """Adapt public-declared FINDING rows to the storage-neutral projection input.
+
+    This function reads lifecycle and judgment facts only.  It never resolves
+    evidence refs or computes support, cycle, staleness, frame, or privacy
+    ancestry verdicts; those enter later through the 37t.14 provider seam.
+    """
+
+    findings = list_assertion_claims(conn, kinds=(AssertionKind.FINDING,), statuses=None)
+    return tuple(_public_finding_input(conn, finding) for finding in findings if _has_public_claim(finding))
+
+
+def _has_public_claim(envelope: ArchiveAssertionEnvelope) -> bool:
+    return isinstance(envelope.value, dict) and isinstance(envelope.value.get("public_claim"), dict)
+
+
+def _public_finding_input(conn: sqlite3.Connection, envelope: ArchiveAssertionEnvelope) -> PublicFindingInput:
+    value = envelope.value if isinstance(envelope.value, dict) else {}
+    declaration = value.get("public_claim")
+    if not isinstance(declaration, dict):
+        raise ValueError(f"finding {envelope.assertion_id!r} has no public_claim declaration")
+
+    publication = _required_str(declaration.get("publication"), field="publication", assertion_id=envelope.assertion_id)
+    scope = _required_str(declaration.get("scope"), field="scope", assertion_id=envelope.assertion_id)
+    caveat = _required_str(declaration.get("caveat"), field="caveat", assertion_id=envelope.assertion_id)
+    disclosure_value = _required_str(
+        declaration.get("disclosure"), field="disclosure", assertion_id=envelope.assertion_id
+    )
+    if disclosure_value not in {"public", "held_private"}:
+        raise ValueError(f"finding {envelope.assertion_id!r} has invalid public disclosure {disclosure_value!r}")
+    disclosure = cast(PublicClaimDisclosure, disclosure_value)
+
+    public_refs = _required_str_list(
+        declaration.get("public_evidence_refs"),
+        field="public_evidence_refs",
+        assertion_id=envelope.assertion_id,
+    )
+    preset_values = _required_str_list(
+        declaration.get("presets"),
+        field="presets",
+        assertion_id=envelope.assertion_id,
+    )
+    try:
+        presets = tuple(PublicClaimPresetName(item) for item in preset_values)
+    except ValueError as exc:
+        raise ValueError(f"finding {envelope.assertion_id!r} has an unknown public-claim preset") from exc
+
+    statistic = value.get("statistic")
+    if not isinstance(statistic, dict):
+        raise ValueError(f"finding {envelope.assertion_id!r} statistic must be a mapping")
+
+    judgment_ref, judgment_decision = _finding_judgment(conn, envelope)
+    return PublicFindingInput(
+        assertion_ref=f"assertion:{envelope.assertion_id}",
+        claim_key=_required_str(envelope.key, field="claim key", assertion_id=envelope.assertion_id),
+        publication=publication,
+        scope=scope,
+        caveat=caveat,
+        public_evidence_refs=public_refs,
+        presets=presets,
+        disclosure=disclosure,
+        statistic=statistic,
+        finding_epoch=_str_or_none(value.get("source_epoch")),
+        evaluation_ref=_str_or_none(value.get("evaluation_ref")),
+        frame_ref=_str_or_none(value.get("frame_ref")),
+        assertion_status=envelope.status,
+        assertion_visibility=envelope.visibility,
+        author_kind=_required_str(envelope.author_kind, field="author kind", assertion_id=envelope.assertion_id),
+        judgment_ref=judgment_ref,
+        judgment_decision=judgment_decision,
+        supersedes=tuple(envelope.supersedes),
+        updated_at_ms=envelope.updated_at_ms,
+    )
+
+
+def _finding_judgment(conn: sqlite3.Connection, envelope: ArchiveAssertionEnvelope) -> tuple[str | None, str | None]:
+    candidate_ids: list[str] = []
+    if envelope.status.value in {"candidate", "accepted", "rejected", "deferred", "superseded"}:
+        candidate_ids.append(envelope.assertion_id)
+    candidate_ids.extend(ref.removeprefix("assertion:") for ref in envelope.supersedes if ref.startswith("assertion:"))
+
+    resulting_ref = f"assertion:{envelope.assertion_id}"
+    for candidate_id in candidate_ids:
+        judgment = read_latest_candidate_judgment(conn, candidate_id)
+        if judgment is None or not isinstance(judgment.value, dict):
+            continue
+        decision = _str_or_none(judgment.value.get("decision"))
+        declared_result = _str_or_none(judgment.value.get("resulting_assertion_ref"))
+        if envelope.status.value == "active" and declared_result != resulting_ref:
+            continue
+        return f"assertion:{judgment.assertion_id}", decision
+    return None, None
+
+
+def _required_str(value: object, *, field: str, assertion_id: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"finding {assertion_id!r} public {field} must be a non-empty string")
+    return value.strip()
+
+
+def _required_str_list(value: object, *, field: str, assertion_id: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item.strip() for item in value):
+        raise ValueError(f"finding {assertion_id!r} public {field} must be a non-empty string list")
+    return tuple(dict.fromkeys(item.strip() for item in value))
+
+
 __all__ = [
     "FindingEvidenceResolution",
     "FindingProvenance",
     "StalenessVerdict",
     "compute_finding_provenance",
+    "list_public_finding_inputs",
 ]

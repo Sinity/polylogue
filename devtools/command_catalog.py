@@ -261,6 +261,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "render public-claims",
+        "generated surfaces",
+        "Render README, launch, findings-page, and verified-export claim views from FINDING assertions.",
+        "devtools.render_public_claims",
+        use_when=(
+            "Refresh public claim Markdown/JSON and the generated YAML compatibility view after changing "
+            "FINDING seeds, judgments, capability declarations, or 37t.14 verdict receipts."
+        ),
+        examples=(
+            "devtools render public-claims",
+            "devtools render public-claims --check",
+            "devtools render public-claims --archive-root /path/to/archive --verdicts /path/to/verdicts.json",
+        ),
+    ),
+    CommandSpec(
         "render pages",
         "generated surfaces",
         "Build the GitHub Pages documentation site into .cache/site/.",
@@ -292,11 +307,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify public-claims",
         "verification",
-        "Validate public claims, evidence paths, Beads owners, and retired copy.",
+        "Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy.",
         "devtools.public_claims",
         use_when=(
-            "Check externally visible claims after changing README, demos, findings, proof artifacts, "
-            "or the claims ledger."
+            "Check externally visible claims after changing README, demos, findings, FINDING assertions, "
+            "capability declarations, or evidence-integrity receipts."
         ),
         examples=(
             "devtools verify public-claims",

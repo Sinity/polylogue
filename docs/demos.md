@@ -57,9 +57,10 @@ The full fixture audit remains machine-readable in `report.json`, so the public 
 
 ## Field finding: claim versus structural failure
 
-A bounded private-archive study sampled 5,000 structured failures from a frame of 42,033. It classified 1,205 cases as silent proceed on the next assistant turn, a 24.1% lower bound, while 3,375 cases remained ambiguous. This is a field observation from one archive and one method—not a population estimate.
+<!-- public-claim:finding.silent-proceed-lower-bound -->
+The historical packet generated on 2026-07-04 sampled 5,000 structured failures from a frame of 42,033. It classified 1,205 cases as silent proceed on the next assistant turn, a 24.1% lower bound, while 3,375 cases remained ambiguous. This is a field observation from one archive and one method—not a population estimate or an automatically current claim.
 
-Read the full [finding, method, calibration, and caveats](findings/claim-vs-evidence.md).
+Read the full [finding, method, calibration, and caveats](findings/claim-vs-evidence.md), then check the generated [findings-page claim status](generated/public-claims/findings-page.md) before reusing the number.
 
 ## Flagship demonstrations under construction
 

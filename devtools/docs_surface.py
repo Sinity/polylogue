@@ -224,6 +224,30 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "README Public-Claims View",
+        "generated/public-claims/readme.md",
+        "Generated compact status view for claims used in README-facing copy.",
+        "evidence",
+    ),
+    _entry(
+        "Launch Public-Claims View",
+        "generated/public-claims/launch.md",
+        "Generated launch-copy claim status with evidence blockers and remediation refs.",
+        "evidence",
+    ),
+    _entry(
+        "Findings-Page Public-Claims View",
+        "generated/public-claims/findings-page.md",
+        "Generated finding status with judgment, privacy, evidence, epoch, and frame qualifiers.",
+        "evidence",
+    ),
+    _entry(
+        "Verified Public-Claims Export",
+        "generated/public-claims/verified-export.md",
+        "Generated full public-claim projection corresponding to the machine-readable export.",
+        "evidence",
+    ),
+    _entry(
         "Structured Failure Follow-Up",
         "findings/claim-vs-evidence.md",
         "Bounded field finding with oracle, sample frame, calibration, and caveats.",

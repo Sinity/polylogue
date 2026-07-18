@@ -1,0 +1,251 @@
+{
+  "authority": {
+    "claims": "AssertionKind.FINDING + explicit capability declarations",
+    "integrity": "polylogue-37t.14 EvidenceIntegrityVerdict",
+    "projection": "polylogue/insights/measurement/public_claims.py"
+  },
+  "claim_count": 4,
+  "claims": [
+    {
+      "badge": "[CAPABILITY ONLY]",
+      "blind_spot_codes": [],
+      "blocker_codes": [],
+      "caveat": "This is a product-category capability statement, not a measured performance or prevalence claim.",
+      "claim_key": "category.local-evidence-system",
+      "integrity_status": null,
+      "integrity_verdict_present": false,
+      "presets": [
+        "readme",
+        "launch",
+        "findings-page",
+        "verified-export"
+      ],
+      "public_evidence_refs": [
+        "file:README.md",
+        "file:docs/architecture.md",
+        "file:docs/proof-artifacts.md"
+      ],
+      "public_remediation_refs": [],
+      "publication": "Polylogue is a local evidence system for AI work.",
+      "qualifiers": {
+        "definition_ref": null,
+        "evaluation_ref": null,
+        "finding_epoch": null,
+        "finding_frame_ref": null,
+        "verdict_as_of_epoch": null,
+        "verdict_frame_ref": null
+      },
+      "reason_codes": [],
+      "review": {
+        "assertion_status": null,
+        "judgment_ref": null,
+        "privacy": "approved",
+        "publication": "approved"
+      },
+      "scope": "The current local archive, query, evidence, judgment, and context surfaces.",
+      "source_kind": "capability",
+      "source_ref": null,
+      "statistic": null,
+      "status": "capability-only"
+    },
+    {
+      "badge": "[UNKNOWN \u00b7 UNRESOLVED]",
+      "blind_spot_codes": [],
+      "blocker_codes": [
+        "finding-candidate"
+      ],
+      "caveat": "The classes are method-defined tool-name groups, not severity labels; each group retains a large or material ambiguous remainder.",
+      "claim_key": "finding.handler-class-split",
+      "integrity_status": "unresolved",
+      "integrity_verdict_present": false,
+      "presets": [
+        "readme",
+        "launch",
+        "findings-page",
+        "verified-export"
+      ],
+      "public_evidence_refs": [
+        "file:docs/findings/claim-vs-evidence.md",
+        "file:.agent/demos/claim-vs-evidence/public-summary.json",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json"
+      ],
+      "public_remediation_refs": [
+        "bead:polylogue-37t.14"
+      ],
+      "publication": "In that sample, the silent-continuation lower bound was 22.3% for consequential handlers, 27.1% for benign-recovery handlers, and 53.9% for other handlers.",
+      "qualifiers": {
+        "definition_ref": null,
+        "evaluation_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration",
+        "finding_epoch": "2026-07-04T08:55:53.667311+00:00",
+        "finding_frame_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+        "verdict_as_of_epoch": null,
+        "verdict_frame_ref": null
+      },
+      "reason_codes": [
+        "integrity-verdict-not-computed"
+      ],
+      "review": {
+        "assertion_status": "candidate",
+        "judgment_ref": null,
+        "privacy": "pending",
+        "publication": "pending"
+      },
+      "scope": "The same 5,000 sampled failures, partitioned by the packet's explicit handler-class methodology: 4,175 consequential, 634 benign-recovery, and 191 other.",
+      "source_kind": "finding",
+      "source_ref": "assertion:assertion-finding:cbb4967fc2d33ce231978b76949205856a68d8306da46a610f478cb4244d2ad8",
+      "statistic": {
+        "op": "breakdown",
+        "unit": "structured_failures",
+        "value": {
+          "benign_recovery": {
+            "ambiguous": 455,
+            "failed_outcomes": 634,
+            "silent_proceed": 172,
+            "silent_rate_lower_bound": 0.27129337539432175
+          },
+          "consequential": {
+            "ambiguous": 2842,
+            "failed_outcomes": 4175,
+            "silent_proceed": 930,
+            "silent_rate_lower_bound": 0.22275449101796407
+          },
+          "other": {
+            "ambiguous": 78,
+            "failed_outcomes": 191,
+            "silent_proceed": 103,
+            "silent_rate_lower_bound": 0.5392670157068062
+          }
+        }
+      },
+      "status": "unknown"
+    },
+    {
+      "badge": "[UNKNOWN \u00b7 UNRESOLVED]",
+      "blind_spot_codes": [],
+      "blocker_codes": [
+        "finding-candidate"
+      ],
+      "caveat": "These are inspection and frame counts, not provider prevalence estimates; the archive's origin mix and the bounded allocation determine them.",
+      "claim_key": "finding.per-origin-inspection-counts",
+      "integrity_status": "unresolved",
+      "integrity_verdict_present": false,
+      "presets": [
+        "readme",
+        "launch",
+        "findings-page",
+        "verified-export"
+      ],
+      "public_evidence_refs": [
+        "file:docs/findings/claim-vs-evidence.md",
+        "file:.agent/demos/claim-vs-evidence/public-summary.json",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json"
+      ],
+      "public_remediation_refs": [
+        "bead:polylogue-37t.14"
+      ],
+      "publication": "The origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven Claude AI structured failures from origin frames of 31,555, 10,429, and 49 respectively.",
+      "qualifiers": {
+        "definition_ref": null,
+        "evaluation_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration",
+        "finding_epoch": "2026-07-04T08:55:53.667311+00:00",
+        "finding_frame_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+        "verdict_as_of_epoch": null,
+        "verdict_frame_ref": null
+      },
+      "reason_codes": [
+        "integrity-verdict-not-computed"
+      ],
+      "review": {
+        "assertion_status": "candidate",
+        "judgment_ref": null,
+        "privacy": "pending",
+        "publication": "pending"
+      },
+      "scope": "The 2026-07-04 bounded sample frame, selected deterministically by origin, session, tool, and result-message identifiers.",
+      "source_kind": "finding",
+      "source_ref": "assertion:assertion-finding:adb1c19ac49d5b835056e68eb12b9389656b83c6eb01d5f09eb7ad6dd5cf7edd",
+      "statistic": {
+        "op": "breakdown",
+        "unit": "structured_failures",
+        "value": {
+          "claude-ai-export": {
+            "frame_total": 49,
+            "inspected": 7,
+            "requested": 7
+          },
+          "claude-code-session": {
+            "frame_total": 31555,
+            "inspected": 3752,
+            "requested": 3752
+          },
+          "codex-session": {
+            "frame_total": 10429,
+            "inspected": 1241,
+            "requested": 1241
+          }
+        }
+      },
+      "status": "unknown"
+    },
+    {
+      "badge": "[UNKNOWN \u00b7 UNRESOLVED]",
+      "blind_spot_codes": [],
+      "blocker_codes": [
+        "finding-candidate"
+      ],
+      "caveat": "This is not a population estimate; 3,375 rows remained ambiguous, and support must be recomputed when the evidence epoch, definition, or frame changes.",
+      "claim_key": "finding.silent-proceed-lower-bound",
+      "integrity_status": "unresolved",
+      "integrity_verdict_present": false,
+      "presets": [
+        "readme",
+        "launch",
+        "findings-page",
+        "verified-export"
+      ],
+      "public_evidence_refs": [
+        "file:docs/findings/claim-vs-evidence.md",
+        "file:.agent/demos/claim-vs-evidence/public-summary.json",
+        "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json"
+      ],
+      "public_remediation_refs": [
+        "bead:polylogue-37t.14"
+      ],
+      "publication": "In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures were followed by silent continuation on the next assistant turn, a 24.1% lower bound.",
+      "qualifiers": {
+        "definition_ref": null,
+        "evaluation_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration",
+        "finding_epoch": "2026-07-04T08:55:53.667311+00:00",
+        "finding_frame_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+        "verdict_as_of_epoch": null,
+        "verdict_frame_ref": null
+      },
+      "reason_codes": [
+        "integrity-verdict-not-computed"
+      ],
+      "review": {
+        "assertion_status": "candidate",
+        "judgment_ref": null,
+        "privacy": "pending",
+        "publication": "pending"
+      },
+      "scope": "One private archive; an origin-stratified 5,000-row sample from a 42,033-row structured-failure frame; next assistant turn only.",
+      "source_kind": "finding",
+      "source_ref": "assertion:assertion-finding:e5da9c88d1c236d15648fc52ad7898d8a6f7018277e84c624bdc9e7c7d037689",
+      "statistic": {
+        "ambiguous": 3375,
+        "denominator": 5000,
+        "numerator": 1205,
+        "op": "lower_bound",
+        "unit": "ratio",
+        "value": 0.241
+      },
+      "status": "unknown"
+    }
+  ],
+  "preset": "verified-export",
+  "publishable_claim_keys": [
+    "category.local-evidence-system"
+  ],
+  "schema": "polylogue.public-claims-view.v1"
+}
