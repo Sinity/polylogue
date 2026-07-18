@@ -258,6 +258,25 @@ class ArchiveStorageStatus(BaseModel):
     identity_conflicts: list[dict[str, object]] = Field(default_factory=list)
 
 
+class BlobPublicationReservationStatus(BaseModel):
+    """Observability for the durable blob-publication reservation ledger.
+
+    ``unresolved_count`` is deliberately never auto-cleared by reconciliation
+    (polylogue-qs0a): the archive-wide writer-exclusion flock only spans the
+    reservation+blob-write step (ArchiveBlobPublisher.flush), not the later
+    reference/commit step, so a row that is unreferenced-but-blob-present is
+    indistinguishable from a writer genuinely mid-commit even under full
+    exclusion. Growth here is a signal for operator inspection or explicit
+    abandonment, not itself a bug.
+    """
+
+    total_reserved_count: int = 0
+    retained_referenced_count: int = 0
+    retained_missing_count: int = 0
+    unresolved_count: int = 0
+    unresolved_oldest_age_s: float | None = None
+
+
 class LiveCursorFileState(BaseModel):
     source_path: str
     failure_count: int = 0
@@ -373,6 +392,9 @@ class DaemonStatus(BaseModel):
     raw_materialization_readiness: RawMaterializationReadiness = Field(default_factory=RawMaterializationReadiness)
     raw_frontier_integrity: RawFrontierIntegrity = Field(default_factory=RawFrontierIntegrity)
     raw_replay_backlog: dict[str, object] = Field(default_factory=dict)
+    blob_publication_reservations: BlobPublicationReservationStatus = Field(
+        default_factory=BlobPublicationReservationStatus
+    )
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
     claim_guard: dict[str, object] = Field(default_factory=dict)
@@ -466,6 +488,39 @@ def _blob_size_info() -> int:
     # archive. A recursive blob-store walk is proportional to archive size and
     # can make `polylogued status` look hung on production archives.
     return 0
+
+
+def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
+    """Read-only classification snapshot, no exclusion acquired (polylogue-qs0a).
+
+    Mirrors reconcile_blob_publication_reservations's own classification so
+    the counts here match what a reconciliation pass would report, without
+    taking the archive-wide writer-exclusion lock a status probe must never
+    contend for.
+    """
+    from polylogue.storage.blob_publication import inspect_blob_publication_receipts
+
+    root = archive_root()
+    source_db = root / "source.db"
+    if not source_db.exists():
+        return BlobPublicationReservationStatus()
+    inspections = inspect_blob_publication_receipts(source_db, root / "blob", index_db_path=index_db_path())
+    now = datetime.now(UTC)
+    unresolved = [item for item in inspections if not item.referenced and item.blob_present]
+    retained_referenced = sum(1 for item in inspections if item.referenced)
+    retained_missing = sum(1 for item in inspections if not item.referenced and not item.blob_present)
+    oldest_unresolved_age_s = (
+        max((now - datetime.fromtimestamp(item.reserved_at_ms / 1000.0, UTC)).total_seconds() for item in unresolved)
+        if unresolved
+        else None
+    )
+    return BlobPublicationReservationStatus(
+        total_reserved_count=len(inspections),
+        retained_referenced_count=retained_referenced,
+        retained_missing_count=retained_missing,
+        unresolved_count=len(unresolved),
+        unresolved_oldest_age_s=round(oldest_unresolved_age_s, 3) if oldest_unresolved_age_s is not None else None,
+    )
 
 
 def _archive_storage_info() -> ArchiveStorageStatus:
@@ -2160,6 +2215,13 @@ def build_daemon_status(
             name="raw_failures", scope="archive", collector=_raw_failure_info, deadline_s=1.0, cost_class="moderate"
         ),
         StatusComponentSpec(
+            name="blob_publication_reservations",
+            scope="archive",
+            collector=_blob_publication_reservation_info,
+            deadline_s=1.0,
+            cost_class="moderate",
+        ),
+        StatusComponentSpec(
             name="embedding_readiness",
             scope="semantic",
             collector=lambda: embedding_readiness_info(active_db),
@@ -2202,6 +2264,7 @@ def build_daemon_status(
         convergence=convergence,
     )
     raw_failures: dict[str, object] = _v("raw_failures", {})
+    blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())
     embedding_info: dict[str, object] = _v("embedding_readiness", {})
     health = _v("health", _checked_health())
 
@@ -2318,6 +2381,7 @@ def build_daemon_status(
         raw_materialization_readiness=raw_materialization_readiness,
         raw_frontier_integrity=raw_frontier_integrity,
         raw_replay_backlog=raw_replay_backlog,
+        blob_publication_reservations=blob_publication_reservations,
         archive_storage=storage_info,
         component_readiness=component_readiness,
         claim_guard=_daemon_claim_guard(
