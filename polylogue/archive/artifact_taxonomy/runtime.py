@@ -159,6 +159,21 @@ def _classify_list(
             reason="empty list payload",
         )
 
+    # Hermes ATOF records look superficially like generic hook events, but
+    # carry a producer-defined observer session stream and must be admitted
+    # before the generic hook-sidecar exclusion below.
+    from polylogue.sources.parsers.hermes_spans import looks_like_atof_payload
+
+    if provider is Provider.HERMES and dict_items and all(looks_like_atof_payload(item) for item in dict_items):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_RECORD_STREAM,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=110,
+            reason="Hermes NeMo Relay ATOF observer event stream",
+        )
+
     if dict_items and looks_like_hook_event_stream(dict_items):
         return ArtifactClassification(
             provider=provider,
@@ -227,6 +242,10 @@ def _classify_dict(
     provider: Provider,
     source_path: str | Path | None,
 ) -> ArtifactClassification:
+    # Keep this deferred to avoid the artifact-taxonomy/sources bootstrap
+    # cycle described below. List streams import the same pair locally.
+    from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
+
     if provider is Provider.BEADS and looks_like_beads_interaction(payload):
         return ArtifactClassification(
             provider=provider,
@@ -264,8 +283,6 @@ def _classify_dict(
     # package is the first one initialized. See
     # `_archive_reconcile_hermes_session_lifecycle` in `api/archive.py` for
     # the same deferred-import pattern used to break an equivalent cycle.
-    from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
-
     if provider is Provider.HERMES and looks_like_atif_payload(payload):
         return ArtifactClassification(
             provider=provider,

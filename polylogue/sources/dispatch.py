@@ -36,8 +36,10 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI})
-GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.BEADS})
-STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.BEADS})
+GROUP_PROVIDERS = frozenset(
+    {Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.BEADS, Provider.HERMES}
+)
+STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.BEADS, Provider.HERMES})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
 # The explicit record-shape branch order below remains the production
 # implementation during the OriginSpec migration.  OriginSpec validates its
@@ -160,6 +162,8 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         return Provider.HERMES
     if hermes_spans.looks_like_atif_payload(record):
         return Provider.HERMES
+    if hermes_spans.looks_like_atof_payload(record):
+        return Provider.HERMES
     if local_agent.looks_like_hermes(record):
         return Provider.HERMES
     if antigravity.looks_like_markdown_export(record):
@@ -197,6 +201,8 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
             return Provider.GEMINI_CLI
         if browser_capture.looks_like(first_record):
             return _detect_provider_from_record(first_record)
+        if hermes_spans.looks_like_atof_payload(first_record):
+            return Provider.HERMES
         if beads.looks_like(first_record):
             return Provider.BEADS
         if is_json_document(first_record.get("mapping")):
@@ -785,6 +791,16 @@ def _lower_payload_specs(
             schema_resolution=schema_resolution,
         )
     if runtime_provider is Provider.HERMES:
+        payloads = _payload_sequence(shaped_payload)
+        if (
+            payloads is not None
+            and payloads
+            and all(
+                (event := _payload_record(item)) is not None and hermes_spans.looks_like_atof_payload(event)
+                for item in payloads
+            )
+        ):
+            return [_grouped_records_spec(runtime_provider, payloads, fallback_id, source_path=source_path)]
         record = _single_document_record(shaped_payload)
         if record is not None and hermes_state.looks_like_state_db_payload(record):
             return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
@@ -867,6 +883,10 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         payloads = _payload_sequence(spec.payload)
         return beads.parse(payloads, spec.fallback_id, source_path=spec.source_path) if payloads is not None else []
 
+    if spec.provider is Provider.HERMES and spec.mode == "grouped_records":
+        payloads = _payload_sequence(spec.payload)
+        return hermes_spans.parse_atof_stream(payloads, spec.fallback_id) if payloads is not None else []
+
     if spec.mode == "local_agent_document":
         record = _payload_record(spec.payload)
         if record is None:
@@ -944,6 +964,8 @@ def parse_stream_payload(
         return [codex.parse_stream(payloads, fallback_id)]
     if runtime_provider is Provider.BEADS:
         return beads.parse(payloads, fallback_id, source_path=source_path)
+    if runtime_provider is Provider.HERMES:
+        return hermes_spans.parse_atof_stream(payloads, fallback_id)
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 

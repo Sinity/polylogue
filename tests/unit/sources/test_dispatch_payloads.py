@@ -11,6 +11,8 @@ from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload, parse_stream_payload
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
+HERMES_ATOF_FIXTURE = Path(__file__).parents[2] / "fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.jsonl"
+
 
 def test_payload_sequence_normalizes_streaming_decimals() -> None:
     payload = [{"whole": Decimal("2"), "fraction": Decimal("2.5"), "items": [Decimal("3")]}]
@@ -91,6 +93,24 @@ def test_parse_payload_unwraps_single_antigravity_metadata_list() -> None:
 
     assert len(from_dict) == 1
     assert len(from_list) == 1
+
+
+def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stream() -> None:
+    """Exercise the filesystem emitter rather than only direct parser calls.
+
+    Mutation: omit Hermes from grouped/stream providers or classify ATOF as a
+    generic hook sidecar. The actual source walk stops producing the one
+    observer session and its retained whole-file raw evidence.
+    """
+    source = Source(name="hermes", path=HERMES_ATOF_FIXTURE.parent)
+    pairs = list(iter_source_sessions_with_raw(source, capture_raw=True))
+    assert len(pairs) == 1
+    raw, session = pairs[0]
+    assert raw is not None
+    assert raw.source_path == str(HERMES_ATOF_FIXTURE)
+    assert raw.source_index is None
+    assert session.provider_session_id == "observer:real-nemo-relay-session-redacted"
+    assert "hermes:atof-observer" in session.ingest_flags
 
 
 def test_parse_payload_splits_claude_code_aggregate_by_session_id() -> None:

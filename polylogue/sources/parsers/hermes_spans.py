@@ -34,17 +34,13 @@ sample contained no ``tool_calls``, observation, or subagent trajectory shape,
 so those mappings intentionally remain ``inferred`` rather than being promoted
 from documentation alone.
 
-Scope narrowing (disclosed, not silent): ATIF's *documented* step schema
-(``source``/``tool_calls``/``observation``/``message``) carries no
-approval-hook or error-hook data -- that vocabulary exists only in the raw
-ATOF event stream (JSONL, one Hermes hook per line), which this importer
-does not ingest. ``decision_points``/``error_taxonomy`` fidelity capabilities
-are honestly declared ``absent`` rather than fabricated from hook types this
-schema doesn't carry. Ingesting the raw ATOF stream is a materially larger,
-differently-shaped change (JSONL grouped by session, not a single document)
-and is intentionally outside this ATIF importer; it must be designed as its
-own JSONL/session-grouping acquisition path rather than silently fabricated
-from trajectory documents.
+ATIF's documented step schema (``source``/``tool_calls``/``observation``/
+``message``) carries no approval/error-hook data, so those capabilities remain
+honestly ``absent`` for ATIF-only imports. The separately-ingested raw ATOF
+JSONL route groups producer events by Hermes session id and preserves LLM,
+tool, approval, error, subagent, context, and unknown-event evidence as
+observer events. It still does not physically merge either observer source
+into the state-db transcript session.
 
 Payload hygiene: unlike a raw ATOF hook (ids/timings/outcomes only), a real
 ATIF step's ``message``/``observation`` fields carry actual response text --
@@ -70,7 +66,7 @@ remains possible today via ``hermes_observer_session_id_for``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
@@ -88,6 +84,9 @@ HermesSpanEventType: TypeAlias = Literal[
     "hermes_llm_request_span",
     "hermes_tool_execution_span",
     "hermes_subagent_span",
+    "hermes_decision_span",
+    "hermes_error_span",
+    "hermes_context_span",
     "hermes_observer_span",
 ]
 
@@ -157,6 +156,228 @@ def looks_like_atif_payload(payload: JSONDocument) -> bool:
         and schema_version.upper().startswith(ATIF_SCHEMA_VERSION_PREFIX)
         and isinstance(payload.get("session_id"), str)
         and isinstance(payload.get("steps"), list)
+    )
+
+
+def looks_like_atof_payload(payload: JSONDocument) -> bool:
+    """Return whether ``payload`` is one NeMo Relay ATOF event envelope.
+
+    The bundled Hermes plugin emits ``atof_version: "0.1"`` records with a
+    ``scope`` or ``mark`` kind, a stable UUID, timestamp, and event name.  The
+    structural check intentionally permits unfamiliar names/categories: those
+    are retained as generic observer evidence instead of being discarded when
+    the producer evolves.
+    """
+    return (
+        isinstance(payload.get("atof_version"), str)
+        and isinstance(payload.get("kind"), str)
+        and payload["kind"] in {"scope", "mark"}
+        and isinstance(payload.get("uuid"), str)
+        and isinstance(payload.get("timestamp"), str)
+        and isinstance(payload.get("name"), str)
+    )
+
+
+def parse_atof_stream(records: Iterable[object], fallback_id: str) -> list[ParsedSession]:
+    """Normalize a raw Hermes NeMo Relay ATOF JSONL stream by session id.
+
+    This is deliberately observer evidence rather than a transcript import.
+    It keeps only correlation/outcome fields that the producer emits
+    structurally; prompts, tool arguments, outputs, headers, and error text
+    remain in the retained raw blob rather than being copied into index rows.
+    Replayed append windows are de-duplicated by the producer's UUID plus the
+    scope phase, because a scope's start and end intentionally share a UUID.
+    """
+    grouped: dict[str, list[ParsedSessionEvent]] = {}
+    seen: dict[str, set[tuple[str, str | None]]] = {}
+    skipped: dict[str, int] = {}
+
+    for raw_record in records:
+        record = json_document(raw_record)
+        if not record or not looks_like_atof_payload(record):
+            continue
+        session_id = _atof_session_id(record) or fallback_id
+        event_key = (str(record["uuid"]), _optional_str(record.get("scope_category")))
+        session_seen = seen.setdefault(session_id, set())
+        if event_key in session_seen:
+            continue
+        session_seen.add(event_key)
+        event = _atof_event(record)
+        if event is None:
+            skipped[session_id] = skipped.get(session_id, 0) + 1
+            continue
+        grouped.setdefault(session_id, []).extend(event)
+
+    return [_atof_session(session_id, events, skipped.get(session_id, 0)) for session_id, events in grouped.items()]
+
+
+def _atof_session_id(record: JSONDocument) -> str | None:
+    metadata = json_document(record.get("metadata")) or {}
+    data = json_document(record.get("data")) or {}
+    return _optional_str(metadata.get("session_id")) or _optional_str(data.get("session_id"))
+
+
+def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
+    metadata = json_document(record.get("metadata")) or {}
+    data = json_document(record.get("data")) or {}
+    category = _optional_str(record.get("category"))
+    name = _optional_str(record.get("name")) or "unknown"
+    scope_category = _optional_str(record.get("scope_category"))
+    base_payload: dict[str, object] = {
+        "atof_version": record["atof_version"],
+        "event_uuid": record["uuid"],
+        "event_name": name,
+        "event_kind": record["kind"],
+        "category": category,
+        "scope_category": scope_category,
+        "session_id": _atof_session_id(record),
+        "task_id": _optional_str(metadata.get("task_id")),
+        "turn_id": _optional_str(metadata.get("turn_id")),
+        "parent_event_uuid": _optional_str(record.get("parent_uuid")),
+    }
+    timestamp = _optional_str(record.get("timestamp"))
+
+    if record["kind"] == "scope" and category == "llm":
+        payload = {
+            **base_payload,
+            "model": _optional_str(metadata.get("model")),
+            "provider": _optional_str(metadata.get("provider")),
+            "has_error": "error" in data,
+            "reason": _optional_str(metadata.get("reason")),
+        }
+        events = [ParsedSessionEvent(event_type="hermes_llm_request_span", timestamp=timestamp, payload=payload)]
+        if payload["has_error"]:
+            events.append(
+                ParsedSessionEvent(
+                    event_type="hermes_error_span",
+                    timestamp=timestamp,
+                    payload={**base_payload, "operation": "llm", "has_error": True},
+                )
+            )
+        return events
+
+    if record["kind"] == "scope" and category == "tool":
+        return [
+            ParsedSessionEvent(
+                event_type="hermes_tool_execution_span",
+                timestamp=timestamp,
+                payload={
+                    **base_payload,
+                    "tool_call_id": _optional_str(metadata.get("tool_call_id")),
+                    "status": _optional_str(metadata.get("status")),
+                },
+            )
+        ]
+
+    if name.startswith("hermes.approval."):
+        return [
+            ParsedSessionEvent(
+                event_type="hermes_decision_span",
+                timestamp=timestamp,
+                payload={
+                    **base_payload,
+                    "approval_id": _optional_str(data.get("approval_id")),
+                    "approved": data.get("approved") if isinstance(data.get("approved"), bool) else None,
+                },
+            )
+        ]
+
+    if name.startswith("hermes.subagent."):
+        return [
+            ParsedSessionEvent(
+                event_type="hermes_subagent_span",
+                timestamp=timestamp,
+                payload={
+                    **base_payload,
+                    "child_session_id": _optional_str(data.get("child_session_id")),
+                    "child_role": _optional_str(data.get("child_role")),
+                    "status": _optional_str(data.get("status")) or _optional_str(metadata.get("status")),
+                },
+            )
+        ]
+
+    if name in {"hermes.api.error", "hermes.api.response.unmatched", "hermes.tool.response.unmatched"}:
+        operation = "tool" if ".tool." in name else "llm"
+        return [
+            ParsedSessionEvent(
+                event_type="hermes_error_span",
+                timestamp=timestamp,
+                payload={
+                    **base_payload,
+                    "operation": operation,
+                    "outcome": "unmatched_response" if name.endswith(".unmatched") else "error",
+                    "has_error": True,
+                },
+            )
+        ]
+
+    if name.startswith("hermes.turn."):
+        return [
+            ParsedSessionEvent(
+                event_type="hermes_context_span",
+                timestamp=timestamp,
+                payload={**base_payload, "context_event": name},
+            )
+        ]
+
+    return [
+        ParsedSessionEvent(
+            event_type="hermes_observer_span",
+            timestamp=timestamp,
+            payload={**base_payload, "shape": "unrecognized_atof_event"},
+        )
+    ]
+
+
+def _atof_session(session_id: str, events: list[ParsedSessionEvent], skipped: int) -> ParsedSession:
+    counts = {
+        event_type: sum(event.event_type == event_type for event in events)
+        for event_type in (
+            "hermes_llm_request_span",
+            "hermes_tool_execution_span",
+            "hermes_subagent_span",
+            "hermes_decision_span",
+            "hermes_error_span",
+            "hermes_context_span",
+            "hermes_observer_span",
+        )
+    }
+    summary_text = (
+        f"Hermes ATOF observer stream: {len(events)} event(s) "
+        f"({counts['hermes_llm_request_span']} LLM, {counts['hermes_tool_execution_span']} tool, "
+        f"{counts['hermes_decision_span']} decision, {counts['hermes_subagent_span']} subagent, "
+        f"{counts['hermes_error_span']} error, {counts['hermes_observer_span']} unrecognized; "
+        f"{skipped} unparseable)."
+    )
+    provider_session_id = observer_session_provider_id(session_id)
+    return ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id=provider_session_id,
+        title=f"Hermes ATOF observer stream: {session_id}",
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"{provider_session_id}:atof-summary",
+                role=Role.SYSTEM,
+                text=summary_text,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="hermes_observer_trace_correlation",
+                payload={
+                    "hermes_conversation_session_id_prefix": session_id,
+                    "join_key": "sessions.native_id",
+                    "note": "ATOF runtime evidence is stored as an observer session, not merged into the transcript.",
+                },
+            ),
+            *events,
+        ],
+        ingest_flags=["hermes:atof-observer"],
     )
 
 
@@ -339,6 +560,9 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
     ``absent`` -- ATIF carries no approval/error-hook vocabulary (that lives
     only in the separate raw ATOF event stream, not ingested by this pass).
     """
+    if "hermes:atof-observer" in session.ingest_flags:
+        return _atof_import_fidelity_declaration(session)
+
     span_events = [
         event
         for event in session.session_events
@@ -430,6 +654,88 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
     )
 
 
+def _atof_import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
+    """Declare fidelity for the real producer-shaped ATOF stream route."""
+    events = session.session_events
+
+    def observed(event_type: str) -> int:
+        return sum(event.event_type == event_type for event in events)
+
+    def exact_if_observed(count: int, detail: str) -> HermesFidelityCapability:
+        return HermesFidelityCapability(
+            status="exact" if count else "absent",
+            observed=count,
+            expected=max(len(events) - 1, 1),
+            counts={},
+            detail=detail,
+        )
+
+    llm = observed("hermes_llm_request_span")
+    tool = observed("hermes_tool_execution_span")
+    decisions = observed("hermes_decision_span")
+    errors = observed("hermes_error_span")
+    subagents = observed("hermes_subagent_span")
+    context = observed("hermes_context_span")
+    generic = observed("hermes_observer_span")
+    capabilities = {
+        "llm_request_spans": exact_if_observed(
+            llm,
+            "ATOF LLM scope start/end records retain correlation, model/provider, and structural error presence only.",
+        ),
+        "tool_execution_spans": exact_if_observed(
+            tool,
+            "ATOF tool scope start/end records retain tool-call correlation and producer status, never arguments/output.",
+        ),
+        "decision_points": exact_if_observed(
+            decisions,
+            "ATOF hermes.approval.* marks retain approval correlation and boolean decision outcome.",
+        ),
+        "error_taxonomy": exact_if_observed(
+            errors,
+            "ATOF LLM scope ends with a structural error field become error evidence without copying error text.",
+        ),
+        "subagent_delegation": exact_if_observed(
+            subagents,
+            "ATOF hermes.subagent.* marks retain child-session correlation and role/status evidence.",
+        ),
+        "context_events": exact_if_observed(
+            context,
+            "ATOF hermes.turn.* marks retain context-event identity without duplicating context content.",
+        ),
+        "topology_edges": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=max(subagents, 1),
+            counts={},
+            detail="Subagent ATOF marks are observer evidence only; session_links materialization remains deferred.",
+        ),
+    }
+    if generic:
+        capabilities["unrecognized_atof_events"] = HermesFidelityCapability(
+            status="degraded",
+            observed=generic,
+            expected=max(len(events) - 1, 1),
+            counts={},
+            detail="Structurally valid but unknown ATOF names/categories are retained as generic observer evidence.",
+        )
+    caveats = tuple(f"{name}: {cap.detail}" for name, cap in capabilities.items() if cap.status != "exact")
+    return HermesImportFidelity(
+        producer="Hermes NeMo Relay ATOF stream (live-generated v0.1 fixture verified)",
+        schema_version=1,
+        profile_namespace=None,
+        acquisition_method="jsonl_stream",
+        retained_blob_reproducibility=HermesFidelityCapability(
+            status="exact",
+            observed=1,
+            expected=1,
+            counts={},
+            detail="The complete ATOF JSONL byte stream is retained before normalization.",
+        ),
+        capabilities=capabilities,
+        caveats=caveats,
+    )
+
+
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -439,8 +745,10 @@ __all__ = [
     "HermesSpanEventType",
     "hermes_observer_session_id_for",
     "import_fidelity_declaration",
+    "looks_like_atof_payload",
     "looks_like_atif_payload",
     "marker_payload",
     "observer_session_provider_id",
     "parse_atif_document",
+    "parse_atof_stream",
 ]
