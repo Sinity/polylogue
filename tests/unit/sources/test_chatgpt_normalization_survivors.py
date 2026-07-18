@@ -419,8 +419,12 @@ def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_keeps_
     assert final_fallback.counts["skipped_sessions"] == 1
     assert retained_raw_id == native_outcome.raw_id
     assert retained_reported_duration_ms == 5_190_000
-    assert retained_message_facts["thought-active-message"] == ("extended", 5_190_000)
-    assert retained_message_facts["answer-active-message"] == ("extended", 5_190_000)
+    # One recap owns the branch's semantic duration (the generation-dedup
+    # contract pinned above on the export fixture); sibling rows keep their
+    # effort but not a second copy of the same 5,190,000 ms.
+    assert retained_message_facts["recap-active-message"] == ("extended", 5_190_000)
+    assert retained_message_facts["thought-active-message"] == ("extended", None)
+    assert retained_message_facts["answer-active-message"] == ("extended", None)
     assert provider is Provider.CHATGPT
     assert raw_source_path == "/fixture/native-capture.json"
     assert b'"reasoning_start_time":1784164541.690012' in raw_material
