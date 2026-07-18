@@ -65,6 +65,23 @@ for the same logical Hermes session is a session-identity/lineage design
 decision (topology_edges / session_links) that is explicitly deferred, not
 silently assumed. Read-side correlation by the shared Hermes session id
 remains possible today via ``hermes_observer_session_id_for``.
+
+KNOWN LIVE INGESTION BUG (polylogue-flxh, confirmed 2026-07-18, not yet
+fixed): the real ATOF producer writes ONE shared ``events.jsonl`` file across
+every Hermes session on an install (live-verified: 3+ distinct session ids
+interleaved in one file), but the live-ingest raw-revision-authority replay
+chain (``polylogue/sources/live/batch.py``) and append path
+(``polylogue/sources/live/append_ingest.py``) both require exactly one
+logical session per raw revision. When a file-growth batch spans a Hermes
+session boundary (a new event for an already-tracked session lands alongside
+a brand-new session's first event), the new event for the ALREADY-TRACKED
+session is silently and permanently lost while the brand-new session is
+still created -- empirically proven by
+``tests/unit/sources/test_live_watcher.py::test_live_append_atof_shared_file_multi_session_boundary_loses_events``
+(``xfail(strict=True)`` pending the fix). This affects only the LIVE watcher
+ingestion path, not ``parse_atof_stream`` itself (which is correct and
+idempotent when given the full file, per this module's own tests) or the
+manual/CLI import path.
 """
 
 from __future__ import annotations
@@ -91,6 +108,7 @@ HermesSpanEventType: TypeAlias = Literal[
     "hermes_error_span",
     "hermes_context_span",
     "hermes_observer_span",
+    "hermes_atof_unpaired_scope",
 ]
 
 
@@ -190,28 +208,72 @@ def parse_atof_stream(records: Iterable[object], fallback_id: str) -> list[Parse
     remain in the retained raw blob rather than being copied into index rows.
     Replayed append windows are de-duplicated by the producer's UUID plus the
     scope phase, because a scope's start and end intentionally share a UUID.
+
+    A ``kind=scope`` UUID that never sees both its ``start`` and ``end``
+    phase (e.g. a crashed request, or a truncated/rotated file cutting a
+    pending scope in half) is real acquisition debt: the span is real but
+    incomplete evidence, not indistinguishable from a normal completed pair.
+    Those are surfaced as explicit ``hermes_atof_unpaired_scope`` events
+    rather than silently left as an ordinary-looking single-phase span.
     """
     grouped: dict[str, list[ParsedSessionEvent]] = {}
     seen: dict[str, set[tuple[str, str | None]]] = {}
     skipped: dict[str, int] = {}
+    scope_phases: dict[str, dict[str, dict[str, tuple[str | None, str | None]]]] = {}
 
     for raw_record in records:
         record = json_document(raw_record)
         if not record or not looks_like_atof_payload(record):
             continue
         session_id = _atof_session_id(record) or fallback_id
-        event_key = (str(record["uuid"]), _optional_str(record.get("scope_category")))
+        uuid = str(record["uuid"])
+        scope_category = _optional_str(record.get("scope_category"))
+        event_key = (uuid, scope_category)
         session_seen = seen.setdefault(session_id, set())
         if event_key in session_seen:
             continue
         session_seen.add(event_key)
+        if record.get("kind") == "scope" and scope_category in {"start", "end"}:
+            phases = scope_phases.setdefault(session_id, {}).setdefault(uuid, {})
+            phases[scope_category] = (_optional_str(record.get("category")), _optional_str(record.get("timestamp")))
         event = _atof_event(record)
         if event is None:
             skipped[session_id] = skipped.get(session_id, 0) + 1
             continue
         grouped.setdefault(session_id, []).extend(event)
 
-    return [_atof_session(session_id, events, skipped.get(session_id, 0)) for session_id, events in grouped.items()]
+    unpaired_events = {session_id: _unpaired_scope_events(phases) for session_id, phases in scope_phases.items()}
+    session_ids = sorted(set(grouped) | set(unpaired_events))
+    return [
+        _atof_session(
+            session_id,
+            [*grouped.get(session_id, []), *unpaired_events.get(session_id, [])],
+            skipped.get(session_id, 0),
+        )
+        for session_id in session_ids
+    ]
+
+
+def _unpaired_scope_events(phases: dict[str, dict[str, tuple[str | None, str | None]]]) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for uuid, seen_phases in phases.items():
+        missing = {"start", "end"} - seen_phases.keys()
+        if not missing:
+            continue
+        (present_phase, (category, timestamp)) = next(iter(seen_phases.items()))
+        events.append(
+            ParsedSessionEvent(
+                event_type="hermes_atof_unpaired_scope",
+                timestamp=timestamp,
+                payload={
+                    "event_uuid": uuid,
+                    "category": category,
+                    "phase_observed": present_phase,
+                    "phase_missing": sorted(missing)[0],
+                },
+            )
+        )
+    return events
 
 
 def _atof_session_id(record: JSONDocument) -> str | None:
@@ -361,13 +423,15 @@ def _atof_session(session_id: str, events: list[ParsedSessionEvent], skipped: in
             "hermes_error_span",
             "hermes_context_span",
             "hermes_observer_span",
+            "hermes_atof_unpaired_scope",
         )
     }
     summary_text = (
         f"Hermes ATOF observer stream: {len(events)} event(s) "
         f"({counts['hermes_llm_request_span']} LLM, {counts['hermes_tool_execution_span']} tool, "
         f"{counts['hermes_decision_span']} decision, {counts['hermes_subagent_span']} subagent, "
-        f"{counts['hermes_error_span']} error, {counts['hermes_observer_span']} unrecognized; "
+        f"{counts['hermes_error_span']} error, {counts['hermes_context_span']} context, "
+        f"{counts['hermes_observer_span']} unrecognized, {counts['hermes_atof_unpaired_scope']} unpaired; "
         f"{skipped} unparseable)."
     )
     provider_session_id = observer_session_provider_id(session_id)
@@ -742,6 +806,17 @@ def _atof_import_fidelity_declaration(session: ParsedSession) -> HermesImportFid
             expected=max(len(events) - 1, 1),
             counts={},
             detail="Structurally valid but unknown ATOF names/categories are retained as generic observer evidence.",
+        )
+    unpaired = observed("hermes_atof_unpaired_scope")
+    if unpaired:
+        capabilities["unpaired_scope_debt"] = HermesFidelityCapability(
+            status="degraded",
+            observed=unpaired,
+            expected=max(len(events) - 1, 1),
+            counts={},
+            detail="A scope UUID that never saw both its start and end phase (crashed request, or a "
+            "truncated/rotated file cutting a pending scope in half) is surfaced as explicit acquisition "
+            "debt, not silently indistinguishable from a normal completed pair.",
         )
     caveats = tuple(f"{name}: {cap.detail}" for name, cap in capabilities.items() if cap.status != "exact")
     return HermesImportFidelity(

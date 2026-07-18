@@ -130,6 +130,19 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     assert sum(event.event_type == "hermes_observer_span" for event in events) == 0
     assert "<redacted>" not in repr([event.payload for event in events])
 
+    # llm-error-1 (record 8) is a real scope=end with no matching scope=start
+    # in this fixture -- genuine acquisition debt, surfaced explicitly rather
+    # than silently indistinguishable from a normal completed llm/tool pair.
+    unpaired = [event for event in events if event.event_type == "hermes_atof_unpaired_scope"]
+    assert len(unpaired) == 1
+    assert unpaired[0].payload["event_uuid"] == "llm-error-1"
+    assert unpaired[0].payload["phase_observed"] == "end"
+    assert unpaired[0].payload["phase_missing"] == "start"
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.capabilities["unpaired_scope_debt"].status == "degraded"
+    assert fidelity.capabilities["unpaired_scope_debt"].observed == 1
+
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.acquisition_method == "jsonl_stream"
     assert fidelity.capabilities["llm_request_spans"].status == "exact"
@@ -182,6 +195,71 @@ def test_atof_unmatched_response_and_turn_context_are_normalized_not_dropped() -
         "hermes_error_span",
     ]
     assert session.session_events[-1].payload["outcome"] == "unmatched_response"
+
+
+def test_atof_scope_start_without_end_is_surfaced_as_unpaired_debt() -> None:
+    """A crashed request, or a truncated/rotated file cutting a pending scope
+    in half, leaves a real scope=start with no matching scope=end. This must
+    be visible as acquisition debt, not silently indistinguishable from a
+    normal completed pair."""
+
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "tool",
+            "scope_category": "start",
+            "uuid": "tool-crashed-1",
+            "timestamp": "2026-07-18T09:00:00Z",
+            "name": "terminal",
+            "metadata": {"session_id": "session-1", "tool_call_id": "call-1"},
+        },
+    ]
+    session = hermes_spans.parse_atof_stream(records, "fallback-id")[0]
+
+    tool_events = [e for e in session.session_events if e.event_type == "hermes_tool_execution_span"]
+    assert len(tool_events) == 1  # the start-phase span itself is still recorded
+
+    unpaired = [e for e in session.session_events if e.event_type == "hermes_atof_unpaired_scope"]
+    assert len(unpaired) == 1
+    assert unpaired[0].payload["event_uuid"] == "tool-crashed-1"
+    assert unpaired[0].payload["category"] == "tool"
+    assert unpaired[0].payload["phase_observed"] == "start"
+    assert unpaired[0].payload["phase_missing"] == "end"
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.capabilities["unpaired_scope_debt"].status == "degraded"
+    assert fidelity.capabilities["unpaired_scope_debt"].observed == 1
+
+
+def test_atof_scope_with_both_phases_is_not_flagged_unpaired() -> None:
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "tool",
+            "scope_category": "start",
+            "uuid": "tool-complete-1",
+            "timestamp": "2026-07-18T09:00:00Z",
+            "name": "terminal",
+            "metadata": {"session_id": "session-1", "tool_call_id": "call-1"},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "tool",
+            "scope_category": "end",
+            "uuid": "tool-complete-1",
+            "timestamp": "2026-07-18T09:00:01Z",
+            "name": "terminal",
+            "metadata": {"session_id": "session-1", "tool_call_id": "call-1", "status": "completed"},
+        },
+    ]
+    session = hermes_spans.parse_atof_stream(records, "fallback-id")[0]
+
+    assert not any(e.event_type == "hermes_atof_unpaired_scope" for e in session.session_events)
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert "unpaired_scope_debt" not in fidelity.capabilities
 
 
 def test_atof_agent_scope_and_session_end_mark_become_typed_context_spans() -> None:
