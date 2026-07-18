@@ -3097,6 +3097,20 @@ x-polylogue-route-contracts:
   response_contract: semantic observability HTML
   notes: SSR-first registry and status projection; credentials protect embedded insight evidence when configured.
 - method: GET
+  pattern: /app/sessions
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic session list HTML
+  notes: SSR-first origin/date/repo faceted session list; Preact enhances only bounded pagination.
+- method: GET
+  pattern: /app/sessions/:session_id
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic session read HTML
+  notes: 'SSR-first session shell: header, lineage banner, and a simple message-flow placeholder Preact enhances with paging.'
+- method: GET
   pattern: /app/assets/:asset
   kind: browser_shell
   stability: shell_supported

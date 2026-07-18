@@ -43,7 +43,9 @@ function ActivityRow({ row }: { readonly row: MessageQueryRow }) {
         )}
       </div>
       <h3>
-        <a href={`/s/${encodeURIComponent(row.session_id)}`}>{row.title ?? row.session_id}</a>
+        <a href={`/app/sessions/${encodeURIComponent(row.session_id)}#msg-${encodeURIComponent(row.message_id)}`}>
+          {row.title ?? row.session_id}
+        </a>
       </h3>
       <p class="activity-row__preview">{compactPreview(row.text) || '[empty message]'}</p>
       <p class="activity-row__detail">

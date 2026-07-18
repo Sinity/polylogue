@@ -1,31 +1,49 @@
 {
-  "_styles-BlEq7VFu.js": {
-    "file": "styles-BlEq7VFu.js",
+  "_styles-CWJQniuB.css": {
+    "file": "styles-CWJQniuB.css",
+    "src": "_styles-CWJQniuB.css"
+  },
+  "_styles-CZzoe2u0.js": {
+    "file": "styles-CZzoe2u0.js",
     "name": "styles",
     "css": [
-      "styles-Xclms7p_.css"
+      "styles-CWJQniuB.css"
     ]
   },
-  "_styles-Xclms7p_.css": {
-    "file": "styles-Xclms7p_.css",
-    "src": "_styles-Xclms7p_.css"
-  },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-LIQlnI8E.js",
+    "file": "archive-overview-DfBWwhF8.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-BlEq7VFu.js"
+      "_styles-CZzoe2u0.js"
     ]
   },
   "src/entrypoints/observability.tsx": {
-    "file": "observability-CV8jsxO2.js",
+    "file": "observability-ByuU1g3r.js",
     "name": "observability",
     "src": "src/entrypoints/observability.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-BlEq7VFu.js"
+      "_styles-CZzoe2u0.js"
+    ]
+  },
+  "src/entrypoints/session-list.tsx": {
+    "file": "session-list-BrZBszvc.js",
+    "name": "session-list",
+    "src": "src/entrypoints/session-list.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-CZzoe2u0.js"
+    ]
+  },
+  "src/entrypoints/session-read.tsx": {
+    "file": "session-read-CGPo8IeH.js",
+    "name": "session-read",
+    "src": "src/entrypoints/session-read.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-CZzoe2u0.js"
     ]
   }
 }

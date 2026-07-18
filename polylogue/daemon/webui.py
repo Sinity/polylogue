@@ -258,13 +258,7 @@ def render_archive_overview_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to archive overview</a>
-    <header class="site-header">
-      <p class="eyebrow">Polylogue</p>
-      <nav aria-label="Reader versions">
-        <a href="/app" aria-current="page">Archive overview</a>
-        <a href="/">Legacy reader</a>
-      </nav>
-    </header>
+    {_render_site_header("/app")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-served semantic HTML</p>
       <h1>Archive overview</h1>
@@ -289,6 +283,310 @@ def render_archive_overview_page(
   </body>
 </html>
 """
+
+
+SESSION_LIST_LIMIT = 20
+SESSION_READ_MESSAGE_LIMIT = 30
+
+
+def render_session_list_page(
+    bundle: WebUIAssetBundle,
+    page: Mapping[str, object] | None,
+    filters: Mapping[str, str],
+    *,
+    notice: str | None = None,
+) -> str:
+    """Render the session list: origin/date/repo facets over paged session rows."""
+
+    entry = bundle.entrypoint_for("session-list")
+    stylesheet_links = "\n".join(
+        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+    )
+    items = page.get("items") if page is not None else None
+    rows = items if isinstance(items, list) else []
+    total = page.get("total") if page is not None else None
+    limit = page.get("limit") if isinstance(page, Mapping) else SESSION_LIST_LIMIT
+    offset = page.get("offset") if isinstance(page, Mapping) else 0
+    limit_int = limit if isinstance(limit, int) else SESSION_LIST_LIMIT
+    offset_int = offset if isinstance(offset, int) else 0
+    has_more = isinstance(total, int) and offset_int + len(rows) < total
+    rendered_rows = (
+        "\n".join(_render_session_card(row) for row in rows)
+        if rows
+        else '          <li class="activity-row"><p class="activity-row__preview">No sessions match these filters.</p></li>'
+    )
+    total_text = f"{total:,} sessions" if isinstance(total, int) else "an unknown number of sessions"
+    status_text = notice or f"Showing {len(rows)} of {total_text}. Additional pages replay the same facets."
+    bootstrap = _json_script(
+        {
+            "filters": dict(filters),
+            "limit": limit_int,
+            "next_offset": offset_int + len(rows) if has_more else None,
+        }
+    )
+    facet_form = _render_session_facet_form(filters)
+    disabled = "" if has_more else ' disabled=""'
+    button_text = "All matching sessions loaded" if not has_more else "Load more sessions"
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Sessions · Polylogue</title>
+{stylesheet_links}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to session list</a>
+    {_render_site_header("/app/sessions")}
+    <main id="main" class="page-shell">
+      <p class="eyebrow">Daemon-served semantic HTML</p>
+      <h1>Sessions</h1>
+      <p class="lede">Filter the archive by origin, time window, and repo. A bounded first page is readable without JavaScript.</p>
+      {facet_form}
+      <section class="activity-panel" aria-labelledby="session-list-title">
+        <div class="activity-panel__heading">
+          <h2 id="session-list-title">Matching sessions</h2>
+          <p>{html.escape(status_text)}</p>
+        </div>
+        <ol id="session-list" class="activity-list">
+{rendered_rows}
+        </ol>
+        <div id="session-list-island" data-island="session-list">
+          <button class="load-more" type="button"{disabled} aria-controls="session-list-more" aria-busy="false">{button_text}</button>
+          <p class="island-status" role="status" aria-live="polite"></p>
+          <ol id="session-list-more" class="activity-list activity-list--continued" aria-label="Additional matching sessions"></ol>
+        </div>
+      </section>
+    </main>
+    <script id="session-list-bootstrap" type="application/json">{bootstrap}</script>
+    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+  </body>
+</html>
+"""
+
+
+def _render_session_facet_form(filters: Mapping[str, str]) -> str:
+    origin = html.escape(str(filters.get("origin") or ""), quote=True)
+    since = html.escape(str(filters.get("since") or ""), quote=True)
+    repo = html.escape(str(filters.get("repo") or ""), quote=True)
+    return f"""      <form class="session-facets" method="get" action="/app/sessions" role="search" aria-label="Session filters">
+        <div class="session-facets__field">
+          <label for="facet-origin">Origin</label>
+          <input id="facet-origin" name="origin" type="text" value="{origin}" placeholder="e.g. codex-session" autocomplete="off">
+        </div>
+        <div class="session-facets__field">
+          <label for="facet-since">Since</label>
+          <input id="facet-since" name="since" type="text" value="{since}" placeholder="e.g. 7d or 2026-07-01" autocomplete="off">
+        </div>
+        <div class="session-facets__field">
+          <label for="facet-repo">Repo</label>
+          <input id="facet-repo" name="repo" type="text" value="{repo}" placeholder="e.g. polylogue" autocomplete="off">
+        </div>
+        <button type="submit">Apply filters</button>
+      </form>"""
+
+
+def _render_session_card(raw: object) -> str:
+    row = raw if isinstance(raw, Mapping) else {}
+    session_id = str(row.get("id") or "")
+    title = row.get("title") or session_id or "[untitled session]"
+    origin = str(row.get("origin") or "unknown-export")
+    date = row.get("date") or row.get("created_at")
+    time_markup = (
+        "<span>Time unavailable</span>"
+        if not date
+        else f'<time datetime="{html.escape(str(date), quote=True)}">{html.escape(str(date))}</time>'
+    )
+    message_count = row.get("message_count")
+    word_count = row.get("word_count")
+    repo = row.get("repo")
+    detail_bits = [
+        f"{message_count:,} messages" if isinstance(message_count, int) else "unknown message count",
+    ]
+    if isinstance(word_count, int):
+        detail_bits.append(f"{word_count:,} words")
+    if repo:
+        detail_bits.append(html.escape(str(repo)))
+    else:
+        detail_bits.append("repo unknown")
+    return f"""          <li class="activity-row" data-session-id="{html.escape(session_id, quote=True)}">
+            <div class="activity-row__meta"><span class="activity-row__origin">{html.escape(origin)}</span>{time_markup}</div>
+            <h3><a href="/app/sessions/{quote(session_id, safe="")}">{html.escape(str(title))}</a></h3>
+            <p class="activity-row__detail">{" · ".join(detail_bits)}</p>
+          </li>"""
+
+
+def render_session_read_page(
+    bundle: WebUIAssetBundle,
+    session_id: str,
+    session: Mapping[str, object] | None,
+    *,
+    notice: str | None = None,
+) -> str:
+    """Render the session read shell: header, lineage banner, message flow skeleton."""
+
+    entry = bundle.entrypoint_for("session-read")
+    stylesheet_links = "\n".join(
+        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+    )
+    if session is None:
+        body = f"<p>{html.escape(notice or 'This session could not be found or the archive is unavailable.')}</p>"
+        bootstrap = _json_script({"session_id": session_id, "messages": [], "next_offset": None})
+        return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Session not found · Polylogue</title>
+{stylesheet_links}
+  </head>
+  <body>
+    {_render_site_header("/app/sessions")}
+    <main id="main" class="page-shell">
+      <p class="eyebrow">Daemon-served semantic HTML</p>
+      <h1>Session unavailable</h1>
+      {body}
+    </main>
+    <script id="session-read-bootstrap" type="application/json">{bootstrap}</script>
+    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+  </body>
+</html>
+"""
+    title = session.get("title") or session.get("display_title") or session_id
+    origin = str(session.get("origin") or "unknown-export")
+    all_messages = session.get("messages")
+    messages = all_messages if isinstance(all_messages, list) else []
+    total_messages = len(messages)
+    first_page = messages[:SESSION_READ_MESSAGE_LIMIT]
+    has_more = total_messages > len(first_page)
+    lineage_banner = _render_lineage_banner(session)
+    rendered_messages = (
+        "\n".join(_render_message_flow_item(m) for m in first_page)
+        if first_page
+        else '        <li class="message-flow__item"><p>No indexed messages are available for this session.</p></li>'
+    )
+    bootstrap = _json_script(
+        {
+            "session_id": session_id,
+            "next_offset": len(first_page) if has_more else None,
+        }
+    )
+    header_detail = " · ".join(
+        bit
+        for bit in (
+            f"{session.get('message_count'):,} messages" if isinstance(session.get("message_count"), int) else None,
+            f"{session.get('word_count'):,} words" if isinstance(session.get("word_count"), int) else None,
+            str(session.get("repo")) if session.get("repo") else None,
+        )
+        if bit
+    )
+    disabled = "" if has_more else ' disabled=""'
+    button_text = "All messages loaded" if not has_more else "Load more messages"
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>{html.escape(str(title))} · Polylogue</title>
+{stylesheet_links}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to session transcript</a>
+    {_render_site_header("/app/sessions")}
+    <main id="main" class="page-shell">
+      <p class="eyebrow">{html.escape(origin)}</p>
+      <h1>{html.escape(str(title))}</h1>
+      <p class="lede">{html.escape(header_detail) or "No structural detail is available for this session."}</p>
+      {lineage_banner}
+      <section class="message-flow-panel" aria-labelledby="message-flow-title">
+        <div class="activity-panel__heading">
+          <h2 id="message-flow-title">Message flow</h2>
+          <p>{html.escape(notice or f"Showing {len(first_page)} of {total_messages:,} messages.")}</p>
+        </div>
+        <ol id="message-flow" class="message-flow">
+{rendered_messages}
+        </ol>
+        <div id="session-read-island" data-island="session-read">
+          <button class="load-more" type="button"{disabled} aria-controls="message-flow-more" aria-busy="false">{button_text}</button>
+          <p class="island-status" role="status" aria-live="polite"></p>
+          <ol id="message-flow-more" class="message-flow message-flow--continued" aria-label="Additional messages"></ol>
+        </div>
+      </section>
+    </main>
+    <script id="session-read-bootstrap" type="application/json">{bootstrap}</script>
+    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+  </body>
+</html>
+"""
+
+
+def _render_lineage_banner(session: Mapping[str, object]) -> str:
+    parent_id = session.get("parent_id")
+    if not parent_id:
+        return ""
+    branch_type = str(session.get("branch_type") or "unknown")
+    parent_href = f"/app/sessions/{quote(str(parent_id), safe='')}"
+    return (
+        '      <p class="lineage-banner" data-branch-type="'
+        + html.escape(branch_type, quote=True)
+        + '">This session composes a parent prefix (<strong>'
+        + html.escape(branch_type)
+        + '</strong>) from <a href="'
+        + parent_href
+        + '">'
+        + html.escape(str(parent_id))
+        + "</a>.</p>"
+    )
+
+
+def _render_message_flow_item(raw: object) -> str:
+    message = raw if isinstance(raw, Mapping) else {}
+    message_id = str(message.get("id") or "")
+    role = str(message.get("role") or "unknown")
+    material_origin = str(message.get("material_origin") or "unknown")
+    text = message.get("text")
+    preview = _compact_preview(str(text or ""), limit=600) or "[empty message]"
+    flags: list[str] = []
+    if message.get("has_tool_use"):
+        flags.append('<span class="message-flag" data-flag="tool-use">tool use</span>')
+    if message.get("has_thinking"):
+        flags.append('<span class="message-flag" data-flag="thinking">thinking</span>')
+    if message.get("has_paste_evidence"):
+        flags.append('<span class="message-flag" data-flag="paste">paste</span>')
+    flags_markup = " ".join(flags)
+    timestamp = message.get("timestamp")
+    time_markup = (
+        f'<time datetime="{html.escape(str(timestamp), quote=True)}">{html.escape(str(timestamp))}</time>'
+        if timestamp
+        else "<span>Time unavailable</span>"
+    )
+    return f"""        <li class="message-flow__item" id="msg-{html.escape(message_id, quote=True)}" data-role="{html.escape(role, quote=True)}" data-material-origin="{html.escape(material_origin, quote=True)}">
+          <div class="message-flow__meta">
+            <span class="message-flow__role">{html.escape(role)}</span>
+            <span class="message-flow__material-origin">{html.escape(material_origin)}</span>
+            {time_markup}
+          </div>
+          <p class="message-flow__text">{html.escape(preview)}</p>
+          <div class="message-flow__flags">{flags_markup}</div>
+        </li>"""
+
+
+def _render_site_header(current_path: str) -> str:
+    def link(href: str, label: str) -> str:
+        current = ' aria-current="page"' if href == current_path else ""
+        return f'<a href="{href}"{current}>{label}</a>'
+
+    return (
+        '<header class="site-header"><p class="eyebrow">Polylogue</p><nav aria-label="WebUI views">'
+        + link("/app", "Archive overview")
+        + link("/app/sessions", "Sessions")
+        + link("/app/observability", "Observability")
+        + link("/", "Legacy reader")
+        + "</nav></header>"
+    )
 
 
 async def build_observability_payload(
@@ -450,7 +748,7 @@ def render_observability_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to observability</a>
-    <header class="site-header"><p class="eyebrow">Polylogue</p><nav aria-label="WebUI views"><a href="/app">Archive overview</a><a href="/app/observability" aria-current="page">Observability</a><a href="/">Legacy reader</a></nav></header>
+    {_render_site_header("/app/observability")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-projected evidence</p><h1>Archive observability</h1><p class="lede">{html.escape(summary)}</p>
       <div id="observability-island" data-island="observability">
@@ -537,7 +835,7 @@ def _render_message_row(row: MessageQueryRowPayload) -> str:
     )
     return f"""          <li class="activity-row" data-message-id="{html.escape(str(row.message_id), quote=True)}">
             <div class="activity-row__meta"><span class="activity-row__origin">{html.escape(row.origin)}</span>{time_markup}</div>
-            <h3><a href="/s/{quote(session_id, safe="")}">{html.escape(title)}</a></h3>
+            <h3><a href="/app/sessions/{quote(session_id, safe="")}#msg-{quote(str(row.message_id), safe="")}">{html.escape(title)}</a></h3>
             <p class="activity-row__preview">{html.escape(preview)}</p>
             <p class="activity-row__detail">{html.escape(row.role)} · {row.word_count:,} words</p>
           </li>"""
@@ -571,6 +869,8 @@ def _json_script(payload: object) -> str:
 __all__ = [
     "ARCHIVE_OVERVIEW_EXPRESSION",
     "ARCHIVE_OVERVIEW_LIMIT",
+    "SESSION_LIST_LIMIT",
+    "SESSION_READ_MESSAGE_LIMIT",
     "WebUIAsset",
     "WebUIAssetBundle",
     "WebUIAssetError",
@@ -579,5 +879,7 @@ __all__ = [
     "load_archive_overview_page",
     "render_archive_overview_page",
     "render_observability_page",
+    "render_session_list_page",
+    "render_session_read_page",
     "render_webui_asset_error",
 ]

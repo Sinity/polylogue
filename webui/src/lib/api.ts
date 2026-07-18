@@ -4,6 +4,12 @@ import {
   parseMessageQueryPage,
   type MessageQueryPage,
 } from '../contracts/query-units';
+import { SESSION_LIST_LIMIT, parseSessionListPage, type SessionListPage } from '../contracts/session-list';
+import {
+  SESSION_READ_MESSAGE_LIMIT,
+  parseSessionMessagePage,
+  type SessionMessagePage,
+} from '../contracts/session-read';
 
 const WEB_CLIENT_HEADERS = Object.freeze({
   'X-Polylogue-Web-Client': '1',
@@ -66,4 +72,36 @@ export async function fetchArchiveMessagePage(
     params.set('limit', String(ARCHIVE_OVERVIEW_LIMIT));
   }
   return parseMessageQueryPage(await requestJson(`/api/query-units?${params.toString()}`));
+}
+
+export interface SessionListFilters {
+  readonly origin?: string | undefined;
+  readonly since?: string | undefined;
+  readonly repo?: string | undefined;
+}
+
+export async function fetchSessionListPage(
+  filters: SessionListFilters,
+  offset: number,
+): Promise<SessionListPage> {
+  const params = new URLSearchParams();
+  if (filters.origin) params.set('origin', filters.origin);
+  if (filters.since) params.set('since', filters.since);
+  if (filters.repo) params.set('repo', filters.repo);
+  params.set('limit', String(SESSION_LIST_LIMIT));
+  params.set('offset', String(offset));
+  return parseSessionListPage(await requestJson(`/api/sessions?${params.toString()}`));
+}
+
+export async function fetchSessionMessagesPage(
+  sessionId: string,
+  offset: number,
+): Promise<SessionMessagePage> {
+  const params = new URLSearchParams();
+  params.set('view', 'messages');
+  params.set('limit', String(SESSION_READ_MESSAGE_LIMIT));
+  params.set('offset', String(offset));
+  return parseSessionMessagePage(
+    await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/read?${params.toString()}`),
+  );
 }
