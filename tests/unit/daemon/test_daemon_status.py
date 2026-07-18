@@ -27,7 +27,12 @@ from polylogue.daemon.status_snapshot import (
     refresh_status_snapshot,
 )
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    initialize_archive_database,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     record_daemon_stage_event,
     record_ingest_attempt,
@@ -2270,3 +2275,39 @@ def test_daemon_status_payload_stalled_component_does_not_block_healthy_componen
 
     archive_storage_collection = cast(dict[str, Any], cast(dict[str, Any], readiness["archive_storage"])["collection"])
     assert archive_storage_collection["state"] == "fresh"
+
+
+def test_blob_publication_reservation_info_reports_unresolved_bucket(tmp_path: Path) -> None:
+    """polylogue-qs0a observability: unresolved reservations surface with an age, not silently.
+
+    Mutation-sensitive: an inverted ``referenced``/``blob_present`` check in
+    the collector would report this row as ``retained_referenced_count`` or
+    ``retained_missing_count`` instead of ``unresolved_count``.
+    """
+    archive_root_dir = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_dir)
+    publisher = ArchiveBlobPublisher(archive_root_dir / "source.db", archive_root_dir / "blob")
+    publisher.write_from_bytes(b"unresolved status probe payload")
+    publisher.flush()
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=archive_root_dir),
+        patch("polylogue.daemon.status.index_db_path", return_value=archive_root_dir / "index.db"),
+    ):
+        info = status_module._blob_publication_reservation_info()
+
+    assert info.total_reserved_count == 1
+    assert info.unresolved_count == 1
+    assert info.retained_referenced_count == 0
+    assert info.retained_missing_count == 0
+    assert info.unresolved_oldest_age_s is not None
+    assert info.unresolved_oldest_age_s >= 0.0
+
+
+def test_blob_publication_reservation_info_empty_before_source_tier_exists(tmp_path: Path) -> None:
+    with patch("polylogue.daemon.status.archive_root", return_value=tmp_path / "no-archive-yet"):
+        info = status_module._blob_publication_reservation_info()
+
+    assert info.total_reserved_count == 0
+    assert info.unresolved_count == 0
+    assert info.unresolved_oldest_age_s is None
