@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -265,13 +265,26 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
 # ── Stage: embed ───────────────────────────────────────────────────
 
 
-def make_embed_stage(db_path: Path) -> ConvergenceStage:
+def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) -> ConvergenceStage:
     """Generate vector embeddings for changed sessions that need them.
 
     Before embedding, detects model/dimension config changes and marks
     affected rows for reindex. Enforces the configured cost cap during
     embedding.
+
+    ``defer`` returning True (e.g. while watcher source catch-up is still
+    running) converts every execute into a ``false_means_pending`` deferral:
+    the work lands in convergence debt for the post-catch-up retry loops
+    instead of paying serial network embedding inside each bulk ingest
+    chunk. Embeddings are a rebuildable read-model — bulk backfill ordering
+    is sessions first, vectors when quiet.
     """
+
+    def _deferred() -> bool:
+        if defer is not None and defer():
+            logger.debug("embed: deferred to convergence debt (source catch-up in progress)")
+            return True
+        return False
 
     def check(path: Path) -> bool:
         if not _embedding_config_enabled():
@@ -282,6 +295,8 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
     def execute(path: Path) -> StageExecuteReturn:
         if not _embedding_config_enabled():
             return True
+        if _deferred():
+            return False
         archive_db = _active_archive_index_path(db_path)
         return _archive_embed_execute(archive_db, path) if archive_db is not None else True
 
@@ -294,6 +309,8 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         if not paths or not _embedding_config_enabled():
             return True
+        if _deferred():
+            return False
         archive_db = _active_archive_index_path(db_path)
         return _archive_embed_execute_many(archive_db, paths) if archive_db is not None else True
 
@@ -306,6 +323,8 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         if not session_ids or not _embedding_config_enabled():
             return True
+        if _deferred():
+            return False
         archive_db = _active_archive_index_path(db_path)
         return _archive_embed_execute_sessions(archive_db, session_ids) if archive_db is not None else True
 
@@ -754,6 +773,7 @@ def make_default_convergence_stages(
     db_path: Path,
     *,
     sinex_transport: SinexTransport | None = None,
+    embed_defer: Callable[[], bool] | None = None,
 ) -> tuple[ConvergenceStage, ...]:
     """Build daemon stages, failing explicitly when backed mode lacks transport."""
     from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
@@ -780,7 +800,7 @@ def make_default_convergence_stages(
     stages.extend(
         (
             make_fts_stage(db_path),
-            make_embed_stage(db_path),
+            make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
             make_insights_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),

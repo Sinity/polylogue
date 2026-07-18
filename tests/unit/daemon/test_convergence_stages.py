@@ -903,6 +903,55 @@ def test_embed_stage_is_noop_when_disabled(
     assert stage.execute(tmp_path / "source.jsonl") is True
 
 
+def test_embed_stage_defers_to_pending_debt_while_predicate_holds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """During source catch-up the embed stage must not embed inline: every
+    execute lane returns False (false_means_pending -> convergence debt)
+    without touching the embedding implementation; once the predicate
+    releases, execution falls through to the real implementation again."""
+    monkeypatch.setattr(stages, "_embedding_config_enabled", lambda: True)
+    db_path = tmp_path / "index.db"
+    db_path.touch()
+    monkeypatch.setattr(stages, "_active_archive_index_path", lambda _db: db_path)
+
+    embed_calls: list[str] = []
+    monkeypatch.setattr(
+        stages,
+        "_archive_embed_execute",
+        lambda _db, _path: embed_calls.append("execute") or True,
+    )
+    monkeypatch.setattr(
+        stages,
+        "_archive_embed_execute_many",
+        lambda _db, _paths: embed_calls.append("execute_many") or True,
+    )
+    monkeypatch.setattr(
+        stages,
+        "_archive_embed_execute_sessions",
+        lambda _db, _ids: embed_calls.append("execute_sessions") or True,
+    )
+
+    deferring = True
+    stage = stages.make_embed_stage(db_path, defer=lambda: deferring)
+    assert stage.false_means_pending is True
+
+    source = tmp_path / "source.jsonl"
+    assert stage.execute(source) is False
+    assert stage.execute_many is not None
+    assert stage.execute_many([source]) is False
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(["origin:native"]) is False
+    assert embed_calls == []
+
+    deferring = False
+    assert stage.execute(source) is True
+    assert stage.execute_many([source]) is True
+    assert stage.execute_sessions(["origin:native"]) is True
+    assert embed_calls == ["execute", "execute_many", "execute_sessions"]
+
+
 def test_insights_stage_batches_sync_rebuild_chunks(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

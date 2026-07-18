@@ -1515,8 +1515,16 @@ async def run_daemon_services(
                 periodic_loops.append(_periodic_drive_source_catchup())
             maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
             _db = _active_index_db_path()
+            # While the watcher's initial source catch-up is still running,
+            # per-chunk embedding (serial network I/O) is deferred into
+            # convergence debt; the gated embedding backlog loop drains it
+            # once catch-up completes.
+            embed_gate = catch_up_complete_gate
             converger = DaemonConverger(
-                stages=make_default_convergence_stages(_db),
+                stages=make_default_convergence_stages(
+                    _db,
+                    embed_defer=(lambda: embed_gate is not None and not embed_gate.is_set()),
+                ),
                 max_workers=2,
             )
             await converger.start()
