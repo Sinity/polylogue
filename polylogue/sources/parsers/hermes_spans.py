@@ -269,6 +269,24 @@ def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
             )
         ]
 
+    if record["kind"] == "scope" and category == "agent":
+        # The outermost scope wrapping the whole Hermes session/agent run
+        # (start/end pair sharing one UUID, same mechanism as the llm/tool
+        # scopes above but marking session lifetime, not a request). Real
+        # events.jsonl evidence: `kind=scope,category=agent` records with
+        # `scope_category` start/end and `name` set to the session's own
+        # identifier, never a stable event key -- synthesize one so this
+        # reads consistently alongside the `hermes.turn.*`/`hermes.session.*`
+        # mark-based context events below.
+        boundary = f"hermes.session.{scope_category}" if scope_category else "hermes.session.boundary"
+        return [
+            ParsedSessionEvent(
+                event_type="hermes_context_span",
+                timestamp=timestamp,
+                payload={**base_payload, "context_event": boundary},
+            )
+        ]
+
     if name.startswith("hermes.approval."):
         return [
             ParsedSessionEvent(
@@ -311,7 +329,7 @@ def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
             )
         ]
 
-    if name.startswith("hermes.turn."):
+    if name.startswith("hermes.turn.") or name.startswith("hermes.session."):
         return [
             ParsedSessionEvent(
                 event_type="hermes_context_span",
@@ -700,7 +718,8 @@ def _atof_import_fidelity_declaration(session: ParsedSession) -> HermesImportFid
         ),
         "context_events": exact_if_observed(
             context,
-            "ATOF hermes.turn.* marks retain context-event identity without duplicating context content.",
+            "ATOF hermes.turn.*/hermes.session.* marks and the outer session-scope "
+            "start/end pair retain context-event identity without duplicating context content.",
         ),
         "topology_edges": HermesFidelityCapability(
             status="absent",

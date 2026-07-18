@@ -112,7 +112,12 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     assert sum(event.event_type == "hermes_decision_span" for event in events) == 2
     assert sum(event.event_type == "hermes_subagent_span" for event in events) == 1
     assert sum(event.event_type == "hermes_error_span" for event in events) == 1
-    assert sum(event.event_type == "hermes_observer_span" for event in events) == 3
+    # The outer session-scope start/end pair (kind=scope,category=agent) and
+    # the hermes.session.end mark are real, well-defined lifecycle evidence
+    # (confirmed against ~/.hermes/observability/nemo-relay/atof/events.jsonl)
+    # -- admitted as typed context_span, not left in the unrecognized bucket.
+    assert sum(event.event_type == "hermes_context_span" for event in events) == 3
+    assert sum(event.event_type == "hermes_observer_span" for event in events) == 0
     assert "<redacted>" not in repr([event.payload for event in events])
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
@@ -122,6 +127,8 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     assert fidelity.capabilities["decision_points"].status == "exact"
     assert fidelity.capabilities["error_taxonomy"].status == "exact"
     assert fidelity.capabilities["subagent_delegation"].status == "exact"
+    assert fidelity.capabilities["context_events"].status == "exact"
+    assert "unrecognized_atof_events" not in fidelity.capabilities
 
 
 def test_atof_stream_is_idempotent_across_append_replay_and_keeps_scope_edges() -> None:
@@ -165,6 +172,52 @@ def test_atof_unmatched_response_and_turn_context_are_normalized_not_dropped() -
         "hermes_error_span",
     ]
     assert session.session_events[-1].payload["outcome"] == "unmatched_response"
+
+
+def test_atof_agent_scope_and_session_end_mark_become_typed_context_spans() -> None:
+    """The outer session-scope start/end pair (kind=scope,category=agent) and a
+    hermes.session.end mark are real lifecycle evidence -- confirmed against
+    ~/.hermes/observability/nemo-relay/atof/events.jsonl -- and must not fall
+    into the generic unrecognized-event bucket."""
+
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "agent",
+            "scope_category": "start",
+            "uuid": "scope-parent",
+            "timestamp": "2026-07-18T09:00:00Z",
+            "name": "hermes-session-example",
+            "metadata": {"session_id": "session-1"},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "uuid": "session-end-1",
+            "timestamp": "2026-07-18T09:00:01Z",
+            "name": "hermes.session.end",
+            "metadata": {"session_id": "session-1"},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "agent",
+            "scope_category": "end",
+            "uuid": "scope-parent",
+            "timestamp": "2026-07-18T09:00:02Z",
+            "name": "hermes-session-example",
+            "metadata": {"session_id": "session-1"},
+        },
+    ]
+    session = hermes_spans.parse_atof_stream(records, "fallback-id")[0]
+    context_events = [event for event in session.session_events if event.event_type == "hermes_context_span"]
+    assert [event.payload["context_event"] for event in context_events] == [
+        "hermes.session.start",
+        "hermes.session.end",
+        "hermes.session.end",
+    ]
+    assert not any(event.event_type == "hermes_observer_span" for event in session.session_events)
 
 
 def test_import_explain_uses_atof_stream_fidelity_for_a_real_fixture() -> None:
