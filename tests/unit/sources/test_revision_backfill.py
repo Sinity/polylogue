@@ -13,10 +13,15 @@ from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import (
+    _parse_one,
+    backfill_historical_revision_evidence,
+    census_historical_revision_evidence,
+)
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
 
 
 def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
@@ -844,3 +849,186 @@ def test_parallel_census_threads_hermes_sqlite_payload_path(tmp_path: Path) -> N
         rows = conn.execute("SELECT native_id, message_count FROM sessions ORDER BY native_id").fetchall()
     assert [native_id.startswith("hermes-") for native_id, _count in rows] == [True, True]
     assert [count for _native_id, count in rows] == [1, 1]
+
+
+def test_independent_raw_corpus_fixture_backfills_cleanly(tmp_path: Path) -> None:
+    """polylogue-amg1 benchmark fixture sanity: every synthetic raw census-and-replays
+    to exactly one session with no quarantine, at both recorded payload shapes' scale
+    (downscaled here for test speed; devtools/scripts run the full recorded counts)."""
+    raw_ids = build_independent_raw_corpus(tmp_path, raw_count=12, avg_payload_bytes=5_000)
+
+    result = backfill_historical_revision_evidence(tmp_path)
+
+    assert result.scanned == 12
+    assert result.replayed_logical_sources == 12
+    assert result.quarantined == 0
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    assert session_count == 12
+    assert len(set(raw_ids)) == 12
+
+
+def test_census_batching_reduces_commit_count(tmp_path: Path) -> None:
+    """polylogue-amg1 lever (a): commit_batch_size must defer per-raw
+    self-commits (manage_transaction=False) and drive the batch boundary
+    through exactly ``ceil(raw_count / batch_size)`` explicit ArchiveStore
+    commits, versus one self-commit per raw when unset -- while producing
+    identical scan/classification results either way. sqlite3.Connection is
+    an immutable C type and cannot be monkeypatched directly, so this
+    verifies the actual mechanism (the manage_transaction contract each
+    write call receives, and how many times the batch-boundary commit()
+    fires) rather than a raw connection-level commit count."""
+    unbatched_root = tmp_path / "unbatched"
+    batched_root = tmp_path / "batched"
+    build_independent_raw_corpus(unbatched_root, raw_count=9, avg_payload_bytes=1_000)
+    build_independent_raw_corpus(batched_root, raw_count=9, avg_payload_bytes=1_000)
+
+    import unittest.mock as mock
+
+    def _manage_transaction_flags(archive_root: Path, *, commit_batch_size: int | None) -> tuple[list[bool], int]:
+        flags: list[bool] = []
+        commit_count = 0
+        original_bind = ArchiveStore.bind_raw_revision
+        original_commit = ArchiveStore.commit
+
+        def recording_bind(self: ArchiveStore, raw_id: str, revision: object, **bind_kwargs: object) -> None:
+            flags.append(bool(bind_kwargs.get("manage_transaction", True)))
+            original_bind(self, raw_id, revision, **bind_kwargs)  # type: ignore[arg-type]
+
+        def counting_commit(self: ArchiveStore) -> None:
+            nonlocal commit_count
+            commit_count += 1
+            original_commit(self)
+
+        with (
+            mock.patch.object(ArchiveStore, "bind_raw_revision", recording_bind),
+            mock.patch.object(ArchiveStore, "commit", counting_commit),
+        ):
+            census_historical_revision_evidence(archive_root, commit_batch_size=commit_batch_size)
+        return flags, commit_count
+
+    unbatched_flags, unbatched_explicit_commits = _manage_transaction_flags(unbatched_root, commit_batch_size=None)
+    batched_flags, batched_explicit_commits = _manage_transaction_flags(batched_root, commit_batch_size=4)
+
+    assert len(unbatched_flags) == len(batched_flags) == 9
+    # Unbatched: every write self-commits immediately (manage_transaction=True).
+    assert all(unbatched_flags)
+    assert unbatched_explicit_commits == 0
+    # Batched (size 4, 9 raws): writes defer (manage_transaction=False) and
+    # the loop drives exactly ceil(9/4) = 3 explicit batch-boundary commits.
+    assert not any(batched_flags)
+    assert batched_explicit_commits == 3
+
+
+def test_census_batch_crash_loses_at_most_one_batch_and_resumes_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-amg1 crash-mid-batch proof: a fault partway through an
+    uncommitted census batch must discard exactly that batch (not a partial
+    raw, not prior committed batches), and a resume must converge to the
+    same terminal state as an uninterrupted run with zero duplication."""
+    raw_count = 10
+    batch_size = 4
+    root = tmp_path / "archive"
+    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000)
+
+    original_bind = ArchiveStore.bind_raw_revision
+    calls = 0
+    # Crash on the 7th bind call: batch 1 (calls 1-4) has already committed;
+    # batch 2 (calls 5-8) is interrupted after its 3rd call (7), before it
+    # reaches batch_size and self-commits.
+    crash_at_call = 7
+
+    def crash_partway(self: ArchiveStore, raw_id: str, revision: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == crash_at_call:
+            raise RuntimeError("injected crash mid-batch")
+        original_bind(self, raw_id, revision, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ArchiveStore, "bind_raw_revision", crash_partway)
+    with pytest.raises(RuntimeError, match="injected crash mid-batch"):
+        backfill_historical_revision_evidence(root, commit_batch_size=batch_size)
+
+    with sqlite3.connect(root / "source.db") as conn:
+        complete_after_crash = conn.execute(
+            "SELECT COUNT(*) FROM raw_sessions WHERE revision_kind != 'unknown'"
+        ).fetchone()[0]
+    # Exactly one fully-committed batch survives the crash -- never a partial one.
+    assert complete_after_crash == batch_size
+
+    monkeypatch.setattr(ArchiveStore, "bind_raw_revision", original_bind)
+    result = backfill_historical_revision_evidence(root, commit_batch_size=batch_size)
+
+    assert result.scanned == raw_count
+    assert result.replayed_logical_sources == raw_count
+    assert result.quarantined == 0
+    with sqlite3.connect(root / "index.db") as conn:
+        session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        application_count = conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
+    assert session_count == raw_count
+    # One application receipt per raw, no duplicates from the retried batch.
+    assert application_count == raw_count
+    with sqlite3.connect(root / "source.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE revision_kind != 'unknown'").fetchone()[0]
+            == raw_count
+        )
+
+
+def test_partition_raws_by_dispatch_size_routes_small_to_pool_large_sequential() -> None:
+    """polylogue-amg1 lever (b): raws under the size ceiling are pool-eligible
+    (parallel parse pays off), raws at/above it stay sequential (pickling the
+    large returned ParsedSession back across the process boundary would cost
+    more than the parse saved -- the bead's own 0.63x/net-loss measurement)."""
+    payload_sizes = {"small-1": 1_000, "small-2": 200_000, "large-1": 262_144, "large-2": 1_700_000}
+
+    pool_ids, sequential_ids = revision_backfill._partition_raws_by_dispatch_size(
+        ["small-1", "small-2", "large-1", "large-2"], payload_sizes, dispatch_max_bytes=262_144
+    )
+
+    assert pool_ids == ["small-1", "small-2"]
+    assert sequential_ids == ["large-1", "large-2"]
+
+
+def test_size_aware_dispatch_keeps_large_raws_off_the_process_pool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end proof: with a low dispatch ceiling, only the small raw in a
+    mixed corpus is submitted to the process pool; the large one parses
+    in-process, and the archive state matches ingest_workers=1 exactly."""
+    monkeypatch.setenv("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES", "5000")
+    initialize_active_archive_root(tmp_path)
+    small_text = "s" * 200
+    large_text = "l" * 20_000
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index, text in enumerate((small_text, large_text, small_text)):
+            payload = (
+                f'{{"type":"session_meta","payload":{{"id":"amg1-mix-{index}"}}}}\n'
+                f'{{"type":"response_item","payload":{{"type":"message","id":"one","role":"user",'
+                f'"content":[{{"type":"input_text","text":"{text}"}}]}}}}\n'
+            ).encode()
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"amg1-mix-{index}.jsonl",
+                acquired_at_ms=index,
+            )
+
+    submitted_raw_ids: list[str] = []
+    original_partition = revision_backfill._partition_raws_by_dispatch_size
+
+    def recording_partition(raw_ids: list[str], payload_sizes: dict[str, int], **kwargs: object) -> object:
+        pool_ids, sequential_ids = original_partition(raw_ids, payload_sizes, **kwargs)  # type: ignore[arg-type]
+        submitted_raw_ids.extend(pool_ids)
+        return pool_ids, sequential_ids
+
+    monkeypatch.setattr(revision_backfill, "_partition_raws_by_dispatch_size", recording_partition)
+
+    result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
+
+    assert result.scanned == 3
+    assert result.replayed_logical_sources == 3
+    assert result.quarantined == 0
+    # Only the two small raws (well under the 5000-byte ceiling) were pool-eligible.
+    assert len(submitted_raw_ids) == 2

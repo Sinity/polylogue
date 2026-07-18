@@ -647,9 +647,20 @@ def write_source_raw_session_blob_ref(
     return resolved_raw_id
 
 
-def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: RawRevisionEnvelope) -> None:
-    """Bind acquisition evidence after a payload proves a single session identity."""
-    with conn:
+def bind_source_raw_revision(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    revision: RawRevisionEnvelope,
+    *,
+    manage_transaction: bool = True,
+) -> None:
+    """Bind acquisition evidence after a payload proves a single session identity.
+
+    ``manage_transaction=False`` batches multiple raws' binds into one
+    caller-managed commit window (polylogue-amg1) -- the caller must call
+    ``conn.commit()`` (or ``conn.rollback()`` on failure) itself.
+    """
+    with conn if manage_transaction else nullcontext():
         cursor = conn.execute(
             """
             UPDATE raw_sessions

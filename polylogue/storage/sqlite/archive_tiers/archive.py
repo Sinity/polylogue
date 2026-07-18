@@ -12,7 +12,7 @@ import math
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1887,8 +1887,9 @@ class ArchiveStore:
             stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
         return result
 
-    def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope) -> None:
-        bind_source_raw_revision(self._ensure_source_conn(), raw_id, revision)
+    def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True) -> None:
+        """Bind acquisition evidence; ``manage_transaction=False`` batches (polylogue-amg1)."""
+        bind_source_raw_revision(self._ensure_source_conn(), raw_id, revision, manage_transaction=manage_transaction)
 
     def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
         """Undo census-time bindings when index authority rejects adoption.
@@ -2415,10 +2416,16 @@ class ArchiveStore:
         censused_at_ms: int,
         detail: str = "",
         retire_full_revision_governance: bool = False,
+        manage_transaction: bool = True,
     ) -> None:
-        """Atomically replace one raw's complete parser census and memberships."""
+        """Replace one raw's complete parser census and memberships.
+
+        ``manage_transaction=False`` batches multiple raws' census writes
+        into one caller-managed commit window (polylogue-amg1) -- the caller
+        must call ``commit()`` (or ``rollback()`` on failure) itself.
+        """
         conn = self._ensure_source_conn()
-        with conn:
+        with conn if manage_transaction else nullcontext():
             if retire_full_revision_governance:
                 revision = conn.execute(
                     "SELECT logical_source_key, revision_kind FROM raw_sessions WHERE raw_id = ?",
