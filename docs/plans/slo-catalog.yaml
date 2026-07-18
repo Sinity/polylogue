@@ -122,3 +122,19 @@ surfaces:
     p95_ms: 10000
     gate: "informational"
     tier: "lab"
+
+  cli_status_cold:
+    description: >-
+      polylogue status --format json, cold subprocess, no daemon reachable,
+      empty archive (deferred until polylogue-8s70's import-tax fix lands).
+      Measured baseline as of this row's introduction: p50 ~1.80s, p95
+      ~1.81s (5 rounds, this repo's dev host) -- dominated by
+      builtins.compile across ~870 modules on the readiness/storage.repair
+      import chain (polylogue-8s70's own cProfile finding), not query cost.
+      Target values below are the aspirational post-fix budget, not today's
+      passing bar.
+    benchmark_test: "tests/benchmarks/test_cli_cold_start.py::test_bench_cli_status_cold"
+    p50_ms: 500
+    p95_ms: 800
+    gate: "informational"
+    tier: "lab"

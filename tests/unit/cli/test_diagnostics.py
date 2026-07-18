@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
@@ -673,3 +676,94 @@ async def test_tools_reports_empty_archives(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert _console_print(env).call_args.args[0] == "No tool invocations found."
+
+
+def _env_with_archive_root(tmp_path: object) -> AppEnv:
+    from polylogue.config import Config
+
+    services = MagicMock()
+    services.get_config.return_value = Config(archive_root=tmp_path, render_root=tmp_path, sources=[])  # type: ignore[arg-type]
+    ui = MagicMock()
+    ui.console = MagicMock()
+    return AppEnv(ui=ui, services=services)
+
+
+def test_latency_command_reports_no_ops_db(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        diagnostics.latency_command,
+        ["--format", "json"],
+        obj=_env_with_archive_root(tmp_path),
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == {"buckets": [], "unavailable_reason": "ops.db does not exist"}
+
+
+def test_latency_command_reports_measured_percentiles(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    conn = sqlite3.connect(ops_db)
+    now_ms = int(time.time() * 1000)
+    for i, duration in enumerate((100, 200, 300, 400, 500)):
+        record_route_observation(
+            conn,
+            observation_id=f"obs-{i}",
+            trace_id=f"t-{i}",
+            surface="cli",
+            route="cli.status",
+            started_at_ms=now_ms - 1000 + i,
+            duration_ms=duration,
+            status="ok",
+        )
+    conn.close()
+
+    result = CliRunner().invoke(
+        diagnostics.latency_command,
+        ["--format", "json"],
+        obj=_env_with_archive_root(tmp_path),
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload["buckets"]) == 1
+    bucket = payload["buckets"][0]
+    assert bucket["surface"] == "cli"
+    assert bucket["route"] == "cli.status"
+    assert bucket["sample_count"] == 5
+    assert bucket["p50_ms"] == 300.0
+    assert bucket["low_confidence"] is False
+
+
+def test_latency_command_excludes_observations_outside_lookback_window(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    conn = sqlite3.connect(ops_db)
+    now_ms = int(time.time() * 1000)
+    record_route_observation(
+        conn,
+        observation_id="old",
+        trace_id="t-old",
+        surface="cli",
+        route="cli.status",
+        started_at_ms=now_ms - (48 * 3600 * 1000),
+        duration_ms=100,
+        status="ok",
+    )
+    conn.close()
+
+    result = CliRunner().invoke(
+        diagnostics.latency_command,
+        ["--format", "json", "--since-hours", "24"],
+        obj=_env_with_archive_root(tmp_path),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["buckets"] == []

@@ -1827,6 +1827,7 @@ def analyze_verb(
         polylogue find 'repo:polylogue' then analyze --by day --format json
         polylogue analyze --cost-outlook --plan claude-pro --format json
         polylogue analyze usage --format json
+        polylogue analyze latency --format json
     """
     if ctx.invoked_subcommand is not None:
         if any(
@@ -2005,6 +2006,7 @@ def _attach_analyze_subcommands() -> None:
         )
     )
     for name, attr, help_text in (
+        ("latency", "latency_command", "Analyze operational route latency (p50/p95) from ops-tier telemetry."),
         ("pace", "pace_command", "Analyze session pacing, gaps, and burstiness."),
         ("tools", "tools_command", "Analyze tool usage across sessions."),
         ("turns", "turns_command", "Analyze turn structure for one session."),

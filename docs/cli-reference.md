@@ -213,6 +213,7 @@ Usage: polylogue analyze [OPTIONS] [COMMAND] [ARGS]...
       polylogue find 'repo:polylogue' then analyze --by day --format json
       polylogue analyze --cost-outlook --plan claude-pro --format json
       polylogue analyze usage --format json
+      polylogue analyze latency --format json
 
 Options:
   --count                         Print only the matched-session count.
@@ -243,6 +244,8 @@ Options:
 
 Commands:
   insights  Check and export derived insight materialization.
+  latency   Analyze operational route latency (p50/p95) from ops-tier
+            telemetry.
   pace      Analyze session pacing, gaps, and burstiness.
   tools     Analyze tool usage across sessions.
   turns     Analyze turn structure for one session.

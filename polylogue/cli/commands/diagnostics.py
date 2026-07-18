@@ -800,3 +800,106 @@ async def _tools(
             env.ui.console.print(
                 f"{source_name[:18]:18s}  {tool_name[:38]:38s}  {action_kind_value[:14]:14s}  {count:7d}"
             )
+
+
+@click.command("latency")
+@click.option("--surface", help="Only rows for this surface (cli, mcp, daemon-http, daemon-internal, web).")
+@click.option("--since-hours", type=float, default=24.0, show_default=True, help="Lookback window in hours.")
+@click.option("--limit", "-l", "-n", type=int, default=1000, help="Max rows read per source table.")
+@click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+@click.pass_context
+def latency_command(
+    ctx: click.Context,
+    surface: str | None,
+    since_hours: float,
+    limit: int,
+    output_format: str,
+) -> None:
+    """Report p50/p95 route latency from ops-tier telemetry (polylogue-jtwu).
+
+    Groups ``route_observations`` (CLI invocations, MCP sub-route detail)
+    and ``mcp_call_log`` (whole MCP tool calls) by (surface, route).
+    ``query_runs`` is a separate exactness/degraded-membership record, not
+    included here. Buckets with fewer than 5 samples are marked
+    low-confidence rather than presented as a reliable percentile.
+    """
+    import json as _json
+    import sqlite3
+    import time as _time
+    from contextlib import closing
+
+    from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.operations.route_observation import compute_latency_percentiles
+    from polylogue.storage.sqlite.archive_tiers.ops_write import list_mcp_calls, list_route_observations
+
+    env: AppEnv = ctx.obj
+    config = load_effective_config(env)
+    ops_db = config.archive_root / "ops.db"
+    since_ms = int((_time.time() - since_hours * 3600) * 1000)
+
+    if not ops_db.exists():
+        if output_format == "json":
+            click.echo(_json.dumps({"buckets": [], "unavailable_reason": "ops.db does not exist"}))
+        else:
+            env.ui.console.print("[yellow]No ops.db found -- no latency telemetry has been recorded yet.[/yellow]")
+        return
+
+    with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True, timeout=2.0)) as conn:
+        observations = list_route_observations(conn, surface=surface, since_ms=since_ms, limit=limit)
+        calls = list_mcp_calls(conn, limit=limit) if surface in (None, "mcp") else ()
+        calls = tuple(call for call in calls if call.started_at_ms >= since_ms)
+
+    buckets = compute_latency_percentiles(observations, calls)
+
+    if output_format == "json":
+        click.echo(
+            _json.dumps(
+                {
+                    "since_hours": since_hours,
+                    "buckets": [
+                        {
+                            "surface": b.surface,
+                            "route": b.route,
+                            "sample_count": b.sample_count,
+                            "p50_ms": b.p50_ms,
+                            "p95_ms": b.p95_ms,
+                            "error_count": b.error_count,
+                            "error_rate": round(b.error_rate, 4),
+                            "low_confidence": b.low_confidence,
+                        }
+                        for b in buckets
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if not buckets:
+        env.ui.console.print(f"[yellow]No route observations in the last {since_hours:g}h.[/yellow]")
+        return
+    header = f"{'surface':10s}  {'route':32s}  {'n':>6s}  {'p50 ms':>8s}  {'p95 ms':>8s}  {'errors':>7s}"
+    env.ui.console.print(header)
+    env.ui.console.print("-" * len(header))
+    for b in buckets:
+        p50 = f"{b.p50_ms:.0f}" if b.p50_ms is not None else "-"
+        p95 = f"{b.p95_ms:.0f}" if b.p95_ms is not None else "-"
+        flag = " (low confidence)" if b.low_confidence else ""
+        env.ui.console.print(
+            f"{b.surface[:10]:10s}  {b.route[:32]:32s}  {b.sample_count:6d}  {p50:>8s}  {p95:>8s}  "
+            f"{b.error_count:7d}{flag}"
+        )
