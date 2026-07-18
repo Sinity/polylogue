@@ -60,10 +60,18 @@ class DriveAttachmentFetchStats:
 
 
 def _doc_file_id(doc: JSONValue) -> str | None:
+    """Resolve the Drive FILE id to download, matching attachment_from_doc's
+
+    own native-id precedence (`fileId`, `id`): #1252 promoted `fileId`/`id`
+    into typed fields because payloads can carry both, where `id` is a
+    provider attachment handle and `fileId` is the actual Drive file id
+    `DriveSourceClient.download_bytes` needs. `driveId` is the shared-drive
+    CONTAINER id, never a file id — it must never be tried as one here.
+    """
     if isinstance(doc, str):
         return doc or None
     if isinstance(doc, dict):
-        for key in ("id", "fileId", "driveId"):
+        for key in ("fileId", "id"):
             value = doc.get(key)
             if isinstance(value, str) and value:
                 return value

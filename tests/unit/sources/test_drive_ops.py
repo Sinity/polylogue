@@ -159,6 +159,70 @@ def test_iter_drive_raw_data_injects_live_attachment_bytes_into_raw_payload(tmp_
     assert json.loads(cache_path.read_bytes()) == stored_payload
 
 
+def test_iter_drive_raw_data_backfills_a_preexisting_cache_file(tmp_path: Path) -> None:
+    """CodeRabbit/Codex P2: a local cache file predating live attachment
+    acquisition (or written by an older polylogue version) must not be
+    permanently skipped just because the top-level document doesn't need
+    re-download. The injector must run on cache hits too."""
+    payload = {
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "role": "model",
+                    "driveDocument": {"id": "att-1", "name": "doc.txt", "mimeType": "text/plain"},
+                },
+            ]
+        }
+    }
+    client = _DriveSessionClient(
+        files=[DriveFile("file-1", "chat.json", "application/json", "2025-01-01T00:00:00Z", 10)],
+        payload_bytes={"file-1": json.dumps(payload).encode("utf-8")},
+        attachment_bytes={"att-1": b"backfilled attachment bytes"},
+    )
+    blob_store = BlobStore(tmp_path / "blob")
+
+    # Pre-populate the cache file exactly as an older run (with no live
+    # attachment acquisition) would have left it -- the raw payload, no
+    # sidecar, and the top-level document is never re-downloaded because it
+    # already exists on disk.
+    cache_path = Path(
+        list(
+            iter_drive_raw_data(
+                source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+                client=_DriveSessionClient(
+                    files=client.files,
+                    payload_bytes=client.payload_bytes,
+                    attachment_failures={"att-1": RuntimeError("attachment not fetchable yet")},
+                ),
+                blob_store=BlobStore(tmp_path / "throwaway-blob"),
+            )
+        )[0].source_path
+    )
+    stale_cache_bytes = cache_path.read_bytes()
+    assert b"att-1" in stale_cache_bytes
+    assert b"backfilled" not in stale_cache_bytes  # sidecar was never injected
+
+    records = list(
+        iter_drive_raw_data(
+            source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+            client=client,
+            blob_store=blob_store,
+        )
+    )
+
+    assert len(records) == 1
+    # The top-level document was NOT re-downloaded (cache hit) -- only the
+    # attachment was fetched.
+    assert client.download_bytes_calls == ["att-1"]
+    assert records[0].blob_hash is not None
+    resolved_payload = json.loads(blob_store.read_all(records[0].blob_hash))
+    resolved_doc = resolved_payload["chunkedPrompt"]["chunks"][0]["driveDocument"]
+    assert resolved_doc["id"] == "att-1"
+    # The cache file itself is refreshed with the backfilled sidecar so the
+    # NEXT run also sees it without re-fetching.
+    assert json.loads(cache_path.read_bytes()) == resolved_payload
+
+
 def test_drive_live_attachment_bytes_reach_acquired_blob_with_true_hash(tmp_path: Path) -> None:
     """End-to-end: live client -> raw injection -> ordinary parse -> write.
 

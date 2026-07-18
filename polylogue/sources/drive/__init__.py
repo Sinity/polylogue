@@ -137,26 +137,31 @@ def _inject_live_drive_attachment_bytes(
     raw_bytes: bytes,
     drive_client: DriveSourceAPI,
     file_meta: DriveFile,
-) -> bytes:
+) -> tuple[bytes, bool]:
     """Fetch live Drive-hosted attachment bytes into the raw session payload.
 
     Must run here, before this function's caller's live-client scope closes:
     googleapiclient/httplib2 are not thread-safe, and acquire (this generator,
     with a live client) and parse (a separate subprocess, no client) are
     deliberately decoupled for memory-bounded streaming. This is the one place
-    both the live client and the raw JSON are available together.
+    both the live client and the raw JSON are available together. Runs on
+    every read regardless of whether the session document came from a fresh
+    download or an existing local cache file, so a cache written before this
+    feature existed (or from any run where Drive-hosted attachments were not
+    yet resolvable) still gets backfilled, not silently skipped forever.
 
-    Returns ``raw_bytes`` unchanged when nothing was fetched (no Drive-hosted
-    references found, or all fetches failed/were oversize), so an ordinary
-    session's raw bytes are never needlessly re-serialized.
+    Returns ``(raw_bytes, False)`` unchanged when nothing was fetched (no
+    Drive-hosted references found, all already resolved, or all
+    fetches failed/were oversize) so an ordinary session's raw bytes are
+    never needlessly re-serialized or re-cached.
     """
     try:
         payload: JSONValue = json.loads(raw_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return raw_bytes
+        return raw_bytes, False
     resolved, stats = fetch_live_drive_attachment_bytes(payload, drive_client.download_bytes)
     if stats.fetched_count == 0:
-        return raw_bytes
+        return raw_bytes, False
     logger.info(
         "Resolved %d live Drive attachment(s) for %s (%d bytes fetched, %d failed, %d oversize)",
         stats.fetched_count,
@@ -165,7 +170,7 @@ def _inject_live_drive_attachment_bytes(
         stats.failed_count,
         stats.skipped_too_large_count,
     )
-    return json.dumps(resolved, ensure_ascii=False).encode("utf-8")
+    return json.dumps(resolved, ensure_ascii=False).encode("utf-8"), True
 
 
 def iter_drive_raw_data(
@@ -224,7 +229,7 @@ def iter_drive_raw_data(
         blob_size: int = 0
 
         if cache_path.exists():
-            blob_hash, blob_size = blob_store.write_from_path(cache_path)
+            raw_bytes = cache_path.read_bytes()
         else:
             try:
                 raw_bytes = drive_client.download_bytes(file_meta.file_id)
@@ -237,12 +242,20 @@ def iter_drive_raw_data(
                     exc,
                 )
                 continue
-            raw_bytes = _inject_live_drive_attachment_bytes(raw_bytes, drive_client, file_meta)
-            blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
-            # Write to cache for future runs
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_bytes(raw_bytes)
-            del raw_bytes
+
+        # Run the live-attachment injector on EVERY read, cache hit or not:
+        # a cache file written before this feature existed (or by a run where
+        # a Drive-hosted attachment failed/was oversize at the time) must
+        # still get backfilled on the next pass, not silently skipped
+        # forever just because the top-level document didn't need re-download.
+        raw_bytes, mutated = _inject_live_drive_attachment_bytes(raw_bytes, drive_client, file_meta)
+        if mutated:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(raw_bytes)
+        blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
+        del raw_bytes
 
         provider_hint = Provider.from_string(source.name)
         observe_acquisition(

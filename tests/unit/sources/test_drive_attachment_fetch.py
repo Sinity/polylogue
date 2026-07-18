@@ -73,6 +73,47 @@ def test_fetch_resolves_bare_string_doc_id() -> None:
     assert attachment.inline_bytes == b"raw-bytes"
 
 
+def test_fetch_prefers_file_id_over_attachment_id_when_both_present() -> None:
+    # attachment_from_doc's own native-id precedence (#1252): `id` is a
+    # provider attachment handle, `fileId` is the real Drive file id that
+    # DriveSourceClient.download_bytes needs. A live fetch must request the
+    # SAME id the parser records as provider_file_id, or real payloads
+    # carrying both fields would request the wrong handle and fail live.
+    payload: JSONDocument = {"driveDocument": {"id": "attachment-handle-1", "fileId": "drive-file-1"}}
+    requested_ids: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        requested_ids.append(file_id)
+        return b"drive-file-bytes"
+
+    resolved, stats = fetch_live_drive_attachment_bytes(payload, fetch)
+
+    assert requested_ids == ["drive-file-1"]
+    assert stats.fetched_count == 1
+    doc = _doc(_doc(resolved)["driveDocument"])
+    fetched_b64 = doc[DRIVE_LIVE_FETCH_DATA_KEY]
+    assert isinstance(fetched_b64, str)
+    assert base64.b64decode(fetched_b64) == b"drive-file-bytes"
+
+
+def test_fetch_never_uses_shared_drive_id_as_a_file_id() -> None:
+    # driveId is the shared-drive CONTAINER id, never a downloadable file id.
+    # A doc carrying only driveId (no id/fileId) has no live handle to fetch.
+    payload: JSONDocument = {"driveDocument": {"driveId": "shared-drive-container-1", "name": "doc.txt"}}
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        return b"should-never-be-fetched"
+
+    resolved, stats = fetch_live_drive_attachment_bytes(payload, fetch)
+
+    assert calls == []
+    assert stats.fetched_count == 0
+    doc = _doc(_doc(resolved)["driveDocument"])
+    assert DRIVE_LIVE_FETCH_DATA_KEY not in doc
+
+
 @pytest.mark.parametrize("field", ["driveImage", "driveAudio", "driveVideo"])
 def test_fetch_resolves_media_fields(field: str) -> None:
     payload: JSONDocument = {"chunk": {field: {"id": "media-1"}}}
