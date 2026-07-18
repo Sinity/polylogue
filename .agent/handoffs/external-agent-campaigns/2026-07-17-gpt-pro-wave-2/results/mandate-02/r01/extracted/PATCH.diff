@@ -1,0 +1,3592 @@
+diff --git a/polylogue/core/refs.py b/polylogue/core/refs.py
+index 3768084b84f71cbf69ae56b67293fe8925443466..d7b1436eb694e3b5abd269c6eab3b60cecf64d51 100644
+--- a/polylogue/core/refs.py
++++ b/polylogue/core/refs.py
+@@ -38,6 +38,14 @@ ObjectRefKind: TypeAlias = Literal[
+     "github-issue",
+     "github-pr",
+     "github-review",
++    # Repository/work-tracker observations used by the provider-neutral
++    # work-evidence graph. Repository snapshots are distinct from corpus
++    # context snapshots: the former identify external project state while the
++    # latter identify archive/query input state.
++    "beads-issue",
++    "beads-change",
++    "verification-receipt",
++    "repository-snapshot",
+     # Analysis-provenance object kinds (polylogue-rxdo epic). Most refs land
+     # here before their backing storage tiers exist; annotation-batch now
+     # resolves through durable user.db storage (polylogue-rxdo.7.1). Do not append a
+@@ -123,6 +131,10 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
+     "github-issue": "github-issue",
+     "github-pr": "github-pr",
+     "github-review": "github-review",
++    "beads-issue": "beads-issue",
++    "beads-change": "beads-change",
++    "verification-receipt": "verification-receipt",
++    "repository-snapshot": "repository-snapshot",
+     "query": "query",
+     "query-run": "query-run",
+     "result-set": "result-set",
+diff --git a/polylogue/insights/claude_workflow_evidence.py b/polylogue/insights/claude_workflow_evidence.py
+index 2590ae705397c7b0f862339a4d9708e78579fd83..538aec3a33eba817927f699f178060d6e4722164 100644
+--- a/polylogue/insights/claude_workflow_evidence.py
++++ b/polylogue/insights/claude_workflow_evidence.py
+@@ -1,7 +1,9 @@
+ """Project admitted Claude Workflow artifacts into the generic evidence graph.
+ 
+ This adapter has no knowledge of session-parent topology: every membership edge
+-comes from a coordinator invocation or an admitted workflow artifact.
++comes from a coordinator invocation or an admitted workflow artifact. Missing
++archive evidence for an admitted artifact degrades that artifact/fact to an
++unresolved direct file ref; coordinator evidence is never substituted for it.
+ """
+ 
+ from __future__ import annotations
+@@ -25,16 +27,31 @@ def project_claude_workflow_evidence(
+ ) -> WorkEvidenceGraph:
+     """Create a generic graph from direct Claude Workflow evidence only.
+ 
+-    Missing evidence-bearing counterparts remain absent/unresolved; this never
+-    promotes an arbitrary child session to a Workflow attempt.
++    Missing evidence-bearing counterparts remain unresolved and retain their
++    admitted source-path ref; this never promotes an arbitrary child session to
++    a Workflow attempt and never borrows coordinator evidence for a sidecar.
+     """
+     nodes: dict[str, WorkEvidenceNode] = {}
+     edges: dict[str, WorkEvidenceEdge] = {}
+ 
+-    def evidence(path: str) -> EvidenceRef:
+-        return evidence_for_path(path) or coordinator_evidence
++    def merged_state(existing: str, incoming: str) -> str:
++        # A direct admitted observation establishes identity even when another
++        # artifact mentioning the same identity is missing. Unresolved remains
++        # when every admitted source is unresolved.
++        if "resolved" in {existing, incoming}:
++            return "resolved"
++        return existing
+ 
+-    def add_node(kind: str, object_id: str, label: str, source: EvidenceRef, *, state: str = "resolved") -> ObjectRef:
++    def add_node(
++        kind: str,
++        object_id: str,
++        label: str,
++        source: EvidenceRef | None,
++        *,
++        source_refs: tuple[ObjectRef, ...] = (),
++        state: str = "resolved",
++        confidence: float = 1.0,
++    ) -> ObjectRef:
+         ref_kind = {
+             "run": "run",
+             "invocation": "work-invocation",
+@@ -45,73 +62,157 @@ def project_claude_workflow_evidence(
+             "artifact": "artifact",
+         }[kind]
+         ref = ObjectRef(kind=ref_kind, object_id=object_id)  # type: ignore[arg-type]
+-        nodes.setdefault(
+-            ref.format(),
+-            WorkEvidenceNode(
+-                ref=ref,
+-                kind=kind,  # type: ignore[arg-type]
+-                label=label,
+-                evidence_refs=(source,),
+-                corpus_snapshot_ref=corpus_snapshot_ref,
+-                authority="provider",
+-                confidence=1.0,
+-                association_state=state,  # type: ignore[arg-type]
+-            ),
++        candidate = WorkEvidenceNode(
++            ref=ref,
++            kind=kind,  # type: ignore[arg-type]
++            label=label,
++            evidence_refs=(source,) if source is not None else (),
++            source_refs=source_refs,
++            corpus_snapshot_ref=corpus_snapshot_ref,
++            authority="provider",
++            confidence=confidence,
++            association_state=state,  # type: ignore[arg-type]
+         )
++        existing = nodes.get(ref.format())
++        if existing is None:
++            nodes[ref.format()] = candidate
++        else:
++            nodes[ref.format()] = existing.model_copy(
++                update={
++                    "evidence_refs": tuple(dict.fromkeys((*existing.evidence_refs, *candidate.evidence_refs))),
++                    "source_refs": tuple(
++                        {
++                            source_ref.format(): source_ref
++                            for source_ref in (*existing.source_refs, *source_refs)
++                        }.values()
++                    ),
++                    "association_state": merged_state(existing.association_state, state),
++                    "confidence": max(existing.confidence, confidence),
++                }
++            )
+         return ref
+ 
+     def add_edge(
+-        kind: str, source: ObjectRef, target: ObjectRef, source_evidence: EvidenceRef, *, state: str = "resolved"
++        kind: str,
++        source: ObjectRef,
++        target: ObjectRef,
++        source_evidence: EvidenceRef | None,
++        *,
++        source_refs: tuple[ObjectRef, ...] = (),
++        state: str = "resolved",
++        confidence: float = 1.0,
+     ) -> None:
+         edge_id = f"claude:{kind}:{source.format()}->{target.format()}"
+         ref = ObjectRef(kind="work-edge", object_id=edge_id)
+-        edges.setdefault(
+-            ref.format(),
+-            WorkEvidenceEdge(
+-                ref=ref,
+-                kind=kind,  # type: ignore[arg-type]
+-                source_ref=source,
+-                target_ref=target,
+-                evidence_refs=(source_evidence,),
+-                corpus_snapshot_ref=corpus_snapshot_ref,
+-                authority="provider",
+-                confidence=1.0,
+-                association_state=state,  # type: ignore[arg-type]
+-            ),
++        candidate = WorkEvidenceEdge(
++            ref=ref,
++            kind=kind,  # type: ignore[arg-type]
++            source_ref=source,
++            target_ref=target,
++            evidence_refs=(source_evidence,) if source_evidence is not None else (),
++            source_refs=source_refs,
++            corpus_snapshot_ref=corpus_snapshot_ref,
++            authority="provider",
++            confidence=confidence,
++            association_state=state,  # type: ignore[arg-type]
+         )
++        existing = edges.get(ref.format())
++        if existing is None:
++            edges[ref.format()] = candidate
++        else:
++            edges[ref.format()] = existing.model_copy(
++                update={
++                    "evidence_refs": tuple(dict.fromkeys((*existing.evidence_refs, *candidate.evidence_refs))),
++                    "source_refs": tuple(
++                        {
++                            source_ref.format(): source_ref
++                            for source_ref in (*existing.source_refs, *source_refs)
++                        }.values()
++                    ),
++                    "association_state": merged_state(existing.association_state, state),
++                    "confidence": max(existing.confidence, confidence),
++                }
++            )
+ 
+     runs: dict[str, ObjectRef] = {}
+     calls: dict[tuple[str, str], ObjectRef] = {}
+ 
+-    def run_ref(run_id: str, source: EvidenceRef) -> ObjectRef:
++    def run_ref(
++        run_id: str,
++        source: EvidenceRef | None,
++        *,
++        source_refs: tuple[ObjectRef, ...] = (),
++        state: str = "resolved",
++        confidence: float = 1.0,
++    ) -> ObjectRef:
+         return runs.setdefault(
+-            run_id, add_node("run", f"claude-workflow:{run_id}", f"Claude Workflow {run_id}", source)
++            run_id,
++            add_node(
++                "run",
++                f"claude-workflow:{run_id}",
++                f"Claude Workflow {run_id}",
++                source,
++                source_refs=source_refs,
++                state=state,
++                confidence=confidence,
++            ),
+         )
+ 
+-    for event in coordinator_events:
++    for event_index, event in enumerate(coordinator_events):
+         if event.event_type != "claude_workflow_invocation":
+             continue
+         payload = event.payload
+         run_id = _string(payload, "runId", "run_id")
+         if run_id is None:
+             continue
+-        run = run_ref(run_id, coordinator_evidence)
++        event_identity = event.source_message_provider_id or f"{run_id}:event:{event_index}"
++        event_ref = ObjectRef(kind="observed-event", object_id=f"claude:{event_identity}")
++        run = run_ref(run_id, coordinator_evidence, source_refs=(event_ref,))
+         invocation = add_node(
+             "invocation",
+-            f"claude-workflow:{run_id}:{event.source_message_provider_id}",
++            f"claude-workflow:{run_id}:{event_identity}",
+             "Workflow invocation",
+             coordinator_evidence,
++            source_refs=(event_ref,),
+         )
+-        add_edge("invoked", run, invocation, coordinator_evidence)
++        add_edge("invoked", run, invocation, coordinator_evidence, source_refs=(event_ref,))
+         resumed = _string(payload, "resumeFromRunId", "resume_from_run_id")
+         if resumed is not None:
+-            add_edge("resumed", run, run_ref(resumed, coordinator_evidence), coordinator_evidence)
++            add_edge(
++                "resumed",
++                run,
++                run_ref(resumed, coordinator_evidence, source_refs=(event_ref,)),
++                coordinator_evidence,
++                source_refs=(event_ref,),
++            )
+ 
+     for artifact in artifacts:
+-        artifact_evidence = evidence(artifact.source_path)
+-        artifact_ref = add_node("artifact", f"claude-artifact:{artifact.source_path}", artifact.kind, artifact_evidence)
++        artifact_evidence = evidence_for_path(artifact.source_path)
++        source_path_ref = ObjectRef(kind="file", object_id=artifact.source_path)
++        state = "resolved" if artifact_evidence is not None else "unresolved"
++        confidence = 1.0 if artifact_evidence is not None else 0.5
++        artifact_ref = add_node(
++            "artifact",
++            f"claude-artifact:{artifact.source_path}",
++            artifact.kind,
++            artifact_evidence,
++            source_refs=(source_path_ref,),
++            state=state,
++            confidence=confidence,
++        )
+         for fact in artifact.facts:
+-            _project_fact(fact, artifact_ref, artifact_evidence, run_ref, calls, add_node, add_edge)
++            _project_fact(
++                fact,
++                artifact_ref,
++                artifact_evidence,
++                (source_path_ref,),
++                state,
++                confidence,
++                run_ref,
++                calls,
++                add_node,
++                add_edge,
++            )
+ 
+     return WorkEvidenceGraph(
+         graph_id=graph_id,
+@@ -124,22 +225,56 @@ def project_claude_workflow_evidence(
+ def _project_fact(
+     fact: ClaudeOrchestrationFact,
+     artifact_ref: ObjectRef,
+-    evidence: EvidenceRef,
+-    run_ref: Callable[[str, EvidenceRef], ObjectRef],
++    evidence: EvidenceRef | None,
++    source_refs: tuple[ObjectRef, ...],
++    state: str,
++    confidence: float,
++    run_ref: Callable[..., ObjectRef],
+     calls: dict[tuple[str, str], ObjectRef],
+     add_node: Callable[..., ObjectRef],
+     add_edge: Callable[..., None],
+ ) -> None:
+     if fact.run_id is None:
+         return
+-    run = run_ref(fact.run_id, evidence)
+-    add_edge("mentioned", run, artifact_ref, evidence)
++    run = run_ref(
++        fact.run_id,
++        evidence,
++        source_refs=source_refs,
++        state=state,
++        confidence=confidence,
++    )
++    add_edge(
++        "mentioned",
++        run,
++        artifact_ref,
++        evidence,
++        source_refs=source_refs,
++        state=state,
++        confidence=confidence,
++    )
+     resumed = _string(fact.payload, "resumeFromRunId", "resume_from_run_id")
+     if resumed is not None:
+-        add_edge("resumed", run, run_ref(resumed, evidence), evidence)
++        add_edge(
++            "resumed",
++            run,
++            run_ref(
++                resumed,
++                evidence,
++                source_refs=source_refs,
++                state=state,
++                confidence=confidence,
++            ),
++            evidence,
++            source_refs=source_refs,
++            state=state,
++            confidence=confidence,
++        )
+     if fact.kind != "workflow_journal_entry" or fact.content_key is None:
+         return
+     key = (fact.run_id, fact.content_key)
++    unresolved = state == "unresolved" or bool(fact.payload.get("unresolved"))
++    fact_state = "unresolved" if unresolved else "resolved"
++    fact_confidence = min(confidence, 0.5) if unresolved else confidence
+     call = calls.get(key)
+     if call is None:
+         call = add_node(
+@@ -147,22 +282,59 @@ def _project_fact(
+             f"claude-workflow:{fact.run_id}:call:{fact.content_key}",
+             fact.content_key,
+             evidence,
+-            state="unresolved" if fact.payload.get("unresolved") else "resolved",
++            source_refs=source_refs,
++            state=fact_state,
++            confidence=fact_confidence,
+         )
+         calls[key] = call
+-    add_edge("invoked", run, call, evidence, state="unresolved" if fact.payload.get("unresolved") else "resolved")
++    add_edge(
++        "invoked",
++        run,
++        call,
++        evidence,
++        source_refs=source_refs,
++        state=fact_state,
++        confidence=fact_confidence,
++    )
+     attempt_id = _string(fact.payload, "attemptId", "attempt") or fact.agent_id
+     if attempt_id is not None:
+-        attempt = add_node("attempt", f"claude-workflow:{fact.run_id}:attempt:{attempt_id}", attempt_id, evidence)
+-        add_edge("invoked", call, attempt, evidence)
++        attempt = add_node(
++            "attempt",
++            f"claude-workflow:{fact.run_id}:attempt:{attempt_id}",
++            attempt_id,
++            evidence,
++            source_refs=source_refs,
++            state=fact_state,
++            confidence=fact_confidence,
++        )
++        add_edge(
++            "invoked",
++            call,
++            attempt,
++            evidence,
++            source_refs=source_refs,
++            state=fact_state,
++            confidence=fact_confidence,
++        )
+     if "structuredResult" in fact.payload or "result" in fact.payload:
+         result = add_node(
+             "structured-result",
+             f"claude-workflow:{fact.run_id}:result:{fact.content_key}:{fact.source_line or 0}",
+             "Workflow structured result",
+             evidence,
++            source_refs=source_refs,
++            state=fact_state,
++            confidence=fact_confidence,
++        )
++        add_edge(
++            "produced",
++            call,
++            result,
++            evidence,
++            source_refs=source_refs,
++            state=fact_state,
++            confidence=fact_confidence,
+         )
+-        add_edge("produced", call, result, evidence)
+ 
+ 
+ def _string(payload: Mapping[str, object], *keys: str) -> str | None:
+diff --git a/polylogue/insights/work_evidence.py b/polylogue/insights/work_evidence.py
+index 468392e8fbefb551c0c66218c577f2cccb5778ae..1717b20438a5131fd869957d41fad75d3600864c 100644
+--- a/polylogue/insights/work_evidence.py
++++ b/polylogue/insights/work_evidence.py
+@@ -1,9 +1,13 @@
+-"""Provider-neutral work topology and claim graph.
++"""Provider-neutral work topology, claims, observed effects, and evaluations.
+ 
+-The graph represents what a runtime reported or what archive evidence can
+-support about work execution.  It intentionally stops before repository
+-effects and acceptance evaluation: a ``claim`` is a first-class node, never a
+-state update on an external object.
++The graph preserves three epistemically different fact classes:
++
++* provider/archive work facts and structured claims;
++* independently observed repository effects; and
++* operator assertions that evaluate claims against effects.
++
++No adapter may turn a claim into an external observation. Time and file overlap
++are represented as candidate associations, never causal effect edges.
+ """
+ 
+ from __future__ import annotations
+@@ -12,6 +16,7 @@ from typing import Final, Literal
+ 
+ from pydantic import Field, model_validator
+ 
++from polylogue.core.json import is_json_document
+ from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef
+ from polylogue.insights.archive_models import ArchiveInsightModel
+ from polylogue.insights.run_projection import ObservedEvent, ProjectedRun
+@@ -28,6 +33,7 @@ WorkEvidenceNodeKind = Literal[
+     "actor",
+     "execution-context",
+     "effect",
++    "evaluation",
+ ]
+ WorkEvidenceEdgeKind = Literal[
+     "invoked",
+@@ -38,11 +44,61 @@ WorkEvidenceEdgeKind = Literal[
+     "consumed",
+     "mentioned",
+     "claimed",
++    "observed_effect",
++    "candidate_effect",
++    "evaluated_as",
++    "evaluated_against",
++    "related_effect",
+     "superseded",
+     "unresolved",
+ ]
+-WorkEvidenceAuthority = Literal["provider", "operator", "inferred", "unknown"]
+-WorkEvidenceAssociationState = Literal["resolved", "unresolved", "ambiguous", "contradicted", "superseded"]
++WorkEvidenceAuthority = Literal[
++    "provider",
++    "operator",
++    "inferred",
++    "unknown",
++    "git",
++    "github",
++    "beads",
++    "artifact",
++    "verification",
++]
++WorkEvidenceAssociationState = Literal[
++    "resolved",
++    "candidate",
++    "unresolved",
++    "ambiguous",
++    "contradicted",
++    "superseded",
++]
++WorkEvidenceEvaluation = Literal["supported", "partial", "contradicted", "unresolved", "superseded"]
++WorkEvidenceEffectKind = Literal[
++    "git-commit",
++    "git-branch",
++    "github-issue",
++    "github-pr",
++    "beads-issue",
++    "beads-change",
++    "artifact",
++    "verification-receipt",
++    "coverage-gap",
++]
++WorkEvidenceEffectAction = Literal[
++    "baseline",
++    "created",
++    "edited",
++    "claimed",
++    "closed",
++    "reopened",
++    "corrected",
++    "merged",
++    "produced",
++    "verified",
++    "failed",
++    "unverified",
++    "unknown",
++]
++BeadWorkAction = Literal["created", "edited", "claimed", "closed"]
+ 
+ _NODE_REF_KINDS: Final[dict[WorkEvidenceNodeKind, frozenset[str]]] = {
+     "run": frozenset({"run"}),
+@@ -55,18 +111,48 @@ _NODE_REF_KINDS: Final[dict[WorkEvidenceNodeKind, frozenset[str]]] = {
+     "artifact": frozenset({"artifact"}),
+     "actor": frozenset({"actor"}),
+     "execution-context": frozenset({"execution-context"}),
+-    "effect": frozenset({"commit", "github-issue", "github-pr", "check-run", "artifact"}),
++    "effect": frozenset(
++        {
++            "branch",
++            "commit",
++            "github-issue",
++            "github-pr",
++            "check-run",
++            "artifact",
++            "beads-issue",
++            "beads-change",
++            "verification-receipt",
++        }
++    ),
++    "evaluation": frozenset({"assertion"}),
++}
++
++_EFFECT_REF_KINDS: Final[dict[WorkEvidenceEffectKind, frozenset[str]]] = {
++    "git-commit": frozenset({"commit"}),
++    "git-branch": frozenset({"branch"}),
++    "github-issue": frozenset({"github-issue"}),
++    "github-pr": frozenset({"github-pr"}),
++    "beads-issue": frozenset({"beads-issue"}),
++    "beads-change": frozenset({"beads-change"}),
++    "artifact": frozenset({"artifact"}),
++    "verification-receipt": frozenset({"check-run", "verification-receipt"}),
++    "coverage-gap": frozenset({"artifact"}),
+ }
+ 
+ 
+ class WorkEvidenceNode(ArchiveInsightModel):
+-    """One evidence-backed, provider-neutral work identity."""
++    """One evidence-backed work, effect, or evaluation identity."""
+ 
+     ref: ObjectRef
+     kind: WorkEvidenceNodeKind
+     label: str
+-    evidence_refs: tuple[EvidenceRef, ...]
++    evidence_refs: tuple[EvidenceRef, ...] = ()
++    source_refs: tuple[ObjectRef, ...] = ()
+     corpus_snapshot_ref: ObjectRef
++    repository_ref: ObjectRef | None = None
++    repository_snapshot_ref: ObjectRef | None = None
++    subject_ref: ObjectRef | None = None
++    subject_key: str | None = None
+     authority: WorkEvidenceAuthority = "unknown"
+     confidence: float = Field(ge=0.0, le=1.0)
+     occurred_at_ms: int | None = Field(default=None, ge=0)
+@@ -74,20 +160,69 @@ class WorkEvidenceNode(ArchiveInsightModel):
+     execution_context_ref: ExecutionContextRef | None = None
+     association_state: WorkEvidenceAssociationState = "resolved"
+     claim_text: str | None = None
++    effect_kind: WorkEvidenceEffectKind | None = None
++    effect_action: WorkEvidenceEffectAction | None = None
++    evaluation_status: WorkEvidenceEvaluation | None = None
++    attributes: dict[str, object] = Field(default_factory=dict)
+ 
+     @model_validator(mode="after")
+-    def _validate_identity_and_claim_boundary(self) -> WorkEvidenceNode:
++    def _validate_identity_and_fact_boundaries(self) -> WorkEvidenceNode:
+         if self.ref.kind not in _NODE_REF_KINDS[self.kind]:
+             expected = ", ".join(sorted(_NODE_REF_KINDS[self.kind]))
+             raise ValueError(f"{self.kind} nodes require a {expected} ref, not {self.ref.kind}")
+         if not self.label.strip():
+             raise ValueError("work-evidence node label cannot be empty")
+-        if not self.evidence_refs:
+-            raise ValueError("work-evidence nodes require source evidence")
++        if not self.evidence_refs and not self.source_refs:
++            raise ValueError("work-evidence nodes require archive evidence or direct source refs")
++        if self.corpus_snapshot_ref.kind != "context-snapshot":
++            raise ValueError("work-evidence nodes require a context-snapshot corpus ref")
++        if self.repository_ref is not None and self.repository_ref.kind != "repo":
++            raise ValueError("repository_ref must be a repo ref")
++        if self.repository_snapshot_ref is not None and self.repository_snapshot_ref.kind != "repository-snapshot":
++            raise ValueError("repository_snapshot_ref must be a repository-snapshot ref")
++        if not is_json_document(self.attributes):
++            raise ValueError("work-evidence node attributes must be JSON-compatible")
++
+         if self.kind == "claim" and not (self.claim_text and self.claim_text.strip()):
+             raise ValueError("claim nodes require claim_text")
+         if self.kind != "claim" and self.claim_text is not None:
+             raise ValueError("only claim nodes may carry claim_text")
++
++        if self.kind == "effect":
++            if self.effect_kind is None:
++                raise ValueError("effect nodes require effect_kind")
++            expected_ref_kinds = _EFFECT_REF_KINDS[self.effect_kind]
++            if self.ref.kind not in expected_ref_kinds:
++                expected = ", ".join(sorted(expected_ref_kinds))
++                raise ValueError(f"{self.effect_kind} effects require a {expected} ref, not {self.ref.kind}")
++            if self.repository_ref is None or self.repository_snapshot_ref is None:
++                raise ValueError("effect nodes require repository and repository-snapshot refs")
++            if not self.source_refs:
++                raise ValueError("effect nodes require direct source refs")
++            if self.effect_action is None:
++                raise ValueError("effect nodes require effect_action")
++            if self.effect_kind == "beads-change":
++                if self.subject_ref is None or self.subject_ref.kind != "beads-issue":
++                    raise ValueError("Beads change effects require a Beads issue subject_ref")
++                if not (self.subject_key and self.subject_key.strip()):
++                    raise ValueError("Beads change effects require subject_key")
++            if self.effect_kind == "beads-issue" and not (self.subject_key and self.subject_key.strip()):
++                raise ValueError("Beads issue effects require subject_key")
++        elif self.effect_kind is not None or self.effect_action is not None:
++            raise ValueError("only effect nodes may carry effect_kind/effect_action")
++        if self.kind != "effect" and (self.subject_ref is not None or self.subject_key is not None):
++            raise ValueError("only effect nodes may carry subject_ref/subject_key")
++
++        if self.kind == "evaluation":
++            if self.evaluation_status is None:
++                raise ValueError("evaluation nodes require evaluation_status")
++            if self.repository_ref is None or self.repository_snapshot_ref is None:
++                raise ValueError("evaluation nodes require repository and repository-snapshot refs")
++            if not any(ref.kind == "assertion" for ref in self.source_refs):
++                raise ValueError("evaluation nodes require their assertion source ref")
++        elif self.evaluation_status is not None:
++            raise ValueError("only evaluation nodes may carry evaluation_status")
++
+         if self.kind == "actor" and (self.actor_ref is None or self.ref.object_id != self.actor_ref.format()):
+             raise ValueError("actor nodes must carry their matching ActorRef")
+         if self.kind == "execution-context" and (
+@@ -98,18 +233,22 @@ class WorkEvidenceNode(ArchiveInsightModel):
+ 
+ 
+ class WorkEvidenceEdge(ArchiveInsightModel):
+-    """Directed, evidence-backed relation between two work identities."""
++    """Directed, evidence-backed relation between graph identities."""
+ 
+     ref: ObjectRef
+     kind: WorkEvidenceEdgeKind
+     source_ref: ObjectRef
+     target_ref: ObjectRef
+-    evidence_refs: tuple[EvidenceRef, ...]
++    evidence_refs: tuple[EvidenceRef, ...] = ()
++    source_refs: tuple[ObjectRef, ...] = ()
+     corpus_snapshot_ref: ObjectRef
++    repository_ref: ObjectRef | None = None
++    repository_snapshot_ref: ObjectRef | None = None
+     authority: WorkEvidenceAuthority = "unknown"
+     confidence: float = Field(ge=0.0, le=1.0)
+     occurred_at_ms: int | None = Field(default=None, ge=0)
+     association_state: WorkEvidenceAssociationState = "resolved"
++    attributes: dict[str, object] = Field(default_factory=dict)
+ 
+     @model_validator(mode="after")
+     def _validate_identity(self) -> WorkEvidenceEdge:
+@@ -117,8 +256,23 @@ class WorkEvidenceEdge(ArchiveInsightModel):
+             raise ValueError("work-evidence edges require a work-edge ref")
+         if self.source_ref == self.target_ref:
+             raise ValueError("work-evidence edges cannot self-reference")
+-        if not self.evidence_refs:
+-            raise ValueError("work-evidence edges require source evidence")
++        if not self.evidence_refs and not self.source_refs:
++            raise ValueError("work-evidence edges require archive evidence or direct source refs")
++        if self.corpus_snapshot_ref.kind != "context-snapshot":
++            raise ValueError("work-evidence edges require a context-snapshot corpus ref")
++        if self.repository_ref is not None and self.repository_ref.kind != "repo":
++            raise ValueError("repository_ref must be a repo ref")
++        if self.repository_snapshot_ref is not None and self.repository_snapshot_ref.kind != "repository-snapshot":
++            raise ValueError("repository_snapshot_ref must be a repository-snapshot ref")
++        if not is_json_document(self.attributes):
++            raise ValueError("work-evidence edge attributes must be JSON-compatible")
++        if self.kind in {"observed_effect", "candidate_effect", "evaluated_as", "evaluated_against", "related_effect"}:
++            if self.repository_ref is None or self.repository_snapshot_ref is None:
++                raise ValueError(f"{self.kind} edges require repository and repository-snapshot refs")
++        if self.kind == "candidate_effect" and self.association_state != "candidate":
++            raise ValueError("candidate_effect edges require candidate association_state")
++        if self.kind == "observed_effect" and self.association_state == "candidate":
++            raise ValueError("observed_effect edges cannot carry candidate association_state")
+         return self
+ 
+ 
+@@ -134,21 +288,69 @@ class WorkEvidenceGraph(ArchiveInsightModel):
+     def _validate_graph(self) -> WorkEvidenceGraph:
+         if not self.graph_id.strip():
+             raise ValueError("work-evidence graph_id cannot be empty")
++        if self.corpus_snapshot_ref.kind != "context-snapshot":
++            raise ValueError("work-evidence graph requires a context-snapshot corpus ref")
+         refs = [node.ref.format() for node in self.nodes]
+         if len(refs) != len(set(refs)):
+             raise ValueError("work-evidence graph node refs must be unique")
+         edge_refs = [edge.ref.format() for edge in self.edges]
+         if len(edge_refs) != len(set(edge_refs)):
+             raise ValueError("work-evidence graph edge refs must be unique")
+-        node_refs = set(refs)
++        nodes_by_ref = {node.ref.format(): node for node in self.nodes}
++        for node in self.nodes:
++            if node.corpus_snapshot_ref != self.corpus_snapshot_ref:
++                raise ValueError("work-evidence nodes must use the graph corpus snapshot")
+         for edge in self.edges:
+-            if edge.source_ref.format() not in node_refs or edge.target_ref.format() not in node_refs:
++            if edge.corpus_snapshot_ref != self.corpus_snapshot_ref:
++                raise ValueError("work-evidence edges must use the graph corpus snapshot")
++            source = nodes_by_ref.get(edge.source_ref.format())
++            target = nodes_by_ref.get(edge.target_ref.format())
++            if source is None or target is None:
+                 raise ValueError("work-evidence edges must connect graph nodes")
++            self._validate_edge_semantics(edge, source, target)
+         return self
+ 
++    @staticmethod
++    def _validate_edge_semantics(
++        edge: WorkEvidenceEdge,
++        source: WorkEvidenceNode,
++        target: WorkEvidenceNode,
++    ) -> None:
++        if edge.kind in {"observed_effect", "candidate_effect"}:
++            if target.kind != "effect":
++                raise ValueError(f"{edge.kind} edges must target an effect")
++            if source.kind in {"claim", "effect", "evaluation"}:
++                raise ValueError(f"{edge.kind} edges must originate from observed work, not {source.kind}")
++            WorkEvidenceGraph._validate_repository_scope(edge, target)
++        elif edge.kind == "claimed":
++            if source.kind != "structured-result" or target.kind != "claim":
++                raise ValueError("claimed edges require structured-result -> claim")
++        elif edge.kind == "evaluated_as":
++            if source.kind != "claim" or target.kind != "evaluation":
++                raise ValueError("evaluated_as edges require claim -> evaluation")
++            WorkEvidenceGraph._validate_repository_scope(edge, target)
++        elif edge.kind == "evaluated_against":
++            if source.kind != "evaluation" or target.kind != "effect":
++                raise ValueError("evaluated_against edges require evaluation -> effect")
++            WorkEvidenceGraph._validate_repository_scope(edge, source)
++            WorkEvidenceGraph._validate_repository_scope(edge, target)
++        elif edge.kind == "related_effect":
++            if source.kind != "effect" or target.kind != "effect":
++                raise ValueError("related_effect edges require effect -> effect")
++            WorkEvidenceGraph._validate_repository_scope(edge, source)
++            WorkEvidenceGraph._validate_repository_scope(edge, target)
++        elif edge.kind == "superseded" and source.kind == "effect" and target.kind == "effect":
++            WorkEvidenceGraph._validate_repository_scope(edge, source)
++            WorkEvidenceGraph._validate_repository_scope(edge, target)
++
++    @staticmethod
++    def _validate_repository_scope(edge: WorkEvidenceEdge, node: WorkEvidenceNode) -> None:
++        if edge.repository_ref != node.repository_ref or edge.repository_snapshot_ref != node.repository_snapshot_ref:
++            raise ValueError(f"{edge.kind} edge repository scope must match its effect/evaluation endpoints")
++
+ 
+ class WorkEvidenceTraversal(ArchiveInsightModel):
+-    """Bidirectional neighborhood returned by the production query route."""
++    """Direction-aware graph neighborhood returned by the production route."""
+ 
+     graph_id: str
+     focal_ref: ObjectRef
+@@ -156,6 +358,55 @@ class WorkEvidenceTraversal(ArchiveInsightModel):
+     edges: tuple[WorkEvidenceEdge, ...]
+ 
+ 
++class BeadWorkSessionMatch(ArchiveInsightModel):
++    """One direct or candidate archived-session association to a Beads change."""
++
++    session_ref: ObjectRef
++    action: BeadWorkAction
++    effect_ref: ObjectRef
++    edge_ref: ObjectRef
++    evidence_refs: tuple[EvidenceRef, ...]
++    source_refs: tuple[ObjectRef, ...]
++    repository_snapshot_ref: ObjectRef
++    confidence: float = Field(ge=0.0, le=1.0)
++    association_state: WorkEvidenceAssociationState
++
++    @model_validator(mode="after")
++    def _validate_match(self) -> BeadWorkSessionMatch:
++        if self.session_ref.kind != "session":
++            raise ValueError("Bead work matches require a session ref")
++        if self.effect_ref.kind != "beads-change":
++            raise ValueError("Bead work matches require a Beads change effect")
++        if self.edge_ref.kind != "work-edge":
++            raise ValueError("Bead work matches require a work-edge ref")
++        if self.repository_snapshot_ref.kind != "repository-snapshot":
++            raise ValueError("Bead work matches require a repository-snapshot ref")
++        return self
++
++
++class BeadWorkHistory(ArchiveInsightModel):
++    """Repository-scoped answer to which sessions touched one Bead."""
++
++    graph_id: str
++    repository_ref: ObjectRef
++    bead_id: str
++    issue_refs: tuple[ObjectRef, ...]
++    direct_matches: tuple[BeadWorkSessionMatch, ...]
++    candidate_matches: tuple[BeadWorkSessionMatch, ...]
++
++    @model_validator(mode="after")
++    def _validate_history(self) -> BeadWorkHistory:
++        if not self.graph_id.strip():
++            raise ValueError("Bead work history requires a graph id")
++        if self.repository_ref.kind != "repo":
++            raise ValueError("Bead work history requires a repo ref")
++        if not self.bead_id.strip():
++            raise ValueError("Bead work history requires a Bead id")
++        if any(ref.kind != "beads-issue" for ref in self.issue_refs):
++            raise ValueError("Bead work history issue refs must be Beads issue refs")
++        return self
++
++
+ def node_from_projected_run(
+     run: ProjectedRun,
+     *,
+@@ -170,6 +421,7 @@ def node_from_projected_run(
+         kind="run",
+         label=run.title,
+         evidence_refs=run.evidence_refs,
++        source_refs=(ObjectRef(kind="session", object_id=run.native_session_id),) if run.native_session_id else (),
+         corpus_snapshot_ref=corpus_snapshot_ref,
+         authority="provider" if run.confidence == "raw" else "inferred",
+         confidence=1.0 if run.confidence == "raw" else 0.5,
+@@ -188,11 +440,20 @@ def session_segment_from_observed_events(
+     """Make a segment from existing observed-event evidence, not prose claims."""
+ 
+     evidence_refs = tuple(dict.fromkeys(evidence for event in events for evidence in event.evidence_refs))
++    source_refs = tuple(
++        dict.fromkeys(
++            [
++                *(ObjectRef(kind="session", object_id=evidence.session_id) for evidence in evidence_refs),
++                *(event.event_ref for event in events),
++            ]
++        )
++    )
+     return WorkEvidenceNode(
+         ref=ref,
+         kind="session-segment",
+         label=label,
+         evidence_refs=evidence_refs,
++        source_refs=source_refs,
+         corpus_snapshot_ref=corpus_snapshot_ref,
+         authority="provider",
+         confidence=1.0,
+@@ -200,10 +461,16 @@ def session_segment_from_observed_events(
+ 
+ 
+ __all__ = [
++    "BeadWorkAction",
++    "BeadWorkHistory",
++    "BeadWorkSessionMatch",
+     "WorkEvidenceAssociationState",
+     "WorkEvidenceAuthority",
+     "WorkEvidenceEdge",
+     "WorkEvidenceEdgeKind",
++    "WorkEvidenceEffectAction",
++    "WorkEvidenceEffectKind",
++    "WorkEvidenceEvaluation",
+     "WorkEvidenceGraph",
+     "WorkEvidenceNode",
+     "WorkEvidenceNodeKind",
+diff --git a/polylogue/insights/work_reconciliation.py b/polylogue/insights/work_reconciliation.py
+index 355d598250122e087e2489ead93d00f4043d199f..a5c262363fd1514405aa5ab39e5d26127f03b849 100644
+--- a/polylogue/insights/work_reconciliation.py
++++ b/polylogue/insights/work_reconciliation.py
+@@ -1,96 +1,381 @@
+-"""Independent repository-effect reconciliation for work-evidence graphs."""
++"""Repository-effect adapters and reconciliation for work-evidence graphs."""
+ 
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass
+-from typing import Literal, cast
++from collections.abc import Iterable, Mapping, Sequence
++from datetime import datetime
++from hashlib import sha256
++from typing import TYPE_CHECKING, Literal
+ 
++from pydantic import Field, model_validator
++
++from polylogue.core.json import JSONDocument, JSONValue, is_json_document
+ from polylogue.core.refs import EvidenceRef, ObjectRef
+-from polylogue.insights.work_evidence import WorkEvidenceEdge, WorkEvidenceGraph, WorkEvidenceNode
++from polylogue.insights.archive_models import ArchiveInsightModel
++from polylogue.insights.run_projection import ObservedEvent
++from polylogue.insights.work_evidence import (
++    WorkEvidenceAssociationState,
++    WorkEvidenceEdge,
++    WorkEvidenceEffectAction,
++    WorkEvidenceEffectKind,
++    WorkEvidenceEvaluation,
++    WorkEvidenceGraph,
++    WorkEvidenceNode,
++)
++
++if TYPE_CHECKING:
++    from polylogue.insights.session_commit import SessionCorrelationResult
+ 
+ EffectAuthority = Literal["git", "github", "beads", "artifact", "verification"]
+-Evaluation = Literal["supported", "partial", "contradicted", "unresolved", "superseded"]
++AssociationBasis = Literal["direct_identifier", "direct_evidence", "file_overlap", "time_overlap"]
++EffectRelationKind = Literal["related_effect", "superseded"]
++BeadsProjectionCompleteness = Literal["complete", "baseline-and-interactions", "degraded-missing-baseline"]
+ 
++_EFFECT_REF_KINDS: dict[WorkEvidenceEffectKind, frozenset[str]] = {
++    "git-commit": frozenset({"commit"}),
++    "git-branch": frozenset({"branch"}),
++    "github-issue": frozenset({"github-issue"}),
++    "github-pr": frozenset({"github-pr"}),
++    "beads-issue": frozenset({"beads-issue"}),
++    "beads-change": frozenset({"beads-change"}),
++    "artifact": frozenset({"artifact"}),
++    "verification-receipt": frozenset({"check-run", "verification-receipt"}),
++    "coverage-gap": frozenset({"artifact"}),
++}
+ 
+-@dataclass(frozen=True, slots=True)
+-class ObservedRepositoryEffect:
+-    """An independently observed effect; it is never an agent's claim."""
++
++class ObservedRepositoryEffect(ArchiveInsightModel):
++    """An independently observed repository fact; never an agent claim."""
+ 
+     ref: ObjectRef
+     label: str
+     authority: EffectAuthority
+-    evidence_ref: EvidenceRef
++    effect_kind: WorkEvidenceEffectKind
++    repository_ref: ObjectRef
+     repository_snapshot_ref: ObjectRef
+-    occurred_at_ms: int | None = None
++    source_refs: tuple[ObjectRef, ...]
++    evidence_refs: tuple[EvidenceRef, ...] = ()
++    subject_ref: ObjectRef | None = None
++    subject_key: str | None = None
++    effect_action: WorkEvidenceEffectAction | None = None
++    occurred_at_ms: int | None = Field(default=None, ge=0)
++    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
++    association_state: WorkEvidenceAssociationState = "resolved"
++    attributes: dict[str, object] = Field(default_factory=dict)
+ 
++    @model_validator(mode="after")
++    def _validate_effect(self) -> ObservedRepositoryEffect:
++        if not self.label.strip():
++            raise ValueError("repository effects require a label")
++        if self.repository_ref.kind != "repo":
++            raise ValueError("repository effects require a repo ref")
++        if self.repository_snapshot_ref.kind != "repository-snapshot":
++            raise ValueError("repository effects require a repository-snapshot ref")
++        if not self.source_refs:
++            raise ValueError("repository effects require direct source refs")
++        if self.ref.kind not in _EFFECT_REF_KINDS[self.effect_kind]:
++            expected = ", ".join(sorted(_EFFECT_REF_KINDS[self.effect_kind]))
++            raise ValueError(f"{self.effect_kind} effects require a {expected} ref, not {self.ref.kind}")
++        if self.effect_action is None:
++            raise ValueError("repository effects require an action")
++        if self.association_state == "candidate":
++            raise ValueError("repository effects cannot be candidate observations")
++        if not is_json_document(self.attributes):
++            raise ValueError("repository effect attributes must be JSON-compatible")
++        if self.effect_kind == "beads-change":
++            if self.ref.kind != "beads-change":
++                raise ValueError("Beads change effects require a beads-change ref")
++            if self.subject_ref is None or self.subject_ref.kind != "beads-issue":
++                raise ValueError("Beads change effects require a Beads issue subject")
++            if self.effect_action is None:
++                raise ValueError("Beads change effects require an action")
++            if not (self.subject_key and self.subject_key.strip()):
++                raise ValueError("Beads change effects require a subject key")
++        if self.effect_kind == "beads-issue" and not (self.subject_key and self.subject_key.strip()):
++            raise ValueError("Beads issue effects require a subject key")
++        return self
+ 
+-@dataclass(frozen=True, slots=True)
+-class ReconciliationJudgment:
+-    """An evaluation over a claim/effect pair, preserving both inputs."""
+ 
+-    claim_ref: ObjectRef
++class EffectAssociation(ArchiveInsightModel):
++    """Evidence for a work-fact to effect association and its causal strength."""
++
++    work_ref: ObjectRef
+     effect_ref: ObjectRef
+-    evaluation: Evaluation
+-    evidence_ref: EvidenceRef
++    basis: AssociationBasis
++    evidence_refs: tuple[EvidenceRef, ...] = ()
++    source_refs: tuple[ObjectRef, ...] = ()
++    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
++    occurred_at_ms: int | None = Field(default=None, ge=0)
++    attributes: dict[str, object] = Field(default_factory=dict)
++
++    @model_validator(mode="after")
++    def _validate_association(self) -> EffectAssociation:
++        if self.work_ref == self.effect_ref:
++            raise ValueError("effect associations cannot self-reference")
++        if not self.evidence_refs and not self.source_refs:
++            raise ValueError("effect associations require evidence or direct source refs")
++        if not is_json_document(self.attributes):
++            raise ValueError("effect association attributes must be JSON-compatible")
++        return self
++
++
++class ObservedEffectRelation(ArchiveInsightModel):
++    """An evidence-backed relation between two independently observed effects."""
++
++    source_effect_ref: ObjectRef
++    target_effect_ref: ObjectRef
++    relation: EffectRelationKind = "related_effect"
++    repository_ref: ObjectRef
++    repository_snapshot_ref: ObjectRef
++    evidence_refs: tuple[EvidenceRef, ...] = ()
++    source_refs: tuple[ObjectRef, ...] = ()
++    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
++    occurred_at_ms: int | None = Field(default=None, ge=0)
++    attributes: dict[str, object] = Field(default_factory=dict)
++
++    @model_validator(mode="after")
++    def _validate_relation(self) -> ObservedEffectRelation:
++        if self.source_effect_ref == self.target_effect_ref:
++            raise ValueError("effect relations cannot self-reference")
++        if self.repository_ref.kind != "repo" or self.repository_snapshot_ref.kind != "repository-snapshot":
++            raise ValueError("effect relations require repository and repository-snapshot refs")
++        if not self.evidence_refs and not self.source_refs:
++            raise ValueError("effect relations require evidence or direct source refs")
++        if not is_json_document(self.attributes):
++            raise ValueError("effect relation attributes must be JSON-compatible")
++        return self
++
++
++class ReconciliationJudgment(ArchiveInsightModel):
++    """An assertion-backed evaluation over a claim and zero or more effects."""
++
++    assertion_ref: ObjectRef
++    claim_ref: ObjectRef
++    effect_refs: tuple[ObjectRef, ...]
++    evaluation: WorkEvidenceEvaluation
++    label: str
++    repository_ref: ObjectRef
++    repository_snapshot_ref: ObjectRef
++    evidence_refs: tuple[EvidenceRef, ...] = ()
++    source_refs: tuple[ObjectRef, ...] = ()
++    rationale: str | None = None
++    acceptance_ref: str | None = None
++    occurred_at_ms: int | None = Field(default=None, ge=0)
++    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
++
++    @model_validator(mode="after")
++    def _validate_judgment(self) -> ReconciliationJudgment:
++        if self.assertion_ref.kind != "assertion":
++            raise ValueError("reconciliation judgments require an assertion ref")
++        if self.claim_ref.kind != "work-claim":
++            raise ValueError("reconciliation judgments require a work-claim ref")
++        if self.repository_ref.kind != "repo" or self.repository_snapshot_ref.kind != "repository-snapshot":
++            raise ValueError("reconciliation judgments require repository and repository-snapshot refs")
++        if self.evaluation != "unresolved" and not self.effect_refs:
++            raise ValueError("non-unresolved reconciliation judgments require observed effects")
++        if len(self.effect_refs) != len({ref.format() for ref in self.effect_refs}):
++            raise ValueError("reconciliation judgment effect refs must be unique")
++        if not self.label.strip():
++            raise ValueError("reconciliation judgments require a label")
++        return self
++
++
++class BeadsEffectProjection(ArchiveInsightModel):
++    """Current issue baselines, append-only changes, and coverage state."""
++
++    effects: tuple[ObservedRepositoryEffect, ...]
++    relations: tuple[ObservedEffectRelation, ...]
++    completeness: BeadsProjectionCompleteness
++    missing_baseline_issue_ids: tuple[str, ...] = ()
+ 
+ 
+ def reconcile_work_effects(
+     graph: WorkEvidenceGraph,
+     *,
+     effects: tuple[ObservedRepositoryEffect, ...],
+-    judgments: tuple[ReconciliationJudgment, ...],
++    associations: tuple[EffectAssociation, ...] = (),
++    relations: tuple[ObservedEffectRelation, ...] = (),
++    judgments: tuple[ReconciliationJudgment, ...] = (),
+ ) -> WorkEvidenceGraph:
+-    """Attach direct repository observations and explicit evaluations.
++    """Attach observations, candidate/direct associations, and evaluations.
+ 
+-    Effects are only linked when a caller supplied a direct identifier-based
+-    judgment. Temporal/file overlap must be represented upstream as a candidate
+-    and cannot reach this function as a supported causal relation.
++    ``direct_identifier`` and ``direct_evidence`` become ``observed_effect``
++    edges. ``file_overlap`` and ``time_overlap`` are forced to
++    ``candidate_effect`` with candidate state. Evaluations become assertion
++    nodes with claim -> evaluation -> effect edges; no claim -> effect edge is
++    created.
+     """
++
+     nodes = {node.ref.format(): node for node in graph.nodes}
+     edges = {edge.ref.format(): edge for edge in graph.edges}
++
++    def put_edge(edge: WorkEvidenceEdge) -> None:
++        existing = edges.get(edge.ref.format())
++        if existing is not None and existing != edge:
++            raise ValueError(f"conflicting work-evidence edge for {edge.ref.format()}")
++        edges[edge.ref.format()] = edge
++
+     for effect in effects:
+-        nodes.setdefault(
+-            effect.ref.format(),
+-            WorkEvidenceNode(
+-                ref=effect.ref,
+-                kind="effect",
+-                label=effect.label,
+-                evidence_refs=(effect.evidence_ref,),
+-                corpus_snapshot_ref=effect.repository_snapshot_ref,
+-                authority="provider",
+-                confidence=1.0,
+-                occurred_at_ms=effect.occurred_at_ms,
+-            ),
++        effect_node = WorkEvidenceNode(
++            ref=effect.ref,
++            kind="effect",
++            label=effect.label,
++            evidence_refs=effect.evidence_refs,
++            source_refs=effect.source_refs,
++            corpus_snapshot_ref=graph.corpus_snapshot_ref,
++            repository_ref=effect.repository_ref,
++            repository_snapshot_ref=effect.repository_snapshot_ref,
++            subject_ref=effect.subject_ref,
++            subject_key=effect.subject_key,
++            authority=effect.authority,
++            confidence=effect.confidence,
++            occurred_at_ms=effect.occurred_at_ms,
++            association_state=effect.association_state,
++            effect_kind=effect.effect_kind,
++            effect_action=effect.effect_action,
++            attributes=effect.attributes,
++        )
++        existing = nodes.get(effect.ref.format())
++        if existing is not None and existing != effect_node:
++            raise ValueError(f"conflicting repository effect for {effect.ref.format()}")
++        nodes[effect.ref.format()] = effect_node
++
++    for association in associations:
++        work = nodes.get(association.work_ref.format())
++        effect = nodes.get(association.effect_ref.format())
++        if work is None or effect is None:
++            raise ValueError("effect associations require known work and effect refs")
++        if work.kind in {"claim", "effect", "evaluation"}:
++            raise ValueError("observed effects must attach to observed work, not claims/effects/evaluations")
++        if effect.kind != "effect":
++            raise ValueError("effect associations must target an effect node")
++        is_candidate = association.basis in {"file_overlap", "time_overlap"}
++        edge_kind = "candidate_effect" if is_candidate else "observed_effect"
++        edge = WorkEvidenceEdge(
++            ref=_edge_ref(edge_kind, association.work_ref, association.effect_ref, association.basis),
++            kind=edge_kind,
++            source_ref=association.work_ref,
++            target_ref=association.effect_ref,
++            evidence_refs=association.evidence_refs,
++            source_refs=association.source_refs,
++            corpus_snapshot_ref=graph.corpus_snapshot_ref,
++            repository_ref=effect.repository_ref,
++            repository_snapshot_ref=effect.repository_snapshot_ref,
++            authority="inferred" if is_candidate else effect.authority,
++            confidence=association.confidence,
++            occurred_at_ms=association.occurred_at_ms,
++            association_state="candidate" if is_candidate else effect.association_state,
++            attributes={**association.attributes, "basis": association.basis},
+         )
++        put_edge(edge)
++
++    for relation in relations:
++        source = nodes.get(relation.source_effect_ref.format())
++        target = nodes.get(relation.target_effect_ref.format())
++        if source is None or target is None or source.kind != "effect" or target.kind != "effect":
++            raise ValueError("effect relations require known effect refs")
++        for endpoint in (source, target):
++            if (
++                endpoint.repository_ref != relation.repository_ref
++                or endpoint.repository_snapshot_ref != relation.repository_snapshot_ref
++            ):
++                raise ValueError("effect relation repository scope must match both effects")
++        edge = WorkEvidenceEdge(
++            ref=_edge_ref(relation.relation, relation.source_effect_ref, relation.target_effect_ref),
++            kind=relation.relation,
++            source_ref=relation.source_effect_ref,
++            target_ref=relation.target_effect_ref,
++            evidence_refs=relation.evidence_refs,
++            source_refs=relation.source_refs,
++            corpus_snapshot_ref=graph.corpus_snapshot_ref,
++            repository_ref=relation.repository_ref,
++            repository_snapshot_ref=relation.repository_snapshot_ref,
++            authority=source.authority,
++            confidence=relation.confidence,
++            occurred_at_ms=relation.occurred_at_ms,
++            association_state="superseded" if relation.relation == "superseded" else "resolved",
++            attributes=relation.attributes,
++        )
++        put_edge(edge)
++
+     for judgment in judgments:
+-        if judgment.claim_ref.format() not in nodes or judgment.effect_ref.format() not in nodes:
+-            raise ValueError("reconciliation judgments require known claim and effect refs")
+-        if nodes[judgment.claim_ref.format()].kind != "claim":
+-            raise ValueError("reconciliation judgment source must be a claim")
+-        edge_ref = ObjectRef(
+-            kind="work-edge",
+-            object_id=f"reconciliation:{judgment.claim_ref.format()}->{judgment.effect_ref.format()}",
++        claim = nodes.get(judgment.claim_ref.format())
++        if claim is None or claim.kind != "claim":
++            raise ValueError("reconciliation judgments require a known claim")
++        effect_nodes: list[WorkEvidenceNode] = []
++        for effect_ref in judgment.effect_refs:
++            effect = nodes.get(effect_ref.format())
++            if effect is None or effect.kind != "effect":
++                raise ValueError("reconciliation judgments require known effect refs")
++            if (
++                effect.repository_ref != judgment.repository_ref
++                or effect.repository_snapshot_ref != judgment.repository_snapshot_ref
++            ):
++                raise ValueError("reconciliation judgment repository scope must match every effect")
++            effect_nodes.append(effect)
++
++        source_refs = _dedupe_object_refs((judgment.assertion_ref, *judgment.source_refs))
++        attributes: JSONDocument = {}
++        if judgment.rationale is not None:
++            attributes["rationale"] = judgment.rationale
++        if judgment.acceptance_ref is not None:
++            attributes["acceptance_ref"] = judgment.acceptance_ref
++        evaluation_node = WorkEvidenceNode(
++            ref=judgment.assertion_ref,
++            kind="evaluation",
++            label=judgment.label,
++            evidence_refs=judgment.evidence_refs,
++            source_refs=source_refs,
++            corpus_snapshot_ref=graph.corpus_snapshot_ref,
++            repository_ref=judgment.repository_ref,
++            repository_snapshot_ref=judgment.repository_snapshot_ref,
++            authority="operator",
++            confidence=judgment.confidence,
++            occurred_at_ms=judgment.occurred_at_ms,
++            association_state=_evaluation_association_state(judgment.evaluation),
++            evaluation_status=judgment.evaluation,
++            attributes=attributes,
+         )
+-        edges[edge_ref.format()] = WorkEvidenceEdge(
+-            ref=edge_ref,
+-            kind="claimed",
++        existing_evaluation = nodes.get(evaluation_node.ref.format())
++        if existing_evaluation is not None and existing_evaluation != evaluation_node:
++            raise ValueError(f"conflicting reconciliation judgment for {evaluation_node.ref.format()}")
++        nodes[evaluation_node.ref.format()] = evaluation_node
++        claim_edge = WorkEvidenceEdge(
++            ref=_edge_ref("evaluated_as", judgment.claim_ref, judgment.assertion_ref),
++            kind="evaluated_as",
+             source_ref=judgment.claim_ref,
+-            target_ref=judgment.effect_ref,
+-            evidence_refs=(judgment.evidence_ref,),
+-            corpus_snapshot_ref=nodes[judgment.effect_ref.format()].corpus_snapshot_ref,
++            target_ref=judgment.assertion_ref,
++            evidence_refs=judgment.evidence_refs,
++            source_refs=source_refs,
++            corpus_snapshot_ref=graph.corpus_snapshot_ref,
++            repository_ref=judgment.repository_ref,
++            repository_snapshot_ref=judgment.repository_snapshot_ref,
+             authority="operator",
+-            confidence=1.0,
+-            association_state=cast(
+-                Literal["resolved", "unresolved", "ambiguous", "contradicted", "superseded"],
+-                {
+-                    "supported": "resolved",
+-                    "partial": "ambiguous",
+-                    "contradicted": "contradicted",
+-                    "unresolved": "unresolved",
+-                    "superseded": "superseded",
+-                }[judgment.evaluation],
+-            ),
++            confidence=judgment.confidence,
++            occurred_at_ms=judgment.occurred_at_ms,
++            association_state=_evaluation_association_state(judgment.evaluation),
++            attributes=attributes,
+         )
++        put_edge(claim_edge)
++        for effect in effect_nodes:
++            effect_edge = WorkEvidenceEdge(
++                ref=_edge_ref("evaluated_against", judgment.assertion_ref, effect.ref),
++                kind="evaluated_against",
++                source_ref=judgment.assertion_ref,
++                target_ref=effect.ref,
++                evidence_refs=judgment.evidence_refs,
++                source_refs=source_refs,
++                corpus_snapshot_ref=graph.corpus_snapshot_ref,
++                repository_ref=judgment.repository_ref,
++                repository_snapshot_ref=judgment.repository_snapshot_ref,
++                authority="operator",
++                confidence=judgment.confidence,
++                occurred_at_ms=judgment.occurred_at_ms,
++                association_state=_evaluation_association_state(judgment.evaluation),
++                attributes=attributes,
++            )
++            put_edge(effect_edge)
++
+     return WorkEvidenceGraph(
+         graph_id=graph.graph_id,
+         corpus_snapshot_ref=graph.corpus_snapshot_ref,
+@@ -99,4 +384,642 @@ def reconcile_work_effects(
+     )
+ 
+ 
+-__all__ = ["ObservedRepositoryEffect", "ReconciliationJudgment", "reconcile_work_effects"]
++def git_commit_effect(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    commit_sha: str,
++    label: str,
++    source_refs: tuple[ObjectRef, ...],
++    evidence_refs: tuple[EvidenceRef, ...] = (),
++    branch_ref: ObjectRef | None = None,
++    occurred_at_ms: int | None = None,
++    attributes: JSONDocument | None = None,
++) -> ObservedRepositoryEffect:
++    """Create a git-authority commit observation from admitted git facts."""
++
++    if not commit_sha.strip():
++        raise ValueError("git_commit_effect requires a non-empty commit sha")
++    if branch_ref is not None and branch_ref.kind != "branch":
++        raise ValueError("git_commit_effect branch_ref must be a branch ref")
++    commit_ref = ObjectRef(kind="commit", object_id=commit_sha)
++    refs = _dedupe_object_refs((commit_ref, *source_refs, *((branch_ref,) if branch_ref is not None else ())))
++    payload: JSONDocument = dict(attributes or {})
++    if branch_ref is not None:
++        payload["branch_ref"] = branch_ref.format()
++    return ObservedRepositoryEffect(
++        ref=commit_ref,
++        label=label,
++        authority="git",
++        effect_kind="git-commit",
++        effect_action="produced",
++        repository_ref=repository_ref,
++        repository_snapshot_ref=repository_snapshot_ref,
++        source_refs=refs,
++        evidence_refs=evidence_refs,
++        occurred_at_ms=occurred_at_ms,
++        attributes=payload,
++    )
++
++
++def git_branch_effect(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    branch_ref: ObjectRef,
++    head_ref: ObjectRef,
++    source_refs: tuple[ObjectRef, ...] = (),
++    evidence_refs: tuple[EvidenceRef, ...] = (),
++    occurred_at_ms: int | None = None,
++) -> ObservedRepositoryEffect:
++    """Create a branch-head observation scoped to one repository snapshot."""
++
++    if branch_ref.kind != "branch":
++        raise ValueError("git_branch_effect requires a branch ref")
++    if head_ref.kind != "commit":
++        raise ValueError("git_branch_effect requires a commit head ref")
++    return ObservedRepositoryEffect(
++        ref=branch_ref,
++        label=f"Branch {branch_ref.object_id} at {head_ref.object_id}",
++        authority="git",
++        effect_kind="git-branch",
++        effect_action="edited",
++        repository_ref=repository_ref,
++        repository_snapshot_ref=repository_snapshot_ref,
++        source_refs=_dedupe_object_refs((branch_ref, head_ref, *source_refs)),
++        evidence_refs=evidence_refs,
++        occurred_at_ms=occurred_at_ms,
++        attributes={"head_ref": head_ref.format()},
++    )
++
++
++def github_pr_effect(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    pr_ref: ObjectRef,
++    state: str,
++    source_refs: tuple[ObjectRef, ...],
++    evidence_refs: tuple[EvidenceRef, ...] = (),
++    merge_commit_ref: ObjectRef | None = None,
++    merge_method: Literal["merge", "squash", "rebase", "unknown"] = "unknown",
++    occurred_at_ms: int | None = None,
++    attributes: JSONDocument | None = None,
++) -> ObservedRepositoryEffect:
++    """Create a GitHub PR lifecycle observation, retaining squash identity."""
++
++    if pr_ref.kind != "github-pr":
++        raise ValueError("github_pr_effect requires a github-pr ref")
++    if not state.strip():
++        raise ValueError("github_pr_effect requires a non-empty state")
++    if merge_commit_ref is not None and merge_commit_ref.kind != "commit":
++        raise ValueError("github_pr_effect merge_commit_ref must be a commit ref")
++    refs = _dedupe_object_refs((pr_ref, *source_refs, *((merge_commit_ref,) if merge_commit_ref else ())))
++    payload: JSONDocument = {"state": state, "merge_method": merge_method, **dict(attributes or {})}
++    if merge_commit_ref is not None:
++        payload["merge_commit_ref"] = merge_commit_ref.format()
++    return ObservedRepositoryEffect(
++        ref=pr_ref,
++        label=f"GitHub PR {pr_ref.object_id} ({state})",
++        authority="github",
++        effect_kind="github-pr",
++        effect_action="merged" if state == "merged" else "edited",
++        repository_ref=repository_ref,
++        repository_snapshot_ref=repository_snapshot_ref,
++        source_refs=refs,
++        evidence_refs=evidence_refs,
++        occurred_at_ms=occurred_at_ms,
++        attributes=payload,
++    )
++
++
++def github_issue_effect(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    issue_ref: ObjectRef,
++    state: str,
++    source_refs: tuple[ObjectRef, ...],
++    evidence_refs: tuple[EvidenceRef, ...] = (),
++    occurred_at_ms: int | None = None,
++    attributes: JSONDocument | None = None,
++) -> ObservedRepositoryEffect:
++    """Create a GitHub issue lifecycle observation from admitted API/archive facts."""
++
++    if issue_ref.kind != "github-issue":
++        raise ValueError("github_issue_effect requires a github-issue ref")
++    if not state.strip():
++        raise ValueError("github_issue_effect requires a non-empty state")
++    action: WorkEvidenceEffectAction = "closed" if state == "closed" else "edited"
++    return ObservedRepositoryEffect(
++        ref=issue_ref,
++        label=f"GitHub issue {issue_ref.object_id} ({state})",
++        authority="github",
++        effect_kind="github-issue",
++        effect_action=action,
++        repository_ref=repository_ref,
++        repository_snapshot_ref=repository_snapshot_ref,
++        source_refs=_dedupe_object_refs((issue_ref, *source_refs)),
++        evidence_refs=evidence_refs,
++        occurred_at_ms=occurred_at_ms,
++        attributes={"state": state, **dict(attributes or {})},
++    )
++
++
++def artifact_effect(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    artifact_ref: ObjectRef,
++    source_refs: tuple[ObjectRef, ...],
++    evidence_refs: tuple[EvidenceRef, ...] = (),
++    digest: str | None = None,
++    occurred_at_ms: int | None = None,
++    attributes: JSONDocument | None = None,
++) -> ObservedRepositoryEffect:
++    """Create an independently observed committed/generated artifact fact."""
++
++    if artifact_ref.kind != "artifact":
++        raise ValueError("artifact_effect requires an artifact ref")
++    payload: JSONDocument = dict(attributes or {})
++    if digest is not None:
++        payload["digest"] = digest
++    return ObservedRepositoryEffect(
++        ref=artifact_ref,
++        label=f"Artifact {artifact_ref.object_id}",
++        authority="artifact",
++        effect_kind="artifact",
++        effect_action="produced",
++        repository_ref=repository_ref,
++        repository_snapshot_ref=repository_snapshot_ref,
++        source_refs=_dedupe_object_refs((artifact_ref, *source_refs)),
++        evidence_refs=evidence_refs,
++        occurred_at_ms=occurred_at_ms,
++        attributes=payload,
++    )
++
++
++def verification_receipt_effect(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    receipt_ref: ObjectRef,
++    outcome: Literal["passed", "failed", "unverified"],
++    source_refs: tuple[ObjectRef, ...],
++    evidence_refs: tuple[EvidenceRef, ...] = (),
++    occurred_at_ms: int | None = None,
++    attributes: JSONDocument | None = None,
++) -> ObservedRepositoryEffect:
++    """Create a synthetic/committed verification receipt or explicit live gap."""
++
++    if receipt_ref.kind != "verification-receipt":
++        raise ValueError("verification_receipt_effect requires a verification-receipt ref")
++    action: WorkEvidenceEffectAction = {"passed": "verified", "failed": "failed", "unverified": "unverified"}[
++        outcome
++    ]
++    return ObservedRepositoryEffect(
++        ref=receipt_ref,
++        label=f"Verification {receipt_ref.object_id}: {outcome}",
++        authority="verification",
++        effect_kind="verification-receipt",
++        effect_action=action,
++        repository_ref=repository_ref,
++        repository_snapshot_ref=repository_snapshot_ref,
++        source_refs=_dedupe_object_refs((receipt_ref, *source_refs)),
++        evidence_refs=evidence_refs,
++        occurred_at_ms=occurred_at_ms,
++        association_state="unresolved" if outcome == "unverified" else "resolved",
++        confidence=0.0 if outcome == "unverified" else 1.0,
++        attributes={"outcome": outcome, **dict(attributes or {})},
++    )
++
++
++def unresolved_coverage_gap(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    expected_artifact_ref: ObjectRef,
++    source_refs: tuple[ObjectRef, ...],
++    reason: str,
++) -> ObservedRepositoryEffect:
++    """Represent missing expected source evidence without fabricating content."""
++
++    if expected_artifact_ref.kind != "artifact":
++        raise ValueError("unresolved_coverage_gap requires an artifact ref")
++    if not reason.strip():
++        raise ValueError("unresolved_coverage_gap requires a reason")
++    return ObservedRepositoryEffect(
++        ref=expected_artifact_ref,
++        label=f"Missing expected evidence: {expected_artifact_ref.object_id}",
++        authority="artifact",
++        effect_kind="coverage-gap",
++        effect_action="unverified",
++        repository_ref=repository_ref,
++        repository_snapshot_ref=repository_snapshot_ref,
++        source_refs=_dedupe_object_refs((repository_snapshot_ref, *source_refs)),
++        association_state="unresolved",
++        confidence=0.0,
++        attributes={"reason": reason, "expected_ref": expected_artifact_ref.format()},
++    )
++
++
++def effects_from_beads_records(
++    *,
++    repository_ref: ObjectRef,
++    repository_snapshot_ref: ObjectRef,
++    branch_ref: ObjectRef,
++    baseline_records: Iterable[JSONDocument],
++    interaction_records: Iterable[JSONDocument],
++    baseline_evidence: Mapping[str, tuple[EvidenceRef, ...]] | None = None,
++    interaction_evidence: Mapping[str, tuple[EvidenceRef, ...]] | None = None,
++    baseline_source_refs: tuple[ObjectRef, ...] = (),
++    interaction_source_refs: Mapping[str, tuple[ObjectRef, ...]] | None = None,
++    history_source_refs: tuple[ObjectRef, ...] = (),
++) -> BeadsEffectProjection:
++    """Project current Beads baselines and append-only interactions.
++
++    Baseline and change identities include repository, snapshot, and branch, so
++    branch-local state remains distinct even when two branches currently point
++    at the same commit. Interactions whose baseline is absent attach to an
++    explicit unresolved issue identity; no current tracker fields are
++    synthesized from the interaction.
++    """
++
++    if repository_ref.kind != "repo" or repository_snapshot_ref.kind != "repository-snapshot":
++        raise ValueError("Beads projection requires repository and repository-snapshot refs")
++    if branch_ref.kind != "branch":
++        raise ValueError("Beads projection requires a branch ref")
++    baseline_evidence = baseline_evidence or {}
++    interaction_evidence = interaction_evidence or {}
++    interaction_source_refs = interaction_source_refs or {}
++    common_refs = _dedupe_object_refs((repository_snapshot_ref, branch_ref, *history_source_refs))
++
++    effects: dict[str, ObservedRepositoryEffect] = {}
++    issue_refs: dict[str, ObjectRef] = {}
++    event_refs: dict[str, ObjectRef] = {}
++    baselines = list(baseline_records)
++    records = list(interaction_records)
++    event_issue_ids: dict[str, str] = {}
++    for record in records:
++        event_id = _required_record_string(record, "id")
++        issue_id = _required_record_string(record, "issue_id")
++        if event_id in event_issue_ids:
++            raise ValueError(f"duplicate Beads interaction id: {event_id}")
++        event_issue_ids[event_id] = issue_id
++
++    for record in baselines:
++        issue_id = _required_record_string(record, "id")
++        if issue_id in issue_refs:
++            raise ValueError(f"duplicate Beads baseline id: {issue_id}")
++        issue_ref = _beads_issue_ref(repository_ref, repository_snapshot_ref, branch_ref, issue_id)
++        issue_refs[issue_id] = issue_ref
++        source_refs = _dedupe_object_refs((issue_ref, *common_refs, *baseline_source_refs))
++        effects[issue_ref.format()] = ObservedRepositoryEffect(
++            ref=issue_ref,
++            label=f"Beads issue {issue_id} baseline",
++            authority="beads",
++            effect_kind="beads-issue",
++            effect_action="baseline",
++            subject_key=issue_id,
++            repository_ref=repository_ref,
++            repository_snapshot_ref=repository_snapshot_ref,
++            source_refs=source_refs,
++            evidence_refs=baseline_evidence.get(issue_id, ()),
++            occurred_at_ms=_record_time_ms(record),
++            attributes={"issue_id": issue_id, "branch_ref": branch_ref.format(), "baseline": dict(record)},
++        )
++
++    missing: set[str] = set()
++    for record in records:
++        issue_id = _required_record_string(record, "issue_id")
++        event_id = _required_record_string(record, "id")
++        issue_ref = issue_refs.get(issue_id)
++        event_source_refs = _dedupe_object_refs(
++            (
++                *common_refs,
++                *interaction_source_refs.get(event_id, ()),
++                ObjectRef(kind="observed-event", object_id=f"beads:{event_id}"),
++            )
++        )
++        if issue_ref is None:
++            missing.add(issue_id)
++            issue_ref = _beads_issue_ref(repository_ref, repository_snapshot_ref, branch_ref, issue_id)
++            issue_refs[issue_id] = issue_ref
++            effects[issue_ref.format()] = ObservedRepositoryEffect(
++                ref=issue_ref,
++                label=f"Unresolved Beads issue {issue_id} (baseline missing)",
++                authority="beads",
++                effect_kind="beads-issue",
++                effect_action="baseline",
++                subject_key=issue_id,
++                repository_ref=repository_ref,
++                repository_snapshot_ref=repository_snapshot_ref,
++                source_refs=_dedupe_object_refs((issue_ref, *event_source_refs)),
++                evidence_refs=interaction_evidence.get(event_id, ()),
++                association_state="unresolved",
++                confidence=0.0,
++                attributes={
++                    "issue_id": issue_id,
++                    "branch_ref": branch_ref.format(),
++                    "coverage": "baseline-missing",
++                },
++            )
++        change_ref = _beads_change_ref(repository_ref, repository_snapshot_ref, branch_ref, issue_id, event_id)
++        event_refs[event_id] = change_ref
++        action = _beads_action(record)
++        effects[change_ref.format()] = ObservedRepositoryEffect(
++            ref=change_ref,
++            label=f"Beads {issue_id} {action} ({event_id})",
++            authority="beads",
++            effect_kind="beads-change",
++            effect_action=action,
++            repository_ref=repository_ref,
++            repository_snapshot_ref=repository_snapshot_ref,
++            source_refs=_dedupe_object_refs((change_ref, *event_source_refs)),
++            evidence_refs=interaction_evidence.get(event_id, ()),
++            subject_ref=issue_ref,
++            subject_key=issue_id,
++            occurred_at_ms=_record_time_ms(record),
++            attributes={
++                "issue_id": issue_id,
++                "event_id": event_id,
++                "branch_ref": branch_ref.format(),
++                "interaction": dict(record),
++            },
++        )
++
++    relations: list[ObservedEffectRelation] = []
++    for record in records:
++        issue_id = _required_record_string(record, "issue_id")
++        event_id = _required_record_string(record, "id")
++        issue_ref = issue_refs[issue_id]
++        change_ref = event_refs[event_id]
++        evidence_refs = interaction_evidence.get(event_id, ())
++        source_refs = effects[change_ref.format()].source_refs
++        relations.append(
++            ObservedEffectRelation(
++                source_effect_ref=issue_ref,
++                target_effect_ref=change_ref,
++                repository_ref=repository_ref,
++                repository_snapshot_ref=repository_snapshot_ref,
++                evidence_refs=evidence_refs,
++                source_refs=source_refs,
++                occurred_at_ms=_record_time_ms(record),
++                attributes={"relation": "baseline-to-change"},
++            )
++        )
++        superseded_event = _superseded_event_id(record)
++        if superseded_event is not None and superseded_event in event_refs:
++            if event_issue_ids[superseded_event] != issue_id:
++                raise ValueError("Beads corrections cannot supersede an interaction from another issue")
++            relations.append(
++                ObservedEffectRelation(
++                    source_effect_ref=change_ref,
++                    target_effect_ref=event_refs[superseded_event],
++                    relation="superseded",
++                    repository_ref=repository_ref,
++                    repository_snapshot_ref=repository_snapshot_ref,
++                    evidence_refs=evidence_refs,
++                    source_refs=source_refs,
++                    occurred_at_ms=_record_time_ms(record),
++                    attributes={"supersedes_event_id": superseded_event},
++                )
++            )
++
++    completeness: BeadsProjectionCompleteness
++    if missing:
++        completeness = "degraded-missing-baseline"
++    elif history_source_refs:
++        completeness = "complete"
++    else:
++        completeness = "baseline-and-interactions"
++    return BeadsEffectProjection(
++        effects=tuple(effects.values()),
++        relations=tuple(relations),
++        completeness=completeness,
++        missing_baseline_issue_ids=tuple(sorted(missing)),
++    )
++
++
++def associations_from_observed_events(
++    *,
++    work_ref: ObjectRef,
++    events: Sequence[ObservedEvent],
++    effects: Sequence[ObservedRepositoryEffect],
++) -> tuple[EffectAssociation, ...]:
++    """Link observed events only when their object refs directly name effects."""
++
++    effects_by_identity = {effect.ref.format(): effect.ref for effect in effects}
++    effects_by_source: dict[str, dict[str, ObjectRef]] = {}
++    for effect in effects:
++        for source_ref in effect.source_refs:
++            effects_by_source.setdefault(source_ref.format(), {})[effect.ref.format()] = effect.ref
++    associations: dict[tuple[str, str], EffectAssociation] = {}
++    for event in events:
++        for object_ref in event.object_refs:
++            effect_ref = effects_by_identity.get(object_ref.format())
++            if effect_ref is None:
++                matched_effects = effects_by_source.get(object_ref.format(), {})
++                if len(matched_effects) != 1:
++                    continue
++                effect_ref = next(iter(matched_effects.values()))
++            association = EffectAssociation(
++                work_ref=work_ref,
++                effect_ref=effect_ref,
++                basis="direct_evidence",
++                evidence_refs=event.evidence_refs,
++                source_refs=_dedupe_object_refs((event.event_ref, object_ref)),
++                confidence=1.0,
++                attributes={"observed_event_ref": event.event_ref.format()},
++            )
++            associations[(work_ref.format(), effect_ref.format())] = association
++    return tuple(associations.values())
++
++
++def associations_from_session_correlation(
++    result: SessionCorrelationResult,
++    *,
++    work_ref: ObjectRef,
++    evidence_refs: tuple[EvidenceRef, ...],
++) -> tuple[EffectAssociation, ...]:
++    """Project legacy commit correlation into direct/candidate graph edges."""
++
++    associations: list[EffectAssociation] = []
++    for commit in result.commits:
++        basis: AssociationBasis
++        if commit.detection_method == "explicit_ref":
++            basis = "direct_identifier"
++        elif commit.detection_method == "file_overlap":
++            basis = "file_overlap"
++        else:
++            basis = "time_overlap"
++        commit_ref = ObjectRef(kind="commit", object_id=commit.commit_sha)
++        associations.append(
++            EffectAssociation(
++                work_ref=work_ref,
++                effect_ref=commit_ref,
++                basis=basis,
++                evidence_refs=evidence_refs,
++                source_refs=(ObjectRef(kind="session", object_id=result.session_id), commit_ref),
++                confidence=commit.confidence,
++                attributes={
++                    "legacy_projection": "SessionCorrelationResult",
++                    "file_overlap_count": commit.file_overlap_count,
++                },
++            )
++        )
++    return tuple(associations)
++
++
++def relations_for_pr_effects(
++    *,
++    pr_effect: ObservedRepositoryEffect,
++    merge_commit_ref: ObjectRef | None = None,
++    bead_issue_refs: tuple[ObjectRef, ...] = (),
++) -> tuple[ObservedEffectRelation, ...]:
++    """Represent a squash/merge commit and one-PR-to-many-Beads links."""
++
++    if pr_effect.effect_kind != "github-pr":
++        raise ValueError("relations_for_pr_effects requires a GitHub PR effect")
++    if merge_commit_ref is not None and merge_commit_ref.kind != "commit":
++        raise ValueError("PR merge_commit_ref must be a commit ref")
++    if any(ref.kind != "beads-issue" for ref in bead_issue_refs):
++        raise ValueError("PR Beads targets must be Beads issue refs")
++    relations: list[ObservedEffectRelation] = []
++    targets = _dedupe_object_refs((*((merge_commit_ref,) if merge_commit_ref is not None else ()), *bead_issue_refs))
++    for target in targets:
++        relations.append(
++            ObservedEffectRelation(
++                source_effect_ref=pr_effect.ref,
++                target_effect_ref=target,
++                repository_ref=pr_effect.repository_ref,
++                repository_snapshot_ref=pr_effect.repository_snapshot_ref,
++                evidence_refs=pr_effect.evidence_refs,
++                source_refs=pr_effect.source_refs,
++                occurred_at_ms=pr_effect.occurred_at_ms,
++                attributes={"relation": "pr-effect"},
++            )
++        )
++    return tuple(relations)
++
++
++def _beads_issue_ref(
++    repository_ref: ObjectRef,
++    snapshot_ref: ObjectRef,
++    branch_ref: ObjectRef,
++    issue_id: str,
++) -> ObjectRef:
++    scope = _stable_id(repository_ref.format(), snapshot_ref.format(), branch_ref.format(), issue_id)
++    return ObjectRef(kind="beads-issue", object_id=f"{issue_id}@{scope}")
++
++
++def _beads_change_ref(
++    repository_ref: ObjectRef,
++    snapshot_ref: ObjectRef,
++    branch_ref: ObjectRef,
++    issue_id: str,
++    event_id: str,
++) -> ObjectRef:
++    scope = _stable_id(repository_ref.format(), snapshot_ref.format(), branch_ref.format(), issue_id, event_id)
++    return ObjectRef(kind="beads-change", object_id=f"{issue_id}:{event_id}@{scope}")
++
++
++def _edge_ref(kind: str, *refs_or_text: ObjectRef | str) -> ObjectRef:
++    parts = [value.format() if isinstance(value, ObjectRef) else value for value in refs_or_text]
++    return ObjectRef(kind="work-edge", object_id=f"{kind}:{_stable_id(kind, *parts)}")
++
++
++def _stable_id(*parts: str) -> str:
++    return sha256("\0".join(parts).encode("utf-8")).hexdigest()[:24]
++
++
++def _dedupe_object_refs(refs: Iterable[ObjectRef]) -> tuple[ObjectRef, ...]:
++    return tuple({ref.format(): ref for ref in refs}.values())
++
++
++def _evaluation_association_state(evaluation: WorkEvidenceEvaluation) -> WorkEvidenceAssociationState:
++    return {
++        "supported": "resolved",
++        "partial": "ambiguous",
++        "contradicted": "contradicted",
++        "unresolved": "unresolved",
++        "superseded": "superseded",
++    }[evaluation]
++
++
++def _required_record_string(record: Mapping[str, JSONValue], key: str) -> str:
++    value = record.get(key)
++    if not isinstance(value, str) or not value:
++        raise ValueError(f"Beads record requires non-empty {key}")
++    return value
++
++
++def _beads_action(record: Mapping[str, JSONValue]) -> WorkEvidenceEffectAction:
++    kind_value = record.get("kind")
++    kind = kind_value.lower() if isinstance(kind_value, str) else ""
++    if kind in {"create", "created", "issue_created"}:
++        return "created"
++    if kind in {"claim", "claimed"}:
++        return "claimed"
++    if kind in {"close", "closed"}:
++        return "closed"
++    extra = record.get("extra")
++    if is_json_document(extra):
++        field = extra.get("field")
++        new_value = extra.get("new_value")
++        old_value = extra.get("old_value")
++        if field == "status" and new_value == "closed":
++            return "closed"
++        if field == "status" and old_value == "closed" and new_value != "closed":
++            return "reopened"
++        if field in {"assignee", "owner"} and new_value not in {None, ""} and old_value in {None, ""}:
++            return "claimed"
++        if extra.get("corrects") is not None or extra.get("supersedes") is not None:
++            return "corrected"
++    return "edited"
++
++
++def _superseded_event_id(record: Mapping[str, JSONValue]) -> str | None:
++    extra = record.get("extra")
++    if not is_json_document(extra):
++        return None
++    for key in ("supersedes", "corrects", "supersedes_event_id"):
++        value = extra.get(key)
++        if isinstance(value, str) and value:
++            return value
++    return None
++
++
++def _record_time_ms(record: Mapping[str, JSONValue]) -> int | None:
++    for key in ("created_at", "updated_at", "closed_at"):
++        value = record.get(key)
++        if not isinstance(value, str) or not value:
++            continue
++        try:
++            normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
++            return int(datetime.fromisoformat(normalized).timestamp() * 1000)
++        except ValueError:
++            continue
++    return None
++
++
++__all__ = [
++    "AssociationBasis",
++    "BeadsEffectProjection",
++    "EffectAssociation",
++    "ObservedEffectRelation",
++    "ObservedRepositoryEffect",
++    "ReconciliationJudgment",
++    "artifact_effect",
++    "associations_from_observed_events",
++    "associations_from_session_correlation",
++    "effects_from_beads_records",
++    "git_branch_effect",
++    "git_commit_effect",
++    "github_issue_effect",
++    "github_pr_effect",
++    "reconcile_work_effects",
++    "relations_for_pr_effects",
++    "unresolved_coverage_gap",
++    "verification_receipt_effect",
++]
+diff --git a/polylogue/storage/query_models.py b/polylogue/storage/query_models.py
+index 3f29b351dbd97d3cd89c1845e05c9215462aa69e..70b5bbf7545f620ff619799525fc284ad90d864e 100644
+--- a/polylogue/storage/query_models.py
++++ b/polylogue/storage/query_models.py
+@@ -276,17 +276,36 @@ class RunProjectionListQuery:
+ 
+ @dataclass(frozen=True, slots=True)
+ class WorkEvidenceTraversalQuery:
+-    """One-hop, direction-aware graph traversal over a named corpus snapshot."""
++    """Bounded, direction-aware graph traversal over a named corpus snapshot."""
+ 
+     graph_id: str
+     focal_ref: str
+     direction: Literal["incoming", "outgoing", "both"] = "both"
+     edge_kinds: tuple[str, ...] = ()
++    max_depth: int = 1
+     limit: int | None = 100
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class BeadWorkHistoryQuery:
++    """Repository-scoped direct/candidate session associations for one Bead."""
++
++    graph_id: str
++    repository_ref: str
++    bead_id: str
++    actions: tuple[Literal["created", "edited", "claimed", "closed"], ...] = (
++        "created",
++        "edited",
++        "claimed",
++        "closed",
++    )
++    repository_snapshot_ref: str | None = None
++    include_candidates: bool = True
++
++
+ __all__ = [
+     "ArtifactObservationListQuery",
++    "BeadWorkHistoryQuery",
+     "RunProjectionListQuery",
+     "WorkEvidenceTraversalQuery",
+     "SessionCountQueryKwargs",
+diff --git a/polylogue/storage/repository/insight/work_evidence.py b/polylogue/storage/repository/insight/work_evidence.py
+index 05170b41178144ac2551d3145badeb74f50b85a1..ea59be94991c06ca85ac63fc52afdfe93aae20f5 100644
+--- a/polylogue/storage/repository/insight/work_evidence.py
++++ b/polylogue/storage/repository/insight/work_evidence.py
+@@ -1,11 +1,11 @@
+-"""Repository route for provider-neutral work topology and claims."""
++"""Repository route for provider-neutral work topology and effects."""
+ 
+ from __future__ import annotations
+ 
+-from typing import TYPE_CHECKING
++from typing import TYPE_CHECKING, Literal
+ 
+-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceTraversal
+-from polylogue.storage.query_models import WorkEvidenceTraversalQuery
++from polylogue.insights.work_evidence import BeadWorkAction, BeadWorkHistory, WorkEvidenceGraph, WorkEvidenceTraversal
++from polylogue.storage.query_models import BeadWorkHistoryQuery, WorkEvidenceTraversalQuery
+ from polylogue.storage.sqlite.queries import work_evidence as work_evidence_q
+ 
+ if TYPE_CHECKING:
+@@ -17,7 +17,7 @@ class RepositoryWorkEvidenceMixin:
+         _backend: RepositoryBackendProtocol
+ 
+     async def replace_work_evidence_graph(self, graph: WorkEvidenceGraph) -> None:
+-        """Store one graph snapshot for generic work-evidence traversal."""
++        """Store one graph snapshot for generic work/effect traversal."""
+ 
+         async with self._backend.connection() as conn:
+             await work_evidence_q.replace_work_evidence_graph(conn, graph, self._backend.transaction_depth)
+@@ -27,19 +27,44 @@ class RepositoryWorkEvidenceMixin:
+         *,
+         graph_id: str,
+         focal_ref: str,
+-        direction: str = "both",
++        direction: Literal["incoming", "outgoing", "both"] = "both",
+         edge_kinds: tuple[str, ...] = (),
++        max_depth: int = 1,
+         limit: int | None = 100,
+     ) -> WorkEvidenceTraversal | None:
+         return await self._backend.queries.get_work_evidence_traversal(
+             WorkEvidenceTraversalQuery(
+                 graph_id=graph_id,
+                 focal_ref=focal_ref,
+-                direction=direction,  # type: ignore[arg-type]
++                direction=direction,
+                 edge_kinds=edge_kinds,
++                max_depth=max_depth,
+                 limit=limit,
+             )
+         )
+ 
++    async def find_bead_work_sessions(
++        self,
++        *,
++        graph_id: str,
++        repository_ref: str,
++        bead_id: str,
++        actions: tuple[BeadWorkAction, ...] = ("created", "edited", "claimed", "closed"),
++        repository_snapshot_ref: str | None = None,
++        include_candidates: bool = True,
++    ) -> BeadWorkHistory | None:
++        """Return direct and candidate archived-session matches for one Bead."""
++
++        return await self._backend.queries.get_bead_work_history(
++            BeadWorkHistoryQuery(
++                graph_id=graph_id,
++                repository_ref=repository_ref,
++                bead_id=bead_id,
++                actions=actions,
++                repository_snapshot_ref=repository_snapshot_ref,
++                include_candidates=include_candidates,
++            )
++        )
++
+ 
+ __all__ = ["RepositoryWorkEvidenceMixin"]
+diff --git a/polylogue/storage/sqlite/archive_tiers/index.py b/polylogue/storage/sqlite/archive_tiers/index.py
+index c6f4b35c346a6ba0dfabc880b5f1fed71a20ba84..7a99d8dceed9715a57f235bfbe4eeeeceaf71e69 100644
+--- a/polylogue/storage/sqlite/archive_tiers/index.py
++++ b/polylogue/storage/sqlite/archive_tiers/index.py
+@@ -24,7 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
+ )
+ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
+ 
+-INDEX_SCHEMA_VERSION = 39
++INDEX_SCHEMA_VERSION = 40
+ 
+ FTS_FRESHNESS_STATE_DDL = """
+ CREATE TABLE IF NOT EXISTS fts_freshness_state (
+@@ -1120,9 +1120,10 @@ CREATE TABLE IF NOT EXISTS derived_refresh_guard (
+     guard_name TEXT PRIMARY KEY
+ ) STRICT;
+ 
+--- Provider-neutral topology and claims. This remains a derived tier: adapters
+--- materialize admitted source facts here, while this slice deliberately does
+--- not model repository effects or evaluated satisfaction.
++-- Provider-neutral work topology, claims, independently observed repository
++-- effects, and assertion-backed evaluations. index.db is rebuildable; v40 is a
++-- semantic rebuild from admitted archive/repository facts, not a durable-tier
++-- migration. Repository snapshots remain distinct from corpus snapshots.
+ CREATE TABLE IF NOT EXISTS work_evidence_graphs (
+     graph_id              TEXT PRIMARY KEY,
+     corpus_snapshot_ref   TEXT NOT NULL
+@@ -1134,7 +1135,12 @@ CREATE TABLE IF NOT EXISTS work_evidence_nodes (
+     node_kind                      TEXT NOT NULL,
+     label                          TEXT NOT NULL,
+     evidence_refs_json             TEXT NOT NULL,
++    source_refs_json               TEXT NOT NULL DEFAULT '[]',
+     corpus_snapshot_ref            TEXT NOT NULL,
++    repository_ref                 TEXT,
++    repository_snapshot_ref        TEXT,
++    subject_ref                    TEXT,
++    subject_key                    TEXT,
+     authority                      TEXT NOT NULL,
+     confidence                     REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+     occurred_at_ms                 INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0),
+@@ -1145,21 +1151,29 @@ CREATE TABLE IF NOT EXISTS work_evidence_nodes (
+     execution_context_addressed    INTEGER CHECK(execution_context_addressed IN (0, 1) OR execution_context_addressed IS NULL),
+     association_state              TEXT NOT NULL,
+     claim_text                     TEXT,
++    effect_kind                    TEXT,
++    effect_action                  TEXT,
++    evaluation_status              TEXT,
++    attributes_json                TEXT NOT NULL DEFAULT '{{}}',
+     PRIMARY KEY(graph_id, node_ref)
+ ) STRICT;
+ 
+ CREATE TABLE IF NOT EXISTS work_evidence_edges (
+-    graph_id             TEXT NOT NULL REFERENCES work_evidence_graphs(graph_id) ON DELETE CASCADE,
+-    edge_ref             TEXT NOT NULL,
+-    edge_kind            TEXT NOT NULL,
+-    source_ref           TEXT NOT NULL,
+-    target_ref           TEXT NOT NULL,
+-    evidence_refs_json   TEXT NOT NULL,
+-    corpus_snapshot_ref  TEXT NOT NULL,
+-    authority            TEXT NOT NULL,
+-    confidence           REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+-    occurred_at_ms       INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0),
+-    association_state    TEXT NOT NULL,
++    graph_id                    TEXT NOT NULL REFERENCES work_evidence_graphs(graph_id) ON DELETE CASCADE,
++    edge_ref                    TEXT NOT NULL,
++    edge_kind                   TEXT NOT NULL,
++    source_ref                  TEXT NOT NULL,
++    target_ref                  TEXT NOT NULL,
++    evidence_refs_json          TEXT NOT NULL,
++    source_refs_json            TEXT NOT NULL DEFAULT '[]',
++    corpus_snapshot_ref         TEXT NOT NULL,
++    repository_ref              TEXT,
++    repository_snapshot_ref     TEXT,
++    authority                   TEXT NOT NULL,
++    confidence                  REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
++    occurred_at_ms              INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0),
++    association_state           TEXT NOT NULL,
++    attributes_json             TEXT NOT NULL DEFAULT '{{}}',
+     PRIMARY KEY(graph_id, edge_ref),
+     FOREIGN KEY(graph_id, source_ref) REFERENCES work_evidence_nodes(graph_id, node_ref) ON DELETE CASCADE,
+     FOREIGN KEY(graph_id, target_ref) REFERENCES work_evidence_nodes(graph_id, node_ref) ON DELETE CASCADE
+@@ -1169,6 +1183,9 @@ CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_source
+ ON work_evidence_edges(graph_id, source_ref, edge_kind);
+ CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_target
+ ON work_evidence_edges(graph_id, target_ref, edge_kind);
++CREATE INDEX IF NOT EXISTS idx_work_evidence_bead_history
++ON work_evidence_nodes(graph_id, repository_ref, subject_key, effect_action)
++WHERE effect_kind = 'beads-change';
+ 
+ CREATE VIEW IF NOT EXISTS delegation_facts_source AS
+ WITH dispatch_actions AS (
+diff --git a/polylogue/storage/sqlite/lifecycle.py b/polylogue/storage/sqlite/lifecycle.py
+index 296315d3fc998c5b8c607a535c74005c71630e63..232dc53b74fdbd49b70e8d328bd9908edaf6a358 100644
+--- a/polylogue/storage/sqlite/lifecycle.py
++++ b/polylogue/storage/sqlite/lifecycle.py
+@@ -231,6 +231,15 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
+         # source evidence its nodes and edges cite.
+         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+     ),
++    IndexDeltaDeclaration(
++        version=40,
++        # Repository effects and assertion-backed evaluations add semantic
++        # fields to the rebuildable work-evidence graph. Rebuild/reprocess from
++        # admitted archive and repository facts; copying v39 rows forward
++        # would erase the claim/effect/evaluation and candidate-causality
++        # boundaries enforced by the v40 model.
++        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
++    ),
+ )
+ 
+ 
+diff --git a/polylogue/storage/sqlite/queries/work_evidence.py b/polylogue/storage/sqlite/queries/work_evidence.py
+index 08b393a0a4cf6dbdc5fea737a05d7094daef506a..f84a2a61d9cfb2e5c21c78d04fbc10e8900f9791 100644
+--- a/polylogue/storage/sqlite/queries/work_evidence.py
++++ b/polylogue/storage/sqlite/queries/work_evidence.py
+@@ -7,20 +7,27 @@ from typing import cast
+ 
+ import aiosqlite
+ 
++from polylogue.core.json import JSONDocument, is_json_document
+ from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef
+ from polylogue.insights.work_evidence import (
++    BeadWorkAction,
++    BeadWorkHistory,
++    BeadWorkSessionMatch,
+     WorkEvidenceAssociationState,
+     WorkEvidenceAuthority,
+     WorkEvidenceEdge,
+     WorkEvidenceEdgeKind,
++    WorkEvidenceEffectAction,
++    WorkEvidenceEffectKind,
++    WorkEvidenceEvaluation,
+     WorkEvidenceGraph,
+     WorkEvidenceNode,
+     WorkEvidenceNodeKind,
+     WorkEvidenceTraversal,
+ )
+-from polylogue.storage.query_models import WorkEvidenceTraversalQuery
++from polylogue.storage.query_models import BeadWorkHistoryQuery, WorkEvidenceTraversalQuery
+ 
+-__all__ = ["get_work_evidence_traversal", "replace_work_evidence_graph"]
++__all__ = ["get_bead_work_history", "get_work_evidence_traversal", "replace_work_evidence_graph"]
+ 
+ 
+ def _json_array(value: object) -> tuple[str, ...]:
+@@ -30,6 +37,13 @@ def _json_array(value: object) -> tuple[str, ...]:
+     return tuple(parsed)
+ 
+ 
++def _json_document(value: object) -> JSONDocument:
++    parsed = json.loads(str(value))
++    if not is_json_document(parsed):
++        raise ValueError("stored work-evidence attributes must be a JSON object")
++    return parsed
++
++
+ def _node_from_row(row: aiosqlite.Row) -> WorkEvidenceNode:
+     context_id = row["execution_context_id"]
+     context = (
+@@ -42,12 +56,24 @@ def _node_from_row(row: aiosqlite.Row) -> WorkEvidenceNode:
+         if context_id is not None
+         else None
+     )
++    effect_kind = row["effect_kind"]
++    effect_action = row["effect_action"]
++    evaluation_status = row["evaluation_status"]
+     return WorkEvidenceNode(
+         ref=ObjectRef.parse(str(row["node_ref"])),
+         kind=cast(WorkEvidenceNodeKind, str(row["node_kind"])),
+         label=str(row["label"]),
+         evidence_refs=tuple(EvidenceRef.parse(value) for value in _json_array(row["evidence_refs_json"])),
++        source_refs=tuple(ObjectRef.parse(value) for value in _json_array(row["source_refs_json"])),
+         corpus_snapshot_ref=ObjectRef.parse(str(row["corpus_snapshot_ref"])),
++        repository_ref=ObjectRef.parse(str(row["repository_ref"])) if row["repository_ref"] is not None else None,
++        repository_snapshot_ref=(
++            ObjectRef.parse(str(row["repository_snapshot_ref"]))
++            if row["repository_snapshot_ref"] is not None
++            else None
++        ),
++        subject_ref=ObjectRef.parse(str(row["subject_ref"])) if row["subject_ref"] is not None else None,
++        subject_key=str(row["subject_key"]) if row["subject_key"] is not None else None,
+         authority=cast(WorkEvidenceAuthority, str(row["authority"])),
+         confidence=float(row["confidence"]),
+         occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
+@@ -55,6 +81,12 @@ def _node_from_row(row: aiosqlite.Row) -> WorkEvidenceNode:
+         execution_context_ref=context,
+         association_state=cast(WorkEvidenceAssociationState, str(row["association_state"])),
+         claim_text=str(row["claim_text"]) if row["claim_text"] is not None else None,
++        effect_kind=cast(WorkEvidenceEffectKind, str(effect_kind)) if effect_kind is not None else None,
++        effect_action=cast(WorkEvidenceEffectAction, str(effect_action)) if effect_action is not None else None,
++        evaluation_status=(
++            cast(WorkEvidenceEvaluation, str(evaluation_status)) if evaluation_status is not None else None
++        ),
++        attributes=_json_document(row["attributes_json"]),
+     )
+ 
+ 
+@@ -65,11 +97,19 @@ def _edge_from_row(row: aiosqlite.Row) -> WorkEvidenceEdge:
+         source_ref=ObjectRef.parse(str(row["source_ref"])),
+         target_ref=ObjectRef.parse(str(row["target_ref"])),
+         evidence_refs=tuple(EvidenceRef.parse(value) for value in _json_array(row["evidence_refs_json"])),
++        source_refs=tuple(ObjectRef.parse(value) for value in _json_array(row["source_refs_json"])),
+         corpus_snapshot_ref=ObjectRef.parse(str(row["corpus_snapshot_ref"])),
++        repository_ref=ObjectRef.parse(str(row["repository_ref"])) if row["repository_ref"] is not None else None,
++        repository_snapshot_ref=(
++            ObjectRef.parse(str(row["repository_snapshot_ref"]))
++            if row["repository_snapshot_ref"] is not None
++            else None
++        ),
+         authority=cast(WorkEvidenceAuthority, str(row["authority"])),
+         confidence=float(row["confidence"]),
+         occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
+         association_state=cast(WorkEvidenceAssociationState, str(row["association_state"])),
++        attributes=_json_document(row["attributes_json"]),
+     )
+ 
+ 
+@@ -88,11 +128,13 @@ async def replace_work_evidence_graph(
+     await conn.executemany(
+         """
+         INSERT INTO work_evidence_nodes(
+-            graph_id, node_ref, node_kind, label, evidence_refs_json, corpus_snapshot_ref,
+-            authority, confidence, occurred_at_ms, actor_ref, execution_context_id,
++            graph_id, node_ref, node_kind, label, evidence_refs_json, source_refs_json,
++            corpus_snapshot_ref, repository_ref, repository_snapshot_ref, subject_ref,
++            subject_key, authority, confidence, occurred_at_ms, actor_ref, execution_context_id,
+             execution_context_known_json, execution_context_unknown_json,
+-            execution_context_addressed, association_state, claim_text
+-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++            execution_context_addressed, association_state, claim_text, effect_kind,
++            effect_action, evaluation_status, attributes_json
++        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         """,
+         [
+             (
+@@ -101,7 +143,12 @@ async def replace_work_evidence_graph(
+                 node.kind,
+                 node.label,
+                 json.dumps([ref.format() for ref in node.evidence_refs]),
++                json.dumps([ref.format() for ref in node.source_refs]),
+                 node.corpus_snapshot_ref.format(),
++                node.repository_ref.format() if node.repository_ref else None,
++                node.repository_snapshot_ref.format() if node.repository_snapshot_ref else None,
++                node.subject_ref.format() if node.subject_ref else None,
++                node.subject_key,
+                 node.authority,
+                 node.confidence,
+                 node.occurred_at_ms,
+@@ -112,6 +159,10 @@ async def replace_work_evidence_graph(
+                 int(node.execution_context_ref.content_addressed) if node.execution_context_ref else None,
+                 node.association_state,
+                 node.claim_text,
++                node.effect_kind,
++                node.effect_action,
++                node.evaluation_status,
++                json.dumps(node.attributes, sort_keys=True),
+             )
+             for node in graph.nodes
+         ],
+@@ -120,8 +171,9 @@ async def replace_work_evidence_graph(
+         """
+         INSERT INTO work_evidence_edges(
+             graph_id, edge_ref, edge_kind, source_ref, target_ref, evidence_refs_json,
+-            corpus_snapshot_ref, authority, confidence, occurred_at_ms, association_state
+-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++            source_refs_json, corpus_snapshot_ref, repository_ref, repository_snapshot_ref,
++            authority, confidence, occurred_at_ms, association_state, attributes_json
++        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         """,
+         [
+             (
+@@ -131,11 +183,15 @@ async def replace_work_evidence_graph(
+                 edge.source_ref.format(),
+                 edge.target_ref.format(),
+                 json.dumps([ref.format() for ref in edge.evidence_refs]),
++                json.dumps([ref.format() for ref in edge.source_refs]),
+                 edge.corpus_snapshot_ref.format(),
++                edge.repository_ref.format() if edge.repository_ref else None,
++                edge.repository_snapshot_ref.format() if edge.repository_snapshot_ref else None,
+                 edge.authority,
+                 edge.confidence,
+                 edge.occurred_at_ms,
+                 edge.association_state,
++                json.dumps(edge.attributes, sort_keys=True),
+             )
+             for edge in graph.edges
+         ],
+@@ -148,8 +204,14 @@ async def get_work_evidence_traversal(
+     conn: aiosqlite.Connection,
+     query: WorkEvidenceTraversalQuery,
+ ) -> WorkEvidenceTraversal | None:
+-    """Return an incoming, outgoing, or bidirectional one-hop neighborhood."""
++    """Return a bounded incoming, outgoing, or bidirectional neighborhood."""
+ 
++    if query.direction not in {"incoming", "outgoing", "both"}:
++        raise ValueError("work-evidence traversal direction must be incoming, outgoing, or both")
++    if query.max_depth < 1:
++        raise ValueError("work-evidence traversal max_depth must be at least one")
++    if query.limit is not None and query.limit < 0:
++        raise ValueError("work-evidence traversal limit cannot be negative")
+     focal = ObjectRef.parse(query.focal_ref).format()
+     graph_cursor = await conn.execute(
+         "SELECT corpus_snapshot_ref FROM work_evidence_graphs WHERE graph_id = ?",
+@@ -165,41 +227,196 @@ async def get_work_evidence_traversal(
+     if focal_row is None:
+         return None
+ 
+-    predicates: list[str] = []
+-    params: list[object] = [query.graph_id]
+-    if query.direction == "incoming":
+-        predicates.append("target_ref = ?")
+-        params.append(focal)
+-    elif query.direction == "outgoing":
+-        predicates.append("source_ref = ?")
+-        params.append(focal)
+-    else:
+-        predicates.append("(source_ref = ? OR target_ref = ?)")
+-        params.extend([focal, focal])
+-    if query.edge_kinds:
+-        placeholders = ", ".join("?" for _ in query.edge_kinds)
+-        predicates.append(f"edge_kind IN ({placeholders})")
+-        params.extend(query.edge_kinds)
+-    sql = "SELECT * FROM work_evidence_edges WHERE graph_id = ? AND " + " AND ".join(predicates)
+-    sql += " ORDER BY occurred_at_ms, edge_ref"
+-    if query.limit is not None:
+-        sql += " LIMIT ?"
+-        params.append(query.limit)
+-    edge_cursor = await conn.execute(sql, tuple(params))
+-    edges = tuple(_edge_from_row(row) for row in await edge_cursor.fetchall())
+-    node_refs = {focal}
+-    for edge in edges:
+-        node_refs.add(edge.source_ref.format())
+-        node_refs.add(edge.target_ref.format())
+-    placeholders = ", ".join("?" for _ in node_refs)
++    selected_edges: dict[str, WorkEvidenceEdge] = {}
++    visited_nodes = {focal}
++    frontier = {focal}
++    for _depth in range(query.max_depth):
++        if not frontier or (query.limit is not None and len(selected_edges) >= query.limit):
++            break
++        predicates: list[str] = []
++        params: list[object] = [query.graph_id]
++        placeholders = ", ".join("?" for _ in frontier)
++        ordered_frontier = sorted(frontier)
++        if query.direction == "incoming":
++            predicates.append(f"target_ref IN ({placeholders})")
++            params.extend(ordered_frontier)
++        elif query.direction == "outgoing":
++            predicates.append(f"source_ref IN ({placeholders})")
++            params.extend(ordered_frontier)
++        else:
++            predicates.append(f"(source_ref IN ({placeholders}) OR target_ref IN ({placeholders}))")
++            params.extend(ordered_frontier)
++            params.extend(ordered_frontier)
++        if query.edge_kinds:
++            kind_placeholders = ", ".join("?" for _ in query.edge_kinds)
++            predicates.append(f"edge_kind IN ({kind_placeholders})")
++            params.extend(query.edge_kinds)
++        if selected_edges:
++            edge_placeholders = ", ".join("?" for _ in selected_edges)
++            predicates.append(f"edge_ref NOT IN ({edge_placeholders})")
++            params.extend(sorted(selected_edges))
++        sql = "SELECT * FROM work_evidence_edges WHERE graph_id = ? AND " + " AND ".join(predicates)
++        sql += " ORDER BY (occurred_at_ms IS NULL), occurred_at_ms, edge_ref"
++        if query.limit is not None:
++            sql += " LIMIT ?"
++            params.append(query.limit - len(selected_edges))
++        edge_cursor = await conn.execute(sql, tuple(params))
++        rows = await edge_cursor.fetchall()
++        next_frontier: set[str] = set()
++        for row in rows:
++            edge = _edge_from_row(row)
++            selected_edges[edge.ref.format()] = edge
++            for ref in (edge.source_ref.format(), edge.target_ref.format()):
++                if ref not in visited_nodes:
++                    next_frontier.add(ref)
++        visited_nodes.update(next_frontier)
++        frontier = next_frontier
++
++    node_placeholders = ", ".join("?" for _ in visited_nodes)
+     neighbors_cursor = await conn.execute(
+-        f"SELECT * FROM work_evidence_nodes WHERE graph_id = ? AND node_ref IN ({placeholders}) ORDER BY node_ref",
+-        (query.graph_id, *sorted(node_refs)),
++        f"SELECT * FROM work_evidence_nodes WHERE graph_id = ? AND node_ref IN ({node_placeholders}) "
++        "ORDER BY node_ref",
++        (query.graph_id, *sorted(visited_nodes)),
+     )
+     nodes = tuple(_node_from_row(row) for row in await neighbors_cursor.fetchall())
++    edges = tuple(selected_edges[key] for key in sorted(selected_edges))
+     return WorkEvidenceTraversal(
+         graph_id=query.graph_id,
+         focal_ref=ObjectRef.parse(focal),
+         nodes=nodes,
+         edges=edges,
+     )
++
++
++async def get_bead_work_history(
++    conn: aiosqlite.Connection,
++    query: BeadWorkHistoryQuery,
++) -> BeadWorkHistory | None:
++    """Answer which archived sessions directly/candidately touched one Bead."""
++
++    repository_ref = ObjectRef.parse(query.repository_ref)
++    if repository_ref.kind != "repo":
++        raise ValueError("Bead work history requires a repo ref")
++    if not query.bead_id.strip():
++        raise ValueError("Bead work history requires a non-empty bead id")
++    allowed_actions = {"created", "edited", "claimed", "closed"}
++    invalid_actions = sorted(set(query.actions) - allowed_actions)
++    if invalid_actions:
++        raise ValueError(f"unsupported Bead work actions: {', '.join(invalid_actions)}")
++    snapshot_ref: ObjectRef | None = None
++    if query.repository_snapshot_ref is not None:
++        snapshot_ref = ObjectRef.parse(query.repository_snapshot_ref)
++        if snapshot_ref.kind != "repository-snapshot":
++            raise ValueError("Bead work history snapshot filter requires a repository-snapshot ref")
++
++    graph_cursor = await conn.execute(
++        "SELECT 1 FROM work_evidence_graphs WHERE graph_id = ?",
++        (query.graph_id,),
++    )
++    if await graph_cursor.fetchone() is None:
++        return None
++
++    predicates = [
++        "graph_id = ?",
++        "node_kind = 'effect'",
++        "effect_kind = 'beads-change'",
++        "repository_ref = ?",
++        "subject_key = ?",
++    ]
++    params: list[object] = [query.graph_id, repository_ref.format(), query.bead_id]
++    if query.actions:
++        placeholders = ", ".join("?" for _ in query.actions)
++        predicates.append(f"effect_action IN ({placeholders})")
++        params.extend(query.actions)
++    if snapshot_ref is not None:
++        predicates.append("repository_snapshot_ref = ?")
++        params.append(snapshot_ref.format())
++    effect_cursor = await conn.execute(
++        "SELECT * FROM work_evidence_nodes WHERE " + " AND ".join(predicates) + " ORDER BY occurred_at_ms, node_ref",
++        tuple(params),
++    )
++    effect_nodes = tuple(_node_from_row(row) for row in await effect_cursor.fetchall())
++    if not effect_nodes:
++        return BeadWorkHistory(
++            graph_id=query.graph_id,
++            repository_ref=repository_ref,
++            bead_id=query.bead_id,
++            issue_refs=(),
++            direct_matches=(),
++            candidate_matches=(),
++        )
++
++    effect_by_ref = {node.ref.format(): node for node in effect_nodes}
++    effect_placeholders = ", ".join("?" for _ in effect_by_ref)
++    edge_kinds = ("observed_effect", "candidate_effect") if query.include_candidates else ("observed_effect",)
++    kind_placeholders = ", ".join("?" for _ in edge_kinds)
++    edge_cursor = await conn.execute(
++        "SELECT * FROM work_evidence_edges "
++        f"WHERE graph_id = ? AND target_ref IN ({effect_placeholders}) AND edge_kind IN ({kind_placeholders}) "
++        "ORDER BY occurred_at_ms, edge_ref",
++        (query.graph_id, *sorted(effect_by_ref), *edge_kinds),
++    )
++    edges = tuple(_edge_from_row(row) for row in await edge_cursor.fetchall())
++    source_refs = sorted({edge.source_ref.format() for edge in edges})
++    source_nodes: dict[str, WorkEvidenceNode] = {}
++    if source_refs:
++        source_placeholders = ", ".join("?" for _ in source_refs)
++        source_cursor = await conn.execute(
++            f"SELECT * FROM work_evidence_nodes WHERE graph_id = ? AND node_ref IN ({source_placeholders})",
++            (query.graph_id, *source_refs),
++        )
++        source_nodes = {node.ref.format(): node for node in map(_node_from_row, await source_cursor.fetchall())}
++
++    direct: dict[tuple[str, str, str], BeadWorkSessionMatch] = {}
++    candidates: dict[tuple[str, str, str], BeadWorkSessionMatch] = {}
++    for edge in edges:
++        source = source_nodes.get(edge.source_ref.format())
++        effect = effect_by_ref[edge.target_ref.format()]
++        if source is None or effect.effect_action not in {"created", "edited", "claimed", "closed"}:
++            continue
++        association_evidence_refs = tuple(dict.fromkeys((*source.evidence_refs, *edge.evidence_refs)))
++        association_source_refs = tuple(
++            {ref.format(): ref for ref in (*source.source_refs, *edge.source_refs)}.values()
++        )
++        evidence_refs = tuple(dict.fromkeys((*association_evidence_refs, *effect.evidence_refs)))
++        direct_source_refs = tuple(
++            {ref.format(): ref for ref in (*association_source_refs, *effect.source_refs)}.values()
++        )
++        session_refs = {
++            ObjectRef(kind="session", object_id=evidence.session_id).format(): ObjectRef(
++                kind="session", object_id=evidence.session_id
++            )
++            for evidence in association_evidence_refs
++        }
++        session_refs.update({ref.format(): ref for ref in association_source_refs if ref.kind == "session"})
++        if effect.repository_snapshot_ref is None:
++            raise ValueError("persisted Beads effect lost repository snapshot")
++        for session_ref in session_refs.values():
++            match = BeadWorkSessionMatch(
++                session_ref=session_ref,
++                action=cast(BeadWorkAction, effect.effect_action),
++                effect_ref=effect.ref,
++                edge_ref=edge.ref,
++                evidence_refs=evidence_refs,
++                source_refs=direct_source_refs,
++                repository_snapshot_ref=effect.repository_snapshot_ref,
++                confidence=edge.confidence,
++                association_state=edge.association_state,
++            )
++            key = (session_ref.format(), match.action, effect.ref.format())
++            if edge.kind == "observed_effect":
++                direct[key] = match
++            else:
++                candidates[key] = match
++
++    issue_refs = tuple(
++        {node.subject_ref.format(): node.subject_ref for node in effect_nodes if node.subject_ref is not None}.values()
++    )
++    return BeadWorkHistory(
++        graph_id=query.graph_id,
++        repository_ref=repository_ref,
++        bead_id=query.bead_id,
++        issue_refs=tuple(sorted(issue_refs, key=lambda ref: ref.format())),
++        direct_matches=tuple(direct[key] for key in sorted(direct)),
++        candidate_matches=tuple(candidates[key] for key in sorted(candidates)),
++    )
+diff --git a/polylogue/storage/sqlite/query_store_work_evidence.py b/polylogue/storage/sqlite/query_store_work_evidence.py
+index c677870dade64fb3640e75907d8a46785a8b8e9d..902ddacecbab3dca48ad4f182b74ad919a1860ca 100644
+--- a/polylogue/storage/sqlite/query_store_work_evidence.py
++++ b/polylogue/storage/sqlite/query_store_work_evidence.py
+@@ -1,4 +1,4 @@
+-"""Read band for provider-neutral work-evidence traversal."""
++"""Read band for provider-neutral work-evidence traversal and reconciliation."""
+ 
+ from __future__ import annotations
+ 
+@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
+ 
+ import aiosqlite
+ 
+-from polylogue.insights.work_evidence import WorkEvidenceTraversal
+-from polylogue.storage.query_models import WorkEvidenceTraversalQuery
++from polylogue.insights.work_evidence import BeadWorkHistory, WorkEvidenceTraversal
++from polylogue.storage.query_models import BeadWorkHistoryQuery, WorkEvidenceTraversalQuery
+ from polylogue.storage.sqlite.queries import work_evidence as work_evidence_q
+ 
+ 
+@@ -24,5 +24,12 @@ class SQLiteQueryStoreWorkEvidenceMixin:
+         async with self._connection_factory() as conn:
+             return await work_evidence_q.get_work_evidence_traversal(conn, query)
+ 
++    async def get_bead_work_history(
++        self,
++        query: BeadWorkHistoryQuery,
++    ) -> BeadWorkHistory | None:
++        async with self._connection_factory() as conn:
++            return await work_evidence_q.get_bead_work_history(conn, query)
++
+ 
+ __all__ = ["SQLiteQueryStoreWorkEvidenceMixin"]
+diff --git a/tests/fixtures/beads/work-effects-baselines.jsonl b/tests/fixtures/beads/work-effects-baselines.jsonl
+new file mode 100644
+index 0000000000000000000000000000000000000000..fed226630288b0343abc393a4808ae55f5b6a00a
+--- /dev/null
++++ b/tests/fixtures/beads/work-effects-baselines.jsonl
+@@ -0,0 +1,2 @@
++{"_type":"issue","id":"polylogue-7fj","title":"Ingest Beads issue history","status":"closed","priority":2,"assignee":"Sinity","created_at":"2026-07-08T20:14:30Z","updated_at":"2026-07-08T20:14:36Z"}
++{"_type":"issue","id":"polylogue-side","title":"Related repository effect","status":"open","priority":2,"created_at":"2026-07-08T20:14:31Z","updated_at":"2026-07-08T20:14:35Z"}
+diff --git a/tests/fixtures/beads/work-effects-interactions.jsonl b/tests/fixtures/beads/work-effects-interactions.jsonl
+new file mode 100644
+index 0000000000000000000000000000000000000000..12e45499a642a1dd5057ae6d9b1c94210ee5e099
+--- /dev/null
++++ b/tests/fixtures/beads/work-effects-interactions.jsonl
+@@ -0,0 +1,5 @@
++{"id":"evt-create","kind":"created","created_at":"2026-07-08T20:14:31Z","actor":"Codex","issue_id":"polylogue-7fj","extra":{"reason":"Created from a structural bd command."}}
++{"id":"evt-edit","kind":"field_change","created_at":"2026-07-08T20:14:32Z","actor":"Claude","issue_id":"polylogue-7fj","extra":{"field":"title","old_value":"Draft","new_value":"Ingest Beads issue history"}}
++{"id":"evt-claim","kind":"field_change","created_at":"2026-07-08T20:14:33Z","actor":"Codex","issue_id":"polylogue-7fj","extra":{"field":"assignee","old_value":null,"new_value":"Sinity"}}
++{"id":"evt-close","kind":"field_change","created_at":"2026-07-08T20:14:34Z","actor":"Codex","issue_id":"polylogue-7fj","extra":{"field":"status","old_value":"in_progress","new_value":"closed","reason":"Focused production-route checks passed."}}
++{"id":"evt-correct","kind":"field_change","created_at":"2026-07-08T20:14:35Z","actor":"Sinity","issue_id":"polylogue-7fj","extra":{"field":"priority","old_value":2,"new_value":1,"supersedes":"evt-edit","reason":"Later correction remains explicit."}}
+diff --git a/tests/unit/core/test_refs.py b/tests/unit/core/test_refs.py
+index dac9694a0889d495da3e5a66bfa4089afded7682..d420e08e2864fa473d07978276e3d9a75f6424d4 100644
+--- a/tests/unit/core/test_refs.py
++++ b/tests/unit/core/test_refs.py
+@@ -74,6 +74,15 @@ def test_execution_context_requires_observed_shape_for_new_ids_and_marks_legacy_
+         ("check-run:ruff check", "check-run", "ruff check", ()),
+         ("github-issue:Sinity/polylogue#1883", "github-issue", "Sinity/polylogue#1883", ()),
+         ("github-review:1911", "github-review", "1911", ()),
++        ("beads-issue:polylogue-1vpm.6.2@master", "beads-issue", "polylogue-1vpm.6.2@master", ()),
++        ("beads-change:polylogue-1vpm.6.2:evt-close", "beads-change", "polylogue-1vpm.6.2:evt-close", ()),
++        ("verification-receipt:pytest:work-effects", "verification-receipt", "pytest:work-effects", ()),
++        (
++            "repository-snapshot:sinity/polylogue:master:bf8191b3",
++            "repository-snapshot",
++            "sinity/polylogue:master:bf8191b3",
++            (),
++        ),
+         ("user:sinity", "user", "sinity", ()),
+         ("repo:polylogue", "repo", "polylogue", ()),
+         ("insight:session-1", "insight", "session-1", ()),
+diff --git a/tests/unit/insights/test_claude_workflow_evidence.py b/tests/unit/insights/test_claude_workflow_evidence.py
+index 0c1381907c30e319663b77e7c6e59085d1e1ca94..635de3adfa92fe57804270a1c28f441d9e17c4bd 100644
+--- a/tests/unit/insights/test_claude_workflow_evidence.py
++++ b/tests/unit/insights/test_claude_workflow_evidence.py
+@@ -55,3 +55,94 @@ def test_claude_projection_uses_provider_facts_not_child_topology() -> None:
+     assert any(edge.kind == "resumed" for edge in graph.edges)
+     assert any(edge.kind == "unresolved" for edge in graph.edges) is False
+     assert any(node.association_state == "unresolved" for node in graph.nodes)
++
++
++def test_missing_artifact_evidence_stays_unresolved_without_borrowing_coordinator_evidence() -> None:
++    coordinator = EvidenceRef(session_id="claude-code-session:coordinator", message_id="m1", block_index=0)
++    artifact = ClaudeOrchestrationArtifact(
++        kind="workflow_journal",
++        source_path="/workflows/wf_missing/journal.jsonl",
++        parse_policy="fact",
++        facts=(
++            ClaudeOrchestrationFact(
++                kind="workflow_journal_entry",
++                source_path="/workflows/wf_missing/journal.jsonl",
++                source_line=1,
++                run_id="wf_missing",
++                agent_id="agent-missing",
++                content_key="call-missing",
++                payload={"attemptId": "attempt-missing"},
++            ),
++        ),
++    )
++    graph = project_claude_workflow_evidence(
++        graph_id="missing-artifact-evidence",
++        corpus_snapshot_ref=ObjectRef(kind="context-snapshot", object_id="missing-artifact-evidence"),
++        artifacts=(artifact,),
++        coordinator_events=(),
++        coordinator_evidence=coordinator,
++        evidence_for_path=lambda _path: None,
++    )
++
++    artifact_node = next(node for node in graph.nodes if node.kind == "artifact")
++    call_node = next(node for node in graph.nodes if node.kind == "call")
++    attempt_node = next(node for node in graph.nodes if node.kind == "attempt")
++    assert artifact_node.evidence_refs == ()
++    assert call_node.evidence_refs == ()
++    assert attempt_node.evidence_refs == ()
++    assert all(node.association_state == "unresolved" for node in (artifact_node, call_node, attempt_node))
++    assert all(node.confidence == 0.5 for node in (artifact_node, call_node, attempt_node))
++    assert all(
++        ObjectRef(kind="file", object_id=artifact.source_path) in node.source_refs
++        for node in (artifact_node, call_node, attempt_node)
++    )
++    assert coordinator not in {
++        evidence
++        for node in graph.nodes
++        if node.kind in {"artifact", "call", "attempt"}
++        for evidence in node.evidence_refs
++    }
++
++
++def test_direct_coordinator_evidence_resolves_shared_run_without_resolving_missing_artifact_facts() -> None:
++    coordinator = EvidenceRef(session_id="claude-code-session:coordinator", message_id="m1", block_index=0)
++    artifact = ClaudeOrchestrationArtifact(
++        kind="workflow_journal",
++        source_path="/workflows/wf_shared/journal.jsonl",
++        parse_policy="fact",
++        facts=(
++            ClaudeOrchestrationFact(
++                kind="workflow_journal_entry",
++                source_path="/workflows/wf_shared/journal.jsonl",
++                source_line=1,
++                run_id="wf_shared",
++                agent_id="agent-missing",
++                content_key="call-missing",
++                payload={"attemptId": "attempt-missing"},
++            ),
++        ),
++    )
++    graph = project_claude_workflow_evidence(
++        graph_id="shared-run-evidence",
++        corpus_snapshot_ref=ObjectRef(kind="context-snapshot", object_id="shared-run-evidence"),
++        artifacts=(artifact,),
++        coordinator_events=(
++            ParsedSessionEvent(
++                event_type="claude_workflow_invocation",
++                payload={"runId": "wf_shared"},
++                source_message_provider_id=None,
++            ),
++        ),
++        coordinator_evidence=coordinator,
++        evidence_for_path=lambda _path: None,
++    )
++
++    run = next(node for node in graph.nodes if node.kind == "run" and node.ref.object_id.endswith("wf_shared"))
++    call = next(node for node in graph.nodes if node.kind == "call")
++    assert run.association_state == "resolved"
++    assert run.confidence == 1.0
++    assert run.evidence_refs == (coordinator,)
++    assert any(ref.kind == "observed-event" and "None" not in ref.object_id for ref in run.source_refs)
++    assert any(ref.kind == "file" for ref in run.source_refs)
++    assert call.association_state == "unresolved"
++    assert call.evidence_refs == ()
+diff --git a/tests/unit/insights/test_work_effects_route.py b/tests/unit/insights/test_work_effects_route.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..43458a35b4366699cdeded1e0bed723abc15d569
+--- /dev/null
++++ b/tests/unit/insights/test_work_effects_route.py
+@@ -0,0 +1,342 @@
++"""Real repository route for observed effects and Beads work-history queries."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++from polylogue.core.json import JSONDocument
++from polylogue.core.refs import EvidenceRef, ObjectRef
++from polylogue.insights.run_projection import ObservedEvent
++from polylogue.insights.work_evidence import (
++    WorkEvidenceEdge,
++    WorkEvidenceGraph,
++    WorkEvidenceNode,
++    session_segment_from_observed_events,
++)
++from polylogue.insights.work_reconciliation import (
++    EffectAssociation,
++    ReconciliationJudgment,
++    artifact_effect,
++    associations_from_observed_events,
++    effects_from_beads_records,
++    git_commit_effect,
++    github_pr_effect,
++    reconcile_work_effects,
++    relations_for_pr_effects,
++    verification_receipt_effect,
++)
++from polylogue.storage.repository import SessionRepository
++
++CORPUS = ObjectRef(kind="context-snapshot", object_id="work-effects-route:corpus")
++REPOSITORY = ObjectRef(kind="repo", object_id="sinity/polylogue")
++REPOSITORY_SNAPSHOT = ObjectRef(
++    kind="repository-snapshot",
++    object_id="sinity/polylogue:master:bf8191b3f56aa40da8f271df7f3385c712825497",
++)
++BRANCH = ObjectRef(kind="branch", object_id="master")
++BEAD_ID = "polylogue-7fj"
++
++
++def _fixture_records(name: str) -> tuple[JSONDocument, ...]:
++    path = Path(__file__).parents[2] / "fixtures" / "beads" / name
++    return tuple(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
++
++
++def _event_for_change(*, event_id: str, effect_ref: ObjectRef, evidence: EvidenceRef) -> ObservedEvent:
++    return ObservedEvent(
++        event_ref=ObjectRef(kind="observed-event", object_id=f"archive-beads:{event_id}"),
++        kind="tool_finished",
++        run_ref=ObjectRef(kind="run", object_id=evidence.session_id),
++        summary=f"Archived structural Beads command named {effect_ref.format()}",
++        object_refs=(effect_ref,),
++        evidence_refs=(evidence,),
++        tool_name="Bash",
++        command=f"bd history {BEAD_ID}",
++        status="completed",
++    )
++
++
++def _claim_subgraph(
++    evidence: EvidenceRef,
++) -> tuple[tuple[WorkEvidenceNode, ...], tuple[WorkEvidenceEdge, ...], ObjectRef]:
++    result = WorkEvidenceNode(
++        ref=ObjectRef(kind="work-result", object_id="work-effects-route:result"),
++        kind="structured-result",
++        label="Agent completion report",
++        evidence_refs=(evidence,),
++        corpus_snapshot_ref=CORPUS,
++        authority="provider",
++        confidence=1.0,
++    )
++    claim = WorkEvidenceNode(
++        ref=ObjectRef(kind="work-claim", object_id="work-effects-route:claim"),
++        kind="claim",
++        label="Agent claimed the Bead work was complete",
++        claim_text="The requested Bead was updated and the repository change was verified.",
++        evidence_refs=(evidence,),
++        corpus_snapshot_ref=CORPUS,
++        authority="provider",
++        confidence=1.0,
++    )
++    edge = WorkEvidenceEdge(
++        ref=ObjectRef(kind="work-edge", object_id="work-effects-route:claimed"),
++        kind="claimed",
++        source_ref=result.ref,
++        target_ref=claim.ref,
++        evidence_refs=(evidence,),
++        corpus_snapshot_ref=CORPUS,
++        authority="provider",
++        confidence=1.0,
++    )
++    return (result, claim), (edge,), claim.ref
++
++
++@pytest.mark.asyncio
++async def test_seeded_bead_history_query_round_trips_direct_refs_and_candidate_overlap(tmp_path: Path) -> None:
++    """Exercise effects_from_beads_records -> reconciliation -> SQLite -> repository query.
++
++    Anti-vacuity: deleting ``subject_key`` persistence, session source-ref recovery,
++    repository scoping, or the observed/candidate edge distinction makes this test
++    fail at the production route rather than only at DTO construction.
++    """
++
++    baselines = _fixture_records("work-effects-baselines.jsonl")
++    interactions = _fixture_records("work-effects-interactions.jsonl")
++    evidence_by_event = {
++        str(record["id"]): EvidenceRef(
++            session_id=f"codex-session:{record['id']}",
++            message_id=f"message:{record['id']}",
++            block_index=0,
++        )
++        for record in interactions
++    }
++    projection = effects_from_beads_records(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        branch_ref=BRANCH,
++        baseline_records=baselines,
++        interaction_records=interactions,
++        interaction_evidence={event_id: (evidence,) for event_id, evidence in evidence_by_event.items()},
++        baseline_source_refs=(ObjectRef(kind="file", object_id=".beads/issues.jsonl"),),
++        interaction_source_refs={
++            event_id: (ObjectRef(kind="file", object_id=".beads/interactions.jsonl"),)
++            for event_id in evidence_by_event
++        },
++        history_source_refs=(ObjectRef(kind="commit", object_id="beads-history-fixture"),),
++    )
++    changes = {
++        str(effect.attributes["event_id"]): effect
++        for effect in projection.effects
++        if effect.effect_kind == "beads-change"
++    }
++
++    segments: list[WorkEvidenceNode] = []
++    associations: list[EffectAssociation] = []
++    for event_id in ("evt-create", "evt-edit", "evt-claim", "evt-close"):
++        event = _event_for_change(
++            event_id=event_id,
++            effect_ref=changes[event_id].ref,
++            evidence=evidence_by_event[event_id],
++        )
++        if event_id == "evt-claim":
++            # The source node deliberately retains only the admitted event ref;
++            # the association edge carries the archive EvidenceRef. The query
++            # must recover sessions from the complete persisted relation.
++            segment = WorkEvidenceNode(
++                ref=ObjectRef(kind="work-session-segment", object_id=f"work-effects-route:{event_id}"),
++                kind="session-segment",
++                label=f"Archived session segment for {event_id}",
++                source_refs=(event.event_ref,),
++                corpus_snapshot_ref=CORPUS,
++                authority="provider",
++                confidence=1.0,
++            )
++        else:
++            segment = session_segment_from_observed_events(
++                ref=ObjectRef(kind="work-session-segment", object_id=f"work-effects-route:{event_id}"),
++                label=f"Archived session segment for {event_id}",
++                corpus_snapshot_ref=CORPUS,
++                events=(event,),
++            )
++        segments.append(segment)
++        associations.extend(
++            associations_from_observed_events(
++                work_ref=segment.ref,
++                events=(event,),
++                effects=projection.effects,
++            )
++        )
++
++    candidate_evidence = EvidenceRef(
++        session_id="codex-session:time-overlap-only",
++        message_id="message:candidate",
++        block_index=0,
++    )
++    candidate_event = ObservedEvent(
++        event_ref=ObjectRef(kind="observed-event", object_id="archive-beads:time-overlap-only"),
++        kind="tool_finished",
++        run_ref=ObjectRef(kind="run", object_id=candidate_evidence.session_id),
++        summary="Unrelated session happened during the same time window",
++        evidence_refs=(candidate_evidence,),
++    )
++    candidate_segment = session_segment_from_observed_events(
++        ref=ObjectRef(kind="work-session-segment", object_id="work-effects-route:time-overlap-only"),
++        label="Time-overlap-only segment",
++        corpus_snapshot_ref=CORPUS,
++        events=(candidate_event,),
++    )
++    segments.append(candidate_segment)
++    associations.append(
++        EffectAssociation(
++            work_ref=candidate_segment.ref,
++            effect_ref=changes["evt-close"].ref,
++            basis="time_overlap",
++            evidence_refs=(candidate_evidence,),
++            source_refs=(candidate_event.event_ref,),
++            confidence=0.1,
++        )
++    )
++
++    close_evidence = evidence_by_event["evt-close"]
++    commit = git_commit_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        commit_sha="bf8191b3f56aa40da8f271df7f3385c712825497",
++        label="Snapshot commit",
++        source_refs=(BRANCH,),
++        evidence_refs=(close_evidence,),
++    )
++    pr = github_pr_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        pr_ref=ObjectRef(kind="github-pr", object_id="sinity/polylogue#3051"),
++        state="merged",
++        source_refs=(ObjectRef(kind="github-review", object_id="sinity/polylogue#3051:review"),),
++        merge_commit_ref=commit.ref,
++        merge_method="squash",
++        evidence_refs=(close_evidence,),
++    )
++    artifact = artifact_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        artifact_ref=ObjectRef(kind="artifact", object_id="PATCH.diff"),
++        source_refs=(commit.ref,),
++        evidence_refs=(close_evidence,),
++        digest="sha256:fixture-patch",
++    )
++    receipt = verification_receipt_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        receipt_ref=ObjectRef(kind="verification-receipt", object_id="pytest:work-effects-route"),
++        outcome="passed",
++        source_refs=(artifact.ref,),
++        evidence_refs=(close_evidence,),
++        attributes={"command": "pytest tests/unit/insights/test_work_effects_route.py"},
++    )
++
++    claim_nodes, claim_edges, claim_ref = _claim_subgraph(close_evidence)
++    base = WorkEvidenceGraph(
++        graph_id="work-effects-route",
++        corpus_snapshot_ref=CORPUS,
++        nodes=(*segments, *claim_nodes),
++        edges=claim_edges,
++    )
++    issue_refs = tuple(effect.ref for effect in projection.effects if effect.effect_kind == "beads-issue")
++    graph = reconcile_work_effects(
++        base,
++        effects=(*projection.effects, commit, pr, artifact, receipt),
++        associations=tuple(associations),
++        relations=(
++            *projection.relations,
++            *relations_for_pr_effects(
++                pr_effect=pr,
++                merge_commit_ref=commit.ref,
++                bead_issue_refs=issue_refs,
++            ),
++        ),
++        judgments=(
++            ReconciliationJudgment(
++                assertion_ref=ObjectRef(kind="assertion", object_id="work-effects-route:acceptance"),
++                claim_ref=claim_ref,
++                effect_refs=(changes["evt-close"].ref, commit.ref, pr.ref, artifact.ref, receipt.ref),
++                evaluation="supported",
++                label="Synthetic acceptance evaluation",
++                repository_ref=REPOSITORY,
++                repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++                evidence_refs=(close_evidence,),
++                source_refs=(receipt.ref,),
++                acceptance_ref="polylogue-1vpm.6.2#6",
++            ),
++        ),
++    )
++
++    async with SessionRepository(db_path=tmp_path / "index.db") as repository:
++        await repository.replace_work_evidence_graph(graph)
++        history = await repository.find_bead_work_sessions(
++            graph_id=graph.graph_id,
++            repository_ref=REPOSITORY.format(),
++            bead_id=BEAD_ID,
++        )
++        direct_only = await repository.find_bead_work_sessions(
++            graph_id=graph.graph_id,
++            repository_ref=REPOSITORY.format(),
++            bead_id=BEAD_ID,
++            include_candidates=False,
++        )
++        wrong_repository = await repository.find_bead_work_sessions(
++            graph_id=graph.graph_id,
++            repository_ref=ObjectRef(kind="repo", object_id="other/repository").format(),
++            bead_id=BEAD_ID,
++        )
++        wrong_snapshot = await repository.find_bead_work_sessions(
++            graph_id=graph.graph_id,
++            repository_ref=REPOSITORY.format(),
++            repository_snapshot_ref=ObjectRef(
++                kind="repository-snapshot",
++                object_id="sinity/polylogue:feature:other",
++            ).format(),
++            bead_id=BEAD_ID,
++        )
++        claim_traversal = await repository.traverse_work_evidence(
++            graph_id=graph.graph_id,
++            focal_ref=claim_ref.format(),
++            direction="outgoing",
++            max_depth=2,
++        )
++        close_traversal = await repository.traverse_work_evidence(
++            graph_id=graph.graph_id,
++            focal_ref=segments[3].ref.format(),
++            direction="outgoing",
++            max_depth=1,
++        )
++
++    assert history is not None
++    assert {(match.action, match.session_ref.object_id) for match in history.direct_matches} == {
++        ("created", "codex-session:evt-create"),
++        ("edited", "codex-session:evt-edit"),
++        ("claimed", "codex-session:evt-claim"),
++        ("closed", "codex-session:evt-close"),
++    }
++    assert {(match.action, match.session_ref.object_id) for match in history.candidate_matches} == {
++        ("closed", "codex-session:time-overlap-only")
++    }
++    assert all(match.association_state == "resolved" for match in history.direct_matches)
++    assert all(match.association_state == "candidate" for match in history.candidate_matches)
++    assert all(
++        any(ref.kind == "observed-event" for ref in match.source_refs)
++        for match in (*history.direct_matches, *history.candidate_matches)
++    )
++    assert direct_only is not None and direct_only.candidate_matches == ()
++    assert wrong_repository is not None and wrong_repository.direct_matches == ()
++    assert wrong_snapshot is not None and wrong_snapshot.direct_matches == ()
++
++    assert claim_traversal is not None
++    assert {edge.kind for edge in claim_traversal.edges} == {"evaluated_as", "evaluated_against"}
++    assert {node.kind for node in claim_traversal.nodes} >= {"claim", "evaluation", "effect"}
++    assert close_traversal is not None
++    assert [(edge.kind, edge.target_ref) for edge in close_traversal.edges] == [
++        ("observed_effect", changes["evt-close"].ref)
++    ]
+diff --git a/tests/unit/insights/test_work_reconciliation.py b/tests/unit/insights/test_work_reconciliation.py
+index 11d298328ea6c4ac67d8145921104cb86b65c413..b26029e3960362ab7473c9fe73374fadc961ff7f 100644
+--- a/tests/unit/insights/test_work_reconciliation.py
++++ b/tests/unit/insights/test_work_reconciliation.py
+@@ -1,54 +1,451 @@
+ from __future__ import annotations
+ 
++import json
++from pathlib import Path
++
+ import pytest
++from pydantic import ValidationError
+ 
++from polylogue.core.json import JSONDocument
+ from polylogue.core.refs import EvidenceRef, ObjectRef
+-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
++from polylogue.insights.run_projection import ObservedEvent
++from polylogue.insights.session_commit import SessionCommitEdge, SessionCorrelationResult
++from polylogue.insights.work_evidence import WorkEvidenceEdge, WorkEvidenceGraph, WorkEvidenceNode
+ from polylogue.insights.work_reconciliation import (
++    EffectAssociation,
+     ObservedRepositoryEffect,
+     ReconciliationJudgment,
++    artifact_effect,
++    associations_from_observed_events,
++    associations_from_session_correlation,
++    effects_from_beads_records,
++    git_commit_effect,
++    github_issue_effect,
++    github_pr_effect,
+     reconcile_work_effects,
++    relations_for_pr_effects,
++    unresolved_coverage_gap,
++    verification_receipt_effect,
+ )
+ 
++EVIDENCE = EvidenceRef(session_id="codex-session:effects", message_id="m1", block_index=0)
++CORPUS = ObjectRef(kind="context-snapshot", object_id="corpus:effects")
++REPOSITORY = ObjectRef(kind="repo", object_id="polylogue")
++REPOSITORY_SNAPSHOT = ObjectRef(kind="repository-snapshot", object_id="polylogue:master:abc")
++BRANCH = ObjectRef(kind="branch", object_id="master")
++
+ 
+-def test_reconciliation_keeps_claim_and_commit_as_distinct_facts() -> None:
+-    evidence = EvidenceRef(session_id="codex-session:test", message_id="m", block_index=0)
+-    snapshot = ObjectRef(kind="context-snapshot", object_id="snapshot")
++def _base_graph() -> tuple[WorkEvidenceGraph, WorkEvidenceNode, WorkEvidenceNode]:
++    segment = WorkEvidenceNode(
++        ref=ObjectRef(kind="work-session-segment", object_id="segment:effects"),
++        kind="session-segment",
++        label="Archived agent segment",
++        evidence_refs=(EVIDENCE,),
++        source_refs=(ObjectRef(kind="session", object_id=EVIDENCE.session_id),),
++        corpus_snapshot_ref=CORPUS,
++        authority="provider",
++        confidence=1.0,
++    )
++    result = WorkEvidenceNode(
++        ref=ObjectRef(kind="work-result", object_id="result:effects"),
++        kind="structured-result",
++        label="Structured result",
++        evidence_refs=(EVIDENCE,),
++        corpus_snapshot_ref=CORPUS,
++        authority="provider",
++        confidence=1.0,
++    )
+     claim = WorkEvidenceNode(
+-        ref=ObjectRef(kind="work-claim", object_id="done"),
++        ref=ObjectRef(kind="work-claim", object_id="claim:effects"),
+         kind="claim",
+-        label="done",
+-        claim_text="done",
+-        evidence_refs=(evidence,),
+-        corpus_snapshot_ref=snapshot,
+-        confidence=1,
+-    )
+-    graph = WorkEvidenceGraph(graph_id="g", corpus_snapshot_ref=snapshot, nodes=(claim,), edges=())
+-    effect = ObservedRepositoryEffect(
+-        ref=ObjectRef(kind="commit", object_id="abc"),
+-        label="commit abc",
+-        authority="git",
+-        evidence_ref=evidence,
+-        repository_snapshot_ref=snapshot,
++        label="Agent reported completion",
++        claim_text="The requested repository work is complete.",
++        evidence_refs=(EVIDENCE,),
++        corpus_snapshot_ref=CORPUS,
++        authority="provider",
++        confidence=1.0,
++    )
++    claimed = WorkEvidenceEdge(
++        ref=ObjectRef(kind="work-edge", object_id="result-claim"),
++        kind="claimed",
++        source_ref=result.ref,
++        target_ref=claim.ref,
++        evidence_refs=(EVIDENCE,),
++        corpus_snapshot_ref=CORPUS,
++        authority="provider",
++        confidence=1.0,
++    )
++    return (
++        WorkEvidenceGraph(
++            graph_id="effects",
++            corpus_snapshot_ref=CORPUS,
++            nodes=(segment, result, claim),
++            edges=(claimed,),
++        ),
++        segment,
++        claim,
++    )
++
++
++def _fixture_records(name: str) -> list[JSONDocument]:
++    path = Path(__file__).parents[2] / "fixtures" / "beads" / name
++    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
++
++
++def test_reconciliation_keeps_claim_effect_and_evaluation_as_three_distinct_facts() -> None:
++    graph, segment, claim = _base_graph()
++    effect = git_commit_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        commit_sha="abc123",
++        label="commit abc123",
++        source_refs=(BRANCH,),
++        evidence_refs=(EVIDENCE,),
+     )
+     reconciled = reconcile_work_effects(
+         graph,
+         effects=(effect,),
++        associations=(
++            EffectAssociation(
++                work_ref=segment.ref,
++                effect_ref=effect.ref,
++                basis="direct_identifier",
++                evidence_refs=(EVIDENCE,),
++                source_refs=(effect.ref,),
++            ),
++        ),
+         judgments=(
+             ReconciliationJudgment(
+-                claim_ref=claim.ref, effect_ref=effect.ref, evaluation="supported", evidence_ref=evidence
++                assertion_ref=ObjectRef(kind="assertion", object_id="judgment:ac-1"),
++                claim_ref=claim.ref,
++                effect_refs=(effect.ref,),
++                evaluation="supported",
++                label="AC 1 supported",
++                repository_ref=REPOSITORY,
++                repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++                evidence_refs=(EVIDENCE,),
++                rationale="The archived direct commit ref and git observation agree.",
++                acceptance_ref="polylogue-1vpm.6.2#1",
+             ),
+         ),
+     )
+-    assert {node.kind for node in reconciled.nodes} == {"claim", "effect"}
+-    assert reconciled.edges[0].association_state == "resolved"
+-    with pytest.raises(ValueError, match="source must be a claim"):
++
++    by_kind = {
++        kind: [node for node in reconciled.nodes if node.kind == kind]
++        for kind in {"claim", "effect", "evaluation"}
++    }
++    assert [len(by_kind[kind]) for kind in ("claim", "effect", "evaluation")] == [1, 1, 1]
++    evaluation = by_kind["evaluation"][0]
++    assert evaluation.ref.kind == "assertion"
++    assert evaluation.evaluation_status == "supported"
++    assert evaluation.repository_snapshot_ref == REPOSITORY_SNAPSHOT
++    assert {(edge.kind, edge.source_ref, edge.target_ref) for edge in reconciled.edges} >= {
++        ("observed_effect", segment.ref, effect.ref),
++        ("evaluated_as", claim.ref, evaluation.ref),
++        ("evaluated_against", evaluation.ref, effect.ref),
++    }
++    assert not any(edge.source_ref == claim.ref and edge.target_ref == effect.ref for edge in reconciled.edges)
++
++    with pytest.raises(ValueError, match="observed effects must attach to observed work"):
+         reconcile_work_effects(
+             graph,
+             effects=(effect,),
+-            judgments=(
+-                ReconciliationJudgment(
+-                    claim_ref=effect.ref, effect_ref=effect.ref, evaluation="supported", evidence_ref=evidence
++            associations=(
++                EffectAssociation(
++                    work_ref=claim.ref,
++                    effect_ref=effect.ref,
++                    basis="direct_identifier",
++                    evidence_refs=(EVIDENCE,),
+                 ),
+             ),
+         )
++
++
++def test_time_and_file_overlap_are_forced_to_candidate_edges() -> None:
++    graph, segment, _claim = _base_graph()
++    effect = git_commit_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        commit_sha="candidate123",
++        label="candidate commit",
++        source_refs=(BRANCH,),
++    )
++    reconciled = reconcile_work_effects(
++        graph,
++        effects=(effect,),
++        associations=(
++            EffectAssociation(
++                work_ref=segment.ref,
++                effect_ref=effect.ref,
++                basis="file_overlap",
++                evidence_refs=(EVIDENCE,),
++                confidence=0.6,
++            ),
++            EffectAssociation(
++                work_ref=segment.ref,
++                effect_ref=effect.ref,
++                basis="time_overlap",
++                evidence_refs=(EVIDENCE,),
++                confidence=0.1,
++            ),
++        ),
++    )
++    candidate_edges = [edge for edge in reconciled.edges if edge.kind == "candidate_effect"]
++    assert len(candidate_edges) == 2
++    assert {edge.attributes["basis"] for edge in candidate_edges} == {"file_overlap", "time_overlap"}
++    assert all(edge.association_state == "candidate" for edge in candidate_edges)
++    assert not any(edge.kind == "observed_effect" for edge in candidate_edges)
++
++    with pytest.raises(ValidationError, match="candidate_effect edges require candidate association_state"):
++        WorkEvidenceEdge(
++            ref=ObjectRef(kind="work-edge", object_id="invalid-candidate"),
++            kind="candidate_effect",
++            source_ref=segment.ref,
++            target_ref=effect.ref,
++            evidence_refs=(EVIDENCE,),
++            corpus_snapshot_ref=CORPUS,
++            repository_ref=REPOSITORY,
++            repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++            authority="inferred",
++            confidence=0.5,
++            association_state="resolved",
++        )
++
++
++def test_beads_adapter_preserves_baselines_branch_snapshots_and_corrections() -> None:
++    baselines = _fixture_records("work-effects-baselines.jsonl")
++    interactions = _fixture_records("work-effects-interactions.jsonl")
++    evidence = {
++        str(record["id"]): (EvidenceRef(session_id=f"beads-session:{record['id']}", message_id=str(record["id"])),)
++        for record in interactions
++    }
++    history_ref = ObjectRef(kind="commit", object_id="beads-history-commit")
++    projection = effects_from_beads_records(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        branch_ref=BRANCH,
++        baseline_records=baselines,
++        interaction_records=interactions,
++        interaction_evidence=evidence,
++        baseline_source_refs=(ObjectRef(kind="file", object_id=".beads/issues.jsonl"),),
++        history_source_refs=(history_ref,),
++    )
++
++    assert projection.completeness == "complete"
++    assert projection.missing_baseline_issue_ids == ()
++    assert sum(effect.effect_kind == "beads-issue" for effect in projection.effects) == 2
++    changes = {
++        effect.attributes["event_id"]: effect
++        for effect in projection.effects
++        if effect.effect_kind == "beads-change"
++    }
++    assert {event_id: effect.effect_action for event_id, effect in changes.items()} == {
++        "evt-create": "created",
++        "evt-edit": "edited",
++        "evt-claim": "claimed",
++        "evt-close": "closed",
++        "evt-correct": "corrected",
++    }
++    assert all(effect.repository_snapshot_ref == REPOSITORY_SNAPSHOT for effect in changes.values())
++    correction = next(relation for relation in projection.relations if relation.relation == "superseded")
++    assert correction.source_effect_ref == changes["evt-correct"].ref
++    assert correction.target_effect_ref == changes["evt-edit"].ref
++
++    branch_projection = effects_from_beads_records(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        branch_ref=ObjectRef(kind="branch", object_id="feature/effects"),
++        baseline_records=baselines,
++        interaction_records=interactions,
++        history_source_refs=(history_ref,),
++    )
++    master_refs = {effect.ref for effect in projection.effects}
++    feature_refs = {effect.ref for effect in branch_projection.effects}
++    assert master_refs.isdisjoint(feature_refs)
++
++    degraded = effects_from_beads_records(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        branch_ref=BRANCH,
++        baseline_records=(),
++        interaction_records=(interactions[0],),
++    )
++    assert degraded.completeness == "degraded-missing-baseline"
++    issue = next(effect for effect in degraded.effects if effect.effect_kind == "beads-issue")
++    assert issue.association_state == "unresolved"
++    assert issue.confidence == 0.0
++    assert issue.attributes["coverage"] == "baseline-missing"
++
++
++def test_git_github_artifact_verification_and_many_to_many_relations_remain_queryable() -> None:
++    baselines = _fixture_records("work-effects-baselines.jsonl")
++    projection = effects_from_beads_records(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        branch_ref=BRANCH,
++        baseline_records=baselines,
++        interaction_records=(),
++        history_source_refs=(ObjectRef(kind="commit", object_id="beads-history"),),
++    )
++    issue_refs = tuple(effect.ref for effect in projection.effects if effect.effect_kind == "beads-issue")
++    commit = git_commit_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        commit_sha="squash123",
++        label="squash merge commit",
++        source_refs=(BRANCH,),
++    )
++    pr = github_pr_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        pr_ref=ObjectRef(kind="github-pr", object_id="openai/polylogue#3051"),
++        state="merged",
++        merge_commit_ref=commit.ref,
++        merge_method="squash",
++        source_refs=(ObjectRef(kind="github-review", object_id="openai/polylogue#3051:r1"),),
++    )
++    github_issue = github_issue_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        issue_ref=ObjectRef(kind="github-issue", object_id="openai/polylogue#3051"),
++        state="closed",
++        source_refs=(pr.ref,),
++    )
++    artifact = artifact_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        artifact_ref=ObjectRef(kind="artifact", object_id="HANDOFF.md"),
++        source_refs=(commit.ref,),
++        digest="sha256:fixture",
++    )
++    verification = verification_receipt_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        receipt_ref=ObjectRef(kind="verification-receipt", object_id="pytest:effects"),
++        outcome="passed",
++        source_refs=(artifact.ref,),
++        attributes={"command": "pytest tests/unit/insights/test_work_reconciliation.py"},
++    )
++    gap = unresolved_coverage_gap(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        expected_artifact_ref=ObjectRef(kind="artifact", object_id="wf_54/attempt-91.meta.json"),
++        source_refs=(ObjectRef(kind="run", object_id="claude-workflow:wf_54"),),
++        reason="2qx.2 metadata sidecar was not admitted in the snapshot",
++    )
++    relations = relations_for_pr_effects(pr_effect=pr, merge_commit_ref=commit.ref, bead_issue_refs=issue_refs)
++    assert len(relations) == 3
++    assert {relation.target_effect_ref for relation in relations} == {commit.ref, *issue_refs}
++    assert pr.attributes["merge_method"] == "squash"
++    assert github_issue.effect_action == "closed"
++    assert verification.effect_action == "verified"
++    assert gap.association_state == "unresolved"
++    assert gap.confidence == 0.0
++
++
++def test_observed_event_and_legacy_correlation_adapters_preserve_direct_vs_candidate_basis() -> None:
++    graph, segment, _claim = _base_graph()
++    direct = git_commit_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        commit_sha="direct123",
++        label="direct commit",
++        source_refs=(BRANCH,),
++    )
++    event = ObservedEvent(
++        event_ref=ObjectRef(kind="observed-event", object_id="command:git-show"),
++        kind="command_succeeded",
++        run_ref=ObjectRef(kind="run", object_id="codex-session:effects"),
++        summary="git show named direct123",
++        object_refs=(direct.ref,),
++        evidence_refs=(EVIDENCE,),
++    )
++    associations = associations_from_observed_events(work_ref=segment.ref, events=(event,), effects=(direct,))
++    assert [(association.effect_ref, association.basis) for association in associations] == [
++        (direct.ref, "direct_evidence")
++    ]
++
++    pr = github_pr_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        pr_ref=ObjectRef(kind="github-pr", object_id="openai/polylogue#direct"),
++        state="merged",
++        source_refs=(direct.ref,),
++        merge_commit_ref=direct.ref,
++        merge_method="squash",
++    )
++    exact_identity = associations_from_observed_events(
++        work_ref=segment.ref,
++        events=(event,),
++        effects=(direct, pr),
++    )
++    assert [association.effect_ref for association in exact_identity] == [direct.ref]
++
++    second = git_commit_effect(
++        repository_ref=REPOSITORY,
++        repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++        commit_sha="second123",
++        label="second commit",
++        source_refs=(BRANCH,),
++    )
++    ambiguous = event.model_copy(update={"object_refs": (BRANCH,)})
++    assert associations_from_observed_events(
++        work_ref=segment.ref,
++        events=(ambiguous,),
++        effects=(direct, second),
++    ) == ()
++
++    correlation = SessionCorrelationResult(
++        session_id=EVIDENCE.session_id,
++        window_start="2026-07-08T00:00:00+00:00",
++        window_end="2026-07-09T00:00:00+00:00",
++        commits=[
++            SessionCommitEdge(EVIDENCE.session_id, "direct123", "explicit_ref", 0.95),
++            SessionCommitEdge(EVIDENCE.session_id, "overlap123", "file_overlap", 0.6, 2),
++            SessionCommitEdge(EVIDENCE.session_id, "time123", "time_window", 0.1),
++        ],
++    )
++    projected = associations_from_session_correlation(correlation, work_ref=segment.ref, evidence_refs=(EVIDENCE,))
++    assert [association.basis for association in projected] == [
++        "direct_identifier",
++        "file_overlap",
++        "time_overlap",
++    ]
++    reconciled = reconcile_work_effects(graph, effects=(direct,), associations=(projected[0],))
++    assert reconciled.edges[-1].kind == "observed_effect"
++
++
++def test_mutations_cannot_erase_fact_types_baselines_or_repository_snapshots() -> None:
++    with pytest.raises(ValidationError, match="claim nodes require a work-claim ref"):
++        WorkEvidenceNode(
++            ref=ObjectRef(kind="commit", object_id="claim-is-effect"),
++            kind="claim",
++            label="invalid",
++            claim_text="invalid",
++            evidence_refs=(EVIDENCE,),
++            corpus_snapshot_ref=CORPUS,
++            confidence=1.0,
++        )
++    with pytest.raises(ValidationError, match="effect nodes require repository and repository-snapshot refs"):
++        WorkEvidenceNode(
++            ref=ObjectRef(kind="commit", object_id="snapshot-removed"),
++            kind="effect",
++            label="invalid",
++            source_refs=(ObjectRef(kind="commit", object_id="snapshot-removed"),),
++            corpus_snapshot_ref=CORPUS,
++            authority="git",
++            confidence=1.0,
++            effect_kind="git-commit",
++        )
++    with pytest.raises(ValidationError, match="Beads change effects require a Beads issue subject"):
++        ObservedRepositoryEffect(
++            ref=ObjectRef(kind="beads-change", object_id="baseline-removed"),
++            label="invalid",
++            authority="beads",
++            effect_kind="beads-change",
++            effect_action="closed",
++            subject_key="polylogue-7fj",
++            repository_ref=REPOSITORY,
++            repository_snapshot_ref=REPOSITORY_SNAPSHOT,
++            source_refs=(ObjectRef(kind="observed-event", object_id="beads:close"),),
++        )

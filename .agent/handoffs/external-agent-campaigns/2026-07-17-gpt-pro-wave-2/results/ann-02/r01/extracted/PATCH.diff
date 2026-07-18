@@ -1,0 +1,3671 @@
+diff --git a/docs/data-model.md b/docs/data-model.md
+index 8840d70cc..3c0f53a96 100644
+--- a/docs/data-model.md
++++ b/docs/data-model.md
+@@ -144,6 +144,34 @@ ingested yet), and the resolved logical root is materialized as
+ [Internals § Topology Edges](internals.md#topology-edges-1258) and
+ [Internals § Logical Session Identity](internals.md#logical-session-identity-866).
+ 
++## Annotation and calibration substrate
++
++Durable external annotations remain assertion rows in `user.db`; calibration
++does not introduce a second label store. `annotation_schemas` declares and
++versions each label shape, while immutable `annotation_batches` rows record
++source, actor, model, prompt, counts, and the assertion refs produced by a
++run. A heterogeneous archive batch keeps its collection scope in
++`target_ref`/`source_result_ref` and records the ordered item targets in the
++batch metadata key `item_target_refs`.
++
++The calibration vocabulary extends the `assertions.kind` text field without a
++database migration:
++
++- `annotation_gold` stores private, non-injectable operator gold answers under
++  an existing annotation schema version.
++- `annotation_assignment` stores the private composition receipt: deterministic
++  selection, hidden gold refs and digests, randomized item order, rubric, and
++  exact judge identity.
++- `annotation` remains the schema-validated judge label row.
++- `annotation_measure` stores private per-construct agreement, gold accuracy,
++  confidence calibration, and drift products scoped to one annotation batch.
++
++A judge calibration partition is the exact triple `(actor_ref, model_ref,
++execution_context_ref)`. The execution context is a `context-snapshot` ref;
++missing or different context is not pooled. These products are therefore
++queryable offline from `user.db` plus the ordinary `index.db` evidence reads,
++while remaining excluded from context injection.
++
+ ## Tags
+ 
+ Tags support `key:value` notation for namespacing:
+diff --git a/docs/openapi/search.yaml b/docs/openapi/search.yaml
+index 73acb411ff5841bf59bb5d22313c51542a120df6..d081d928d482b2a6652d166b6fb394c1db4b0809 100644
+GIT binary patch
+delta 51
+zcmbQ=$M&I*ZG-Io$z1!nSmV?4b5bTV?ic2YPb@CZOwY?r&6~7egd;vTHL<v~D0Q>Q
+He(n<h5AqaW
+
+delta 14
+Wcmey+$2Px@ZG-Io&3XHoP5=NjNCxfz
+
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index 9360f9fa915b8821111de2dac9d5af5899d78d44..bcdb2bdaaa496abd98e585173da3f92ac934081e 100644
+GIT binary patch
+delta 256
+zcmZpA$<g$RV?z<+^tZbhB`3!-^GuFq6qtPAhtgylCZ5T>OuW<WEE(m&61+^-(#eTA
+znMp;7C7JnodIgnS3P6yPpKPUIWMVS8v0VbJPUgAkW*eq@#>rmwV1do|nFTDSD;YCN
+zOx|F`w^`JNF`LnJ^2eEyn+=vr{$n(oUblqNfBVd(jA5!w<_6OrE@AYTKL0c$+jRTW
+zjN*)j(`%suM}bNwZe&!L?tg}nZ+iB2M$YN|s~AJ4A2`d%J>BjsqrmirP)4@NGejk)
+uKRCxIyd5ZHr!#$PA*1AUhc}Ee(_?=!N=&b_VpN{~;WeYoc8*_+RaO84v09!0
+
+delta 223
+zcmZpA#nJSVV?z<+^a@rc$;tPbc_zm)3QTtRsWjP!iDxn|6Yuo$JVtr21TT~I<`YcC
+zjMKOOW0U}iY>sCUu$X?B56Ckx=G#2ghB2GbWb(%h$;}&<Oa5ato&IkLqyKivWsG5}
+z%x0DbAg=p#`7?}c)Ayfd6lXFrgNqzxG?~7UnMq;#`7?}s(_e3A<ebjGnlW^`!#PIo
+z>HE$y3QP-QWScA@COJLfJfrY-popE$^ha`x64MPhnfRw0yaDRE`xD6hXT_*Iz2FU_
+L%=V67j8#?u!I)6Z
+
+diff --git a/docs/schemas/cli-output/query-unit-envelope.schema.json b/docs/schemas/cli-output/query-unit-envelope.schema.json
+index 17d21c22c5aafc9c04d7fdfced854cd1df99eb0d..eb11fad004e86ca956181a7f6aa7674b91d9ad84 100644
+GIT binary patch
+delta 52
+zcmX@m!8EIrX~PGB$+rZ!SmV?4b5bUs6A<HyPb@CZOwY?r&6|8yK%65!H#M=iv?z7+
+I6M>jw04B8*yZ`_I
+
+delta 14
+VcmbQ$$#kHDX~PGB&0c~5#Q-mc1@Qm?
+
+diff --git a/docs/topology-status.md b/docs/topology-status.md
+index 24a2948fb84ea75f651ecdb84179ae0eb30540ac..8c68f540dbf3bca0092078fbb7959de6d6bfd2c0 100644
+GIT binary patch
+delta 26
+icmca3a7SRnLl#D}$&Xn27)>S@vZ^tfY@We-gb4tP1qoXK
+
+delta 26
+icmca3a7SRnLl#EU$&Xn27>y?vvZ^r}Z=S(=gb4tO;R#p(
+
+diff --git a/polylogue/annotations/__init__.py b/polylogue/annotations/__init__.py
+index 70291810e..638acf0cb 100644
+--- a/polylogue/annotations/__init__.py
++++ b/polylogue/annotations/__init__.py
+@@ -11,10 +11,13 @@ holds:
+   through the existing single write chokepoint.
+ - :mod:`polylogue.annotations.batch` -- immutable source/actor/model/prompt,
+   validation, and count provenance for independent labeling batches.
++- :mod:`polylogue.annotations.calibration` -- private gold authoring, blinded
++  batch composition, exact judge identity, and durable per-construct measures.
+ 
+-The JSONL/CLI/MCP import surface that loops over
+-:func:`polylogue.annotations.write.upsert_annotation_assertion` remains in
+-``polylogue-rxdo.7.2``; this package owns its durable schema/batch contracts.
++The JSONL import route in :mod:`polylogue.annotations.importer` and calibration
++recording both loop over
++:func:`polylogue.annotations.write.upsert_annotation_assertion`; this package
++owns their durable schema, batch, and assertion contracts.
+ """
+ 
+ from __future__ import annotations
+diff --git a/polylogue/annotations/batch.py b/polylogue/annotations/batch.py
+index dfc35db01..4b59d2db4 100644
+--- a/polylogue/annotations/batch.py
++++ b/polylogue/annotations/batch.py
+@@ -18,6 +18,7 @@ from polylogue.core.refs import ObjectRef, normalize_object_ref_text
+ _BATCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+ _SCHEMA_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
+ ANNOTATION_BATCH_PROVENANCE_FORMAT = "polylogue.annotation-batch/v1"
++ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY = "item_target_refs"
+ 
+ 
+ class AnnotationBatchError(ValueError):
+@@ -197,6 +198,14 @@ class AnnotationBatch:
+             "metadata",
+             _document_copy(self.metadata, context="annotation batch metadata"),
+         )
++        # Force validation of heterogeneous item targets at construction time,
++        # before their canonical provenance is frozen.
++        item_target_refs = self.item_target_refs
++        if item_target_refs and len(item_target_refs) != self.valid_count:
++            raise AnnotationBatchError(
++                f"annotation batch metadata.{ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY} count "
++                "must equal valid_count"
++            )
+         object.__setattr__(
+             self,
+             "_canonical_provenance",
+@@ -219,6 +228,37 @@ class AnnotationBatch:
+     def batch_ref(self) -> str:
+         return ObjectRef(kind="annotation-batch", object_id=self.batch_id).format()
+ 
++    @property
++    def item_target_refs(self) -> tuple[str, ...]:
++        """Return item-level targets for a heterogeneous batch, if declared.
++
++        Historical annotation batches label one ``target_ref`` repeatedly. A
++        calibration/import packet may instead use ``target_ref`` as the
++        collection/result-set scope and declare the concrete item targets in
++        immutable metadata. This keeps every label in the existing assertions
++        substrate and every packet in ``annotation_batches`` without a second
++        labels or batches table.
++        """
++
++        raw = self.metadata.get(ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY)
++        if raw is None:
++            return ()
++        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
++            raise AnnotationBatchError(
++                f"annotation batch metadata.{ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY} must be an array of ObjectRefs"
++            )
++        try:
++            normalized = tuple(normalize_object_ref_text(item) for item in raw)
++        except ValueError as exc:
++            raise AnnotationBatchError(
++                f"annotation batch metadata.{ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY} must contain valid ObjectRefs"
++            ) from exc
++        if len(normalized) != len(set(normalized)):
++            raise AnnotationBatchError(
++                f"annotation batch metadata.{ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY} must be unique"
++            )
++        return normalized
++
+     def _provenance_document_from_fields(self) -> JSONDocument:
+         return {
+             "abstained_count": self.abstained_count,
+@@ -259,4 +299,9 @@ class AnnotationBatch:
+         return self._canonical_provenance
+ 
+ 
+-__all__ = ["ANNOTATION_BATCH_PROVENANCE_FORMAT", "AnnotationBatch", "AnnotationBatchError"]
++__all__ = [
++    "ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY",
++    "ANNOTATION_BATCH_PROVENANCE_FORMAT",
++    "AnnotationBatch",
++    "AnnotationBatchError",
++]
+diff --git a/polylogue/annotations/calibration.py b/polylogue/annotations/calibration.py
+new file mode 100644
+index 000000000..32451b89e
+--- /dev/null
++++ b/polylogue/annotations/calibration.py
+@@ -0,0 +1,2442 @@
++"""Blinded gold injection and durable calibration products for annotations.
++
++The annotation substrate deliberately keeps labels in the unified
++``assertions`` table and provenance in ``annotation_batches``. This module adds
++no parallel label, judge, or report store. It introduces three assertion
++vocabularies over that substrate:
++
++``annotation_gold``
++    Operator-authored, immutable gold answers bound to an existing versioned
++    :class:`~polylogue.annotations.schema.AnnotationSchema`.
++``annotation_assignment``
++    A private assignment receipt that records deterministic gold selection,
++    randomized order, and exact judge/context refs. The judge receives a
++    separately shaped :class:`JudgeBatchView`; the receipt is never part of
++    that view.
++``annotation_measure``
++    Deterministic per-construct agreement, gold accuracy, confidence
++    calibration, and drift products scoped to one ``annotation-batch:<id>``.
++
++Every preserve/read/write boundary in this module owns a ``BEGIN IMMEDIATE``
++transaction. This is intentional: the generic assertion upsert currently has a
++known read-before-write TOCTOU hazard (polylogue-41ow), so calibration writes do
++not rely on a caller's timing or on judge goodwill for correctness.
++"""
++
++from __future__ import annotations
++
++import json
++import re
++import sqlite3
++from collections import Counter, defaultdict
++from collections.abc import Callable, Iterator, Mapping, Sequence
++from contextlib import contextmanager
++from dataclasses import dataclass
++from math import isfinite
++from typing import Literal, cast
++
++from polylogue.annotations.batch import ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY, AnnotationBatch
++from polylogue.annotations.schema import (
++    AnnotationField,
++    AnnotationSchema,
++    AnnotationSchemaRegistry,
++    validate_annotation_row,
++)
++from polylogue.annotations.write import assertion_id_for_schema_annotation, upsert_annotation_assertion
++from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
++from polylogue.core.hashing import hash_payload
++from polylogue.core.json import JSONDocument, require_json_document
++from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
++from polylogue.storage.sqlite.archive_tiers.user_annotations import (
++    persist_annotation_batch,
++    persist_annotation_schema,
++    read_annotation_batch,
++    read_durable_annotation_schema,
++)
++from polylogue.storage.sqlite.archive_tiers.user_write import (
++    ArchiveAssertionEnvelope,
++    read_assertion_envelope,
++    upsert_assertion,
++)
++
++ANNOTATION_GOLD_FORMAT = "polylogue.annotation-gold/v1"
++ANNOTATION_ASSIGNMENT_FORMAT = "polylogue.annotation-calibration-assignment/v1"
++ANNOTATION_MEASURE_FORMAT = "polylogue.annotation-calibration-measure/v1"
++ANNOTATION_CALIBRATION_BATCH_FORMAT = "polylogue.annotation-calibration-batch/v1"
++ANNOTATION_MEASURE_ALGORITHM = "polylogue.annotation-calibration-algorithm/v1"
++ANNOTATION_CALIBRATION_AUTHOR_REF = "insight:annotation-calibration@v1"
++ANNOTATION_CALIBRATION_EXECUTION_CONTEXT_KEY = "execution_context_ref"
++ANNOTATION_CALIBRATION_ASSIGNMENT_REF_KEY = "assignment_ref"
++ANNOTATION_CALIBRATION_RUBRIC_REF_KEY = "rubric_ref"
++ANNOTATION_CALIBRATION_GOLD_COUNT_KEY = "gold_count"
++ANNOTATION_CALIBRATION_ORDER_HASH_KEY = "item_order_hash"
++
++MeasurementLevel = Literal["nominal", "interval"]
++TrustState = Literal["eligible", "below_threshold", "drifting", "unknown"]
++
++# Hardcoded independently of the existing blinding constant. A mutation that
++# shrinks either list must fail a frozen-checklist test instead of shrinking the
++# test's own expectations alongside production.
++BASE_BLINDING_MASKED_FIELDS: frozenset[str] = frozenset(
++    {
++        "actor_ref",
++        "arm",
++        "author_kind",
++        "author_ref",
++        "detector_ref",
++        "execution_context_id",
++        "judge_ref",
++        "model",
++        "prior_rank",
++        "prior_score",
++        "provider",
++    }
++)
++CALIBRATION_MASKED_FIELDS: frozenset[str] = frozenset(
++    {
++        *BASE_BLINDING_MASKED_FIELDS,
++        "assignment_ref",
++        "gold_assertion_ref",
++        "gold_label",
++        "gold_set_ref",
++        "is_gold",
++        "prior_judgments",
++        "prior_labels",
++        "seed",
++    }
++)
++
++_CONTEXT_REF_KIND = "context-snapshot"
++_ACTOR_REF_KINDS = frozenset({"agent", "user"})
++_BATCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
++
++
++class AnnotationCalibrationError(ValueError):
++    """Raised when calibration provenance or values fail closed."""
++
++
++@dataclass(frozen=True, slots=True)
++class AnnotationJudgeRefs:
++    """Exact judge partition projected onto existing durable refs.
++
++    This is not a universal judge registry. ``actor_ref`` identifies the
++    durable human/agent actor, ``model_ref`` records the versioned model or the
++    human actor ref for human judgments, and ``execution_context_ref`` is a
++    content-addressed ``context-snapshot`` ref for prompt/tools/runtime/config.
++    Calibration never pools across any of these three refs.
++    """
++
++    actor_ref: str
++    model_ref: str
++    execution_context_ref: str
++
++    def __post_init__(self) -> None:
++        actor_ref = _normalized_ref(self.actor_ref, label="judge actor_ref")
++        model_ref = _normalized_ref(self.model_ref, label="judge model_ref")
++        context_ref = _normalized_ref(
++            self.execution_context_ref,
++            label="judge execution_context_ref",
++            expected_kind=_CONTEXT_REF_KIND,
++        )
++        actor_kind = ObjectRef.parse(actor_ref).kind
++        if actor_kind not in _ACTOR_REF_KINDS:
++            raise AnnotationCalibrationError("judge actor_ref must use the 'agent' or 'user' ObjectRef kind")
++        object.__setattr__(self, "actor_ref", actor_ref)
++        object.__setattr__(self, "model_ref", model_ref)
++        object.__setattr__(self, "execution_context_ref", context_ref)
++
++    @property
++    def key(self) -> tuple[str, str, str]:
++        return (self.actor_ref, self.model_ref, self.execution_context_ref)
++
++    def as_document(self) -> JSONDocument:
++        return {
++            "actor_ref": self.actor_ref,
++            "execution_context_ref": self.execution_context_ref,
++            "model_ref": self.model_ref,
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class GoldAnnotationInput:
++    """One operator-authored gold item under an existing construct schema."""
++
++    gold_key: str
++    target_ref: str
++    label: Mapping[str, object]
++    evidence_refs: tuple[str, ...]
++    strata: Mapping[str, str]
++    rationale: str | None = None
++
++    def __post_init__(self) -> None:
++        if not isinstance(self.gold_key, str) or not self.gold_key.strip():
++            raise AnnotationCalibrationError("gold_key cannot be empty")
++        object.__setattr__(self, "gold_key", self.gold_key.strip())
++        if self.rationale is not None and not isinstance(self.rationale, str):
++            raise AnnotationCalibrationError("gold rationale must be a string or null")
++        object.__setattr__(self, "target_ref", _normalized_ref(self.target_ref, label="gold target_ref"))
++        object.__setattr__(
++            self,
++            "evidence_refs",
++            tuple(normalize_public_ref_text(ref) for ref in self.evidence_refs),
++        )
++        if not self.strata:
++            raise AnnotationCalibrationError("gold item must declare at least one stratum")
++        normalized_strata: dict[str, str] = {}
++        for raw_key, raw_value in self.strata.items():
++            key = str(raw_key).strip()
++            value = str(raw_value).strip()
++            if not key or not value:
++                raise AnnotationCalibrationError("gold strata keys and values must be non-empty strings")
++            if key in normalized_strata:
++                raise AnnotationCalibrationError(f"duplicate gold stratum key {key!r}")
++            normalized_strata[key] = value
++        object.__setattr__(self, "strata", normalized_strata)
++        object.__setattr__(self, "label", _detached_document(self.label, context="gold label"))
++
++
++@dataclass(frozen=True, slots=True)
++class GoldStratumQuota:
++    """Deterministic quota over exact gold-item stratum key/value filters."""
++
++    filters: Mapping[str, str]
++    count: int
++
++    def __post_init__(self) -> None:
++        if isinstance(self.count, bool) or not isinstance(self.count, int) or self.count < 1:
++            raise AnnotationCalibrationError("gold stratum quota count must be >= 1")
++        if not self.filters:
++            raise AnnotationCalibrationError("gold stratum quota must declare at least one filter")
++        normalized: dict[str, str] = {}
++        for raw_key, raw_value in self.filters.items():
++            key = str(raw_key).strip()
++            value = str(raw_value).strip()
++            if not key or not value:
++                raise AnnotationCalibrationError("gold stratum filters must be non-empty strings")
++            normalized[key] = value
++        object.__setattr__(self, "filters", normalized)
++
++
++@dataclass(frozen=True, slots=True)
++class CalibrationSourceItem:
++    """Archive material admitted to the exact judge-facing projection."""
++
++    target_ref: str
++    evidence_refs: tuple[str, ...]
++    presentation: Mapping[str, object]
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "target_ref", _normalized_ref(self.target_ref, label="item target_ref"))
++        object.__setattr__(
++            self,
++            "evidence_refs",
++            tuple(normalize_public_ref_text(ref) for ref in self.evidence_refs),
++        )
++        presentation = _detached_document(self.presentation, context="calibration item presentation")
++        leaked_keys = _recursive_key_intersection(presentation, CALIBRATION_MASKED_FIELDS)
++        if leaked_keys:
++            raise AnnotationCalibrationError(
++                f"calibration item presentation contains forbidden provenance keys: {sorted(leaked_keys)}"
++            )
++        object.__setattr__(self, "presentation", presentation)
++
++
++@dataclass(frozen=True, slots=True)
++class CalibrationCompositionRequest:
++    """Complete deterministic request for one blinded multi-item assignment."""
++
++    batch_id: str
++    schema_id: str
++    schema_version: int
++    source_result_ref: str
++    judge: AnnotationJudgeRefs
++    prompt_ref: str
++    rubric_ref: str
++    ordinary_items: tuple[CalibrationSourceItem, ...]
++    gold_set_ref: str
++    gold_count: int = 0
++    gold_strata: tuple[GoldStratumQuota, ...] = ()
++    seed: str = ""
++    created_at_ms: int = 0
++
++    def __post_init__(self) -> None:
++        if not isinstance(self.batch_id, str) or not _BATCH_ID_RE.fullmatch(self.batch_id):
++            raise AnnotationCalibrationError("batch_id must form a stable annotation-batch ObjectRef")
++        if (
++            not isinstance(self.schema_id, str)
++            or not self.schema_id.strip()
++            or isinstance(self.schema_version, bool)
++            or not isinstance(self.schema_version, int)
++            or self.schema_version < 1
++        ):
++            raise AnnotationCalibrationError("schema identity must be schema_id plus version >= 1")
++        if isinstance(self.gold_count, bool) or not isinstance(self.gold_count, int) or self.gold_count < 0:
++            raise AnnotationCalibrationError("gold_count cannot be negative")
++        if (
++            isinstance(self.created_at_ms, bool)
++            or not isinstance(self.created_at_ms, int)
++            or self.created_at_ms < 0
++        ):
++            raise AnnotationCalibrationError("created_at_ms cannot be negative")
++        if not isinstance(self.seed, str) or not self.seed:
++            raise AnnotationCalibrationError("composition seed must be explicit")
++        object.__setattr__(
++            self,
++            "source_result_ref",
++            _normalized_ref(self.source_result_ref, label="source_result_ref", expected_kind="result-set"),
++        )
++        object.__setattr__(self, "prompt_ref", _normalized_ref(self.prompt_ref, label="prompt_ref"))
++        object.__setattr__(self, "rubric_ref", _normalized_ref(self.rubric_ref, label="rubric_ref"))
++        object.__setattr__(self, "gold_set_ref", _normalized_ref(self.gold_set_ref, label="gold_set_ref"))
++        ordinary_targets = [item.target_ref for item in self.ordinary_items]
++        if len(ordinary_targets) != len(set(ordinary_targets)):
++            raise AnnotationCalibrationError("ordinary calibration item target_refs must be unique")
++        quota_total = sum(quota.count for quota in self.gold_strata)
++        if self.gold_strata and self.gold_count not in (0, quota_total):
++            raise AnnotationCalibrationError("gold_count must be zero or equal the sum of gold_strata quotas")
++        if not self.ordinary_items and max(self.gold_count, quota_total) == 0:
++            raise AnnotationCalibrationError("calibration assignment cannot be empty")
++
++    @property
++    def requested_gold_count(self) -> int:
++        return sum(quota.count for quota in self.gold_strata) if self.gold_strata else self.gold_count
++
++    @property
++    def batch_ref(self) -> str:
++        return f"annotation-batch:{self.batch_id}"
++
++
++@dataclass(frozen=True, slots=True)
++class JudgeItemView:
++    """Only item fields exposed to a judge before a verdict is recorded."""
++
++    item_id: str
++    target_ref: str
++    evidence_refs: tuple[str, ...]
++    presentation: JSONDocument
++
++    def as_document(self) -> JSONDocument:
++        return {
++            "evidence_refs": list(self.evidence_refs),
++            "item_id": self.item_id,
++            "presentation": self.presentation,
++            "target_ref": self.target_ref,
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class JudgeBatchView:
++    """The exact pre-verdict surface: no labels, authors, gold marks, or scores."""
++
++    batch_ref: str
++    qualified_schema_id: str
++    rubric_ref: str
++    items: tuple[JudgeItemView, ...]
++    item_order_hash: str
++
++    def as_document(self) -> JSONDocument:
++        return {
++            "batch_ref": self.batch_ref,
++            "item_order_hash": self.item_order_hash,
++            "items": [item.as_document() for item in self.items],
++            "qualified_schema_id": self.qualified_schema_id,
++            "rubric_ref": self.rubric_ref,
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class ComposedCalibrationBatch:
++    """Private assignment ref plus the separately shaped judge-facing view."""
++
++    assignment_ref: str
++    judge_view: JudgeBatchView
++
++
++@dataclass(frozen=True, slots=True)
++class CalibrationLabelInput:
++    """One judge response keyed only by opaque assignment item id."""
++
++    item_id: str
++    value: Mapping[str, object]
++    confidence: float | None = None
++    body_text: str | None = None
++
++    def __post_init__(self) -> None:
++        if not self.item_id.strip():
++            raise AnnotationCalibrationError("calibration label item_id cannot be empty")
++        if self.confidence is not None:
++            if (
++                isinstance(self.confidence, bool)
++                or not isinstance(self.confidence, (int, float))
++                or not isfinite(float(self.confidence))
++                or not 0.0 <= float(self.confidence) <= 1.0
++            ):
++                raise AnnotationCalibrationError("calibration label confidence must be finite and in [0, 1]")
++            object.__setattr__(self, "confidence", float(self.confidence))
++        object.__setattr__(self, "value", _detached_document(self.value, context="calibration label value"))
++
++
++@dataclass(frozen=True, slots=True)
++class ReliabilityBucket:
++    lower: float
++    upper: float
++    count: int
++    mean_confidence: float | None
++    empirical_accuracy: float | None
++    gap: float | None
++
++    def as_document(self) -> JSONDocument:
++        return {
++            "count": self.count,
++            "empirical_accuracy": self.empirical_accuracy,
++            "gap": self.gap,
++            "lower": self.lower,
++            "mean_confidence": self.mean_confidence,
++            "upper": self.upper,
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class JudgeTrustSummary:
++    """Latest exact-context trust decision for one construct field."""
++
++    judge: AnnotationJudgeRefs
++    batch_ref: str | None
++    qualified_schema_id: str
++    construct: str
++    state: TrustState
++    reasons: tuple[str, ...]
++    n_gold: int
++    n_gold_assigned: int
++    n_confident_gold: int
++    gold_abstention_rate: float | None
++    gold_unscored_rate: float | None
++    accuracy: float | None
++    brier_score: float | None
++    expected_calibration_error: float | None
++    drift_alert: bool
++    measured_at_ms: int | None
++
++
++@dataclass(frozen=True, slots=True)
++class _GoldRecord:
++    assertion_ref: str
++    gold_key: str
++    target_ref: str
++    evidence_refs: tuple[str, ...]
++    label: JSONDocument
++    strata: JSONDocument
++    content_digest: str
++
++
++@dataclass(frozen=True, slots=True)
++class _AssignmentItem:
++    item_id: str
++    target_ref: str
++    evidence_refs: tuple[str, ...]
++    presentation_digest: str
++    is_gold: bool
++    gold_assertion_ref: str | None
++    gold_assertion_digest: str | None
++
++
++@dataclass(frozen=True, slots=True)
++class _Assignment:
++    assertion: ArchiveAssertionEnvelope
++    batch_ref: str
++    qualified_schema_id: str
++    source_result_ref: str
++    judge: AnnotationJudgeRefs
++    prompt_ref: str
++    rubric_ref: str
++    gold_set_ref: str
++    seed: str
++    items: tuple[_AssignmentItem, ...]
++    receipt: _BlindingReceipt
++
++
++@dataclass(frozen=True, slots=True)
++class _BatchObservation:
++    batch: AnnotationBatch
++    assignment: _Assignment
++    labels_by_target: Mapping[str, ArchiveAssertionEnvelope]
++
++
++@dataclass(frozen=True, slots=True)
++class _BlindingReceipt:
++    item_order_hash: str
++    masked_fields: tuple[str, ...]
++    rubric_ref: str
++    sealed_at_ms: int
++
++
++@dataclass(frozen=True, slots=True)
++class _ConstructGoldMetrics:
++    correct_count: int
++    n_assigned: int
++    n_scored: int
++    n_abstained: int
++    n_missing: int
++    outcomes: tuple[tuple[float, int], ...]
++    observed_values: tuple[object, ...]
++
++    @property
++    def accuracy(self) -> float | None:
++        return self.correct_count / self.n_scored if self.n_scored else None
++
++    @property
++    def abstention_rate(self) -> float | None:
++        return self.n_abstained / self.n_assigned if self.n_assigned else None
++
++    @property
++    def unscored_rate(self) -> float | None:
++        return (self.n_assigned - self.n_scored) / self.n_assigned if self.n_assigned else None
++
++
++ItemLoader = Callable[[str, tuple[str, ...]], CalibrationSourceItem]
++
++
++def _normalized_ref(value: str, *, label: str, expected_kind: str | None = None) -> str:
++    try:
++        normalized = normalize_object_ref_text(value)
++        parsed = ObjectRef.parse(normalized)
++    except ValueError as exc:
++        raise AnnotationCalibrationError(f"{label} must be a valid ObjectRef") from exc
++    if expected_kind is not None and parsed.kind != expected_kind:
++        raise AnnotationCalibrationError(f"{label} must use the {expected_kind!r} ObjectRef kind")
++    return normalized
++
++
++def _detached_document(value: Mapping[str, object], *, context: str) -> JSONDocument:
++    try:
++        encoded = json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++        return require_json_document(json.loads(encoded), context=context)
++    except (TypeError, ValueError, UnicodeEncodeError) as exc:
++        raise AnnotationCalibrationError(f"{context} must be a finite JSON object") from exc
++
++
++def _canonical_json(value: object) -> str:
++    return json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++
++
++def _normalized_provenance_key(value: object) -> str:
++    # Compare a separator-free, case-folded fingerprint so common JSON naming
++    # variants (``prior_labels``, ``Prior-Labels``, ``priorLabels``) cannot
++    # bypass the composition boundary. Matching only exact snake_case keys
++    # would make the recursive defense materially weaker than its contract.
++    return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
++
++
++def _recursive_key_intersection(value: object, forbidden: frozenset[str]) -> frozenset[str]:
++    found: set[str] = set()
++    forbidden_fingerprints = {_normalized_provenance_key(item) for item in forbidden}
++    if isinstance(value, Mapping):
++        for raw_key, item in value.items():
++            key = str(raw_key)
++            if _normalized_provenance_key(key) in forbidden_fingerprints:
++                found.add(key)
++            found.update(_recursive_key_intersection(item, forbidden))
++    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
++        for item in value:
++            found.update(_recursive_key_intersection(item, forbidden))
++    return frozenset(found)
++
++
++@contextmanager
++def _immediate_transaction(conn: sqlite3.Connection) -> Iterator[None]:
++    """Own one preserve/write transaction; nested/deferred callers fail closed."""
++
++    if conn.in_transaction:
++        raise AnnotationCalibrationError("calibration writes must start outside an existing transaction")
++    conn.execute("BEGIN IMMEDIATE")
++    try:
++        yield
++    except BaseException:
++        conn.rollback()
++        raise
++    else:
++        conn.commit()
++
++
++def _gold_assertion_id(*, gold_set_ref: str, schema_qualified_id: str, gold_key: str, target_ref: str) -> str:
++    digest = hash_payload(
++        {
++            "gold_key": gold_key,
++            "gold_set_ref": gold_set_ref,
++            "schema": schema_qualified_id,
++            "target_ref": target_ref,
++        }
++    )
++    return f"assertion-annotation-gold:{digest}"
++
++
++def _assignment_assertion_id(batch_ref: str) -> str:
++    return f"assertion-annotation-assignment:{hash_payload({'batch_ref': batch_ref})}"
++
++
++def _measure_assertion_id(*, batch_ref: str, construct: str, input_digest: str) -> str:
++    digest = hash_payload(
++        {
++            "batch_ref": batch_ref,
++            "construct": construct,
++            "input": input_digest,
++        }
++    )
++    return f"assertion-annotation-measure:{digest}"
++
++
++def _assert_immutable_replay(
++    existing: ArchiveAssertionEnvelope,
++    *,
++    candidate: Mapping[str, object],
++    allowed_statuses: frozenset[AssertionStatus] = frozenset({AssertionStatus.ACTIVE}),
++) -> None:
++    stored = {
++        "author_kind": existing.author_kind,
++        "author_ref": existing.author_ref,
++        "body_text": existing.body_text,
++        "confidence": existing.confidence,
++        "evidence_refs": existing.evidence_refs,
++        "key": existing.key,
++        "kind": existing.kind.value,
++        "scope_ref": existing.scope_ref,
++        "target_ref": existing.target_ref,
++        "value": existing.value,
++    }
++    if _canonical_json(stored) != _canonical_json(candidate):
++        raise AnnotationCalibrationError(
++            f"assertion {existing.assertion_id!r} already exists with incompatible provenance"
++        )
++    if existing.status not in allowed_statuses:
++        raise AnnotationCalibrationError(
++            f"assertion {existing.assertion_id!r} has unsupported status {existing.status.value!r}"
++        )
++    if existing.visibility is not AssertionVisibility.PRIVATE:
++        raise AnnotationCalibrationError(f"assertion {existing.assertion_id!r} must remain private")
++    if existing.context_policy.get("inject") is not False:
++        raise AnnotationCalibrationError(f"assertion {existing.assertion_id!r} must remain non-injectable")
++    if existing.context_policy.get("promotion_required") is not False:
++        raise AnnotationCalibrationError(
++            f"assertion {existing.assertion_id!r} must not enter the promotion queue"
++        )
++
++
++def _gold_content_digest(envelope: ArchiveAssertionEnvelope) -> str:
++    return hash_payload(
++        {
++            "assertion_ref": f"assertion:{envelope.assertion_id}",
++            "author_kind": envelope.author_kind,
++            "author_ref": envelope.author_ref,
++            "body_text": envelope.body_text,
++            "evidence_refs": list(envelope.evidence_refs),
++            "key": envelope.key,
++            "scope_ref": envelope.scope_ref,
++            "target_ref": envelope.target_ref,
++            "value": envelope.value,
++        }
++    )
++
++
++def _validated_gold_record(
++    envelope: ArchiveAssertionEnvelope,
++    *,
++    schema: AnnotationSchema,
++    gold_set_ref: str,
++) -> _GoldRecord:
++    if envelope.kind is not AssertionKind.ANNOTATION_GOLD:
++        raise AnnotationCalibrationError(f"assertion {envelope.assertion_id!r} is not annotation gold")
++    if envelope.scope_ref != gold_set_ref:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has the wrong gold-set scope")
++    if envelope.status not in {AssertionStatus.ACTIVE, AssertionStatus.ACCEPTED}:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} is not active")
++    if envelope.visibility is not AssertionVisibility.PRIVATE or envelope.context_policy.get("inject") is not False:
++        raise AnnotationCalibrationError(
++            f"gold assertion {envelope.assertion_id!r} must remain private and non-injectable"
++        )
++    if envelope.context_policy.get("promotion_required") is not False:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} must not require promotion")
++    if envelope.author_kind != "user" or envelope.author_ref is None:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} must be user-authored")
++    try:
++        if ObjectRef.parse(envelope.author_ref).kind != "user":
++            raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has a non-user author ref")
++    except ValueError as exc:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has an invalid author ref") from exc
++    if not isinstance(envelope.value, dict):
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has a malformed payload")
++    if envelope.value.get("format") != ANNOTATION_GOLD_FORMAT:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has an unsupported format")
++    if envelope.value.get("_schema") != schema.qualified_id:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} uses a different schema version")
++    if envelope.value.get("gold_set_ref") != gold_set_ref:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} payload has the wrong gold set")
++    gold_key = envelope.value.get("gold_key")
++    if not isinstance(gold_key, str) or not gold_key or envelope.key != gold_key:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has an invalid gold key")
++    expected_id = _gold_assertion_id(
++        gold_set_ref=gold_set_ref,
++        schema_qualified_id=schema.qualified_id,
++        gold_key=gold_key,
++        target_ref=envelope.target_ref,
++    )
++    if envelope.assertion_id != expected_id:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has a non-canonical identity")
++    label = envelope.value.get("label")
++    strata = envelope.value.get("strata")
++    if not isinstance(label, dict) or not isinstance(strata, dict) or not strata:
++        raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has malformed label/strata")
++    errors = validate_annotation_row(
++        schema,
++        target_ref=envelope.target_ref,
++        value=label,
++        evidence_refs=envelope.evidence_refs,
++    )
++    if errors:
++        raise AnnotationCalibrationError(
++            f"gold assertion {envelope.assertion_id!r} violates {schema.qualified_id}: {errors}"
++        )
++    return _GoldRecord(
++        assertion_ref=f"assertion:{envelope.assertion_id}",
++        gold_key=gold_key,
++        target_ref=envelope.target_ref,
++        evidence_refs=tuple(envelope.evidence_refs),
++        label=require_json_document(label, context="stored gold label"),
++        strata=require_json_document(strata, context="stored gold strata"),
++        content_digest=_gold_content_digest(envelope),
++    )
++
++
++def author_gold_annotations(
++    conn: sqlite3.Connection,
++    *,
++    schema: AnnotationSchema,
++    registry: AnnotationSchemaRegistry,
++    gold_set_ref: str,
++    items: Sequence[GoldAnnotationInput],
++    author_ref: str = "user:local",
++    now_ms: int,
++) -> tuple[ArchiveAssertionEnvelope, ...]:
++    """Persist immutable operator gold rows under one immediate transaction."""
++
++    if isinstance(now_ms, bool) or not isinstance(now_ms, int) or now_ms < 0:
++        raise AnnotationCalibrationError("now_ms must be a non-negative integer")
++    registered = registry.require_active(schema)
++    normalized_gold_set_ref = _normalized_ref(gold_set_ref, label="gold_set_ref")
++    normalized_author_ref = _normalized_ref(author_ref, label="gold author_ref", expected_kind="user")
++    if not items:
++        raise AnnotationCalibrationError("gold authoring requires at least one item")
++    if len({item.gold_key for item in items}) != len(items):
++        raise AnnotationCalibrationError("gold keys must be unique within one authoring call")
++    if len({item.target_ref for item in items}) != len(items):
++        raise AnnotationCalibrationError("gold target_refs must be unique within one authoring call")
++
++    envelopes: list[ArchiveAssertionEnvelope] = []
++    with _immediate_transaction(conn):
++        persist_annotation_schema(conn, registered, registered_at_ms=now_ms)
++        existing_records = _gold_records(
++            conn,
++            schema=registered,
++            gold_set_ref=normalized_gold_set_ref,
++        )
++        existing_by_key = {record.gold_key: record for record in existing_records}
++        existing_by_target = {record.target_ref: record for record in existing_records}
++        for item in items:
++            expected_assertion_id = _gold_assertion_id(
++                gold_set_ref=normalized_gold_set_ref,
++                schema_qualified_id=registered.qualified_id,
++                gold_key=item.gold_key,
++                target_ref=item.target_ref,
++            )
++            expected_ref = f"assertion:{expected_assertion_id}"
++            key_collision = existing_by_key.get(item.gold_key)
++            if key_collision is not None and key_collision.assertion_ref != expected_ref:
++                raise AnnotationCalibrationError(
++                    f"gold key {item.gold_key!r} already identifies {key_collision.target_ref!r}"
++                )
++            target_collision = existing_by_target.get(item.target_ref)
++            if target_collision is not None and target_collision.assertion_ref != expected_ref:
++                raise AnnotationCalibrationError(
++                    f"gold target {item.target_ref!r} already uses key {target_collision.gold_key!r}"
++                )
++            errors = validate_annotation_row(
++                registered,
++                target_ref=item.target_ref,
++                value=item.label,
++                evidence_refs=item.evidence_refs,
++            )
++            if errors:
++                raise AnnotationCalibrationError(
++                    f"gold item {item.gold_key!r} violates {registered.qualified_id}: {errors}"
++                )
++            value: JSONDocument = {
++                "_schema": registered.qualified_id,
++                "format": ANNOTATION_GOLD_FORMAT,
++                "gold_key": item.gold_key,
++                "gold_set_ref": normalized_gold_set_ref,
++                "label": cast(JSONDocument, item.label),
++                "strata": cast(JSONDocument, item.strata),
++            }
++            if item.rationale is not None:
++                value["rationale"] = item.rationale
++            assertion_id = _gold_assertion_id(
++                gold_set_ref=normalized_gold_set_ref,
++                schema_qualified_id=registered.qualified_id,
++                gold_key=item.gold_key,
++                target_ref=item.target_ref,
++            )
++            candidate = {
++                "author_kind": "user",
++                "author_ref": normalized_author_ref,
++                "body_text": item.rationale,
++                "confidence": None,
++                "evidence_refs": list(item.evidence_refs),
++                "key": item.gold_key,
++                "kind": AssertionKind.ANNOTATION_GOLD.value,
++                "scope_ref": normalized_gold_set_ref,
++                "target_ref": item.target_ref,
++                "value": value,
++            }
++            existing = read_assertion_envelope(conn, assertion_id)
++            if existing is not None:
++                _assert_immutable_replay(
++                    existing,
++                    candidate=candidate,
++                    allowed_statuses=frozenset({AssertionStatus.ACTIVE, AssertionStatus.ACCEPTED}),
++                )
++                envelopes.append(existing)
++                continue
++            envelopes.append(
++                upsert_assertion(
++                    conn,
++                    assertion_id=assertion_id,
++                    scope_ref=normalized_gold_set_ref,
++                    target_ref=item.target_ref,
++                    key=item.gold_key,
++                    kind=AssertionKind.ANNOTATION_GOLD,
++                    value=value,
++                    body_text=item.rationale,
++                    author_ref=normalized_author_ref,
++                    author_kind="user",
++                    evidence_refs=item.evidence_refs,
++                    status=AssertionStatus.ACTIVE,
++                    visibility=AssertionVisibility.PRIVATE,
++                    context_policy={"inject": False, "promotion_required": False},
++                    now_ms=now_ms,
++                )
++            )
++    return tuple(envelopes)
++
++
++def _gold_records(
++    conn: sqlite3.Connection,
++    *,
++    schema: AnnotationSchema,
++    gold_set_ref: str,
++) -> tuple[_GoldRecord, ...]:
++    records: list[_GoldRecord] = []
++    rows = conn.execute(
++        """
++        SELECT assertion_id
++        FROM assertions
++        WHERE kind = ?
++          AND scope_ref = ?
++          AND status IN (?, ?)
++        ORDER BY assertion_id
++        """,
++        (
++            AssertionKind.ANNOTATION_GOLD.value,
++            gold_set_ref,
++            AssertionStatus.ACTIVE.value,
++            AssertionStatus.ACCEPTED.value,
++        ),
++    ).fetchall()
++    by_key: dict[str, _GoldRecord] = {}
++    by_target: dict[str, _GoldRecord] = {}
++    for row in rows:
++        envelope = read_assertion_envelope(conn, str(row[0]))
++        if envelope is None:
++            raise AnnotationCalibrationError(f"gold set {gold_set_ref!r} references a missing assertion")
++        if not isinstance(envelope.value, dict):
++            raise AnnotationCalibrationError(f"gold assertion {envelope.assertion_id!r} has a malformed payload")
++        if envelope.value.get("_schema") != schema.qualified_id:
++            continue
++        record = _validated_gold_record(envelope, schema=schema, gold_set_ref=gold_set_ref)
++        previous_key = by_key.get(record.gold_key)
++        if previous_key is not None and previous_key.assertion_ref != record.assertion_ref:
++            raise AnnotationCalibrationError(
++                f"gold set {gold_set_ref!r} has duplicate key {record.gold_key!r} for {schema.qualified_id}"
++            )
++        previous_target = by_target.get(record.target_ref)
++        if previous_target is not None and previous_target.assertion_ref != record.assertion_ref:
++            raise AnnotationCalibrationError(
++                f"gold set {gold_set_ref!r} has duplicate target {record.target_ref!r} for {schema.qualified_id}"
++            )
++        by_key[record.gold_key] = record
++        by_target[record.target_ref] = record
++        records.append(record)
++    return tuple(records)
++
++
++def _selection_rank(
++    request: CalibrationCompositionRequest,
++    *,
++    phase: str,
++    identity: str,
++) -> str:
++    return hash_payload(
++        {
++            "batch_ref": request.batch_ref,
++            "identity": identity,
++            "phase": phase,
++            "seed": request.seed,
++        }
++    )
++
++
++def _select_gold(
++    records: Sequence[_GoldRecord],
++    *,
++    request: CalibrationCompositionRequest,
++) -> tuple[_GoldRecord, ...]:
++    ordinary_targets = {item.target_ref for item in request.ordinary_items}
++    available = [record for record in records if record.target_ref not in ordinary_targets]
++    selected: list[_GoldRecord] = []
++    selected_refs: set[str] = set()
++
++    if request.gold_strata:
++        for quota_index, quota in enumerate(request.gold_strata):
++            matches = [
++                record
++                for record in available
++                if record.assertion_ref not in selected_refs
++                and all(record.strata.get(key) == value for key, value in quota.filters.items())
++            ]
++            phase = f"gold-stratum:{quota_index}:{_canonical_json(dict(quota.filters))}"
++            matches.sort(
++                key=lambda record, selection_phase=phase: (
++                    _selection_rank(request, phase=selection_phase, identity=record.assertion_ref),
++                    record.assertion_ref,
++                )
++            )
++            if len(matches) < quota.count:
++                raise AnnotationCalibrationError(
++                    f"gold stratum {dict(quota.filters)!r} requested {quota.count}, only {len(matches)} available"
++                )
++            for record in matches[: quota.count]:
++                selected.append(record)
++                selected_refs.add(record.assertion_ref)
++    else:
++        available.sort(
++            key=lambda record: (
++                _selection_rank(request, phase="gold-unstratified", identity=record.assertion_ref),
++                record.assertion_ref,
++            )
++        )
++        if len(available) < request.gold_count:
++            raise AnnotationCalibrationError(
++                f"gold_count requested {request.gold_count}, only {len(available)} non-overlapping gold items available"
++            )
++        selected.extend(available[: request.gold_count])
++
++    if len({record.target_ref for record in selected}) != len(selected):
++        raise AnnotationCalibrationError("selected gold items must have unique target_refs")
++    return tuple(selected)
++
++
++def _item_id(*, batch_ref: str, target_ref: str) -> str:
++    return f"item-{hash_payload({'batch_ref': batch_ref, 'target_ref': target_ref})[:24]}"
++
++
++def compose_calibration_batch(
++    conn: sqlite3.Connection,
++    *,
++    request: CalibrationCompositionRequest,
++    item_loader: ItemLoader,
++) -> ComposedCalibrationBatch:
++    """Select/inject gold and persist a private receipt, returning only a blind view.
++
++    The only assertion vocabulary read for selection is ``annotation_gold``.
++    Existing ``annotation`` labels and ``judgment`` rows are never joined into
++    the source records. The judge-facing DTO is constructed from explicit
++    fields after :func:`blind_items` and a recursive forbidden-key check. Gold
++    selection, item loading, receipt construction, and preserve/write execute
++    under one ``BEGIN IMMEDIATE`` transaction so the assignment cannot bind a
++    gold snapshot different from the one it selected.
++    """
++
++    from polylogue.insights.judgment.blinding import (
++        DEFAULT_MASKED_PROVENANCE_FIELDS,
++        assert_no_leak,
++        blind_items,
++    )
++
++    with _immediate_transaction(conn):
++        durable_schema = read_durable_annotation_schema(conn, request.schema_id, request.schema_version)
++        if durable_schema is None:
++            raise AnnotationCalibrationError(
++                f"unknown durable annotation schema {request.schema_id}@v{request.schema_version}"
++            )
++        schema = durable_schema.schema
++        gold_records = _gold_records(
++            conn,
++            schema=schema,
++            gold_set_ref=request.gold_set_ref,
++        )
++        selected_gold = _select_gold(gold_records, request=request)
++
++        source_items: list[tuple[CalibrationSourceItem, _GoldRecord | None]] = [
++            (item, None) for item in request.ordinary_items
++        ]
++        for gold in selected_gold:
++            loaded = item_loader(gold.target_ref, gold.evidence_refs)
++            if loaded.target_ref != gold.target_ref:
++                raise AnnotationCalibrationError("gold item loader changed target_ref")
++            if tuple(loaded.evidence_refs) != tuple(gold.evidence_refs):
++                raise AnnotationCalibrationError("gold item loader changed evidence_refs")
++            source_items.append((loaded, gold))
++        # A batch is set-valued before its deliberately randomized judge order.
++        # Canonicalizing the source set makes byte-identical replays independent
++        # of a caller's incidental ordinary-item sequence order.
++        source_items.sort(key=lambda pair: pair[0].target_ref)
++
++        incompatible_targets = [
++            item.target_ref for item, _ in source_items if not schema.accepts_target_kind(item.target_ref)
++        ]
++        if incompatible_targets:
++            raise AnnotationCalibrationError(
++                f"calibration item targets {incompatible_targets!r} are incompatible with {schema.qualified_id}"
++            )
++
++        target_refs = [item.target_ref for item, _ in source_items]
++        if len(target_refs) != len(set(target_refs)):
++            raise AnnotationCalibrationError("ordinary and selected gold target_refs must be disjoint")
++
++        raw_records: list[JSONDocument] = []
++        internal_items: list[_AssignmentItem] = []
++        for item, gold in source_items:
++            item_id = _item_id(batch_ref=request.batch_ref, target_ref=item.target_ref)
++            record: JSONDocument = {
++                "actor_ref": request.judge.actor_ref,
++                "assignment_ref": f"assertion:{_assignment_assertion_id(request.batch_ref)}",
++                "evidence_refs": list(item.evidence_refs),
++                "execution_context_id": request.judge.execution_context_ref,
++                "gold_assertion_ref": gold.assertion_ref if gold is not None else None,
++                "gold_label": gold.label if gold is not None else None,
++                "gold_set_ref": request.gold_set_ref,
++                "is_gold": gold is not None,
++                "item_id": item_id,
++                "model": request.judge.model_ref,
++                "presentation": cast(JSONDocument, item.presentation),
++                "target_ref": item.target_ref,
++            }
++            raw_records.append(record)
++            internal_items.append(
++                _AssignmentItem(
++                    item_id=item_id,
++                    target_ref=item.target_ref,
++                    evidence_refs=item.evidence_refs,
++                    presentation_digest=hash_payload(item.presentation),
++                    is_gold=gold is not None,
++                    gold_assertion_ref=gold.assertion_ref if gold is not None else None,
++                    gold_assertion_digest=gold.content_digest if gold is not None else None,
++                )
++            )
++
++        source_item_ids = [item.item_id for item in internal_items]
++        order = sorted(
++            range(len(raw_records)),
++            key=lambda index: (
++                _selection_rank(
++                    request,
++                    phase="judge-order",
++                    identity=internal_items[index].item_id,
++                ),
++                internal_items[index].item_id,
++            ),
++        )
++        blinded, receipt = blind_items(
++            raw_records,
++            order=order,
++            rubric_ref=request.rubric_ref,
++            sealed_at_ms=request.created_at_ms,
++            extra_masked_fields=tuple(CALIBRATION_MASKED_FIELDS - DEFAULT_MASKED_PROVENANCE_FIELDS),
++        )
++        assert_no_leak(blinded, masked_fields=CALIBRATION_MASKED_FIELDS)
++
++        ordered_internal = tuple(internal_items[index] for index in order)
++        view_items: list[JudgeItemView] = []
++        for item in blinded:
++            leaked_keys = _recursive_key_intersection(item.visible_fields, CALIBRATION_MASKED_FIELDS)
++            if leaked_keys:
++                raise AnnotationCalibrationError(f"blinded judge projection leaked keys: {sorted(leaked_keys)}")
++            visible = item.visible_fields
++            item_id = visible.get("item_id")
++            target_ref = visible.get("target_ref")
++            presentation = visible.get("presentation")
++            if not isinstance(item_id, str) or not isinstance(target_ref, str) or not isinstance(presentation, dict):
++                raise AnnotationCalibrationError("blinded judge projection lost a required field")
++            view_items.append(
++                JudgeItemView(
++                    item_id=item_id,
++                    target_ref=target_ref,
++                    evidence_refs=item.evidence_refs,
++                    presentation=require_json_document(presentation, context="judge item presentation"),
++                )
++            )
++
++        assignment_value: JSONDocument = {
++            "batch_ref": request.batch_ref,
++            "format": ANNOTATION_ASSIGNMENT_FORMAT,
++            "gold_count": len(selected_gold),
++            "gold_set_ref": request.gold_set_ref,
++            "item_order_hash": receipt.item_order_hash,
++            "items": [
++                {
++                    "evidence_refs": list(item.evidence_refs),
++                    "gold_assertion_digest": item.gold_assertion_digest,
++                    "gold_assertion_ref": item.gold_assertion_ref,
++                    "is_gold": item.is_gold,
++                    "item_id": item.item_id,
++                    "presentation_digest": item.presentation_digest,
++                    "target_ref": item.target_ref,
++                }
++                for item in ordered_internal
++            ],
++            "judge": request.judge.as_document(),
++            "masked_fields": list(receipt.masked_fields),
++            "prompt_ref": request.prompt_ref,
++            "qualified_schema_id": schema.qualified_id,
++            "rubric_ref": request.rubric_ref,
++            "seed": request.seed,
++            "selection": {
++                "gold_count": request.requested_gold_count,
++                "gold_strata": [
++                    {
++                        "count": quota.count,
++                        "filters": dict(quota.filters),
++                    }
++                    for quota in request.gold_strata
++                ],
++            },
++            "sealed_at_ms": receipt.sealed_at_ms,
++            "source_result_ref": request.source_result_ref,
++            "source_item_ids": source_item_ids,
++        }
++        assertion_id = _assignment_assertion_id(request.batch_ref)
++        candidate = {
++            "author_kind": "system",
++            "author_ref": ANNOTATION_CALIBRATION_AUTHOR_REF,
++            "body_text": None,
++            "confidence": None,
++            "evidence_refs": [request.source_result_ref, request.gold_set_ref],
++            "key": "composition",
++            "kind": AssertionKind.ANNOTATION_ASSIGNMENT.value,
++            "scope_ref": request.batch_ref,
++            "target_ref": request.batch_ref,
++            "value": assignment_value,
++        }
++        existing = read_assertion_envelope(conn, assertion_id)
++        if existing is not None:
++            _assert_immutable_replay(existing, candidate=candidate)
++        else:
++            upsert_assertion(
++                conn,
++                assertion_id=assertion_id,
++                scope_ref=request.batch_ref,
++                target_ref=request.batch_ref,
++                key="composition",
++                kind=AssertionKind.ANNOTATION_ASSIGNMENT,
++                value=assignment_value,
++                author_ref=ANNOTATION_CALIBRATION_AUTHOR_REF,
++                author_kind="system",
++                evidence_refs=(request.source_result_ref, request.gold_set_ref),
++                status=AssertionStatus.ACTIVE,
++                visibility=AssertionVisibility.PRIVATE,
++                context_policy={"inject": False, "promotion_required": False},
++                now_ms=request.created_at_ms,
++                require_promotion=False,
++            )
++
++        judge_view = JudgeBatchView(
++            batch_ref=request.batch_ref,
++            qualified_schema_id=schema.qualified_id,
++            rubric_ref=request.rubric_ref,
++            items=tuple(view_items),
++            item_order_hash=receipt.item_order_hash,
++        )
++        leaked_keys = _recursive_key_intersection(judge_view.as_document(), CALIBRATION_MASKED_FIELDS)
++        if leaked_keys:
++            raise AnnotationCalibrationError(f"final judge view leaked keys: {sorted(leaked_keys)}")
++
++    return ComposedCalibrationBatch(
++        assignment_ref=f"assertion:{assertion_id}",
++        judge_view=judge_view,
++    )
++
++
++def _required_mapping(value: object, *, context: str) -> Mapping[str, object]:
++    if not isinstance(value, Mapping):
++        raise AnnotationCalibrationError(f"{context} must be an object")
++    return cast(Mapping[str, object], value)
++
++
++def _required_string(value: object, *, context: str) -> str:
++    if not isinstance(value, str) or not value:
++        raise AnnotationCalibrationError(f"{context} must be a non-empty string")
++    return value
++
++
++def _read_assignment(conn: sqlite3.Connection, batch_ref: str) -> _Assignment:
++    normalized_batch_ref = _normalized_ref(batch_ref, label="batch_ref", expected_kind="annotation-batch")
++    assertion_id = _assignment_assertion_id(normalized_batch_ref)
++    envelope = read_assertion_envelope(conn, assertion_id)
++    if envelope is None or envelope.kind != AssertionKind.ANNOTATION_ASSIGNMENT:
++        raise AnnotationCalibrationError(f"missing calibration assignment for {normalized_batch_ref!r}")
++    if envelope.scope_ref != normalized_batch_ref or envelope.target_ref != normalized_batch_ref:
++        raise AnnotationCalibrationError("assignment assertion scope/target does not match batch_ref")
++    if envelope.author_ref != ANNOTATION_CALIBRATION_AUTHOR_REF or envelope.author_kind != "system":
++        raise AnnotationCalibrationError("assignment assertion has an unsupported author identity")
++    if envelope.status is not AssertionStatus.ACTIVE:
++        raise AnnotationCalibrationError("assignment assertion must remain active")
++    if envelope.key != "composition":
++        raise AnnotationCalibrationError("assignment assertion key must be 'composition'")
++    if envelope.visibility != AssertionVisibility.PRIVATE or envelope.context_policy.get("inject") is not False:
++        raise AnnotationCalibrationError("assignment assertion must remain private and non-injectable")
++    if envelope.context_policy.get("promotion_required") is not False:
++        raise AnnotationCalibrationError("assignment assertion must not require promotion")
++    value = _required_mapping(envelope.value, context="assignment value")
++    if value.get("format") != ANNOTATION_ASSIGNMENT_FORMAT:
++        raise AnnotationCalibrationError("assignment format is unsupported")
++    if value.get("batch_ref") != normalized_batch_ref:
++        raise AnnotationCalibrationError("assignment batch_ref does not match its assertion scope")
++    judge_doc = _required_mapping(value.get("judge"), context="assignment judge")
++    judge = AnnotationJudgeRefs(
++        actor_ref=_required_string(judge_doc.get("actor_ref"), context="assignment judge.actor_ref"),
++        model_ref=_required_string(judge_doc.get("model_ref"), context="assignment judge.model_ref"),
++        execution_context_ref=_required_string(
++            judge_doc.get("execution_context_ref"),
++            context="assignment judge.execution_context_ref",
++        ),
++    )
++    raw_items = value.get("items")
++    if not isinstance(raw_items, list):
++        raise AnnotationCalibrationError("assignment items must be an array")
++    raw_gold_count = value.get("gold_count")
++    if isinstance(raw_gold_count, bool) or not isinstance(raw_gold_count, int) or raw_gold_count < 0:
++        raise AnnotationCalibrationError("assignment gold_count must be a non-negative integer")
++    items: list[_AssignmentItem] = []
++    for raw in raw_items:
++        document = _required_mapping(raw, context="assignment item")
++        evidence = document.get("evidence_refs")
++        if not isinstance(evidence, list) or not all(isinstance(ref, str) for ref in evidence):
++            raise AnnotationCalibrationError("assignment item evidence_refs must be an array of strings")
++        is_gold = document.get("is_gold")
++        if not isinstance(is_gold, bool):
++            raise AnnotationCalibrationError("assignment item is_gold must be boolean")
++        raw_gold_ref = document.get("gold_assertion_ref")
++        if raw_gold_ref is not None and not isinstance(raw_gold_ref, str):
++            raise AnnotationCalibrationError("assignment item gold_assertion_ref must be a string or null")
++        raw_gold_digest = document.get("gold_assertion_digest")
++        if raw_gold_digest is not None and not isinstance(raw_gold_digest, str):
++            raise AnnotationCalibrationError("assignment item gold_assertion_digest must be a string or null")
++        if is_gold != (raw_gold_ref is not None and raw_gold_digest is not None):
++            raise AnnotationCalibrationError("assignment item gold marker and gold receipt disagree")
++        if raw_gold_ref is not None:
++            raw_gold_ref = _normalized_ref(
++                raw_gold_ref,
++                label="assignment item gold_assertion_ref",
++                expected_kind="assertion",
++            )
++        item_id = _required_string(document.get("item_id"), context="assignment item.item_id")
++        target_ref = _normalized_ref(
++            _required_string(document.get("target_ref"), context="assignment item.target_ref"),
++            label="assignment item target_ref",
++        )
++        if item_id != _item_id(batch_ref=normalized_batch_ref, target_ref=target_ref):
++            raise AnnotationCalibrationError("assignment item has a non-canonical item_id")
++        items.append(
++            _AssignmentItem(
++                item_id=item_id,
++                target_ref=target_ref,
++                evidence_refs=tuple(normalize_public_ref_text(ref) for ref in evidence),
++                presentation_digest=_required_string(
++                    document.get("presentation_digest"),
++                    context="assignment item.presentation_digest",
++                ),
++                is_gold=is_gold,
++                gold_assertion_ref=raw_gold_ref,
++                gold_assertion_digest=raw_gold_digest,
++            )
++        )
++    if not items:
++        raise AnnotationCalibrationError("assignment items cannot be empty")
++    if len({item.item_id for item in items}) != len(items):
++        raise AnnotationCalibrationError("assignment item_ids must be unique")
++    if len({item.target_ref for item in items}) != len(items):
++        raise AnnotationCalibrationError("assignment target_refs must be unique")
++    if sum(item.is_gold for item in items) != raw_gold_count:
++        raise AnnotationCalibrationError("assignment gold_count does not match its item receipts")
++    masked = value.get("masked_fields")
++    if not isinstance(masked, list) or not all(isinstance(item, str) for item in masked):
++        raise AnnotationCalibrationError("assignment masked_fields must be an array of strings")
++    if masked != sorted(set(masked)):
++        raise AnnotationCalibrationError("assignment masked_fields must be unique and sorted")
++    if not CALIBRATION_MASKED_FIELDS.issubset(masked):
++        missing = sorted(CALIBRATION_MASKED_FIELDS - set(masked))
++        raise AnnotationCalibrationError(f"assignment masked_fields omit required fields: {missing}")
++    sealed_at_ms = value.get("sealed_at_ms")
++    if isinstance(sealed_at_ms, bool) or not isinstance(sealed_at_ms, int) or sealed_at_ms < 0:
++        raise AnnotationCalibrationError("assignment sealed_at_ms must be a non-negative integer")
++    receipt = _BlindingReceipt(
++        item_order_hash=_required_string(value.get("item_order_hash"), context="assignment item_order_hash"),
++        masked_fields=tuple(masked),
++        rubric_ref=_normalized_ref(
++            _required_string(value.get("rubric_ref"), context="assignment rubric_ref"),
++            label="assignment rubric_ref",
++        ),
++        sealed_at_ms=sealed_at_ms,
++    )
++    source_item_ids = value.get("source_item_ids")
++    if not isinstance(source_item_ids, list) or not all(isinstance(item, str) for item in source_item_ids):
++        raise AnnotationCalibrationError("assignment source_item_ids must be an array of strings")
++    if len(source_item_ids) != len(set(source_item_ids)) or set(source_item_ids) != {item.item_id for item in items}:
++        raise AnnotationCalibrationError("assignment source_item_ids must be a permutation of assigned item ids")
++    source_positions = {item_id: index for index, item_id in enumerate(source_item_ids)}
++    order = [source_positions[item.item_id] for item in items]
++    if hash_payload(order) != receipt.item_order_hash:
++        raise AnnotationCalibrationError("assignment item order does not match its blinding receipt")
++    seed = _required_string(value.get("seed"), context="assignment seed")
++    selection = _required_mapping(value.get("selection"), context="assignment selection")
++    selected_gold_count = selection.get("gold_count")
++    if (
++        isinstance(selected_gold_count, bool)
++        or not isinstance(selected_gold_count, int)
++        or selected_gold_count != raw_gold_count
++    ):
++        raise AnnotationCalibrationError("assignment selection gold_count differs from the selected items")
++    raw_gold_strata = selection.get("gold_strata")
++    if not isinstance(raw_gold_strata, list):
++        raise AnnotationCalibrationError("assignment selection gold_strata must be an array")
++    quota_total = 0
++    for raw_quota in raw_gold_strata:
++        quota = _required_mapping(raw_quota, context="assignment gold stratum quota")
++        count = quota.get("count")
++        filters = quota.get("filters")
++        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
++            raise AnnotationCalibrationError("assignment gold stratum quota count must be >= 1")
++        if not isinstance(filters, dict) or not filters or not all(
++            isinstance(key, str) and isinstance(item, str) and key and item for key, item in filters.items()
++        ):
++            raise AnnotationCalibrationError("assignment gold stratum quota filters must be string pairs")
++        quota_total += count
++    if raw_gold_strata and quota_total != raw_gold_count:
++        raise AnnotationCalibrationError("assignment gold stratum quotas do not sum to gold_count")
++
++    source_result_ref = _normalized_ref(
++        _required_string(value.get("source_result_ref"), context="assignment source_result_ref"),
++        label="assignment source_result_ref",
++        expected_kind="result-set",
++    )
++    gold_set_ref = _normalized_ref(
++        _required_string(value.get("gold_set_ref"), context="assignment gold_set_ref"),
++        label="assignment gold_set_ref",
++    )
++    if tuple(envelope.evidence_refs) != (source_result_ref, gold_set_ref):
++        raise AnnotationCalibrationError("assignment assertion evidence differs from its payload refs")
++    return _Assignment(
++        assertion=envelope,
++        batch_ref=normalized_batch_ref,
++        qualified_schema_id=_required_string(
++            value.get("qualified_schema_id"), context="assignment qualified_schema_id"
++        ),
++        source_result_ref=source_result_ref,
++        judge=judge,
++        prompt_ref=_normalized_ref(
++            _required_string(value.get("prompt_ref"), context="assignment prompt_ref"),
++            label="assignment prompt_ref",
++        ),
++        rubric_ref=receipt.rubric_ref,
++        gold_set_ref=gold_set_ref,
++        seed=seed,
++        items=tuple(items),
++        receipt=receipt,
++    )
++
++
++def _resolved_calibration_confidence(
++    schema: AnnotationSchema,
++    label: CalibrationLabelInput,
++) -> float | None:
++    """Resolve the assertion confidence without allowing two divergent values.
++
++    Annotation imports already treat a declared ``value.confidence`` field as
++    the analytical source of truth. Calibration recording follows the same
++    contract: a separately supplied envelope confidence may repeat that value,
++    but it may not disagree with it. This keeps Brier/reliability products tied
++    to the schema-validated judgment payload rather than an unchecked side
++    channel.
++    """
++
++    if not any(field_def.name == "confidence" for field_def in schema.fields):
++        return label.confidence
++    value_confidence = label.value.get("confidence")
++    if value_confidence is None:
++        return label.confidence
++    if (
++        isinstance(value_confidence, bool)
++        or not isinstance(value_confidence, (int, float))
++        or not isfinite(float(value_confidence))
++        or not 0.0 <= float(value_confidence) <= 1.0
++    ):
++        raise AnnotationCalibrationError("value.confidence must be finite and in [0, 1]")
++    resolved = float(value_confidence)
++    if label.confidence is not None and label.confidence != resolved:
++        raise AnnotationCalibrationError("top-level confidence must equal value.confidence")
++    return resolved
++
++
++def record_calibration_batch(
++    conn: sqlite3.Connection,
++    *,
++    schema: AnnotationSchema,
++    registry: AnnotationSchemaRegistry,
++    batch_id: str,
++    labels: Sequence[CalibrationLabelInput],
++    now_ms: int,
++) -> AnnotationBatch:
++    """Persist one complete judged packet through the existing annotation writer.
++
++    Target/evidence refs come exclusively from the private assignment receipt;
++    a judge can submit only ``item_id`` plus a schema-valid value. The batch and
++    all labels commit atomically under ``BEGIN IMMEDIATE``. Agent rows remain
++    candidates, and their ids include actor + batch, so they cannot collide
++    with operator-authored gold rows or unrelated operator judgments.
++    """
++
++    if not isinstance(batch_id, str) or not _BATCH_ID_RE.fullmatch(batch_id):
++        raise AnnotationCalibrationError("batch_id must form a stable annotation-batch ObjectRef")
++    if isinstance(now_ms, bool) or not isinstance(now_ms, int) or now_ms < 0:
++        raise AnnotationCalibrationError("now_ms must be a non-negative integer")
++    batch_ref = f"annotation-batch:{batch_id}"
++    registered = registry.require_active(schema)
++    if len({label.item_id for label in labels}) != len(labels):
++        raise AnnotationCalibrationError("calibration label item_ids must be unique")
++
++    with _immediate_transaction(conn):
++        assignment = _read_assignment(conn, batch_ref)
++        if assignment.qualified_schema_id != registered.qualified_id:
++            raise AnnotationCalibrationError(
++                f"assignment uses {assignment.qualified_schema_id!r}, not {registered.qualified_id!r}"
++            )
++        by_item_id = {label.item_id: label for label in labels}
++        expected_ids = {item.item_id for item in assignment.items}
++        if set(by_item_id) != expected_ids:
++            missing = sorted(expected_ids - set(by_item_id))
++            extra = sorted(set(by_item_id) - expected_ids)
++            raise AnnotationCalibrationError(f"calibration response item set differs: missing={missing}, extra={extra}")
++
++        assertion_ids: list[str] = []
++        confidence_by_item_id: dict[str, float | None] = {}
++        abstained_count = 0
++        for item in assignment.items:
++            label = by_item_id[item.item_id]
++            errors = validate_annotation_row(
++                registered,
++                target_ref=item.target_ref,
++                value=label.value,
++                evidence_refs=item.evidence_refs,
++            )
++            if errors:
++                raise AnnotationCalibrationError(
++                    f"calibration label {item.item_id!r} violates {registered.qualified_id}: {errors}"
++                )
++            confidence_by_item_id[item.item_id] = _resolved_calibration_confidence(registered, label)
++            if registered.abstain_field is not None and label.value.get(registered.abstain_field) is True:
++                abstained_count += 1
++            assertion_ids.append(
++                assertion_id_for_schema_annotation(
++                    schema_qualified_id=registered.qualified_id,
++                    target_ref=item.target_ref,
++                    author_ref=assignment.judge.actor_ref,
++                    row_key=item.item_id,
++                    batch_ref=batch_ref,
++                )
++            )
++
++        metadata: JSONDocument = {
++            ANNOTATION_BATCH_ITEM_TARGET_REFS_KEY: [item.target_ref for item in assignment.items],
++            ANNOTATION_CALIBRATION_ASSIGNMENT_REF_KEY: f"assertion:{assignment.assertion.assertion_id}",
++            ANNOTATION_CALIBRATION_EXECUTION_CONTEXT_KEY: assignment.judge.execution_context_ref,
++            ANNOTATION_CALIBRATION_GOLD_COUNT_KEY: sum(item.is_gold for item in assignment.items),
++            ANNOTATION_CALIBRATION_ORDER_HASH_KEY: assignment.receipt.item_order_hash,
++            ANNOTATION_CALIBRATION_RUBRIC_REF_KEY: assignment.rubric_ref,
++            "format": ANNOTATION_CALIBRATION_BATCH_FORMAT,
++            "item_ids": [item.item_id for item in assignment.items],
++        }
++        batch = AnnotationBatch(
++            batch_id=batch_id,
++            schema_id=registered.schema_id,
++            schema_version=registered.version,
++            # Heterogeneous packets use the source result-set as their
++            # collection target; item targets are immutable metadata.
++            target_ref=assignment.source_result_ref,
++            source_result_ref=assignment.source_result_ref,
++            actor_ref=assignment.judge.actor_ref,
++            model_ref=assignment.judge.model_ref,
++            prompt_ref=assignment.prompt_ref,
++            total_count=len(assignment.items),
++            valid_count=len(assignment.items),
++            invalid_count=0,
++            abstained_count=abstained_count,
++            assertion_refs=tuple(f"assertion:{assertion_id}" for assertion_id in assertion_ids),
++            metadata=metadata,
++            # The batch identity is sealed at composition time. Using the
++            # receipt timestamp keeps a later retry byte-for-byte idempotent
++            # instead of turning wall-clock retry time into provenance drift.
++            created_at_ms=assignment.receipt.sealed_at_ms,
++        )
++        persist_annotation_schema(conn, registered, registered_at_ms=now_ms)
++        persist_annotation_batch(conn, batch)
++
++        author_kind = "user" if ObjectRef.parse(assignment.judge.actor_ref).kind == "user" else "agent"
++        for item, assertion_id in zip(assignment.items, assertion_ids, strict=True):
++            label = by_item_id[item.item_id]
++            envelope = upsert_annotation_assertion(
++                conn,
++                schema=registered,
++                registry=registry,
++                target_ref=item.target_ref,
++                value=label.value,
++                row_key=item.item_id,
++                evidence_refs=item.evidence_refs,
++                author_ref=assignment.judge.actor_ref,
++                author_kind=author_kind,
++                confidence=confidence_by_item_id[item.item_id],
++                body_text=label.body_text,
++                batch_ref=batch_ref,
++                now_ms=now_ms,
++            )
++            if envelope.assertion_id != assertion_id:
++                raise AnnotationCalibrationError("annotation assertion identity drifted after batch admission")
++    return batch
++
++
++def krippendorff_alpha(
++    units: Mapping[str, Sequence[object]],
++    *,
++    level: MeasurementLevel = "nominal",
++) -> float | None:
++    """Compute Krippendorff's alpha over incomplete unit/rater observations.
++
++    ``nominal`` uses exact category identity. ``interval`` uses squared numeric
++    distance. Units with fewer than two observed ratings are excluded from both
++    observed and expected coincidence distributions. ``None`` means fewer than
++    two pairable ratings or malformed interval values; a degenerate all-equal
++    set returns ``1.0``. Invalid interval values raise
++    :class:`AnnotationCalibrationError`.
++    """
++
++    if level not in ("nominal", "interval"):
++        raise AnnotationCalibrationError(f"unsupported measurement level {level!r}")
++    pairable: list[tuple[object, ...]] = [tuple(values) for values in units.values() if len(values) >= 2]
++    all_values = [value for values in pairable for value in values]
++    if len(all_values) < 2:
++        return None
++
++    def distance(left: object, right: object) -> float:
++        if level == "nominal":
++            return 0.0 if _canonical_json(left) == _canonical_json(right) else 1.0
++        if (
++            isinstance(left, bool)
++            or isinstance(right, bool)
++            or not isinstance(left, (int, float))
++            or not isinstance(right, (int, float))
++            or not isfinite(float(left))
++            or not isfinite(float(right))
++        ):
++            raise AnnotationCalibrationError("interval alpha requires finite numeric values")
++        return (float(left) - float(right)) ** 2
++
++    observed = 0.0
++    for values in pairable:
++        denominator = len(values) - 1
++        observed += sum(
++            distance(left, right)
++            for left_index, left in enumerate(values)
++            for right_index, right in enumerate(values)
++            if left_index != right_index
++        ) / denominator
++
++    expected = sum(
++        distance(left, right)
++        for left_index, left in enumerate(all_values)
++        for right_index, right in enumerate(all_values)
++        if left_index != right_index
++    ) / (len(all_values) - 1)
++    if expected == 0.0:
++        return 1.0 if observed == 0.0 else None
++    return 1.0 - observed / expected
++
++
++def _schema_field(schema: AnnotationSchema, name: str) -> AnnotationField:
++    for field_def in schema.fields:
++        if field_def.name == name:
++            return field_def
++    raise AnnotationCalibrationError(f"construct field {name!r} is not declared by {schema.qualified_id}")
++
++
++def _batch_observation(conn: sqlite3.Connection, batch_id: str) -> _BatchObservation:
++    batch = read_annotation_batch(conn, batch_id)
++    if batch is None:
++        raise AnnotationCalibrationError(f"unknown annotation batch {batch_id!r}")
++    assignment_ref = batch.metadata.get(ANNOTATION_CALIBRATION_ASSIGNMENT_REF_KEY)
++    if not isinstance(assignment_ref, str) or not assignment_ref.startswith("assertion:"):
++        raise AnnotationCalibrationError(f"annotation batch {batch.batch_ref!r} is not a calibration batch")
++    assignment = _read_assignment(conn, batch.batch_ref)
++    expected_assignment_ref = f"assertion:{assignment.assertion.assertion_id}"
++    if assignment_ref != expected_assignment_ref:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} points at a different assignment receipt")
++    if batch.metadata.get("format") != ANNOTATION_CALIBRATION_BATCH_FORMAT:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} has an unsupported calibration format")
++    if batch.source_result_ref != assignment.source_result_ref or batch.target_ref != assignment.source_result_ref:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} source scope differs from its assignment")
++    if batch.qualified_schema_id != assignment.qualified_schema_id:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} schema differs from its assignment")
++    if (batch.actor_ref, batch.model_ref, batch.prompt_ref) != (
++        assignment.judge.actor_ref,
++        assignment.judge.model_ref,
++        assignment.prompt_ref,
++    ):
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} judge provenance differs from its assignment")
++    if batch.metadata.get(ANNOTATION_CALIBRATION_EXECUTION_CONTEXT_KEY) != assignment.judge.execution_context_ref:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} context differs from its assignment")
++    if batch.metadata.get(ANNOTATION_CALIBRATION_RUBRIC_REF_KEY) != assignment.rubric_ref:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} rubric differs from its assignment")
++    if batch.metadata.get(ANNOTATION_CALIBRATION_ORDER_HASH_KEY) != assignment.receipt.item_order_hash:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} order receipt differs from its assignment")
++    expected_targets = tuple(item.target_ref for item in assignment.items)
++    if batch.item_target_refs != expected_targets:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} item targets differ from its assignment")
++    raw_item_ids = batch.metadata.get("item_ids")
++    expected_item_ids = [item.item_id for item in assignment.items]
++    if raw_item_ids != expected_item_ids:
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} item ids differ from its assignment")
++    if batch.metadata.get(ANNOTATION_CALIBRATION_GOLD_COUNT_KEY) != sum(item.is_gold for item in assignment.items):
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} gold count differs from its assignment")
++
++    assignment_by_target = {item.target_ref: item for item in assignment.items}
++    labels_by_target: dict[str, ArchiveAssertionEnvelope] = {}
++    for assertion_ref in batch.assertion_refs:
++        assertion_id = assertion_ref.removeprefix("assertion:")
++        envelope = read_assertion_envelope(conn, assertion_id)
++        if envelope is None:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} references missing {assertion_ref!r}")
++        if envelope.kind != AssertionKind.ANNOTATION or envelope.scope_ref != batch.batch_ref:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} contains a non-annotation assertion")
++        assignment_item = assignment_by_target.get(envelope.target_ref)
++        if assignment_item is None:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} contains an unassigned target label")
++        if envelope.key != assignment_item.item_id:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} label key differs from its assigned item id")
++        if envelope.author_ref != assignment.judge.actor_ref:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} label author differs from its judge")
++        if tuple(envelope.evidence_refs) != assignment_item.evidence_refs:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} label evidence differs from its assignment")
++        if not isinstance(envelope.value, dict):
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} contains a malformed annotation value")
++        if envelope.value.get("_schema") != assignment.qualified_schema_id:
++            raise AnnotationCalibrationError(
++                f"batch {batch.batch_ref!r} label schema stamp differs from its assignment"
++            )
++        if envelope.value.get("_batch") != batch.batch_ref:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} label batch stamp is missing")
++        if envelope.target_ref in labels_by_target:
++            raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} contains duplicate target labels")
++        labels_by_target[envelope.target_ref] = envelope
++    if set(labels_by_target) != set(expected_targets):
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} does not contain its complete assigned target set")
++    return _BatchObservation(batch=batch, assignment=assignment, labels_by_target=labels_by_target)
++
++
++def _gold_by_target(
++    conn: sqlite3.Connection,
++    assignment: _Assignment,
++    *,
++    schema: AnnotationSchema,
++) -> Mapping[str, _GoldRecord]:
++    records: dict[str, _GoldRecord] = {}
++    for item in assignment.items:
++        if not item.is_gold:
++            continue
++        if item.gold_assertion_ref is None:
++            raise AnnotationCalibrationError("gold assignment item lacks gold_assertion_ref")
++        assertion_id = item.gold_assertion_ref.removeprefix("assertion:")
++        envelope = read_assertion_envelope(conn, assertion_id)
++        if envelope is None:
++            raise AnnotationCalibrationError(f"assignment references missing gold {item.gold_assertion_ref!r}")
++        record = _validated_gold_record(
++            envelope,
++            schema=schema,
++            gold_set_ref=assignment.gold_set_ref,
++        )
++        if record.target_ref != item.target_ref:
++            raise AnnotationCalibrationError(f"gold {item.gold_assertion_ref!r} does not match its assignment receipt")
++        if item.gold_assertion_digest is None or record.content_digest != item.gold_assertion_digest:
++            raise AnnotationCalibrationError(f"gold {item.gold_assertion_ref!r} changed after assignment sealing")
++        records[item.target_ref] = record
++        if records[item.target_ref].evidence_refs != item.evidence_refs:
++            raise AnnotationCalibrationError(f"gold {item.gold_assertion_ref!r} evidence differs from its receipt")
++    return records
++
++
++def _label_value(envelope: ArchiveAssertionEnvelope, construct: str) -> object | None:
++    if not isinstance(envelope.value, dict):
++        return None
++    return envelope.value.get(construct)
++
++
++def _is_abstained(envelope: ArchiveAssertionEnvelope, schema: AnnotationSchema) -> bool:
++    return bool(
++        schema.abstain_field
++        and isinstance(envelope.value, dict)
++        and envelope.value.get(schema.abstain_field) is True
++    )
++
++
++def _construct_gold_metrics(
++    observation: _BatchObservation,
++    *,
++    gold_by_target: Mapping[str, _GoldRecord],
++    schema: AnnotationSchema,
++    construct: str,
++) -> _ConstructGoldMetrics:
++    correct_count = 0
++    n_assigned = 0
++    n_scored = 0
++    n_abstained = 0
++    n_missing = 0
++    outcomes: list[tuple[float, int]] = []
++    observed_values: list[object] = []
++    for target_ref, label in observation.labels_by_target.items():
++        gold_record = gold_by_target.get(target_ref)
++        is_scored_gold = gold_record is not None and construct in gold_record.label
++        if is_scored_gold:
++            n_assigned += 1
++        if _is_abstained(label, schema):
++            if is_scored_gold:
++                n_abstained += 1
++            continue
++        value = _label_value(label, construct)
++        if value is None:
++            if is_scored_gold:
++                n_missing += 1
++            continue
++        if not is_scored_gold or gold_record is None:
++            continue
++        observed_values.append(value)
++        outcome = int(_canonical_json(value) == _canonical_json(gold_record.label[construct]))
++        n_scored += 1
++        correct_count += outcome
++        if label.confidence is not None:
++            outcomes.append((label.confidence, outcome))
++    return _ConstructGoldMetrics(
++        correct_count=correct_count,
++        n_assigned=n_assigned,
++        n_scored=n_scored,
++        n_abstained=n_abstained,
++        n_missing=n_missing,
++        outcomes=tuple(outcomes),
++        observed_values=tuple(observed_values),
++    )
++
++
++def _reliability(
++    outcomes: Sequence[tuple[float, int]],
++    *,
++    bucket_count: int,
++) -> tuple[float | None, float | None, tuple[ReliabilityBucket, ...]]:
++    if isinstance(bucket_count, bool) or not isinstance(bucket_count, int) or bucket_count < 1:
++        raise AnnotationCalibrationError("bucket_count must be >= 1")
++    if not outcomes:
++        return None, None, tuple(
++            ReliabilityBucket(
++                lower=index / bucket_count,
++                upper=(index + 1) / bucket_count,
++                count=0,
++                mean_confidence=None,
++                empirical_accuracy=None,
++                gap=None,
++            )
++            for index in range(bucket_count)
++        )
++    brier = sum((confidence - outcome) ** 2 for confidence, outcome in outcomes) / len(outcomes)
++    buckets: list[list[tuple[float, int]]] = [[] for _ in range(bucket_count)]
++    for confidence, outcome in outcomes:
++        index = min(int(confidence * bucket_count), bucket_count - 1)
++        buckets[index].append((confidence, outcome))
++    documents: list[ReliabilityBucket] = []
++    weighted_gap = 0.0
++    for index, entries in enumerate(buckets):
++        if entries:
++            mean_confidence = sum(confidence for confidence, _ in entries) / len(entries)
++            empirical_accuracy = sum(outcome for _, outcome in entries) / len(entries)
++            gap = abs(mean_confidence - empirical_accuracy)
++            weighted_gap += len(entries) / len(outcomes) * gap
++        else:
++            mean_confidence = None
++            empirical_accuracy = None
++            gap = None
++        documents.append(
++            ReliabilityBucket(
++                lower=index / bucket_count,
++                upper=(index + 1) / bucket_count,
++                count=len(entries),
++                mean_confidence=mean_confidence,
++                empirical_accuracy=empirical_accuracy,
++                gap=gap,
++            )
++        )
++    return brier, weighted_gap, tuple(documents)
++
++
++def _distribution(values: Sequence[object]) -> Mapping[str, float]:
++    if not values:
++        return {}
++    counts = Counter(_canonical_json(value) for value in values)
++    total = sum(counts.values())
++    return {key: count / total for key, count in sorted(counts.items())}
++
++
++def _total_variation(left: Mapping[str, float], right: Mapping[str, float]) -> float | None:
++    if not left or not right:
++        return None
++    keys = set(left) | set(right)
++    return 0.5 * sum(abs(left.get(key, 0.0) - right.get(key, 0.0)) for key in keys)
++
++
++def _judge_from_batch(batch: AnnotationBatch) -> AnnotationJudgeRefs:
++    context_ref = batch.metadata.get(ANNOTATION_CALIBRATION_EXECUTION_CONTEXT_KEY)
++    if not isinstance(context_ref, str):
++        raise AnnotationCalibrationError(f"batch {batch.batch_ref!r} lacks execution_context_ref")
++    return AnnotationJudgeRefs(
++        actor_ref=batch.actor_ref,
++        model_ref=batch.model_ref,
++        execution_context_ref=context_ref,
++    )
++
++
++def materialize_calibration_measures(
++    conn: sqlite3.Connection,
++    *,
++    batch_id: str,
++    peer_batch_ids: Sequence[str] = (),
++    baseline_batch_id: str | None = None,
++    constructs: Sequence[str] | None = None,
++    measurement_levels: Mapping[str, MeasurementLevel] | None = None,
++    bucket_count: int = 10,
++    accuracy_drop_alert: float = 0.10,
++    brier_increase_alert: float = 0.05,
++    distribution_tv_alert: float = 0.15,
++    now_ms: int,
++) -> tuple[ArchiveAssertionEnvelope, ...]:
++    """Compute and persist typed measures for one batch and exact peers/baseline.
++
++    The complete read/compute/preserve/write operation runs under one immediate
++    transaction. Each output row is scoped to the current annotation batch and
++    one schema construct; its deterministic identity includes every algorithm
++    parameter and immutable input ref that can change the result.
++    """
++
++    if isinstance(now_ms, bool) or not isinstance(now_ms, int) or now_ms < 0:
++        raise AnnotationCalibrationError("now_ms must be a non-negative integer")
++    if isinstance(bucket_count, bool) or not isinstance(bucket_count, int) or bucket_count < 1:
++        raise AnnotationCalibrationError("bucket_count must be >= 1")
++    for name, threshold in (
++        ("accuracy_drop_alert", accuracy_drop_alert),
++        ("brier_increase_alert", brier_increase_alert),
++        ("distribution_tv_alert", distribution_tv_alert),
++    ):
++        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not isfinite(float(threshold)):
++            raise AnnotationCalibrationError(f"{name} must be a finite number")
++        if not 0.0 <= float(threshold) <= 1.0:
++            raise AnnotationCalibrationError(f"{name} must be in [0, 1]")
++
++    requested_peer_ids = tuple(peer_batch_ids)
++    if len(requested_peer_ids) != len(set(requested_peer_ids)):
++        raise AnnotationCalibrationError("peer_batch_ids must be unique")
++    # Agreement is a set-valued computation. Canonicalize caller order so the
++    # same peer set produces one immutable measure identity and evidence order.
++    peer_ids = tuple(sorted(requested_peer_ids))
++    if batch_id in peer_ids:
++        raise AnnotationCalibrationError("the current batch cannot also be an agreement peer")
++    if baseline_batch_id == batch_id:
++        raise AnnotationCalibrationError("the current batch cannot be its own drift baseline")
++    if baseline_batch_id is not None and baseline_batch_id in peer_ids:
++        raise AnnotationCalibrationError("a drift baseline cannot also be an agreement peer")
++
++    with _immediate_transaction(conn):
++        current = _batch_observation(conn, batch_id)
++        durable_schema = read_durable_annotation_schema(
++            conn,
++            current.batch.schema_id,
++            current.batch.schema_version,
++        )
++        if durable_schema is None:
++            raise AnnotationCalibrationError(f"batch {current.batch.batch_ref!r} has no durable schema")
++        schema = durable_schema.schema
++        selected_constructs = tuple(constructs) if constructs is not None else tuple(
++            field_def.name
++            for field_def in schema.fields
++            if field_def.name not in {schema.abstain_field, "confidence", "rationale"}
++        )
++        if not selected_constructs:
++            raise AnnotationCalibrationError("at least one construct field is required")
++        if len(selected_constructs) != len(set(selected_constructs)):
++            raise AnnotationCalibrationError("constructs must be unique")
++        for construct in selected_constructs:
++            _schema_field(schema, construct)
++
++        resolved_levels = dict(measurement_levels or {})
++        extra_level_keys = set(resolved_levels) - set(selected_constructs)
++        if extra_level_keys:
++            raise AnnotationCalibrationError(
++                f"measurement_levels names unselected constructs: {sorted(extra_level_keys)}"
++            )
++
++        peers = tuple(_batch_observation(conn, peer_id) for peer_id in peer_ids)
++        current_judge = _judge_from_batch(current.batch)
++        seen_peer_judges: set[tuple[str, str, str]] = set()
++        for peer in peers:
++            if peer.batch.qualified_schema_id != current.batch.qualified_schema_id:
++                raise AnnotationCalibrationError("agreement peers must use the same annotation schema version")
++            peer_judge = _judge_from_batch(peer.batch)
++            if peer_judge.key == current_judge.key:
++                raise AnnotationCalibrationError(
++                    "inter-judge agreement peers must use a different exact judge identity"
++                )
++            if peer_judge.key in seen_peer_judges:
++                raise AnnotationCalibrationError("agreement peers must have distinct exact judge identities")
++            seen_peer_judges.add(peer_judge.key)
++
++        baseline = _batch_observation(conn, baseline_batch_id) if baseline_batch_id is not None else None
++        if baseline is not None:
++            if baseline.batch.qualified_schema_id != current.batch.qualified_schema_id:
++                raise AnnotationCalibrationError("drift baseline must use the same annotation schema version")
++            if _judge_from_batch(baseline.batch) != current_judge:
++                raise AnnotationCalibrationError("drift baseline must match exact actor/model/execution-context refs")
++            if baseline.assignment.gold_set_ref != current.assignment.gold_set_ref:
++                raise AnnotationCalibrationError("drift baseline must use the same gold_set_ref")
++            if baseline.batch.created_at_ms > current.batch.created_at_ms:
++                raise AnnotationCalibrationError("drift baseline cannot be newer than the current batch")
++
++        current_gold = _gold_by_target(conn, current.assignment, schema=schema)
++        baseline_gold = (
++            _gold_by_target(conn, baseline.assignment, schema=schema) if baseline is not None else {}
++        )
++        if baseline is not None:
++            current_gold_refs = {record.assertion_ref for record in current_gold.values()}
++            baseline_gold_refs = {record.assertion_ref for record in baseline_gold.values()}
++            if baseline_gold_refs != current_gold_refs:
++                raise AnnotationCalibrationError(
++                    "drift baseline must use the exact same sealed gold anchors as the current batch"
++                )
++        gold_assertion_refs = sorted(record.assertion_ref for record in current_gold.values())
++        evidence_refs = [
++            current.batch.batch_ref,
++            *(peer.batch.batch_ref for peer in peers),
++            *((baseline.batch.batch_ref,) if baseline is not None else ()),
++            *gold_assertion_refs,
++        ]
++        envelopes: list[ArchiveAssertionEnvelope] = []
++
++        for construct in selected_constructs:
++            level = resolved_levels.get(construct, "nominal")
++            if level not in ("nominal", "interval"):
++                raise AnnotationCalibrationError(f"unsupported measurement level {level!r}")
++
++            current_metrics = _construct_gold_metrics(
++                current,
++                gold_by_target=current_gold,
++                schema=schema,
++                construct=construct,
++            )
++            brier, expected_calibration_error, buckets = _reliability(
++                current_metrics.outcomes,
++                bucket_count=bucket_count,
++            )
++
++            units: dict[str, list[object]] = defaultdict(list)
++            for observation in (current, *peers):
++                for target_ref, label in observation.labels_by_target.items():
++                    if _is_abstained(label, schema):
++                        continue
++                    value = _label_value(label, construct)
++                    if value is not None:
++                        units[target_ref].append(value)
++            alpha = krippendorff_alpha(units, level=level)
++            n_pairable_units = sum(len(values) >= 2 for values in units.values())
++            n_ratings = sum(len(values) for values in units.values() if len(values) >= 2)
++
++            drift_doc: JSONDocument = {
++                "accuracy_delta": None,
++                "alert": False,
++                "baseline_batch_ref": None,
++                "brier_delta": None,
++                "distribution_tv": None,
++                "reasons": [],
++                "thresholds": {
++                    "accuracy_drop": float(accuracy_drop_alert),
++                    "brier_increase": float(brier_increase_alert),
++                    "distribution_tv": float(distribution_tv_alert),
++                },
++            }
++            if baseline is not None:
++                baseline_metrics = _construct_gold_metrics(
++                    baseline,
++                    gold_by_target=baseline_gold,
++                    schema=schema,
++                    construct=construct,
++                )
++                baseline_brier, _, _ = _reliability(baseline_metrics.outcomes, bucket_count=bucket_count)
++                accuracy_delta = (
++                    current_metrics.accuracy - baseline_metrics.accuracy
++                    if current_metrics.accuracy is not None and baseline_metrics.accuracy is not None
++                    else None
++                )
++                brier_delta = brier - baseline_brier if brier is not None and baseline_brier is not None else None
++                tv = _total_variation(
++                    _distribution(current_metrics.observed_values),
++                    _distribution(baseline_metrics.observed_values),
++                )
++                reasons: list[str] = []
++                if accuracy_delta is not None and accuracy_delta <= -float(accuracy_drop_alert):
++                    reasons.append("accuracy_drop")
++                if brier_delta is not None and brier_delta >= float(brier_increase_alert):
++                    reasons.append("brier_increase")
++                if tv is not None and tv >= float(distribution_tv_alert):
++                    reasons.append("label_distribution_shift")
++                drift_doc = {
++                    "accuracy_delta": accuracy_delta,
++                    "alert": bool(reasons),
++                    "baseline_batch_ref": baseline.batch.batch_ref,
++                    "brier_delta": brier_delta,
++                    "distribution_tv": tv,
++                    "reasons": reasons,
++                    "thresholds": {
++                        "accuracy_drop": float(accuracy_drop_alert),
++                        "brier_increase": float(brier_increase_alert),
++                        "distribution_tv": float(distribution_tv_alert),
++                    },
++                }
++
++            input_document: JSONDocument = {
++                "algorithm": ANNOTATION_MEASURE_ALGORITHM,
++                "baseline_assertion_refs": list(baseline.batch.assertion_refs) if baseline is not None else [],
++                "baseline_batch_ref": baseline.batch.batch_ref if baseline is not None else None,
++                "batch_assertion_refs": list(current.batch.assertion_refs),
++                "batch_ref": current.batch.batch_ref,
++                "bucket_count": bucket_count,
++                "construct": construct,
++                "drift_thresholds": {
++                    "accuracy_drop": float(accuracy_drop_alert),
++                    "brier_increase": float(brier_increase_alert),
++                    "distribution_tv": float(distribution_tv_alert),
++                },
++                "gold_assertion_refs": gold_assertion_refs,
++                "measurement_level": level,
++                "peer_assertion_refs": {
++                    peer.batch.batch_ref: list(peer.batch.assertion_refs) for peer in peers
++                },
++                "peer_batch_refs": [peer.batch.batch_ref for peer in peers],
++                "qualified_schema_id": current.batch.qualified_schema_id,
++            }
++            input_digest = hash_payload(input_document)
++            value: JSONDocument = {
++                "agreement": {
++                    "alpha": alpha,
++                    "measurement_level": level,
++                    "method": "krippendorff_alpha",
++                    "n_judges": 1 + len(peers),
++                    "n_pairable_units": n_pairable_units,
++                    "n_ratings": n_ratings,
++                    "peer_batch_refs": [peer.batch.batch_ref for peer in peers],
++                },
++                "algorithm": ANNOTATION_MEASURE_ALGORITHM,
++                "batch_ref": current.batch.batch_ref,
++                "calibration": {
++                    "brier_score": brier,
++                    "bucket_count": bucket_count,
++                    "buckets": [bucket.as_document() for bucket in buckets],
++                    "expected_calibration_error": expected_calibration_error,
++                    "n_confident_gold": len(current_metrics.outcomes),
++                },
++                "construct": construct,
++                "drift": drift_doc,
++                "format": ANNOTATION_MEASURE_FORMAT,
++                "gold": {
++                    "abstention_rate": current_metrics.abstention_rate,
++                    "accuracy": current_metrics.accuracy,
++                    "correct": current_metrics.correct_count,
++                    "label_distribution": _distribution(current_metrics.observed_values),
++                    "n_abstained": current_metrics.n_abstained,
++                    "n_assigned": current_metrics.n_assigned,
++                    "n_missing": current_metrics.n_missing,
++                    "n_overlap": current_metrics.n_scored,
++                    "unscored_rate": current_metrics.unscored_rate,
++                },
++                "input_digest": input_digest,
++                "judge": current_judge.as_document(),
++                "measured_at_ms": now_ms,
++                "qualified_schema_id": current.batch.qualified_schema_id,
++            }
++            assertion_id = _measure_assertion_id(
++                batch_ref=current.batch.batch_ref,
++                construct=construct,
++                input_digest=input_digest,
++            )
++            candidate = {
++                "author_kind": "system",
++                "author_ref": ANNOTATION_CALIBRATION_AUTHOR_REF,
++                "body_text": None,
++                "confidence": None,
++                "evidence_refs": evidence_refs,
++                "key": construct,
++                "kind": AssertionKind.ANNOTATION_MEASURE.value,
++                "scope_ref": current.batch.batch_ref,
++                "target_ref": current.batch.batch_ref,
++                "value": value,
++            }
++            existing = read_assertion_envelope(conn, assertion_id)
++            if existing is not None:
++                if not isinstance(existing.value, dict):
++                    raise AnnotationCalibrationError(
++                        f"measure assertion {existing.assertion_id!r} has a malformed payload"
++                    )
++                existing_measured_at_ms = existing.value.get("measured_at_ms")
++                if (
++                    isinstance(existing_measured_at_ms, bool)
++                    or not isinstance(existing_measured_at_ms, int)
++                    or existing_measured_at_ms < 0
++                ):
++                    raise AnnotationCalibrationError(
++                        f"measure assertion {existing.assertion_id!r} has an invalid timestamp"
++                    )
++                value["measured_at_ms"] = existing_measured_at_ms
++                _assert_immutable_replay(existing, candidate=candidate)
++                envelopes.append(existing)
++                continue
++            envelopes.append(
++                upsert_assertion(
++                    conn,
++                    assertion_id=assertion_id,
++                    scope_ref=current.batch.batch_ref,
++                    target_ref=current.batch.batch_ref,
++                    key=construct,
++                    kind=AssertionKind.ANNOTATION_MEASURE,
++                    value=value,
++                    author_ref=ANNOTATION_CALIBRATION_AUTHOR_REF,
++                    author_kind="system",
++                    evidence_refs=evidence_refs,
++                    status=AssertionStatus.ACTIVE,
++                    visibility=AssertionVisibility.PRIVATE,
++                    context_policy={"inject": False, "promotion_required": False},
++                    now_ms=now_ms,
++                    require_promotion=False,
++                )
++            )
++    return tuple(envelopes)
++
++
++def query_judge_trust(
++    conn: sqlite3.Connection,
++    *,
++    schema_id: str,
++    schema_version: int,
++    construct: str,
++    judge: AnnotationJudgeRefs | None = None,
++    minimum_gold: int = 20,
++    minimum_confident_gold: int = 20,
++    minimum_accuracy: float = 0.80,
++    maximum_brier: float = 0.25,
++    maximum_expected_calibration_error: float = 0.10,
++    maximum_gold_unscored_rate: float = 0.25,
++) -> tuple[JudgeTrustSummary, ...]:
++    """Return latest exact-context trust status for each measured judge.
++
++    No cross-context pooling occurs. When ``judge`` is supplied and no measure
++    exists for that exact actor/model/context triple, one explicit ``unknown``
++    result is returned rather than inheriting confidence from a sibling
++    execution context.
++    """
++
++    for name, value in (("minimum_gold", minimum_gold), ("minimum_confident_gold", minimum_confident_gold)):
++        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
++            raise AnnotationCalibrationError(f"{name} must be a non-negative integer")
++    for name, value in (
++        ("minimum_accuracy", minimum_accuracy),
++        ("maximum_brier", maximum_brier),
++        ("maximum_expected_calibration_error", maximum_expected_calibration_error),
++        ("maximum_gold_unscored_rate", maximum_gold_unscored_rate),
++    ):
++        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
++            raise AnnotationCalibrationError(f"{name} must be a finite number")
++        if not 0.0 <= float(value) <= 1.0:
++            raise AnnotationCalibrationError(f"{name} must be in [0, 1]")
++
++    if (
++        not isinstance(schema_id, str)
++        or not schema_id.strip()
++        or isinstance(schema_version, bool)
++        or not isinstance(schema_version, int)
++        or schema_version < 1
++    ):
++        raise AnnotationCalibrationError("schema identity must be schema_id plus version >= 1")
++    durable_schema = read_durable_annotation_schema(conn, schema_id, schema_version)
++    if durable_schema is None:
++        raise AnnotationCalibrationError(f"unknown durable annotation schema {schema_id}@v{schema_version}")
++    _schema_field(durable_schema.schema, construct)
++    qualified_schema_id = durable_schema.schema.qualified_id
++    rows = conn.execute(
++        """
++        SELECT assertion_id
++        FROM assertions
++        WHERE kind = ?
++          AND key = ?
++          AND status = ?
++        ORDER BY assertion_id
++        """,
++        (
++            AssertionKind.ANNOTATION_MEASURE.value,
++            construct,
++            AssertionStatus.ACTIVE.value,
++        ),
++    ).fetchall()
++    latest: dict[tuple[str, str, str], tuple[tuple[int, int, str, str], JudgeTrustSummary]] = {}
++    observations: dict[str, _BatchObservation] = {}
++    for row in rows:
++        envelope = read_assertion_envelope(conn, str(row[0]))
++        if envelope is None:
++            raise AnnotationCalibrationError("calibration-measure query returned a missing assertion")
++        if not isinstance(envelope.value, dict):
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} has a malformed payload")
++        value = envelope.value
++        if value.get("format") != ANNOTATION_MEASURE_FORMAT:
++            continue
++        if value.get("algorithm") != ANNOTATION_MEASURE_ALGORITHM:
++            continue
++        if value.get("qualified_schema_id") != qualified_schema_id or value.get("construct") != construct:
++            continue
++        if envelope.author_ref != ANNOTATION_CALIBRATION_AUTHOR_REF or envelope.author_kind != "system":
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} has a forged author")
++        if envelope.visibility is not AssertionVisibility.PRIVATE or envelope.context_policy.get("inject") is not False:
++            raise AnnotationCalibrationError(
++                f"measure assertion {envelope.assertion_id!r} must remain private and non-injectable"
++            )
++        if envelope.context_policy.get("promotion_required") is not False:
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} must not require promotion")
++
++        batch_ref = _normalized_ref(
++            _required_string(value.get("batch_ref"), context="measure batch_ref"),
++            label="measure batch_ref",
++            expected_kind="annotation-batch",
++        )
++        input_digest = _required_string(value.get("input_digest"), context="measure input_digest")
++        expected_assertion_id = _measure_assertion_id(
++            batch_ref=batch_ref,
++            construct=construct,
++            input_digest=input_digest,
++        )
++        if envelope.assertion_id != expected_assertion_id:
++            raise AnnotationCalibrationError(
++                f"measure assertion {envelope.assertion_id!r} has a non-canonical identity"
++            )
++        if envelope.scope_ref != batch_ref or envelope.target_ref != batch_ref:
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} has the wrong batch scope")
++        if batch_ref not in envelope.evidence_refs:
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} omits its batch evidence")
++        measured_at_ms = value.get("measured_at_ms")
++        if isinstance(measured_at_ms, bool) or not isinstance(measured_at_ms, int) or measured_at_ms < 0:
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} has an invalid timestamp")
++
++        judge_doc = value.get("judge")
++        gold_doc = value.get("gold")
++        calibration_doc = value.get("calibration")
++        drift_doc = value.get("drift")
++        if not all(isinstance(document, dict) for document in (judge_doc, gold_doc, calibration_doc, drift_doc)):
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} has malformed products")
++        judge_mapping = cast(dict[str, object], judge_doc)
++        measured_judge = AnnotationJudgeRefs(
++            actor_ref=_required_string(judge_mapping.get("actor_ref"), context="measure judge.actor_ref"),
++            model_ref=_required_string(judge_mapping.get("model_ref"), context="measure judge.model_ref"),
++            execution_context_ref=_required_string(
++                judge_mapping.get("execution_context_ref"),
++                context="measure judge.execution_context_ref",
++            ),
++        )
++        if judge is not None and measured_judge != judge:
++            continue
++
++        observation = observations.get(batch_ref)
++        if observation is None:
++            observation = _batch_observation(conn, ObjectRef.parse(batch_ref).object_id)
++            observations[batch_ref] = observation
++        if observation.batch.qualified_schema_id != qualified_schema_id:
++            raise AnnotationCalibrationError(
++                f"measure assertion {envelope.assertion_id!r} disagrees with its batch schema"
++            )
++        if _judge_from_batch(observation.batch) != measured_judge:
++            raise AnnotationCalibrationError(
++                f"measure assertion {envelope.assertion_id!r} disagrees with its batch judge"
++            )
++
++        gold_mapping = cast(dict[str, object], gold_doc)
++        calibration_mapping = cast(dict[str, object], calibration_doc)
++        drift_mapping = cast(dict[str, object], drift_doc)
++        n_gold = _required_nonnegative_int(gold_mapping.get("n_overlap"), context="measure gold.n_overlap")
++        n_gold_assigned = _required_nonnegative_int(
++            gold_mapping.get("n_assigned"),
++            context="measure gold.n_assigned",
++        )
++        n_confident_gold = _required_nonnegative_int(
++            calibration_mapping.get("n_confident_gold"),
++            context="measure calibration.n_confident_gold",
++        )
++        accuracy = _optional_unit_float(gold_mapping.get("accuracy"), context="measure gold.accuracy")
++        brier = _optional_unit_float(
++            calibration_mapping.get("brier_score"),
++            context="measure calibration.brier_score",
++        )
++        ece = _optional_unit_float(
++            calibration_mapping.get("expected_calibration_error"),
++            context="measure calibration.expected_calibration_error",
++        )
++        abstention_rate = _optional_unit_float(
++            gold_mapping.get("abstention_rate"),
++            context="measure gold.abstention_rate",
++        )
++        unscored_rate = _optional_unit_float(
++            gold_mapping.get("unscored_rate"),
++            context="measure gold.unscored_rate",
++        )
++        if not isinstance(drift_mapping.get("alert"), bool):
++            raise AnnotationCalibrationError(f"measure assertion {envelope.assertion_id!r} has an invalid drift alert")
++        drift_alert = drift_mapping.get("alert") is True
++        reasons: list[str] = []
++        if n_gold < minimum_gold:
++            reasons.append("insufficient_gold")
++        if n_confident_gold < minimum_confident_gold:
++            reasons.append("insufficient_confident_gold")
++        if reasons:
++            state: TrustState = "unknown"
++        elif drift_alert:
++            state = "drifting"
++            reasons.append("drift_alert")
++        else:
++            if accuracy is None or accuracy < float(minimum_accuracy):
++                reasons.append("accuracy_below_threshold")
++            if brier is None or brier > float(maximum_brier):
++                reasons.append("brier_above_threshold")
++            if ece is None or ece > float(maximum_expected_calibration_error):
++                reasons.append("calibration_error_above_threshold")
++            if unscored_rate is None or unscored_rate > float(maximum_gold_unscored_rate):
++                reasons.append("gold_unscored_above_threshold")
++            state = "eligible" if not reasons else "below_threshold"
++        summary = JudgeTrustSummary(
++            judge=measured_judge,
++            batch_ref=batch_ref,
++            qualified_schema_id=qualified_schema_id,
++            construct=construct,
++            state=state,
++            reasons=tuple(reasons),
++            n_gold=n_gold,
++            n_gold_assigned=n_gold_assigned,
++            n_confident_gold=n_confident_gold,
++            gold_abstention_rate=abstention_rate,
++            gold_unscored_rate=unscored_rate,
++            accuracy=accuracy,
++            brier_score=brier,
++            expected_calibration_error=ece,
++            drift_alert=drift_alert,
++            measured_at_ms=measured_at_ms,
++        )
++        # Batch provenance, not analysis execution time, defines recency. A
++        # historical batch can be re-materialized under changed thresholds or
++        # bucket parameters without becoming the judge's latest calibration.
++        sort_key = (
++            observation.batch.created_at_ms,
++            measured_at_ms,
++            batch_ref,
++            envelope.assertion_id,
++        )
++        existing = latest.get(measured_judge.key)
++        if existing is None or sort_key > existing[0]:
++            latest[measured_judge.key] = (sort_key, summary)
++
++    if judge is not None and judge.key not in latest:
++        return (
++            JudgeTrustSummary(
++                judge=judge,
++                batch_ref=None,
++                qualified_schema_id=qualified_schema_id,
++                construct=construct,
++                state="unknown",
++                reasons=("no_measure",),
++                n_gold=0,
++                n_gold_assigned=0,
++                n_confident_gold=0,
++                gold_abstention_rate=None,
++                gold_unscored_rate=None,
++                accuracy=None,
++                brier_score=None,
++                expected_calibration_error=None,
++                drift_alert=False,
++                measured_at_ms=None,
++            ),
++        )
++    return tuple(sorted((item[1] for item in latest.values()), key=lambda item: item.judge.key))
++
++
++def _required_nonnegative_int(value: object, *, context: str) -> int:
++    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
++        raise AnnotationCalibrationError(f"{context} must be a non-negative integer")
++    return value
++
++
++def _optional_unit_float(value: object, *, context: str) -> float | None:
++    if value is None:
++        return None
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise AnnotationCalibrationError(f"{context} must be null or a finite number in [0, 1]")
++    normalized = float(value)
++    if not isfinite(normalized) or not 0.0 <= normalized <= 1.0:
++        raise AnnotationCalibrationError(f"{context} must be null or a finite number in [0, 1]")
++    return normalized
++
++
++__all__ = [
++    "ANNOTATION_ASSIGNMENT_FORMAT",
++    "ANNOTATION_CALIBRATION_BATCH_FORMAT",
++    "ANNOTATION_GOLD_FORMAT",
++    "ANNOTATION_MEASURE_ALGORITHM",
++    "ANNOTATION_MEASURE_FORMAT",
++    "BASE_BLINDING_MASKED_FIELDS",
++    "CALIBRATION_MASKED_FIELDS",
++    "AnnotationCalibrationError",
++    "AnnotationJudgeRefs",
++    "CalibrationCompositionRequest",
++    "CalibrationLabelInput",
++    "CalibrationSourceItem",
++    "ComposedCalibrationBatch",
++    "GoldAnnotationInput",
++    "GoldStratumQuota",
++    "JudgeBatchView",
++    "JudgeItemView",
++    "JudgeTrustSummary",
++    "ReliabilityBucket",
++    "author_gold_annotations",
++    "compose_calibration_batch",
++    "krippendorff_alpha",
++    "materialize_calibration_measures",
++    "query_judge_trust",
++    "record_calibration_batch",
++]
+diff --git a/polylogue/annotations/write.py b/polylogue/annotations/write.py
+index e51ecb65e..13fe5b67f 100644
+--- a/polylogue/annotations/write.py
++++ b/polylogue/annotations/write.py
+@@ -224,10 +224,12 @@ def upsert_annotation_assertion(
+                 f"not {registered_schema.qualified_id!r}"
+             )
+         if durable_batch is not None and durable_batch.target_ref != normalized_target_ref:
+-            batch_errors.append(
+-                f"batch_ref {normalized_batch_ref!r} targets {durable_batch.target_ref!r}, "
+-                f"not {normalized_target_ref!r}"
+-            )
++            item_target_refs = durable_batch.item_target_refs
++            if normalized_target_ref not in item_target_refs:
++                batch_errors.append(
++                    f"batch_ref {normalized_batch_ref!r} targets {durable_batch.target_ref!r} "
++                    f"with item targets {list(item_target_refs)!r}, not {normalized_target_ref!r}"
++                )
+         if durable_batch is not None and durable_batch.actor_ref != normalized_author_ref:
+             batch_errors.append(
+                 f"batch_ref {normalized_batch_ref!r} records actor {durable_batch.actor_ref!r}, "
+diff --git a/polylogue/core/enums.py b/polylogue/core/enums.py
+index 7d7a98055..2bd25e526 100644
+--- a/polylogue/core/enums.py
++++ b/polylogue/core/enums.py
+@@ -417,6 +417,12 @@ class AssertionKind(PolylogueStrEnum):
+     MARK = "mark"
+     HIGHLIGHT = "highlight"
+     ANNOTATION = "annotation"
++    ANNOTATION_GOLD = "annotation_gold"
++    """Operator-authored gold answer for a versioned annotation construct."""
++    ANNOTATION_ASSIGNMENT = "annotation_assignment"
++    """Private, immutable receipt for one blinded annotation work assignment."""
++    ANNOTATION_MEASURE = "annotation_measure"
++    """Deterministic, non-injected calibration/agreement product for a batch."""
+     CORRECTION = "correction"
+     SUPPRESSION = "suppression"
+     TAG = "tag"
+diff --git a/polylogue/storage/sqlite/archive_tiers/user_annotations.py b/polylogue/storage/sqlite/archive_tiers/user_annotations.py
+index 4986ab795..9cb48f686 100644
+--- a/polylogue/storage/sqlite/archive_tiers/user_annotations.py
++++ b/polylogue/storage/sqlite/archive_tiers/user_annotations.py
+@@ -244,9 +244,15 @@ def persist_annotation_batch(conn: sqlite3.Connection, batch: AnnotationBatch) -
+     schema = read_durable_annotation_schema(conn, batch.schema_id, batch.schema_version)
+     if schema is None:
+         raise AnnotationBatchError(f"annotation batch references unknown schema {batch.qualified_schema_id!r}")
+-    if not schema.schema.accepts_target_kind(batch.target_ref):
++    item_target_refs = batch.item_target_refs
++    targets_to_validate = item_target_refs or (batch.target_ref,)
++    incompatible_targets = [
++        target_ref for target_ref in targets_to_validate if not schema.schema.accepts_target_kind(target_ref)
++    ]
++    if incompatible_targets:
++        target_label = "item target_refs" if item_target_refs else "target_ref"
+         raise AnnotationBatchError(
+-            f"annotation batch target_ref {batch.target_ref!r} is incompatible with "
++            f"annotation batch {target_label} {incompatible_targets!r} are incompatible with "
+             f"schema target_ref_kinds {list(schema.schema.target_ref_kinds)}"
+         )
+     try:
+diff --git a/tests/unit/annotations/test_calibration.py b/tests/unit/annotations/test_calibration.py
+new file mode 100644
+index 000000000..7dedb6722
+--- /dev/null
++++ b/tests/unit/annotations/test_calibration.py
+@@ -0,0 +1,975 @@
++"""Real-route tests for blinded annotation judge calibration."""
++
++from __future__ import annotations
++
++import json
++import sqlite3
++import threading
++from collections.abc import Iterator, Mapping
++from pathlib import Path
++from queue import Queue
++from typing import cast
++
++import pytest
++
++from polylogue.annotations.calibration import (
++    ANNOTATION_ASSIGNMENT_FORMAT,
++    ANNOTATION_MEASURE_FORMAT,
++    BASE_BLINDING_MASKED_FIELDS,
++    CALIBRATION_MASKED_FIELDS,
++    AnnotationCalibrationError,
++    AnnotationJudgeRefs,
++    CalibrationCompositionRequest,
++    CalibrationLabelInput,
++    CalibrationSourceItem,
++    GoldAnnotationInput,
++    GoldStratumQuota,
++    JudgeBatchView,
++    author_gold_annotations,
++    compose_calibration_batch,
++    krippendorff_alpha,
++    materialize_calibration_measures,
++    query_judge_trust,
++    record_calibration_batch,
++)
++from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
++from polylogue.annotations.write import AnnotationValidationError, upsert_annotation_assertion
++from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
++from polylogue.insights.judgment.blinding import DEFAULT_MASKED_PROVENANCE_FIELDS
++from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
++from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
++from polylogue.storage.sqlite.archive_tiers.user_annotations import read_annotation_batch
++from polylogue.storage.sqlite.archive_tiers.user_write import (
++    judge_assertion_candidate,
++    read_assertion_envelope,
++)
++from polylogue.storage.sqlite.connection_profile import open_connection
++
++_EXPECTED_BASE_MASK = frozenset(
++    {
++        "actor_ref",
++        "arm",
++        "author_kind",
++        "author_ref",
++        "detector_ref",
++        "execution_context_id",
++        "judge_ref",
++        "model",
++        "prior_rank",
++        "prior_score",
++        "provider",
++    }
++)
++_EXPECTED_CALIBRATION_MASK = frozenset(
++    {
++        *_EXPECTED_BASE_MASK,
++        "assignment_ref",
++        "gold_assertion_ref",
++        "gold_label",
++        "gold_set_ref",
++        "is_gold",
++        "prior_judgments",
++        "prior_labels",
++        "seed",
++    }
++)
++
++
++def _schema() -> AnnotationSchema:
++    return AnnotationSchema(
++        schema_id="test.calibration",
++        version=1,
++        title="Calibration fixture",
++        fields=(
++            AnnotationField(name="label", value_type="enum", enum_values=("A", "B")),
++            AnnotationField(name="abstain", value_type="boolean", required=False),
++        ),
++        target_ref_kinds=("session",),
++        abstain_field="abstain",
++        evidence_policy="required",
++        status="active",
++    )
++
++
++def _confidence_schema() -> AnnotationSchema:
++    return AnnotationSchema(
++        schema_id="test.calibration-confidence",
++        version=1,
++        title="Calibration confidence fixture",
++        fields=(
++            AnnotationField(name="label", value_type="enum", enum_values=("A", "B")),
++            AnnotationField(name="confidence", value_type="number", required=False, minimum=0.0, maximum=1.0),
++            AnnotationField(name="abstain", value_type="boolean", required=False),
++        ),
++        target_ref_kinds=("session",),
++        abstain_field="abstain",
++        evidence_policy="required",
++        status="active",
++    )
++
++
++def _registry(schema: AnnotationSchema) -> AnnotationSchemaRegistry:
++    registry = AnnotationSchemaRegistry()
++    registry.register(schema)
++    return registry
++
++
++@pytest.fixture
++def user_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
++    path = tmp_path / "user.db"
++    initialize_archive_database(path, ArchiveTier.USER)
++    conn = open_connection(path)
++    yield conn
++    conn.close()
++
++
++def _author_gold(
++    conn: sqlite3.Connection,
++    *,
++    schema: AnnotationSchema,
++    registry: AnnotationSchemaRegistry,
++) -> None:
++    author_gold_annotations(
++        conn,
++        schema=schema,
++        registry=registry,
++        gold_set_ref="analysis:test-gold-v1",
++        items=(
++            GoldAnnotationInput(
++                gold_key="g1",
++                target_ref="session:s1",
++                label={"label": "A"},
++                evidence_refs=("session:s1",),
++                strata={"class": "A", "difficulty": "easy"},
++            ),
++            GoldAnnotationInput(
++                gold_key="g2",
++                target_ref="session:s2",
++                label={"label": "A"},
++                evidence_refs=("session:s2",),
++                strata={"class": "A", "difficulty": "hard"},
++            ),
++            GoldAnnotationInput(
++                gold_key="g3",
++                target_ref="session:s3",
++                label={"label": "B"},
++                evidence_refs=("session:s3",),
++                strata={"class": "B", "difficulty": "easy"},
++            ),
++        ),
++        author_ref="user:operator",
++        now_ms=100,
++    )
++
++
++def _safe_loader(target_ref: str, evidence_refs: tuple[str, ...]) -> CalibrationSourceItem:
++    return CalibrationSourceItem(
++        target_ref=target_ref,
++        evidence_refs=evidence_refs,
++        presentation={"text": f"evidence for {target_ref}"},
++    )
++
++
++def _compose(
++    conn: sqlite3.Connection,
++    *,
++    schema: AnnotationSchema,
++    judge: AnnotationJudgeRefs,
++    batch_id: str,
++    gold_count: int = 3,
++    gold_strata: tuple[GoldStratumQuota, ...] = (),
++    created_at_ms: int = 200,
++) -> JudgeBatchView:
++    composed = compose_calibration_batch(
++        conn,
++        request=CalibrationCompositionRequest(
++            batch_id=batch_id,
++            schema_id=schema.schema_id,
++            schema_version=schema.version,
++            source_result_ref="result-set:calibration-source",
++            judge=judge,
++            prompt_ref="block:prompt:0",
++            rubric_ref="insight:rubric-v1",
++            ordinary_items=(),
++            gold_set_ref="analysis:test-gold-v1",
++            gold_count=gold_count,
++            gold_strata=gold_strata,
++            seed=f"seed-{batch_id}",
++            created_at_ms=created_at_ms,
++        ),
++        item_loader=_safe_loader,
++    )
++    return composed.judge_view
++
++
++def _record(
++    conn: sqlite3.Connection,
++    *,
++    schema: AnnotationSchema,
++    registry: AnnotationSchemaRegistry,
++    batch_id: str,
++    view: JudgeBatchView,
++    labels_by_target: Mapping[str, str],
++    confidence: float = 0.9,
++):
++    return record_calibration_batch(
++        conn,
++        schema=schema,
++        registry=registry,
++        batch_id=batch_id,
++        labels=tuple(
++            CalibrationLabelInput(
++                item_id=item.item_id,
++                value={"label": labels_by_target[item.target_ref]},
++                confidence=confidence,
++            )
++            for item in view.items
++        ),
++        now_ms=300,
++    )
++
++
++def _assert_no_masked_key(value: object) -> None:
++    if isinstance(value, dict):
++        assert not (set(value) & _EXPECTED_CALIBRATION_MASK)
++        for item in value.values():
++            _assert_no_masked_key(item)
++    elif isinstance(value, list):
++        for item in value:
++            _assert_no_masked_key(item)
++
++
++def test_mask_checklists_are_independent_and_blind_view_has_exact_surface(
++    user_conn: sqlite3.Connection,
++) -> None:
++    assert DEFAULT_MASKED_PROVENANCE_FIELDS == _EXPECTED_BASE_MASK
++    assert BASE_BLINDING_MASKED_FIELDS == _EXPECTED_BASE_MASK
++    assert CALIBRATION_MASKED_FIELDS == _EXPECTED_CALIBRATION_MASK
++
++    schema = _schema()
++    registry = _registry(schema)
++    _author_gold(user_conn, schema=schema, registry=registry)
++
++    # A real pre-existing label with a recognizable sentinel must not become a
++    # composition input. The batch composer reads only annotation_gold rows.
++    upsert_annotation_assertion(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        target_ref="session:s1",
++        value={"label": "B"},
++        row_key="prior-label-sentinel",
++        evidence_refs=("session:s1",),
++        author_ref="agent:prior-judge",
++        body_text="PRIOR_LABEL_SENTINEL",
++        now_ms=150,
++    )
++    user_conn.commit()
++
++    with pytest.raises(AnnotationCalibrationError, match="forbidden provenance keys"):
++        CalibrationSourceItem(
++            target_ref="session:s1",
++            evidence_refs=("session:s1",),
++            presentation={"nested": {"prior_labels": "PRIOR_LABEL_SENTINEL"}},
++        )
++    with pytest.raises(AnnotationCalibrationError, match="Prior-Labels"):
++        CalibrationSourceItem(
++            target_ref="session:s1",
++            evidence_refs=("session:s1",),
++            presentation={"nested": {"Prior-Labels": "case-and-separator bypass"}},
++        )
++
++    with pytest.raises(AnnotationCalibrationError, match="goldLabel"):
++        CalibrationSourceItem(
++            target_ref="session:s1",
++            evidence_refs=("session:s1",),
++            presentation={"nested": {"goldLabel": "camel-case bypass"}},
++        )
++
++    judge = AnnotationJudgeRefs(
++        actor_ref="agent:judge-blind",
++        model_ref="agent:model-v1",
++        execution_context_ref="context-snapshot:ctx-blind",
++    )
++    composed = compose_calibration_batch(
++        user_conn,
++        request=CalibrationCompositionRequest(
++            batch_id="blind-stratified",
++            schema_id=schema.schema_id,
++            schema_version=schema.version,
++            source_result_ref="result-set:calibration-source",
++            judge=judge,
++            prompt_ref="block:prompt:0",
++            rubric_ref="insight:rubric-v1",
++            ordinary_items=(
++                CalibrationSourceItem(
++                    target_ref="session:s4",
++                    evidence_refs=("session:s4",),
++                    presentation={"text": "ordinary archive evidence"},
++                ),
++            ),
++            gold_set_ref="analysis:test-gold-v1",
++            gold_strata=(
++                GoldStratumQuota(filters={"class": "A"}, count=1),
++                GoldStratumQuota(filters={"class": "B"}, count=1),
++            ),
++            seed="blind-seed",
++            created_at_ms=200,
++        ),
++        item_loader=_safe_loader,
++    )
++
++    document = composed.judge_view.as_document()
++    assert set(document) == {
++        "batch_ref",
++        "item_order_hash",
++        "items",
++        "qualified_schema_id",
++        "rubric_ref",
++    }
++    assert all(set(item) == {"evidence_refs", "item_id", "presentation", "target_ref"} for item in document["items"])
++    _assert_no_masked_key(document)
++    serialized = json.dumps(document, sort_keys=True)
++    assert "PRIOR_LABEL_SENTINEL" not in serialized
++    assert "annotation_gold" not in serialized
++    assert judge.actor_ref not in serialized
++    assert judge.model_ref not in serialized
++    assert judge.execution_context_ref not in serialized
++
++    assignment = read_assertion_envelope(user_conn, composed.assignment_ref.removeprefix("assertion:"))
++    assert assignment is not None
++    assert assignment.kind is AssertionKind.ANNOTATION_ASSIGNMENT
++    assert assignment.visibility is AssertionVisibility.PRIVATE
++    assert assignment.context_policy.get("inject") is False
++    assignment_value = cast(dict[str, object], assignment.value)
++    assert assignment_value["format"] == ANNOTATION_ASSIGNMENT_FORMAT
++    assert assignment_value["gold_count"] == 2
++    assert assignment_value["seed"] == "blind-seed"
++    assert set(cast(list[str], assignment_value["source_item_ids"])) == {
++        item.item_id for item in composed.judge_view.items
++    }
++    assignment_items = cast(list[dict[str, object]], assignment_value["items"])
++    assert sum(item["is_gold"] is True for item in assignment_items) == 2
++    gold_items = [item for item in assignment_items if item["is_gold"] is True]
++    ordinary_items = [item for item in assignment_items if item["is_gold"] is False]
++    assert len(gold_items) == 2
++    assert len(ordinary_items) == 1
++    assert all(isinstance(item["gold_assertion_digest"], str) for item in gold_items)
++    assert ordinary_items[0]["gold_assertion_ref"] is None
++    assert ordinary_items[0]["gold_assertion_digest"] is None
++
++
++def test_gold_identity_and_composition_inputs_are_canonical(user_conn: sqlite3.Connection) -> None:
++    schema = _schema()
++    registry = _registry(schema)
++    _author_gold(user_conn, schema=schema, registry=registry)
++
++    with pytest.raises(AnnotationCalibrationError, match="gold target .* already uses key"):
++        author_gold_annotations(
++            user_conn,
++            schema=schema,
++            registry=registry,
++            gold_set_ref="analysis:test-gold-v1",
++            items=(
++                GoldAnnotationInput(
++                    gold_key="replacement-key",
++                    target_ref="session:s1",
++                    label={"label": "A"},
++                    evidence_refs=("session:s1",),
++                    strata={"class": "A"},
++                ),
++            ),
++            author_ref="user:operator",
++            now_ms=101,
++        )
++    with pytest.raises(AnnotationCalibrationError, match="gold key .* already identifies"):
++        author_gold_annotations(
++            user_conn,
++            schema=schema,
++            registry=registry,
++            gold_set_ref="analysis:test-gold-v1",
++            items=(
++                GoldAnnotationInput(
++                    gold_key="g1",
++                    target_ref="session:s4",
++                    label={"label": "A"},
++                    evidence_refs=("session:s4",),
++                    strata={"class": "A"},
++                ),
++            ),
++            author_ref="user:operator",
++            now_ms=102,
++        )
++    assert user_conn.execute(
++        "SELECT COUNT(*) FROM assertions WHERE kind = ?",
++        (AssertionKind.ANNOTATION_GOLD.value,),
++    ).fetchone()[0] == 3
++
++    judge = AnnotationJudgeRefs(
++        "agent:judge-canonical-input",
++        "agent:model-v1",
++        "context-snapshot:ctx-canonical-input",
++    )
++    ordinary = (
++        CalibrationSourceItem(
++            target_ref="session:s4",
++            evidence_refs=("session:s4",),
++            presentation={"text": "ordinary four"},
++        ),
++        CalibrationSourceItem(
++            target_ref="session:s5",
++            evidence_refs=("session:s5",),
++            presentation={"text": "ordinary five"},
++        ),
++    )
++
++    def request(items: tuple[CalibrationSourceItem, ...]) -> CalibrationCompositionRequest:
++        return CalibrationCompositionRequest(
++            batch_id="canonical-source-order",
++            schema_id=schema.schema_id,
++            schema_version=schema.version,
++            source_result_ref="result-set:calibration-source",
++            judge=judge,
++            prompt_ref="block:prompt:0",
++            rubric_ref="insight:rubric-v1",
++            ordinary_items=items,
++            gold_set_ref="analysis:test-gold-v1",
++            gold_count=1,
++            seed="canonical-source-seed",
++            created_at_ms=200,
++        )
++
++    first = compose_calibration_batch(user_conn, request=request(ordinary), item_loader=_safe_loader)
++    replay = compose_calibration_batch(
++        user_conn,
++        request=request(tuple(reversed(ordinary))),
++        item_loader=_safe_loader,
++    )
++    assert replay.assignment_ref == first.assignment_ref
++    assert replay.judge_view.as_document() == first.judge_view.as_document()
++
++    assignment_id = first.assignment_ref.removeprefix("assertion:")
++    assignment = read_assertion_envelope(user_conn, assignment_id)
++    assert assignment is not None
++    value = cast(dict[str, object], assignment.value)
++    items = cast(list[dict[str, object]], value["items"])
++    source_item_ids = cast(list[str], value["source_item_ids"])
++    original_item_id = cast(str, items[0]["item_id"])
++    items[0]["item_id"] = "item-forged"
++    source_item_ids[source_item_ids.index(original_item_id)] = "item-forged"
++    user_conn.execute(
++        "UPDATE assertions SET value_json = ? WHERE assertion_id = ?",
++        (json.dumps(value, sort_keys=True, separators=(",", ":")), assignment_id),
++    )
++    user_conn.commit()
++
++    with pytest.raises(AnnotationCalibrationError, match="non-canonical item_id"):
++        record_calibration_batch(
++            user_conn,
++            schema=schema,
++            registry=registry,
++            batch_id="canonical-source-order",
++            labels=tuple(
++                CalibrationLabelInput(item_id=item.item_id, value={"label": "A"})
++                for item in first.judge_view.items
++            ),
++            now_ms=300,
++        )
++
++
++def test_krippendorff_alpha_matches_hand_computed_nominal_fixture() -> None:
++    # Ratings by unit: A/A, A/B, B/B. Do = 1/3, De = 3/5, so
++    # alpha = 1 - (1/3)/(3/5) = 4/9.
++    alpha = krippendorff_alpha(
++        {
++            "unit-1": ("A", "A"),
++            "unit-2": ("A", "B"),
++            "unit-3": ("B", "B"),
++        }
++    )
++    assert alpha == pytest.approx(4 / 9)
++    assert krippendorff_alpha({"unit-1": ("A",), "unit-2": ("B",)}) is None
++    assert krippendorff_alpha({"unit-1": (1.0, 1.0), "unit-2": (2.0, 2.0)}, level="interval") == 1.0
++
++
++def test_measures_are_batch_scoped_queryable_and_context_exact(user_conn: sqlite3.Connection) -> None:
++    schema = _schema()
++    registry = _registry(schema)
++    _author_gold(user_conn, schema=schema, registry=registry)
++
++    judge_one = AnnotationJudgeRefs("agent:judge-1", "agent:model-v1", "context-snapshot:ctx-1")
++    judge_two = AnnotationJudgeRefs("agent:judge-2", "agent:model-v1", "context-snapshot:ctx-2")
++    first_view = _compose(user_conn, schema=schema, judge=judge_one, batch_id="judge-one-baseline")
++    second_view = _compose(user_conn, schema=schema, judge=judge_two, batch_id="judge-two-peer")
++    first = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="judge-one-baseline",
++        view=first_view,
++        labels_by_target={"session:s1": "A", "session:s2": "A", "session:s3": "B"},
++    )
++    second = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="judge-two-peer",
++        view=second_view,
++        labels_by_target={"session:s1": "A", "session:s2": "B", "session:s3": "B"},
++    )
++
++    measures = materialize_calibration_measures(
++        user_conn,
++        batch_id=first.batch_id,
++        peer_batch_ids=(second.batch_id,),
++        constructs=("label",),
++        bucket_count=10,
++        now_ms=500,
++    )
++    assert len(measures) == 1
++    measure = measures[0]
++    assert measure.kind is AssertionKind.ANNOTATION_MEASURE
++    assert measure.scope_ref == measure.target_ref == first.batch_ref
++    assert measure.visibility is AssertionVisibility.PRIVATE
++    assert measure.context_policy.get("inject") is False
++    value = cast(dict[str, object], measure.value)
++    assert value["format"] == ANNOTATION_MEASURE_FORMAT
++    assert value["measured_at_ms"] == 500
++    agreement = cast(dict[str, object], value["agreement"])
++    gold = cast(dict[str, object], value["gold"])
++    calibration = cast(dict[str, object], value["calibration"])
++    assert agreement["alpha"] == pytest.approx(4 / 9)
++    assert agreement["n_pairable_units"] == 3
++    assert gold["accuracy"] == 1.0
++    assert gold["n_assigned"] == gold["n_overlap"] == 3
++    assert gold["label_distribution"] == {'"A"': pytest.approx(2 / 3), '"B"': pytest.approx(1 / 3)}
++    assert calibration["brier_score"] == pytest.approx(0.01)
++    assert calibration["expected_calibration_error"] == pytest.approx(0.1)
++    assert len(cast(list[object], calibration["buckets"])) == 10
++
++    recomputed = materialize_calibration_measures(
++        user_conn,
++        batch_id=first.batch_id,
++        peer_batch_ids=(second.batch_id,),
++        constructs=("label",),
++        bucket_count=10,
++        now_ms=501,
++    )[0]
++    assert recomputed.assertion_id == measure.assertion_id
++    assert cast(dict[str, object], recomputed.value)["measured_at_ms"] == 500
++
++    eligible = query_judge_trust(
++        user_conn,
++        schema_id=schema.schema_id,
++        schema_version=schema.version,
++        construct="label",
++        judge=judge_one,
++        minimum_gold=3,
++        minimum_confident_gold=3,
++        maximum_expected_calibration_error=0.11,
++    )
++    assert len(eligible) == 1
++    assert eligible[0].state == "eligible"
++    assert eligible[0].batch_ref == first.batch_ref
++    assert eligible[0].measured_at_ms == 500
++
++    unseen_context = query_judge_trust(
++        user_conn,
++        schema_id=schema.schema_id,
++        schema_version=schema.version,
++        construct="label",
++        judge=AnnotationJudgeRefs("agent:judge-1", "agent:model-v1", "context-snapshot:ctx-unseen"),
++        minimum_gold=3,
++        minimum_confident_gold=3,
++    )
++    assert unseen_context[0].state == "unknown"
++    assert unseen_context[0].reasons == ("no_measure",)
++    assert unseen_context[0].batch_ref is None
++
++    # A later batch for the exact same judge/context is compared to the
++    # baseline and becomes the latest trust product for that exact partition.
++    drift_view = _compose(
++        user_conn,
++        schema=schema,
++        judge=judge_one,
++        batch_id="judge-one-drift",
++        created_at_ms=250,
++    )
++    drift_batch = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="judge-one-drift",
++        view=drift_view,
++        labels_by_target={"session:s1": "B", "session:s2": "B", "session:s3": "A"},
++    )
++    drift_measure = materialize_calibration_measures(
++        user_conn,
++        batch_id=drift_batch.batch_id,
++        baseline_batch_id=first.batch_id,
++        constructs=("label",),
++        now_ms=600,
++    )[0]
++    drift_value = cast(dict[str, object], drift_measure.value)
++    drift = cast(dict[str, object], drift_value["drift"])
++    assert drift["alert"] is True
++    assert "accuracy_drop" in cast(list[str], drift["reasons"])
++    assert "brier_increase" in cast(list[str], drift["reasons"])
++
++    # A later analysis run over the older batch (with changed bucket
++    # parameters, hence a distinct product) must not make old calibration
++    # provenance look newer than the later judged batch.
++    historical_reanalysis = materialize_calibration_measures(
++        user_conn,
++        batch_id=first.batch_id,
++        peer_batch_ids=(second.batch_id,),
++        constructs=("label",),
++        bucket_count=5,
++        now_ms=700,
++    )[0]
++    assert historical_reanalysis.assertion_id != measure.assertion_id
++
++    latest = query_judge_trust(
++        user_conn,
++        schema_id=schema.schema_id,
++        schema_version=schema.version,
++        construct="label",
++        judge=judge_one,
++        minimum_gold=3,
++        minimum_confident_gold=3,
++        maximum_expected_calibration_error=1.0,
++    )
++    assert latest[0].state == "drifting"
++    assert latest[0].batch_ref == drift_batch.batch_ref
++
++    # The query surface fails closed if a durable calibration product is
++    # subsequently made public or otherwise policy-mutated out of band.
++    user_conn.execute(
++        "UPDATE assertions SET visibility = 'public' WHERE assertion_id = ?",
++        (drift_measure.assertion_id,),
++    )
++    user_conn.commit()
++    with pytest.raises(AnnotationCalibrationError, match="private and non-injectable"):
++        query_judge_trust(
++            user_conn,
++            schema_id=schema.schema_id,
++            schema_version=schema.version,
++            construct="label",
++            judge=judge_one,
++            minimum_gold=3,
++            minimum_confident_gold=3,
++        )
++
++
++def test_measure_peer_sets_are_canonical_and_future_baselines_fail_closed(
++    user_conn: sqlite3.Connection,
++) -> None:
++    schema = _schema()
++    registry = _registry(schema)
++    _author_gold(user_conn, schema=schema, registry=registry)
++
++    current_judge = AnnotationJudgeRefs(
++        "agent:judge-canonical",
++        "agent:model-v1",
++        "context-snapshot:ctx-canonical",
++    )
++    peer_two = AnnotationJudgeRefs("agent:judge-peer-2", "agent:model-v1", "context-snapshot:ctx-peer-2")
++    peer_three = AnnotationJudgeRefs("agent:judge-peer-3", "agent:model-v1", "context-snapshot:ctx-peer-3")
++    labels = {"session:s1": "A", "session:s2": "A", "session:s3": "B"}
++
++    current_view = _compose(
++        user_conn,
++        schema=schema,
++        judge=current_judge,
++        batch_id="canonical-current",
++        created_at_ms=300,
++    )
++    peer_two_view = _compose(
++        user_conn,
++        schema=schema,
++        judge=peer_two,
++        batch_id="canonical-peer-2",
++        created_at_ms=301,
++    )
++    peer_three_view = _compose(
++        user_conn,
++        schema=schema,
++        judge=peer_three,
++        batch_id="canonical-peer-3",
++        created_at_ms=302,
++    )
++    current = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="canonical-current",
++        view=current_view,
++        labels_by_target=labels,
++    )
++    second = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="canonical-peer-2",
++        view=peer_two_view,
++        labels_by_target=labels,
++    )
++    third = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="canonical-peer-3",
++        view=peer_three_view,
++        labels_by_target=labels,
++    )
++
++    first_order = materialize_calibration_measures(
++        user_conn,
++        batch_id=current.batch_id,
++        peer_batch_ids=(third.batch_id, second.batch_id),
++        constructs=("label",),
++        now_ms=500,
++    )[0]
++    reverse_order = materialize_calibration_measures(
++        user_conn,
++        batch_id=current.batch_id,
++        peer_batch_ids=(second.batch_id, third.batch_id),
++        constructs=("label",),
++        now_ms=501,
++    )[0]
++    assert reverse_order.assertion_id == first_order.assertion_id
++    assert cast(dict[str, object], reverse_order.value)["measured_at_ms"] == 500
++    agreement = cast(dict[str, object], cast(dict[str, object], first_order.value)["agreement"])
++    assert agreement["peer_batch_refs"] == sorted((second.batch_ref, third.batch_ref))
++
++    future_view = _compose(
++        user_conn,
++        schema=schema,
++        judge=current_judge,
++        batch_id="canonical-future",
++        created_at_ms=400,
++    )
++    future = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="canonical-future",
++        view=future_view,
++        labels_by_target=labels,
++    )
++    with pytest.raises(AnnotationCalibrationError, match="baseline cannot be newer"):
++        materialize_calibration_measures(
++            user_conn,
++            batch_id=current.batch_id,
++            baseline_batch_id=future.batch_id,
++            constructs=("label",),
++            now_ms=600,
++        )
++
++
++def test_recording_derives_schema_confidence_and_rejects_dual_value_drift(
++    user_conn: sqlite3.Connection,
++) -> None:
++    schema = _confidence_schema()
++    registry = _registry(schema)
++    _author_gold(user_conn, schema=schema, registry=registry)
++    judge = AnnotationJudgeRefs(
++        "agent:judge-confidence",
++        "agent:model-v1",
++        "context-snapshot:ctx-confidence",
++    )
++    view = _compose(user_conn, schema=schema, judge=judge, batch_id="confidence-authority")
++    labels_by_target = {"session:s1": "A", "session:s2": "A", "session:s3": "B"}
++
++    mismatched = tuple(
++        CalibrationLabelInput(
++            item_id=item.item_id,
++            value={"label": labels_by_target[item.target_ref], "confidence": 0.8},
++            confidence=0.9 if index == 0 else None,
++        )
++        for index, item in enumerate(view.items)
++    )
++    with pytest.raises(AnnotationCalibrationError, match="top-level confidence must equal value.confidence"):
++        record_calibration_batch(
++            user_conn,
++            schema=schema,
++            registry=registry,
++            batch_id="confidence-authority",
++            labels=mismatched,
++            now_ms=300,
++        )
++    assert read_annotation_batch(user_conn, "confidence-authority") is None
++
++    batch = record_calibration_batch(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="confidence-authority",
++        labels=tuple(
++            CalibrationLabelInput(
++                item_id=item.item_id,
++                value={"label": labels_by_target[item.target_ref], "confidence": 0.8},
++            )
++            for item in view.items
++        ),
++        now_ms=301,
++    )
++    stored = [
++        read_assertion_envelope(user_conn, assertion_ref.removeprefix("assertion:"))
++        for assertion_ref in batch.assertion_refs
++    ]
++    assert all(envelope is not None and envelope.confidence == 0.8 for envelope in stored)
++
++    measure = materialize_calibration_measures(
++        user_conn,
++        batch_id=batch.batch_id,
++        constructs=("label",),
++        now_ms=400,
++    )[0]
++    calibration = cast(dict[str, object], cast(dict[str, object], measure.value)["calibration"])
++    assert calibration["n_confident_gold"] == 3
++    assert calibration["brier_score"] == pytest.approx(0.04)
++
++
++def test_recording_is_immediate_and_cannot_overwrite_operator_judgment(user_conn: sqlite3.Connection) -> None:
++    schema = _schema()
++    registry = _registry(schema)
++    _author_gold(user_conn, schema=schema, registry=registry)
++    judge = AnnotationJudgeRefs("agent:judge-authority", "agent:model-v1", "context-snapshot:ctx-authority")
++    view = _compose(user_conn, schema=schema, judge=judge, batch_id="authority")
++    labels_by_target = {"session:s1": "A", "session:s2": "A", "session:s3": "B"}
++
++    trace: list[str] = []
++    user_conn.set_trace_callback(trace.append)
++    batch = _record(
++        user_conn,
++        schema=schema,
++        registry=registry,
++        batch_id="authority",
++        view=view,
++        labels_by_target=labels_by_target,
++    )
++    user_conn.set_trace_callback(None)
++    first_statement = next(statement for statement in trace if statement.strip())
++    assert first_statement.upper().startswith("BEGIN IMMEDIATE")
++    assert batch.item_target_refs == tuple(item.target_ref for item in view.items)
++
++    candidate_ref = batch.assertion_refs[0]
++    candidate = read_assertion_envelope(user_conn, candidate_ref.removeprefix("assertion:"))
++    assert candidate is not None
++    assert candidate.status is AssertionStatus.CANDIDATE
++    accepted_value = candidate.value
++    accepted_item_id = candidate.key
++    database_path = Path(str(user_conn.execute("PRAGMA database_list").fetchone()[2]))
++    operator_ready = threading.Event()
++    operator_judged = threading.Event()
++    release_operator = threading.Event()
++    replay_ready = threading.Event()
++    replay_begin_seen = threading.Event()
++    replay_done = threading.Event()
++    operator_result: Queue[BaseException | None] = Queue()
++    replay_result: Queue[BaseException | None] = Queue()
++
++    def operator_write() -> None:
++        operator_conn: sqlite3.Connection | None = None
++        try:
++            operator_conn = open_connection(database_path)
++            operator_ready.set()
++            operator_conn.execute("BEGIN IMMEDIATE")
++            judge_assertion_candidate(
++                operator_conn,
++                candidate_ref=candidate_ref,
++                decision="accept",
++                actor_ref="user:operator",
++                now_ms=500,
++            )
++            operator_judged.set()
++            if not release_operator.wait(5):
++                raise AssertionError("test did not release the operator transaction")
++            operator_conn.commit()
++            operator_result.put(None)
++        except BaseException as exc:
++            if operator_conn is not None:
++                operator_conn.rollback()
++            operator_result.put(exc)
++            operator_judged.set()
++        finally:
++            operator_ready.set()
++            if operator_conn is not None:
++                operator_conn.close()
++
++    def replay_agent_batch() -> None:
++        replay_conn: sqlite3.Connection | None = None
++        try:
++            replay_conn = open_connection(database_path)
++            replay_conn.set_trace_callback(
++                lambda statement: replay_begin_seen.set()
++                if statement.strip().upper().startswith("BEGIN IMMEDIATE")
++                else None
++            )
++            replay_ready.set()
++            _record(
++                replay_conn,
++                schema=schema,
++                registry=registry,
++                batch_id="authority",
++                view=view,
++                labels_by_target=labels_by_target,
++            )
++            replay_result.put(None)
++        except BaseException as exc:
++            replay_result.put(exc)
++        finally:
++            replay_ready.set()
++            replay_done.set()
++            if replay_conn is not None:
++                replay_conn.close()
++
++    operator_thread = threading.Thread(target=operator_write, name="calibration-operator-write")
++    replay_thread = threading.Thread(target=replay_agent_batch, name="calibration-agent-replay")
++    operator_thread.start()
++    assert operator_ready.wait(5)
++    assert operator_judged.wait(5)
++    replay_thread.start()
++    assert replay_ready.wait(5)
++    assert replay_begin_seen.wait(5)
++    assert not replay_done.wait(0.1), "agent replay did not wait behind BEGIN IMMEDIATE"
++    release_operator.set()
++    operator_thread.join(5)
++    replay_thread.join(5)
++    assert not operator_thread.is_alive()
++    assert not replay_thread.is_alive()
++    operator_error = operator_result.get(timeout=1)
++    replay_error = replay_result.get(timeout=1)
++    if operator_error is not None:
++        raise operator_error
++    if replay_error is not None:
++        raise replay_error
++
++    # The blocked, byte-identical retry starts after the operator commit and
++    # therefore observes and preserves the terminal operator outcome.
++    preserved = read_assertion_envelope(user_conn, candidate_ref.removeprefix("assertion:"))
++    assert preserved is not None
++    assert preserved.status is AssertionStatus.ACCEPTED
++    assert preserved.value == accepted_value
++
++    # A changed replay for the accepted item fails the batched immutable-input
++    # check and rolls back the whole immediate transaction.
++    changed_labels = dict(labels_by_target)
++    accepted_view_item = next(item for item in view.items if item.item_id == accepted_item_id)
++    changed_labels[accepted_view_item.target_ref] = (
++        "B" if labels_by_target[accepted_view_item.target_ref] == "A" else "A"
++    )
++    with pytest.raises(AnnotationValidationError, match="immutable input drift"):
++        _record(
++            user_conn,
++            schema=schema,
++            registry=registry,
++            batch_id="authority",
++            view=view,
++            labels_by_target=changed_labels,
++        )
++    after_attack = read_assertion_envelope(user_conn, candidate_ref.removeprefix("assertion:"))
++    assert after_attack is not None
++    assert after_attack.status is AssertionStatus.ACCEPTED
++    assert after_attack.value == accepted_value

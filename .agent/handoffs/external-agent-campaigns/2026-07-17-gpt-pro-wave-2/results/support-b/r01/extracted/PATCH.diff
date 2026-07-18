@@ -1,0 +1,1760 @@
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index ff588aeb1c2f48a2a42f7ca0d6ea26a317eba8e5..7f3fb3fa7ad63c24c3371c9e0c129cdedf56db53 100644
+--- a/docs/plans/topology-target.yaml
++++ b/docs/plans/topology-target.yaml
+@@ -150,12 +150,12 @@ files:
+     owner: archive-artifact-taxonomy
+     reason: archive-domain semantics
+   - path: polylogue/archive/artifact_taxonomy/models.py
+-    loc: 40
++    loc: 41
+     target: polylogue/archive/artifact_taxonomy/models.py
+     owner: archive-artifact-taxonomy
+     reason: archive-domain semantics
+   - path: polylogue/archive/artifact_taxonomy/runtime.py
+-    loc: 354
++    loc: 362
+     target: polylogue/archive/artifact_taxonomy/runtime.py
+     owner: archive-artifact-taxonomy
+     reason: archive-domain semantics
+@@ -452,7 +452,7 @@ files:
+     owner: archive-query
+     reason: archive-domain query semantics
+   - path: polylogue/archive/query/unit_results.py
+-    loc: 564
++    loc: 565
+     target: polylogue/archive/query/unit_results.py
+     owner: archive-query
+     reason: archive-domain query semantics
+@@ -605,6 +605,11 @@ files:
+     target: polylogue/archive/session/extraction.py
+     owner: archive-session
+     reason: archive-domain semantics
++  - path: polylogue/archive/session/hermes_verification.py
++    loc: 67
++    target: polylogue/archive/session/hermes_verification.py
++    owner: archive-session
++    reason: archive-domain semantics
+   - path: polylogue/archive/session/models.py
+     loc: 346
+     target: polylogue/archive/session/models.py
+@@ -1748,7 +1753,7 @@ files:
+     target: polylogue/demo/workspace.py
+     owner: stable
+   - path: polylogue/hooks/__init__.py
+-    loc: 880
++    loc: 882
+     target: polylogue/hooks/__init__.py
+     owner: stable
+   - path: polylogue/insights/__init__.py
+@@ -3011,7 +3016,7 @@ files:
+     target: polylogue/sources/decoders.py
+     owner: stable
+   - path: polylogue/sources/dispatch.py
+-    loc: 1011
++    loc: 1018
+     target: polylogue/sources/dispatch.py
+     owner: stable
+   - path: polylogue/sources/drive/__init__.py
+@@ -3055,7 +3060,7 @@ files:
+     target: polylogue/sources/drive/types.py
+     owner: stable
+   - path: polylogue/sources/emitter.py
+-    loc: 427
++    loc: 435
+     target: polylogue/sources/emitter.py
+     owner: stable
+   - path: polylogue/sources/hooks.py
+@@ -3063,7 +3068,7 @@ files:
+     target: polylogue/sources/hooks.py
+     owner: stable
+   - path: polylogue/sources/import_explain.py
+-    loc: 737
++    loc: 742
+     target: polylogue/sources/import_explain.py
+     owner: stable
+   - path: polylogue/sources/import_preflight.py
+@@ -3135,7 +3140,7 @@ files:
+     target: polylogue/sources/live/watcher.py
+     owner: stable
+   - path: polylogue/sources/origin_specs.py
+-    loc: 793
++    loc: 800
+     target: polylogue/sources/origin_specs.py
+     owner: stable
+   - path: polylogue/sources/parsers/antigravity.py
+@@ -3235,6 +3240,10 @@ files:
+     loc: 946
+     target: polylogue/sources/parsers/hermes_state.py
+     owner: stable
++  - path: polylogue/sources/parsers/hermes_verification.py
++    loc: 497
++    target: polylogue/sources/parsers/hermes_verification.py
++    owner: stable
+   - path: polylogue/sources/parsers/local_agent.py
+     loc: 473
+     target: polylogue/sources/parsers/local_agent.py
+@@ -3304,7 +3313,7 @@ files:
+     target: polylogue/sources/source_acquisition_components.py
+     owner: stable
+   - path: polylogue/sources/source_parsing.py
+-    loc: 283
++    loc: 323
+     target: polylogue/sources/source_parsing.py
+     owner: stable
+   - path: polylogue/sources/source_walk.py
+@@ -3657,7 +3666,7 @@ files:
+     target: polylogue/storage/repository/archive/search.py
+     owner: stable
+   - path: polylogue/storage/repository/archive/sessions.py
+-    loc: 369
++    loc: 382
+     target: polylogue/storage/repository/archive/sessions.py
+     owner: stable
+   - path: polylogue/storage/repository/archive/tree.py
+@@ -3959,7 +3968,7 @@ files:
+     target: polylogue/storage/sqlite/async_sqlite.py
+     owner: stable
+   - path: polylogue/storage/sqlite/async_sqlite_archive.py
+-    loc: 321
++    loc: 334
+     target: polylogue/storage/sqlite/async_sqlite_archive.py
+     owner: stable
+   - path: polylogue/storage/sqlite/async_sqlite_raw.py
+@@ -4110,7 +4119,7 @@ files:
+     owner: stable
+     cross_cut: { layer: write }
+   - path: polylogue/storage/sqlite/queries/session_events.py
+-    loc: 175
++    loc: 347
+     target: polylogue/storage/sqlite/queries/session_events.py
+     owner: stable
+   - path: polylogue/storage/sqlite/queries/session_insight_profile_reads.py
+@@ -4198,7 +4207,7 @@ files:
+     target: polylogue/storage/sqlite/query_store.py
+     owner: stable
+   - path: polylogue/storage/sqlite/query_store_archive.py
+-    loc: 334
++    loc: 348
+     target: polylogue/storage/sqlite/query_store_archive.py
+     owner: stable
+   - path: polylogue/storage/sqlite/query_store_insight_profiles.py
+diff --git a/docs/topology-status.md b/docs/topology-status.md
+index 8916ec4731be16b5a5c521c733dbe01cf827bfdd..ed69c6f84e2cf78a032684cf60e43e722074ad33 100644
+--- a/docs/topology-status.md
++++ b/docs/topology-status.md
+@@ -22,18 +22,18 @@ Generated by `devtools render topology-status`. Reads `docs/plans/topology-targe
+ | archive-query | archive query semantics | 32 | 32 | 0 | 0 |
+ | archive-raw-payload | — | 5 | 5 | 0 | 0 |
+ | archive-semantic | — | 12 | 12 | 0 | 0 |
+-| archive-session | — | 18 | 18 | 0 | 0 |
++| archive-session | — | 19 | 19 | 0 | 0 |
+ | archive-viewport | — | 6 | 6 | 0 | 0 |
+ | core-primitive | — | 29 | 29 | 0 | 0 |
+ 
+ ### Summary
+ 
+-- **Stable** (no move scoped): 865
++- **Stable** (no move scoped): 866
+ - **Kernel** (polylogue/ root): 8
+ - **Primitives** (storage-root): 18
+ - **TBD** (cell needs explicit assignment): 9
+-- **Total declared**: 1034
+-- **Realized polylogue/**/*.py**: 1034 files declared
++- **Total declared**: 1036
++- **Realized polylogue/**/*.py**: 1036 files declared
+ 
+ ### TBD cells (require explicit routing)
+ 
+diff --git a/polylogue/archive/artifact_taxonomy/models.py b/polylogue/archive/artifact_taxonomy/models.py
+index 7e766034e09c421dddd15bffa894fd711b8a1dd7..6d9908bc549e26d311131156a98116cc1733706b 100644
+--- a/polylogue/archive/artifact_taxonomy/models.py
++++ b/polylogue/archive/artifact_taxonomy/models.py
+@@ -20,6 +20,7 @@ class ArtifactKind(StrEnum):
+     SESSION_INDEX = "session_index"
+     BRIDGE_POINTER = "bridge_pointer"
+     METADATA_DOCUMENT = "metadata_document"
++    VERIFICATION_EVIDENCE = "verification_evidence"
+     HOOK_EVENT = "hook_event"
+     UNKNOWN = "unknown"
+ 
+diff --git a/polylogue/archive/artifact_taxonomy/runtime.py b/polylogue/archive/artifact_taxonomy/runtime.py
+index 532db139d3c01363cb8c71c3386443c7a3db050d..c472664d9fc65b57dbb61bb856df293156a26359 100644
+--- a/polylogue/archive/artifact_taxonomy/runtime.py
++++ b/polylogue/archive/artifact_taxonomy/runtime.py
+@@ -58,11 +58,11 @@ def classify_artifact_path(
+     }:
+         return ArtifactClassification(
+             provider=provider_token,
+-            kind=ArtifactKind.METADATA_DOCUMENT,
++            kind=ArtifactKind.VERIFICATION_EVIDENCE,
+             parse_as_session=False,
+             schema_eligible=False,
+             default_priority=0,
+-            reason="Hermes SQLite evidence sidecar",
++            reason="Hermes SQLite evidence sidecar; requires versioned JSON acquisition export",
+         )
+     if provider_token is Provider.ANTIGRAVITY:
+         if inner_name.endswith(".md.metadata.json"):
+@@ -257,14 +257,22 @@ def _classify_dict(
+             reason="Hermes state.db SQLite archive marker",
+         )
+ 
+-    # Deferred import: `sources.parsers.hermes_spans` sits downstream of
+-    # `sources/__init__.py` (drive -> dispatch -> decoders -> decoder_zip),
+-    # which itself imports back from `archive.artifact_taxonomy` -- a
+-    # module-level import here creates a circular import the moment this
+-    # package is the first one initialized. See
+-    # `_archive_reconcile_hermes_session_lifecycle` in `api/archive.py` for
+-    # the same deferred-import pattern used to break an equivalent cycle.
++    # Deferred imports: Hermes parsers sit downstream of `sources/__init__.py`
++    # (drive -> dispatch -> decoders -> decoder_zip), which itself imports back
++    # from `archive.artifact_taxonomy`. Module-level imports here would create
++    # a package-bootstrap cycle.
+     from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
++    from polylogue.sources.parsers.hermes_verification import looks_like_verification_evidence_payload
++
++    if provider is Provider.HERMES and looks_like_verification_evidence_payload(payload):
++        return ArtifactClassification(
++            provider=provider,
++            kind=ArtifactKind.VERIFICATION_EVIDENCE,
++            parse_as_session=True,
++            schema_eligible=True,
++            default_priority=115,
++            reason="Hermes verification evidence v1 JSON acquisition export",
++        )
+ 
+     if provider is Provider.HERMES and looks_like_atif_payload(payload):
+         return ArtifactClassification(
+diff --git a/polylogue/archive/session/hermes_verification.py b/polylogue/archive/session/hermes_verification.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3db1f95ff383289ece74d108fe7cdc02ef47a3f1
+--- /dev/null
++++ b/polylogue/archive/session/hermes_verification.py
+@@ -0,0 +1,67 @@
++"""Typed Hermes verification-evidence read models."""
++
++from __future__ import annotations
++
++from datetime import datetime
++from enum import StrEnum
++
++from pydantic import BaseModel, ConfigDict
++
++from polylogue.core.types import MessageId, SessionEventId, SessionId
++
++
++class HermesVerificationCorrelationState(StrEnum):
++    """Read-side correlation between evidence and an archived Hermes session."""
++
++    MATCHED = "matched"
++    MISSING_IDENTITY = "missing_identity"
++    UNMATCHED_IDENTITY = "unmatched_identity"
++    AMBIGUOUS_IDENTITY = "ambiguous_identity"
++
++
++class HermesVerificationRowState(StrEnum):
++    """Parser-visible quality of one producer row."""
++
++    COMPLETE = "complete"
++    PARTIAL = "partial"
++    MALFORMED = "malformed"
++    OUTCOME_CONFLICT = "outcome_conflict"
++
++
++class HermesVerificationEvidence(BaseModel):
++    """One normalized Hermes verification ledger row.
++
++    ``None`` is preserved for every field the producer/export boundary did not
++    establish. In particular, unknown outcome state is never reconstructed by
++    scanning ``output_summary`` text.
++    """
++
++    model_config = ConfigDict(frozen=True)
++
++    evidence_id: str
++    observer_session_id: SessionId
++    observer_event_id: SessionEventId
++    source_message_id: MessageId | None = None
++    source_index: int
++    row_state: HermesVerificationRowState
++    correlation_state: HermesVerificationCorrelationState
++    target_session_native_id: str | None = None
++    target_raw_session_id: str | None = None
++    target_session_id: SessionId | None = None
++    command: str | None = None
++    canonical_command: str | None = None
++    kind: str | None = None
++    scope: str | None = None
++    status: str | None = None
++    exit_code: int | None = None
++    is_error: bool | None = None
++    output_summary: str | None = None
++    changed_paths: tuple[str, ...] | None = None
++    observed_at: datetime | None = None
++
++
++__all__ = [
++    "HermesVerificationCorrelationState",
++    "HermesVerificationEvidence",
++    "HermesVerificationRowState",
++]
+diff --git a/polylogue/sources/dispatch.py b/polylogue/sources/dispatch.py
+index 036f1e2dfa2e41b9a275e7da46fbbc2d2dde42e3..c49c586de567bd7657f485bf3f115f1129ce9470 100644
+--- a/polylogue/sources/dispatch.py
++++ b/polylogue/sources/dispatch.py
+@@ -26,6 +26,7 @@ from .parsers import (
+     drive,
+     hermes_spans,
+     hermes_state,
++    hermes_verification,
+     local_agent,
+ )
+ from .parsers.base import ParsedSession, extract_messages_from_list
+@@ -158,6 +159,8 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
+         return Provider.GEMINI_CLI
+     if hermes_state.looks_like_state_db_payload(record):
+         return Provider.HERMES
++    if hermes_verification.looks_like_verification_evidence_payload(record):
++        return Provider.HERMES
+     if hermes_spans.looks_like_atif_payload(record):
+         return Provider.HERMES
+     if local_agent.looks_like_hermes(record):
+@@ -784,6 +787,8 @@ def _lower_payload_specs(
+         record = _single_document_record(shaped_payload)
+         if record is not None and hermes_state.looks_like_state_db_payload(record):
+             return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
++        if record is not None and hermes_verification.looks_like_verification_evidence_payload(record):
++            return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
+         if record is not None and hermes_spans.looks_like_atif_payload(record):
+             return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
+         if record is not None and local_agent.looks_like_hermes(record):
+@@ -879,6 +884,8 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
+             return []
+         if spec.provider is Provider.HERMES and hermes_state.looks_like_state_db_payload(record):
+             return hermes_state.parse_state_db_payload(record, spec.fallback_id)
++        if spec.provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_payload(record):
++            return hermes_verification.parse_verification_evidence_document(record, spec.fallback_id)
+         if spec.provider is Provider.HERMES and hermes_spans.looks_like_atif_payload(record):
+             return [hermes_spans.parse_atif_document(record, spec.fallback_id)]
+         if spec.provider is Provider.ANTIGRAVITY:
+diff --git a/polylogue/sources/emitter.py b/polylogue/sources/emitter.py
+index bcf40acbb107a7a2820fa20aca734c5460206ac4..a5f21287eb8bf2c2d37a251b38190cacd1a5af2d 100644
+--- a/polylogue/sources/emitter.py
++++ b/polylogue/sources/emitter.py
+@@ -91,6 +91,8 @@ class _SessionEmitter:
+             pre_read_bytes: If provided, already-read bytes for raw capture.
+                 Used when the caller pre-read the whole file for grouped
+                 providers with ``capture_raw=True``.
++            precomputed_raw: If provided, the retained whole-artifact identity
++                shared by every session emitted from this stream.
+         """
+         is_jsonl = is_jsonl_source_path(stream_name)
+ 
+@@ -112,7 +114,12 @@ class _SessionEmitter:
+             )
+             return
+ 
+-        yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
++        yield from self._emit_individual(
++            handle,
++            stream_name,
++            pre_read_bytes=pre_read_bytes,
++            precomputed_raw=precomputed_raw,
++        )
+ 
+     def _emit_grouped(
+         self,
+@@ -159,13 +166,14 @@ class _SessionEmitter:
+         stream_name: str,
+         *,
+         pre_read_bytes: bytes | None = None,
++        precomputed_raw: RawSessionData | None = None,
+     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+         """Individual items: each payload = one session."""
+         unpack = not (stream_name.lower().endswith(".json") and self._ctx.should_group)
+ 
+-        # If caller pre-read the whole file, use that as one raw capture
+-        # (for should_group + capture_raw + non-JSONL files)
+-        whole_file_raw = self._make_raw(pre_read_bytes) if pre_read_bytes is not None else None
++        # A retained whole artifact or caller pre-read is shared by every
++        # session produced from this document.
++        whole_file_raw = precomputed_raw or (self._make_raw(pre_read_bytes) if pre_read_bytes is not None else None)
+ 
+         yield from self._emit_individual_payloads(
+             _iter_json_stream(handle, stream_name, unpack_lists=unpack),
+diff --git a/polylogue/sources/import_explain.py b/polylogue/sources/import_explain.py
+index 22a1c4ddce14891488af5b208a7ccddb3cad2311..95af218b610e7b7ea02f81dfdbe8e228876318f9 100644
+--- a/polylogue/sources/import_explain.py
++++ b/polylogue/sources/import_explain.py
+@@ -24,7 +24,7 @@ from polylogue.sources.decoder_zip import (
+ )
+ from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
+ from polylogue.sources.dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
+-from polylogue.sources.parsers import hermes_spans, hermes_state
++from polylogue.sources.parsers import hermes_spans, hermes_state, hermes_verification
+ from polylogue.sources.parsers.base import ParsedSession
+ from polylogue.sources.source_walk import _resolve_source_paths
+ from polylogue.surfaces.payloads import (
+@@ -622,9 +622,14 @@ def _explain_bytes(
+             (session for session in sessions if "hermes:atif-trajectory" in session.ingest_flags),
+             None,
+         )
++        verification_sessions = [
++            session for session in sessions if "hermes:verification-evidence" in session.ingest_flags
++        ]
+         fidelity = _fidelity_payload(
+             hermes_spans.import_fidelity_declaration(atif_session)
+             if atif_session is not None
++            else hermes_verification.import_fidelity_declaration(verification_sessions)
++            if verification_sessions
+             else hermes_state.import_fidelity_declaration(sessions, acquisition_method="json_fallback")
+         )
+     return ImportExplainEntryPayload(
+diff --git a/polylogue/sources/origin_specs.py b/polylogue/sources/origin_specs.py
+index 64d6f06e5a5a429abbcca037648303b5461a1ed1..9c9a9e50f33b97bdb2422bc086563373105c9f95 100644
+--- a/polylogue/sources/origin_specs.py
++++ b/polylogue/sources/origin_specs.py
+@@ -404,10 +404,17 @@ def _hermes_spec() -> OriginSpec:
+         Origin.HERMES_SESSION,
+         provider=Provider.HERMES,
+         tightness=20,
+-        discovery="Hermes state database and span document admission.",
+-        acquisition_modes=("state-db", "atif-spans"),
+-        parser_paths=("polylogue/sources/parsers/hermes_state.py", "polylogue/sources/parsers/hermes_spans.py"),
+-        fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
++        discovery="Hermes state database, span document, and verification-evidence export admission.",
++        acquisition_modes=("state-db", "atif-spans", "verification-evidence-json-export"),
++        parser_paths=(
++            "polylogue/sources/parsers/hermes_state.py",
++            "polylogue/sources/parsers/hermes_spans.py",
++            "polylogue/sources/parsers/hermes_verification.py",
++        ),
++        fixture_paths=(
++            "tests/unit/sources/test_parsers_local_agent.py",
++            "tests/fixtures/hermes/verification_evidence/synthetic-v1.json",
++        ),
+     )
+ 
+ 
+diff --git a/polylogue/sources/parsers/hermes_verification.py b/polylogue/sources/parsers/hermes_verification.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fcefb12c065fa450b01cd8faffb2388da9133bdc
+--- /dev/null
++++ b/polylogue/sources/parsers/hermes_verification.py
+@@ -0,0 +1,497 @@
++"""Hermes verification-ledger export normalization.
++
++The on-disk ``verification_evidence.db`` artifact is identified by the
++artifact taxonomy but is deliberately not opened here.  A producer-side or
++paired local acquisition lane exports selected rows into the versioned JSON
++envelope defined by :data:`VERIFICATION_EXPORT_SCHEMA`; those retained JSON
++bytes then travel through the ordinary raw -> parser -> normalized archive
++route.
++
++The fixture checked into this repository is synthetic and only exercises that
++stable boundary.  No field mapping in this module is promoted to ``exact``
++until a local lane validates the envelope against retained real producer bytes.
++"""
++
++from __future__ import annotations
++
++from collections import defaultdict
++from collections.abc import Mapping, Sequence
++from dataclasses import dataclass
++
++from polylogue.archive.message.roles import Role
++from polylogue.archive.session.hermes_verification import HermesVerificationRowState
++from polylogue.core.enums import BlockType, MaterialOrigin, Provider
++from polylogue.core.hashing import hash_payload, hash_text_short
++from polylogue.core.json import JSONDocument, JSONValue, json_document
++
++from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
++from .hermes_state import HermesFidelityCapability, HermesImportFidelity
++
++VERIFICATION_EXPORT_SCHEMA = "polylogue.hermes.verification-evidence/v1"
++VERIFICATION_ARTIFACT_KIND = "hermes_verification_evidence"
++VERIFICATION_EVENT_TYPE = "hermes_verification_evidence"
++VERIFICATION_ARTIFACT_EVENT_TYPE = "hermes_verification_artifact"
++
++_SUCCESS_STATUSES = frozenset({"completed", "ok", "pass", "passed", "succeeded", "success"})
++_FAILURE_STATUSES = frozenset({"error", "errored", "fail", "failed", "failure"})
++_CORE_FIELDS = ("command", "canonical_command", "kind", "scope", "status", "changed_paths")
++
++
++@dataclass(frozen=True, slots=True)
++class _NormalizedRow:
++    source_index: int
++    evidence_id: str
++    row_state: HermesVerificationRowState
++    target_session_native_id: str | None
++    target_session_id: str | None
++    command: str | None
++    canonical_command: str | None
++    kind: str | None
++    scope: str | None
++    status: str | None
++    exit_code: int | None
++    is_error: bool | None
++    output_summary: str | None
++    changed_paths: tuple[str, ...] | None
++    observed_at: str | None
++
++    @property
++    def correlation_key(self) -> str | None:
++        return self.target_session_native_id or self.target_session_id
++
++
++def looks_like_verification_evidence_payload(payload: JSONDocument) -> bool:
++    """Return whether *payload* is the versioned verification export envelope."""
++
++    return (
++        payload.get("schema_version") == VERIFICATION_EXPORT_SCHEMA
++        and payload.get("artifact_kind") == VERIFICATION_ARTIFACT_KIND
++        and isinstance(payload.get("rows"), list)
++    )
++
++
++def parse_verification_evidence_document(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
++    """Normalize one versioned verification export into observer sessions.
++
++    Rows are grouped by producer-positive session identity, while rows without
++    identity are retained in a deterministic missing-identity group.  Every
++    object row becomes a paired ``tool_use``/``tool_result`` message so the
++    existing ``actions`` relation exposes command and structural outcome.
++    Malformed non-object rows remain visible as typed events with unknown
++    normalized fields rather than being dropped or converted into prose.
++    """
++
++    if not looks_like_verification_evidence_payload(payload):
++        raise ValueError("payload is not a Hermes verification-evidence v1 export")
++
++    export_id = _optional_string(payload.get("export_id")) or fallback_id
++    raw_rows = payload.get("rows")
++    rows: list[JSONValue] = raw_rows if isinstance(raw_rows, list) else []
++    normalized = [_normalize_row(value, source_index=index, export_id=export_id) for index, value in enumerate(rows)]
++
++    grouped: dict[str | None, list[_NormalizedRow]] = defaultdict(list)
++    for row in normalized:
++        grouped[row.correlation_key].append(row)
++    if not grouped:
++        grouped[None] = []
++
++    artifact_payload = _artifact_payload(payload, export_id=export_id)
++    sessions = [
++        _session_for_rows(
++            export_id=export_id,
++            correlation_key=correlation_key,
++            rows=group_rows,
++            artifact_payload=artifact_payload,
++        )
++        for correlation_key, group_rows in sorted(grouped.items(), key=lambda item: item[0] or "")
++    ]
++    return sessions
++
++
++def import_fidelity_declaration(sessions: Sequence[ParsedSession]) -> HermesImportFidelity:
++    """Declare what this boundary proves without claiming real producer bytes."""
++
++    evidence_events = [
++        event for session in sessions for event in session.session_events if event.event_type == VERIFICATION_EVENT_TYPE
++    ]
++    total = len(evidence_events)
++    malformed = sum(
++        event.payload.get("row_state") == HermesVerificationRowState.MALFORMED.value for event in evidence_events
++    )
++    partial = sum(
++        event.payload.get("row_state") == HermesVerificationRowState.PARTIAL.value for event in evidence_events
++    )
++    conflicts = sum(
++        event.payload.get("row_state") == HermesVerificationRowState.OUTCOME_CONFLICT.value for event in evidence_events
++    )
++    missing_identity = sum(
++        event.payload.get("target_session_native_id") is None and event.payload.get("target_session_id") is None
++        for event in evidence_events
++    )
++
++    def inferred(name: str, detail: str) -> HermesFidelityCapability:
++        observed = sum(event.payload.get(name) is not None for event in evidence_events)
++        return HermesFidelityCapability(
++            status="inferred" if observed else "absent",
++            observed=observed,
++            expected=total,
++            counts={},
++            detail=detail,
++        )
++
++    capabilities: dict[str, HermesFidelityCapability] = {
++        "artifact_identity": HermesFidelityCapability(
++            status="inferred",
++            observed=sum(
++                event.event_type == VERIFICATION_ARTIFACT_EVENT_TYPE
++                for session in sessions
++                for event in session.session_events
++            ),
++            expected=max(len(sessions), 1),
++            counts={},
++            detail="The JSON envelope records source-artifact identity, but its mapping to real verification_evidence.db bytes is not locally validated in this lane.",
++        ),
++        "command": inferred(
++            "command",
++            "Command is copied only from the structured export column; it is never recovered from output prose.",
++        ),
++        "canonical_command": inferred(
++            "canonical_command",
++            "Canonical command is producer/export supplied; the parser does not invent one from command text.",
++        ),
++        "kind": inferred("kind", "Verification kind is copied from the structured export row."),
++        "scope": inferred("scope", "Verification scope is copied from the structured export row."),
++        "status": inferred("status", "Status is normalized from the explicit structured status token."),
++        "exit_code": inferred("exit_code", "Exit code remains NULL when the structured row does not establish it."),
++        "output_summary": inferred(
++            "output_summary",
++            "Only the structured output-summary column is imported; no transcript or arbitrary output body is synthesized.",
++        ),
++        "changed_paths": inferred(
++            "changed_paths", "Changed paths preserve NULL (unknown) separately from an explicit empty list."
++        ),
++        "session_correlation": HermesFidelityCapability(
++            status="degraded" if missing_identity else "inferred",
++            observed=total - missing_identity,
++            expected=total,
++            counts={"missing_identity": missing_identity},
++            detail="Read-side correlation uses producer-positive native/raw session identifiers and fails closed for zero or multiple matches.",
++        ),
++        "row_quality": HermesFidelityCapability(
++            status="degraded" if malformed or partial or conflicts else "inferred",
++            observed=total - malformed,
++            expected=total,
++            counts={"malformed": malformed, "partial": partial, "outcome_conflict": conflicts},
++            detail="Malformed, partial, and structurally conflicting rows remain visible as typed states.",
++        ),
++    }
++    caveats = (
++        "Synthetic producer-shaped rows exercise the stable JSON boundary; no real ~/.hermes verification_evidence.db bytes were supplied to this lane.",
++        "The local real-byte lane must validate table/column names, types, status vocabulary, canonical-command semantics, changed-path encoding, session identity, ordering, and artifact revision/hash rules before any mapping becomes exact.",
++    )
++    return HermesImportFidelity(
++        producer="Hermes verification_evidence.db via Polylogue v1 JSON acquisition boundary (real-byte mapping unverified)",
++        schema_version=1,
++        profile_namespace=None,
++        acquisition_method="verification_evidence_json_export",
++        retained_blob_reproducibility=HermesFidelityCapability(
++            status="exact",
++            observed=len(sessions),
++            expected=len(sessions),
++            counts={},
++            detail="The exported JSON artifact bytes use the ordinary retained-raw path and reproduce the same normalized rows on replay; this does not prove the upstream SQLite-to-JSON mapping.",
++        ),
++        capabilities=capabilities,
++        caveats=caveats,
++    )
++
++
++def _session_for_rows(
++    *,
++    export_id: str,
++    correlation_key: str | None,
++    rows: list[_NormalizedRow],
++    artifact_payload: dict[str, object],
++) -> ParsedSession:
++    export_component = hash_text_short(export_id, 16)
++    correlation_component = hash_text_short(correlation_key or "missing_identity", 16)
++    provider_session_id = f"verification:{export_component}:{correlation_component}"
++
++    messages: list[ParsedMessage] = []
++    events: list[ParsedSessionEvent] = [
++        ParsedSessionEvent(event_type=VERIFICATION_ARTIFACT_EVENT_TYPE, payload=dict(artifact_payload))
++    ]
++    for row in rows:
++        source_message_provider_id = None
++        if row.row_state is not HermesVerificationRowState.MALFORMED:
++            source_message_provider_id = f"verification-row:{row.source_index}:{hash_text_short(row.evidence_id, 16)}"
++            tool_id = f"verification:{row.source_index}:{hash_text_short(row.evidence_id, 16)}"
++            tool_input: dict[str, object] = {}
++            for key, value in (
++                ("command", row.command),
++                ("canonical_command", row.canonical_command),
++                ("kind", row.kind),
++                ("scope", row.scope),
++                ("status", row.status),
++                ("session_native_id", row.target_session_native_id),
++                ("session_id", row.target_session_id),
++            ):
++                if value is not None:
++                    tool_input[key] = value
++            if row.changed_paths is not None:
++                tool_input["changed_paths"] = list(row.changed_paths)
++                if len(row.changed_paths) == 1:
++                    tool_input["path"] = row.changed_paths[0]
++            messages.append(
++                ParsedMessage(
++                    provider_message_id=source_message_provider_id,
++                    role=Role.ASSISTANT,
++                    timestamp=row.observed_at,
++                    position=row.source_index,
++                    material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
++                    blocks=[
++                        ParsedContentBlock(
++                            type=BlockType.TOOL_USE,
++                            tool_name="hermes_verification",
++                            tool_id=tool_id,
++                            tool_input=tool_input,
++                        ),
++                        ParsedContentBlock(
++                            type=BlockType.TOOL_RESULT,
++                            tool_id=tool_id,
++                            text=row.output_summary,
++                            is_error=row.is_error,
++                            exit_code=row.exit_code,
++                        ),
++                    ],
++                )
++            )
++
++        events.append(
++            ParsedSessionEvent(
++                event_type=VERIFICATION_EVENT_TYPE,
++                timestamp=row.observed_at,
++                source_message_provider_id=source_message_provider_id,
++                payload=_event_payload(row, export_id=export_id),
++            )
++        )
++
++    flags: list[str] = ["hermes:verification-evidence"]
++    if correlation_key is None:
++        flags.append("degraded:hermes-verification-missing-identity")
++    if any(row.row_state is HermesVerificationRowState.MALFORMED for row in rows):
++        flags.append("degraded:hermes-verification-malformed-row")
++    if any(
++        row.row_state in {HermesVerificationRowState.PARTIAL, HermesVerificationRowState.OUTCOME_CONFLICT}
++        for row in rows
++    ):
++        flags.append("degraded:hermes-verification-partial-row")
++
++    created = next((row.observed_at for row in rows if row.observed_at is not None), None)
++    updated = next((row.observed_at for row in reversed(rows) if row.observed_at is not None), None)
++    return ParsedSession(
++        source_name=Provider.HERMES,
++        provider_session_id=provider_session_id,
++        title=f"Hermes verification evidence: {correlation_key or 'missing identity'}",
++        created_at=created,
++        updated_at=updated,
++        messages=messages,
++        session_events=events,
++        ingest_flags=flags,
++    )
++
++
++def _normalize_row(value: JSONValue, *, source_index: int, export_id: str) -> _NormalizedRow:
++    row = json_document(value)
++    if not row:
++        malformed_evidence_id = (
++            f"malformed-{hash_payload({'export_id': export_id, 'source_index': source_index, 'row': value})[:24]}"
++        )
++        return _NormalizedRow(
++            source_index=source_index,
++            evidence_id=malformed_evidence_id,
++            row_state=HermesVerificationRowState.MALFORMED,
++            target_session_native_id=None,
++            target_session_id=None,
++            command=None,
++            canonical_command=None,
++            kind=None,
++            scope=None,
++            status=None,
++            exit_code=None,
++            is_error=None,
++            output_summary=None,
++            changed_paths=None,
++            observed_at=None,
++        )
++
++    invalid = False
++    evidence_id = _optional_string(row.get("evidence_id"))
++    if evidence_id is None:
++        invalid = True
++        evidence_id = f"row-{hash_payload({'export_id': export_id, 'source_index': source_index, 'row': row})[:24]}"
++
++    target_session_native_id, invalid_native = _string_field(row, "session_native_id")
++    target_session_id, invalid_session = _string_field(row, "session_id")
++    command, invalid_command = _string_field(row, "command")
++    canonical_command, invalid_canonical = _string_field(row, "canonical_command")
++    kind, invalid_kind = _token_field(row, "kind")
++    scope, invalid_scope = _token_field(row, "scope")
++    status, invalid_status = _token_field(row, "status")
++    output_summary, invalid_summary = _string_field(row, "output_summary")
++    observed_at, invalid_timestamp = _string_field(row, "observed_at")
++    changed_paths, invalid_paths = _changed_paths(row)
++    exit_code, invalid_exit = _exit_code(row)
++
++    invalid = invalid or any(
++        (
++            invalid_native,
++            invalid_session,
++            invalid_command,
++            invalid_canonical,
++            invalid_kind,
++            invalid_scope,
++            invalid_status,
++            invalid_summary,
++            invalid_timestamp,
++            invalid_paths,
++            invalid_exit,
++        )
++    )
++    invalid = invalid or any(row.get(field) is None for field in _CORE_FIELDS)
++
++    is_error = _structural_is_error(status=status, exit_code=exit_code)
++    conflict = _outcome_conflicts(status=status, exit_code=exit_code)
++    row_state = (
++        HermesVerificationRowState.OUTCOME_CONFLICT
++        if conflict
++        else HermesVerificationRowState.PARTIAL
++        if invalid
++        else HermesVerificationRowState.COMPLETE
++    )
++    return _NormalizedRow(
++        source_index=source_index,
++        evidence_id=evidence_id,
++        row_state=row_state,
++        target_session_native_id=target_session_native_id,
++        target_session_id=target_session_id,
++        command=command,
++        canonical_command=canonical_command,
++        kind=kind,
++        scope=scope,
++        status=status,
++        exit_code=exit_code,
++        is_error=is_error,
++        output_summary=output_summary,
++        changed_paths=changed_paths,
++        observed_at=observed_at,
++    )
++
++
++def _event_payload(row: _NormalizedRow, *, export_id: str) -> dict[str, object]:
++    return {
++        "export_id": export_id,
++        "source_index": row.source_index,
++        "evidence_id": row.evidence_id,
++        "row_state": row.row_state.value,
++        "target_session_native_id": row.target_session_native_id,
++        "target_session_id": row.target_session_id,
++        "command": row.command,
++        "canonical_command": row.canonical_command,
++        "kind": row.kind,
++        "scope": row.scope,
++        "status": row.status,
++        "exit_code": row.exit_code,
++        "output_summary": row.output_summary,
++        "changed_paths": None if row.changed_paths is None else list(row.changed_paths),
++        "observed_at": row.observed_at,
++    }
++
++
++def _artifact_payload(payload: JSONDocument, *, export_id: str) -> dict[str, object]:
++    return {
++        "schema_version": VERIFICATION_EXPORT_SCHEMA,
++        "artifact_kind": VERIFICATION_ARTIFACT_KIND,
++        "export_id": export_id,
++        "source_artifact": _optional_string(payload.get("source_artifact")),
++        "source_sha256": _optional_string(payload.get("source_sha256")),
++        "producer_schema_version": _optional_string(payload.get("producer_schema_version")),
++        "fixture_provenance": _optional_string(payload.get("fixture_provenance")),
++    }
++
++
++def _optional_string(value: object) -> str | None:
++    if not isinstance(value, str):
++        return None
++    candidate = value.strip()
++    return candidate or None
++
++
++def _string_field(row: Mapping[str, object], key: str) -> tuple[str | None, bool]:
++    if key not in row or row.get(key) is None:
++        return None, False
++    value = _optional_string(row.get(key))
++    return value, value is None
++
++
++def _token_field(row: Mapping[str, object], key: str) -> tuple[str | None, bool]:
++    value, invalid = _string_field(row, key)
++    if value is None:
++        return None, invalid
++    return value.lower().replace("-", "_").replace(" ", "_"), False
++
++
++def _exit_code(row: Mapping[str, object]) -> tuple[int | None, bool]:
++    if "exit_code" not in row or row.get("exit_code") is None:
++        return None, False
++    value = row.get("exit_code")
++    if isinstance(value, int) and not isinstance(value, bool):
++        return value, False
++    return None, True
++
++
++def _changed_paths(row: Mapping[str, object]) -> tuple[tuple[str, ...] | None, bool]:
++    if "changed_paths" not in row or row.get("changed_paths") is None:
++        return None, False
++    raw = row.get("changed_paths")
++    if not isinstance(raw, list):
++        return None, True
++    paths: list[str] = []
++    invalid = False
++    for value in raw:
++        path = _optional_string(value)
++        if path is None:
++            invalid = True
++            continue
++        paths.append(path)
++    return tuple(dict.fromkeys(paths)), invalid
++
++
++def _status_outcome(status: str | None) -> bool | None:
++    if status in _SUCCESS_STATUSES:
++        return False
++    if status in _FAILURE_STATUSES:
++        return True
++    return None
++
++
++def _structural_is_error(*, status: str | None, exit_code: int | None) -> bool | None:
++    if exit_code is not None:
++        return exit_code != 0
++    return _status_outcome(status)
++
++
++def _outcome_conflicts(*, status: str | None, exit_code: int | None) -> bool:
++    status_outcome = _status_outcome(status)
++    return exit_code is not None and status_outcome is not None and status_outcome != (exit_code != 0)
++
++
++__all__ = [
++    "VERIFICATION_ARTIFACT_EVENT_TYPE",
++    "VERIFICATION_ARTIFACT_KIND",
++    "VERIFICATION_EVENT_TYPE",
++    "VERIFICATION_EXPORT_SCHEMA",
++    "import_fidelity_declaration",
++    "looks_like_verification_evidence_payload",
++    "parse_verification_evidence_document",
++]
+diff --git a/polylogue/sources/source_parsing.py b/polylogue/sources/source_parsing.py
+index 27e457d668eabb45173314293f25f503e2412418..314a16b8d9979fe6966eec2b97141a5157112631 100644
+--- a/polylogue/sources/source_parsing.py
++++ b/polylogue/sources/source_parsing.py
+@@ -7,6 +7,8 @@ import zipfile
+ from collections.abc import Iterable
+ from pathlib import Path
+ 
++import ijson
++
+ from polylogue.archive.artifact_taxonomy import classify_artifact_path
+ from polylogue.config import Source
+ from polylogue.core.enums import Provider
+@@ -21,7 +23,7 @@ from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor
+ from .decoders import _process_zip
+ from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
+ from .emitter import _SessionEmitter
+-from .parsers import antigravity, hermes_state
++from .parsers import antigravity, hermes_state, hermes_verification
+ from .parsers.base import ParsedSession, RawSessionData
+ from .source_walk import _setup_source_walk
+ from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
+@@ -31,6 +33,43 @@ _cursor.logger = logger
+ _decoders.logger = logger
+ 
+ 
++def _looks_like_hermes_verification_export(path: Path, provider: Provider) -> bool:
++    """Identify the versioned JSON envelope without materializing its rows.
++
++    This acquisition-side sniff exists only to decide whether the exact source
++    artifact must be retained before normal dispatch.  The parser remains the
++    authority for validation and normalization.
++    """
++
++    if provider is not Provider.HERMES or path.suffix.lower() != ".json":
++        return False
++
++    schema_matches = False
++    artifact_matches = False
++    rows_array_seen = False
++    try:
++        with path.open("rb") as handle:
++            for prefix, event, value in ijson.parse(handle):
++                if prefix == "schema_version" and event == "string":
++                    schema_matches = value == hermes_verification.VERIFICATION_EXPORT_SCHEMA
++                elif prefix == "artifact_kind" and event == "string":
++                    artifact_matches = value == hermes_verification.VERIFICATION_ARTIFACT_KIND
++                elif prefix == "rows" and event == "start_array":
++                    rows_array_seen = True
++                if schema_matches and artifact_matches and rows_array_seen:
++                    return True
++    except (ijson.common.JSONError, UnicodeError):
++        decoded = _decoders._decode_json_bytes(path.read_bytes())
++        if decoded is None:
++            return False
++        try:
++            payload = json.loads(decoded)
++        except json.JSONDecodeError:
++            return False
++        return isinstance(payload, dict) and hermes_verification.looks_like_verification_evidence_payload(payload)
++    return False
++
++
+ def iter_antigravity_language_server_sessions(
+     source: Source,
+ ) -> Iterable[tuple[None, ParsedSession]]:
+@@ -169,7 +208,7 @@ def parse_one_source_path(
+     )
+     emitter = _SessionEmitter(ctx)
+ 
+-    if capture_raw and should_group:
++    if capture_raw and (should_group or _looks_like_hermes_verification_export(path, provider_hint)):
+         if blob_root is None:
+             from polylogue.paths import blob_store_root
+ 
+@@ -190,7 +229,8 @@ def parse_one_source_path(
+             blob_size=blob_size,
+             blob_publication_receipt_id=receipt_id,
+         )
+-        with path.open("rb") as handle:
++        retained_path = resolved_store.blob_path(blob_hash)
++        with retained_path.open("rb") as handle:
+             yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
+     else:
+         with path.open("rb") as handle:
+diff --git a/polylogue/storage/repository/archive/sessions.py b/polylogue/storage/repository/archive/sessions.py
+index 4c702e3620645bd500dc6b610a544396e07aa786..c3c3c9ad4db332d693f1638a8396ffe071149291 100644
+--- a/polylogue/storage/repository/archive/sessions.py
++++ b/polylogue/storage/repository/archive/sessions.py
+@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
+ from polylogue.archive.message.models import Message
+ from polylogue.archive.message.roles import MessageRoleFilter
+ from polylogue.archive.session.domain_models import Session, SessionSummary
++from polylogue.archive.session.hermes_verification import HermesVerificationEvidence
+ from polylogue.storage.archive_views import SessionRenderProjection
+ from polylogue.storage.hydrators import (
+     message_from_record,
+@@ -110,6 +111,18 @@ class RepositoryArchiveSessionMixin:
+     async def get_eager(self, session_id: str) -> Session | None:
+         return await self.get(session_id)
+ 
++    async def get_hermes_verification_evidence(
++        self,
++        *,
++        observer_session_id: str | None = None,
++        target_session_id: str | None = None,
++    ) -> list[HermesVerificationEvidence]:
++        """Read verification ledger rows with typed target correlation state."""
++        return await self.queries.get_hermes_verification_evidence(
++            observer_session_id=observer_session_id,
++            target_session_id=target_session_id,
++        )
++
+     async def get_messages(self, session_id: str) -> list[MessageRecord]:
+         return await self.queries.get_messages(session_id)
+ 
+diff --git a/polylogue/storage/sqlite/async_sqlite_archive.py b/polylogue/storage/sqlite/async_sqlite_archive.py
+index 0225fa5cb40f100f0abb6e69927f6f8efc3f28eb..b1519a96fe32a5bf3818de55c89faed130d60395 100644
+--- a/polylogue/storage/sqlite/async_sqlite_archive.py
++++ b/polylogue/storage/sqlite/async_sqlite_archive.py
+@@ -61,6 +61,7 @@ from pathlib import Path
+ from typing import TYPE_CHECKING
+ 
+ from polylogue.archive.message.roles import MessageRoleFilter
++from polylogue.archive.session.hermes_verification import HermesVerificationEvidence
+ from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+ from polylogue.storage.runtime import (
+     AttachmentRecord,
+@@ -193,6 +194,18 @@ class SQLiteArchiveMixin:
+         """Get attachments for multiple sessions in a single query."""
+         return await self.queries.get_attachments_batch(session_ids)
+ 
++    async def get_hermes_verification_evidence(
++        self,
++        *,
++        observer_session_id: str | None = None,
++        target_session_id: str | None = None,
++    ) -> list[HermesVerificationEvidence]:
++        """Read typed Hermes verification evidence and correlation state."""
++        return await self.queries.get_hermes_verification_evidence(
++            observer_session_id=observer_session_id,
++            target_session_id=target_session_id,
++        )
++
+     async def get_session_events(self, session_id: str) -> list[SessionEventRecord]:
+         """Get timeline events for a session."""
+         return await self.queries.get_session_events(session_id)
+diff --git a/polylogue/storage/sqlite/queries/session_events.py b/polylogue/storage/sqlite/queries/session_events.py
+index 56689e8203a39ccc9406a82f98054fc4c1d1bb87..8a714320348956d5a9135678e3f4f10521d4bedf 100644
+--- a/polylogue/storage/sqlite/queries/session_events.py
++++ b/polylogue/storage/sqlite/queries/session_events.py
+@@ -10,6 +10,11 @@ from datetime import datetime, timezone
+ 
+ import aiosqlite
+ 
++from polylogue.archive.session.hermes_verification import (
++    HermesVerificationCorrelationState,
++    HermesVerificationEvidence,
++    HermesVerificationRowState,
++)
+ from polylogue.core.types import MessageId, SessionEventId, SessionId
+ from polylogue.storage.runtime import SessionEventRecord
+ 
+@@ -45,6 +50,172 @@ def _row_to_session_event(row: sqlite3.Row) -> SessionEventRecord:
+     )
+ 
+ 
++def _optional_text(value: object) -> str | None:
++    if not isinstance(value, str):
++        return None
++    candidate = value.strip()
++    return candidate or None
++
++
++def _optional_int(value: object) -> int | None:
++    return value if isinstance(value, int) and not isinstance(value, bool) else None
++
++
++def _optional_bool(value: object) -> bool | None:
++    if isinstance(value, bool):
++        return value
++    if isinstance(value, int) and value in (0, 1):
++        return bool(value)
++    return None
++
++
++def _changed_paths(value: object) -> tuple[str, ...] | None:
++    if value is None:
++        return None
++    if not isinstance(value, list):
++        return None
++    return tuple(item for item in value if isinstance(item, str) and item)
++
++
++def _candidate_native_id(value: str) -> str:
++    prefix = "hermes-session:"
++    return value[len(prefix) :] if value.startswith(prefix) else value
++
++
++def _correlate_verification_identity(
++    *,
++    target_session_native_id: str | None,
++    target_raw_session_id: str | None,
++    sessions_by_native_id: dict[str, str],
++) -> tuple[HermesVerificationCorrelationState, SessionId | None]:
++    identity = target_session_native_id or target_raw_session_id
++    if identity is None:
++        return HermesVerificationCorrelationState.MISSING_IDENTITY, None
++
++    native_id = _candidate_native_id(identity)
++    exact = sessions_by_native_id.get(native_id)
++    if exact is not None:
++        return HermesVerificationCorrelationState.MATCHED, SessionId(exact)
++
++    if "@profile-" in native_id:
++        return HermesVerificationCorrelationState.UNMATCHED_IDENTITY, None
++
++    prefix = f"{native_id}@profile-"
++    candidates = sorted(
++        session_id
++        for candidate_native_id, session_id in sessions_by_native_id.items()
++        if candidate_native_id.startswith(prefix)
++    )
++    if len(candidates) == 1:
++        return HermesVerificationCorrelationState.MATCHED, SessionId(candidates[0])
++    if len(candidates) > 1:
++        return HermesVerificationCorrelationState.AMBIGUOUS_IDENTITY, None
++    return HermesVerificationCorrelationState.UNMATCHED_IDENTITY, None
++
++
++async def get_hermes_verification_evidence(
++    conn: aiosqlite.Connection,
++    *,
++    observer_session_id: str | None = None,
++    target_session_id: str | None = None,
++) -> list[HermesVerificationEvidence]:
++    """Read normalized verification rows through events plus ``actions``.
++
++    The paired action row is the authority for command/output/is_error/exit
++    code, preserving the archive-wide structural outcome convention. Session
++    correlation is computed from producer-positive identity only and fails
++    closed for missing, zero-match, or multi-profile matches.
++    """
++
++    clauses = ["se.event_type = 'hermes_verification_evidence'"]
++    params: list[object] = []
++    if observer_session_id is not None:
++        clauses.append("se.session_id = ?")
++        params.append(observer_session_id)
++    evidence_rows = await (
++        await conn.execute(
++            f"""
++            SELECT
++                se.event_id,
++                se.session_id AS observer_session_id,
++                se.source_message_id,
++                se.position,
++                se.payload_json,
++                se.occurred_at_ms,
++                a.tool_command,
++                a.output_text,
++                a.is_error,
++                a.exit_code
++            FROM session_events AS se
++            LEFT JOIN actions AS a
++              ON a.message_id = se.source_message_id
++             AND a.tool_name = 'hermes_verification'
++            WHERE {" AND ".join(clauses)}
++            ORDER BY se.session_id, se.position
++            """,
++            tuple(params),
++        )
++    ).fetchall()
++
++    session_rows = await (
++        await conn.execute(
++            """
++            SELECT session_id, native_id
++            FROM sessions
++            WHERE origin = 'hermes-session'
++              AND native_id NOT LIKE 'observer:%'
++              AND native_id NOT LIKE 'verification:%'
++            ORDER BY native_id
++            """
++        )
++    ).fetchall()
++    sessions_by_native_id = {str(row["native_id"]): str(row["session_id"]) for row in session_rows}
++
++    evidence: list[HermesVerificationEvidence] = []
++    for row in evidence_rows:
++        payload = _payload(row["payload_json"])
++        target_native_id = _optional_text(payload.get("target_session_native_id"))
++        target_raw_id = _optional_text(payload.get("target_session_id"))
++        correlation_state, resolved_target_id = _correlate_verification_identity(
++            target_session_native_id=target_native_id,
++            target_raw_session_id=target_raw_id,
++            sessions_by_native_id=sessions_by_native_id,
++        )
++        if target_session_id is not None and str(resolved_target_id or "") != target_session_id:
++            continue
++        source_message_id = row["source_message_id"]
++        row_state_value = _optional_text(payload.get("row_state")) or HermesVerificationRowState.MALFORMED.value
++        evidence.append(
++            HermesVerificationEvidence(
++                evidence_id=_optional_text(payload.get("evidence_id")) or f"event:{row['event_id']}",
++                observer_session_id=SessionId(str(row["observer_session_id"])),
++                observer_event_id=SessionEventId(str(row["event_id"])),
++                source_message_id=MessageId(str(source_message_id)) if source_message_id is not None else None,
++                source_index=_optional_int(payload.get("source_index")) or 0,
++                row_state=HermesVerificationRowState(row_state_value),
++                correlation_state=correlation_state,
++                target_session_native_id=target_native_id,
++                target_raw_session_id=target_raw_id,
++                target_session_id=resolved_target_id,
++                command=_optional_text(row["tool_command"]),
++                canonical_command=_optional_text(payload.get("canonical_command")),
++                kind=_optional_text(payload.get("kind")),
++                scope=_optional_text(payload.get("scope")),
++                status=_optional_text(payload.get("status")),
++                exit_code=_optional_int(row["exit_code"]),
++                is_error=_optional_bool(row["is_error"]),
++                output_summary=_optional_text(row["output_text"]),
++                changed_paths=_changed_paths(payload.get("changed_paths")),
++                observed_at=(
++                    datetime.fromtimestamp(int(row["occurred_at_ms"]) / 1000.0, tz=timezone.utc)
++                    if row["occurred_at_ms"] is not None
++                    else None
++                ),
++            )
++        )
++    return evidence
++
++
+ async def get_session_events(
+     conn: aiosqlite.Connection,
+     session_id: str,
+@@ -167,6 +338,7 @@ def sync_session_event_compaction_counts(
+ 
+ 
+ __all__ = [
++    "get_hermes_verification_evidence",
+     "get_session_event_compaction_counts",
+     "get_session_events",
+     "get_session_events_batch",
+diff --git a/polylogue/storage/sqlite/query_store_archive.py b/polylogue/storage/sqlite/query_store_archive.py
+index 159518c989a745552dff7048ea38bb538ab28882..315c329c319c3b391840d8148d1883354067097e 100644
+--- a/polylogue/storage/sqlite/query_store_archive.py
++++ b/polylogue/storage/sqlite/query_store_archive.py
+@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
+ import aiosqlite
+ 
+ from polylogue.archive.message.roles import MessageRoleFilter
++from polylogue.archive.session.hermes_verification import HermesVerificationEvidence
+ from polylogue.storage.query_models import SessionRecordQuery
+ from polylogue.storage.runtime import (
+     AttachmentRecord,
+@@ -243,6 +244,19 @@ class SQLiteQueryStoreArchiveMixin:
+         async with self._connection_factory() as conn:
+             return await attachments_q.get_attachments_batch(conn, session_ids)
+ 
++    async def get_hermes_verification_evidence(
++        self,
++        *,
++        observer_session_id: str | None = None,
++        target_session_id: str | None = None,
++    ) -> list[HermesVerificationEvidence]:
++        async with self._connection_factory() as conn:
++            return await session_events_q.get_hermes_verification_evidence(
++                conn,
++                observer_session_id=observer_session_id,
++                target_session_id=target_session_id,
++            )
++
+     async def get_session_events(self, session_id: str) -> list[SessionEventRecord]:
+         async with self._connection_factory() as conn:
+             return await session_events_q.get_session_events(conn, session_id)
+diff --git a/tests/fixtures/hermes/verification_evidence/synthetic-v1.json b/tests/fixtures/hermes/verification_evidence/synthetic-v1.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..0246e13513ac2a2e3974f1dcecb16d9060ac555a
+--- /dev/null
++++ b/tests/fixtures/hermes/verification_evidence/synthetic-v1.json
+@@ -0,0 +1,96 @@
++{
++  "schema_version": "polylogue.hermes.verification-evidence/v1",
++  "artifact_kind": "hermes_verification_evidence",
++  "export_id": "synthetic-ledger-fixture-v1",
++  "source_artifact": "verification_evidence.db",
++  "source_sha256": null,
++  "producer_schema_version": null,
++  "fixture_provenance": "synthetic; no real Hermes producer bytes",
++  "rows": [
++    {
++      "evidence_id": "verify-pass-001",
++      "session_native_id": "session-a@profile-profile-a",
++      "session_id": "session-a",
++      "command": "pytest -q tests/unit/test_widget.py",
++      "canonical_command": "pytest tests/unit/test_widget.py -q",
++      "kind": "test",
++      "scope": "repository",
++      "status": "passed",
++      "exit_code": 0,
++      "output_summary": "1 passed",
++      "changed_paths": ["tests/unit/test_widget.py"],
++      "observed_at": "2026-07-17T12:00:00Z"
++    },
++    {
++      "evidence_id": "verify-fail-002",
++      "session_native_id": "session-a@profile-profile-a",
++      "session_id": "session-a",
++      "command": "ruff check polylogue",
++      "canonical_command": "ruff check polylogue",
++      "kind": "lint",
++      "scope": "repository",
++      "status": "failed",
++      "exit_code": 2,
++      "output_summary": "2 violations",
++      "changed_paths": ["polylogue/example.py", "tests/unit/test_widget.py"],
++      "observed_at": "2026-07-17T12:01:00Z"
++    },
++    {
++      "evidence_id": "verify-running-003",
++      "session_native_id": "session-a@profile-profile-a",
++      "session_id": "session-a",
++      "command": "pytest tests/unit/test_slow.py",
++      "canonical_command": null,
++      "kind": "test",
++      "scope": "repository",
++      "status": "running",
++      "exit_code": null,
++      "output_summary": null,
++      "changed_paths": null,
++      "observed_at": "2026-07-17T12:02:00Z"
++    },
++    {
++      "evidence_id": "verify-conflict-004",
++      "session_native_id": "session-a@profile-profile-a",
++      "session_id": "session-a",
++      "command": "python -m compileall polylogue",
++      "canonical_command": "python -m compileall polylogue",
++      "kind": "build",
++      "scope": "repository",
++      "status": "passed",
++      "exit_code": 1,
++      "output_summary": "compiler returned one",
++      "changed_paths": [],
++      "observed_at": "2026-07-17T12:03:00Z"
++    },
++    {
++      "evidence_id": "verify-unmatched-005",
++      "session_native_id": "missing-session@profile-profile-z",
++      "session_id": "missing-session",
++      "command": "git diff --check",
++      "canonical_command": "git diff --check",
++      "kind": "check",
++      "scope": "worktree",
++      "status": "skipped",
++      "exit_code": null,
++      "output_summary": "not run",
++      "changed_paths": [],
++      "observed_at": "2026-07-17T12:04:00Z"
++    },
++    {
++      "evidence_id": "verify-missing-identity-006",
++      "session_native_id": null,
++      "session_id": null,
++      "command": "mypy polylogue",
++      "canonical_command": "mypy polylogue",
++      "kind": "typecheck",
++      "scope": "repository",
++      "status": "success",
++      "exit_code": null,
++      "output_summary": "clean",
++      "changed_paths": [],
++      "observed_at": "2026-07-17T12:05:00Z"
++    },
++    "malformed-row-sentinel"
++  ]
++}
+diff --git a/tests/unit/core/test_sampling.py b/tests/unit/core/test_sampling.py
+index 0c1a4a34ecae91c5e8a1892b15c523da536528b1..739a488825b1c52d85091c0fb0f23e9b0bb6e281 100644
+--- a/tests/unit/core/test_sampling.py
++++ b/tests/unit/core/test_sampling.py
+@@ -416,9 +416,11 @@ class TestLoadSamplesFromDb:
+             {
+                 "raw_id": raw_id,
+                 "status": "intentionally_excluded",
+-                "artifact_kind": "metadata_document",
++                "artifact_kind": "verification_evidence",
+                 "source_path": "/tmp/hermes/verification_evidence.db",
+-                "reason": "artifact_taxonomy:Hermes SQLite evidence sidecar",
++                "reason": (
++                    "artifact_taxonomy:Hermes SQLite evidence sidecar; requires versioned JSON acquisition export"
++                ),
+             }
+         ]
+ 
+diff --git a/tests/unit/sources/parsers/test_hermes_verification.py b/tests/unit/sources/parsers/test_hermes_verification.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..706680cd77e4fcb19fed6877cc37afc00b316569
+--- /dev/null
++++ b/tests/unit/sources/parsers/test_hermes_verification.py
+@@ -0,0 +1,293 @@
++"""Hermes verification-ledger boundary, normalization, and query tests."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++from collections.abc import AsyncIterator
++from pathlib import Path
++
++import pytest
++
++from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
++from polylogue.archive.message.roles import Role
++from polylogue.archive.session.hermes_verification import (
++    HermesVerificationCorrelationState,
++    HermesVerificationRowState,
++)
++from polylogue.config import Config, Source
++from polylogue.core.enums import Provider
++from polylogue.pipeline.services.acquisition import AcquisitionService
++from polylogue.pipeline.services.parsing import ParsingService
++from polylogue.sources.dispatch import detect_provider, parse_payload
++from polylogue.sources.import_explain import explain_import_path
++from polylogue.sources.parsers import hermes_verification
++from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
++from polylogue.sources.source_parsing import parse_one_source_path
++from polylogue.storage.blob_store import BlobStore
++from polylogue.storage.repository import SessionRepository
++from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
++from tests.infra.live_ingest import ingest_session
++
++FIXTURE = Path("tests/fixtures/hermes/verification_evidence/synthetic-v1.json")
++
++
++@pytest.fixture
++async def async_backend(test_db: Path) -> AsyncIterator[SQLiteBackend]:
++    backend = SQLiteBackend(db_path=test_db)
++    yield backend
++    await backend.close()
++
++
++def _payload() -> dict[str, object]:
++    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
++    assert isinstance(payload, dict)
++    return payload
++
++
++def _target_session() -> ParsedSession:
++    return ParsedSession(
++        source_name=Provider.HERMES,
++        provider_session_id="session-a@profile-profile-a",
++        title="Synthetic target session",
++        created_at="2026-07-17T11:00:00Z",
++        updated_at="2026-07-17T11:00:00Z",
++        messages=[
++            ParsedMessage(
++                provider_message_id="target-message",
++                role=Role.USER,
++                text="synthetic target",
++                timestamp="2026-07-17T11:00:00Z",
++            )
++        ],
++    )
++
++
++def test_artifact_boundary_distinguishes_sqlite_sidecar_from_versioned_export(tmp_path: Path) -> None:
++    sqlite_sidecar = classify_artifact_path(
++        tmp_path / "verification_evidence.db",
++        provider=Provider.HERMES,
++    )
++    assert sqlite_sidecar is not None
++    assert sqlite_sidecar.kind is ArtifactKind.VERIFICATION_EVIDENCE
++    assert sqlite_sidecar.parse_as_session is False
++    assert sqlite_sidecar.schema_eligible is False
++    assert "requires versioned JSON acquisition export" in sqlite_sidecar.reason
++
++    payload = _payload()
++    exported = classify_artifact(payload, provider=Provider.HERMES, source_path=FIXTURE)
++    assert exported.kind is ArtifactKind.VERIFICATION_EVIDENCE
++    assert exported.parse_as_session is True
++    assert detect_provider(payload) is Provider.HERMES
++
++
++def test_raw_file_reaches_shared_dispatch_and_preserves_synthetic_provenance(tmp_path: Path) -> None:
++    source = tmp_path / "verification-export.json"
++    source.write_bytes(FIXTURE.read_bytes())
++
++    emitted = list(
++        parse_one_source_path(
++            str(source),
++            file_mtime="2026-07-17T12:06:00Z",
++            source_name=Provider.HERMES.value,
++            sidecar_data={},
++            capture_raw=True,
++            blob_root=tmp_path / "blobs",
++        )
++    )
++
++    assert len(emitted) == 3
++    assert all(raw is not None for raw, _session in emitted)
++    expected_hash = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
++    assert all(raw is not None and raw.source_path == str(source) for raw, _session in emitted)
++    assert all(raw is not None and raw.blob_hash == expected_hash for raw, _session in emitted)
++    assert all(raw is not None and raw.blob_size == source.stat().st_size for raw, _session in emitted)
++    assert BlobStore(tmp_path / "blobs").read_all(expected_hash) == FIXTURE.read_bytes()
++    assert all("hermes:verification-evidence" in session.ingest_flags for _raw, session in emitted)
++    artifact_events = [
++        event
++        for _raw, session in emitted
++        for event in session.session_events
++        if event.event_type == hermes_verification.VERIFICATION_ARTIFACT_EVENT_TYPE
++    ]
++    assert len(artifact_events) == 3
++    assert all(
++        event.payload["fixture_provenance"] == "synthetic; no real Hermes producer bytes" for event in artifact_events
++    )
++    assert all(event.payload["source_sha256"] is None for event in artifact_events)
++
++
++def test_import_explain_declares_synthetic_fidelity_without_real_byte_claims() -> None:
++    [entry] = explain_import_path(FIXTURE, source_name=Provider.HERMES.value).entries
++
++    assert entry.artifact_kind == ArtifactKind.VERIFICATION_EVIDENCE.value
++    assert entry.produced.sessions == 3
++    assert entry.produced.actions == 6
++    assert entry.fidelity is not None
++    assert entry.fidelity.acquisition_method == "verification_evidence_json_export"
++    assert entry.fidelity.retained_blob_reproducibility.status == "exact"
++    assert entry.fidelity.capabilities["artifact_identity"].status == "inferred"
++    assert entry.fidelity.capabilities["session_correlation"].status == "degraded"
++    assert entry.fidelity.capabilities["row_quality"].counts == {
++        "malformed": 1,
++        "partial": 1,
++        "outcome_conflict": 1,
++    }
++    assert all(capability.status != "exact" for capability in entry.fidelity.capabilities.values())
++    assert any("no real ~/.hermes" in caveat for caveat in entry.caveats)
++
++
++def test_parser_is_deterministic_and_retains_partial_malformed_and_missing_identity_rows() -> None:
++    payload = _payload()
++    first = parse_payload(Provider.HERMES, payload, "fallback")
++    second = parse_payload(Provider.HERMES, payload, "fallback")
++    assert [session.model_dump(mode="json") for session in first] == [
++        session.model_dump(mode="json") for session in second
++    ]
++
++    events = [
++        event
++        for session in first
++        for event in session.session_events
++        if event.event_type == hermes_verification.VERIFICATION_EVENT_TYPE
++    ]
++    by_id = {event.payload["evidence_id"]: event for event in events}
++    assert len(events) == 7
++    assert by_id["verify-running-003"].payload["row_state"] == HermesVerificationRowState.PARTIAL.value
++    assert by_id["verify-running-003"].payload["changed_paths"] is None
++    assert by_id["verify-missing-identity-006"].payload["target_session_id"] is None
++
++    malformed = [event for event in events if event.payload["row_state"] == HermesVerificationRowState.MALFORMED.value]
++    assert len(malformed) == 1
++    assert malformed[0].source_message_provider_id is None
++    assert malformed[0].payload["command"] is None
++
++    fidelity = hermes_verification.import_fidelity_declaration(first)
++    assert fidelity.capabilities["artifact_identity"].status == "inferred"
++    assert fidelity.capabilities["session_correlation"].status == "degraded"
++    assert all(capability.status != "exact" for capability in fidelity.capabilities.values())
++    assert "no real ~/.hermes" in fidelity.caveats[0]
++
++
++async def test_end_to_end_replay_outcomes_correlation_and_typed_query(
++    async_backend: SQLiteBackend, tmp_path: Path
++) -> None:
++    target_id = await ingest_session(_target_session(), async_backend)
++    assert target_id == "hermes-session:session-a@profile-profile-a"
++
++    source = tmp_path / "verification-export.json"
++    source.write_bytes(FIXTURE.read_bytes())
++    source_config = Source(name=Provider.HERMES.value, path=source)
++    config = Config(
++        archive_root=tmp_path,
++        render_root=tmp_path / "render",
++        sources=[source_config],
++    )
++    acquired = await AcquisitionService(backend=async_backend).acquire_sources([source_config])
++    assert acquired.acquired == 1
++    assert len(acquired.raw_ids) == 1
++    [raw_id] = acquired.raw_ids
++    stored_raw = await async_backend.get_raw_session(raw_id)
++    assert stored_raw is not None
++    assert stored_raw.blob_hash == hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
++    assert stored_raw.blob_size == FIXTURE.stat().st_size
++    assert BlobStore(tmp_path / "blob").read_all(stored_raw.blob_hash) == FIXTURE.read_bytes()
++
++    parser = ParsingService(
++        repository=SessionRepository(backend=async_backend),
++        archive_root=tmp_path,
++        config=config,
++        ingest_workers=1,
++    )
++    first_parse = await parser.parse_from_raw(raw_ids=acquired.raw_ids)
++    assert first_parse.parse_failures == 0
++    assert first_parse.counts["sessions"] == 3
++    first_observer_ids = sorted(first_parse.processed_ids)
++    first = await async_backend.get_hermes_verification_evidence()
++
++    async with async_backend.connection() as conn:
++        first_counts = {
++            table: int((await (await conn.execute(f"SELECT COUNT(*) FROM {table}")).fetchone())[0])
++            for table in ("sessions", "messages", "blocks", "session_events", "actions")
++        }
++
++    second_parse = await parser.parse_from_raw(raw_ids=acquired.raw_ids)
++    assert second_parse.parse_failures == 0
++    second = await async_backend.get_hermes_verification_evidence()
++    async with async_backend.connection() as conn:
++        second_counts = {
++            table: int((await (await conn.execute(f"SELECT COUNT(*) FROM {table}")).fetchone())[0])
++            for table in ("sessions", "messages", "blocks", "session_events", "actions")
++        }
++
++    assert len(first_observer_ids) == 3
++    assert second_parse.processed_ids == set()
++    assert second_counts == first_counts
++    assert [item.model_dump(mode="json") for item in second] == [item.model_dump(mode="json") for item in first]
++
++    by_id = {item.evidence_id: item for item in second}
++    passed = by_id["verify-pass-001"]
++    assert passed.correlation_state is HermesVerificationCorrelationState.MATCHED
++    assert passed.target_session_native_id == "session-a@profile-profile-a"
++    assert passed.target_raw_session_id == "session-a"
++    assert str(passed.target_session_id) == target_id
++    assert passed.command == "pytest -q tests/unit/test_widget.py"
++    assert passed.canonical_command == "pytest tests/unit/test_widget.py -q"
++    assert passed.kind == "test"
++    assert passed.scope == "repository"
++    assert passed.status == "passed"
++    assert passed.exit_code == 0
++    assert passed.is_error is False
++    assert passed.output_summary == "1 passed"
++    assert passed.changed_paths == ("tests/unit/test_widget.py",)
++
++    failed = by_id["verify-fail-002"]
++    assert failed.exit_code == 2
++    assert failed.is_error is True
++
++    unknown = by_id["verify-running-003"]
++    assert unknown.row_state is HermesVerificationRowState.PARTIAL
++    assert unknown.status == "running"
++    assert unknown.canonical_command is None
++    assert unknown.exit_code is None
++    assert unknown.is_error is None
++    assert unknown.changed_paths is None
++
++    conflict = by_id["verify-conflict-004"]
++    assert conflict.row_state is HermesVerificationRowState.OUTCOME_CONFLICT
++    assert conflict.status == "passed"
++    assert conflict.exit_code == 1
++    assert conflict.is_error is True
++
++    unmatched = by_id["verify-unmatched-005"]
++    assert unmatched.correlation_state is HermesVerificationCorrelationState.UNMATCHED_IDENTITY
++    assert unmatched.target_raw_session_id == "missing-session"
++    assert unmatched.target_session_id is None
++    assert unmatched.status == "skipped"
++    assert unmatched.exit_code is None
++    assert unmatched.is_error is None
++    assert unmatched.changed_paths == ()
++
++    missing = by_id["verify-missing-identity-006"]
++    assert missing.correlation_state is HermesVerificationCorrelationState.MISSING_IDENTITY
++    assert missing.target_session_native_id is None
++    assert missing.target_raw_session_id is None
++    assert missing.target_session_id is None
++    assert missing.status == "success"
++    assert missing.exit_code is None
++    assert missing.is_error is False
++
++    malformed = [item for item in second if item.row_state is HermesVerificationRowState.MALFORMED]
++    assert len(malformed) == 1
++    assert malformed[0].source_message_id is None
++    assert malformed[0].command is None
++    assert malformed[0].is_error is None
++
++    repository = SessionRepository(backend=async_backend)
++    matched_only = await repository.get_hermes_verification_evidence(target_session_id=target_id)
++    assert {item.evidence_id for item in matched_only} == {
++        "verify-pass-001",
++        "verify-fail-002",
++        "verify-running-003",
++        "verify-conflict-004",
++    }
+diff --git a/tests/unit/sources/test_parsers_local_agent.py b/tests/unit/sources/test_parsers_local_agent.py
+index 7447be1c0b7392fe0567b24aae6bf5b4af657861..ec3538baf92969e0b329764b85c6e778b17ad307 100644
+--- a/tests/unit/sources/test_parsers_local_agent.py
++++ b/tests/unit/sources/test_parsers_local_agent.py
+@@ -6,7 +6,7 @@ from pathlib import Path
+ 
+ import pytest
+ 
+-from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
++from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
+ from polylogue.archive.raw_payload import build_raw_payload_envelope
+ from polylogue.config import Source
+ from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+@@ -781,7 +781,8 @@ def test_agent_sidecars_are_classified_as_non_session() -> None:
+     assert hermes_sqlite_evidence is not None
+     assert hermes_sqlite_evidence.parse_as_session is False
+     assert hermes_sqlite_evidence.schema_eligible is False
+-    assert hermes_sqlite_evidence.reason == "Hermes SQLite evidence sidecar"
++    assert hermes_sqlite_evidence.kind is ArtifactKind.VERIFICATION_EVIDENCE
++    assert hermes_sqlite_evidence.reason == "Hermes SQLite evidence sidecar; requires versioned JSON acquisition export"
+ 
+ 
+ def test_runtime_provider_identity_keeps_gemini_surfaces_distinct() -> None:

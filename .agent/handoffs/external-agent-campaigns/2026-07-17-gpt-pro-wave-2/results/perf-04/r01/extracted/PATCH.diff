@@ -1,0 +1,2224 @@
+diff --git a/devtools/resume_ranking_eval.py b/devtools/resume_ranking_eval.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ccc8b548cc143919fe92f655f455b1f7541c823
+--- /dev/null
++++ b/devtools/resume_ranking_eval.py
+@@ -0,0 +1,467 @@
++"""Offline before/after evaluation for resume-candidate ranking changes.
++
++The fixture format carries a current-work context, a candidate profile pool,
++and lineage identifiers. Ground truth is derived from that lineage rather than
++from an evaluator-only relevance label. Both ranking variants call the
++production scorer in :mod:`polylogue.insights.resume`.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++import tempfile
++from collections import defaultdict
++from dataclasses import asdict, dataclass
++from pathlib import Path
++from typing import Literal
++
++from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
++
++from polylogue.insights.archive import ArchiveInsightProvenance, SessionProfileInsight
++from polylogue.insights.archive_models import SessionEvidencePayload, SessionInferencePayload
++from polylogue.insights.resume import (
++    ResumeCandidate,
++    _PathResolutionContext,
++    _rank_resume_profiles,
++    _score_file_overlap,
++)
++
++DEFAULT_FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "data" / "resume-ranking-eval-v1.json"
++FixtureSource = Literal["synthetic", "snapshot-derived"]
++
++
++class _FixtureModel(BaseModel):
++    model_config = ConfigDict(extra="forbid", frozen=True)
++
++
++class CurrentWorkFixture(_FixtureModel):
++    session_id: str
++    logical_session_id: str
++    parent_session_id: str | None = None
++    recent_files: tuple[str, ...]
++    cwd: str | None = None
++
++
++class CandidateFixture(_FixtureModel):
++    session_id: str
++    logical_session_id: str
++    parent_session_id: str | None = None
++    title: str
++    last_message_at: str
++    file_paths_touched: tuple[str, ...]
++    repo_root_alias: str | None = None
++    cwd_paths: tuple[str, ...] = ()
++    terminal_state: str = "unknown"
++    workflow_shape: str = "unknown"
++
++
++class RankingScenarioFixture(_FixtureModel):
++    id: str
++    source: FixtureSource
++    present_paths: tuple[str, ...]
++    current: CurrentWorkFixture
++    candidates: tuple[CandidateFixture, ...]
++
++    @model_validator(mode="after")
++    def _require_candidate_pool(self) -> RankingScenarioFixture:
++        if not self.candidates:
++            raise ValueError("ranking scenario must include at least one candidate")
++        return self
++
++
++class EvidenceSampleFixture(_FixtureModel):
++    id: str
++    source: FixtureSource
++    resolvable_count: int = Field(ge=0)
++    recoverable_dead_count: int = Field(ge=0)
++    unrecoverable_dead_count: int = Field(ge=0)
++
++    @model_validator(mode="after")
++    def _require_evidence(self) -> EvidenceSampleFixture:
++        if self.resolvable_count + self.recoverable_dead_count + self.unrecoverable_dead_count == 0:
++            raise ValueError("evidence sample must include at least one path")
++        return self
++
++
++class RankingEvaluationFixture(_FixtureModel):
++    version: int
++    description: str
++    scenarios: tuple[RankingScenarioFixture, ...]
++    evidence_samples: tuple[EvidenceSampleFixture, ...] = ()
++
++    @model_validator(mode="after")
++    def _validate_version_and_scenarios(self) -> RankingEvaluationFixture:
++        if self.version != 1:
++            raise ValueError(f"unsupported resume ranking fixture version: {self.version}")
++        if not self.scenarios:
++            raise ValueError("fixture must include at least one ranking scenario")
++        scenario_ids = [scenario.id for scenario in self.scenarios]
++        if len(scenario_ids) != len(set(scenario_ids)):
++            raise ValueError("ranking scenario ids must be unique")
++        return self
++
++
++@dataclass(frozen=True, slots=True)
++class RankingMetrics:
++    scenarios: int
++    hit_at_1: float
++    hit_at_3: float
++    mrr: float
++
++
++@dataclass(frozen=True, slots=True)
++class BeforeAfterMetrics:
++    before: RankingMetrics
++    after: RankingMetrics
++
++
++@dataclass(frozen=True, slots=True)
++class ScenarioEvaluation:
++    scenario_id: str
++    source: FixtureSource
++    target_logical_session_ids: tuple[str, ...]
++    before_rank: int | None
++    after_rank: int | None
++    before_order: tuple[str, ...]
++    after_order: tuple[str, ...]
++    after_overlap_basis: dict[str, object]
++
++
++@dataclass(frozen=True, slots=True)
++class EvidenceRecoveryEvaluation:
++    sample_id: str
++    source: FixtureSource
++    path_count: int
++    resolvable_count: int
++    dead_count: int
++    directory_recovered_count: int
++    dead_excluded_count: int
++    usable_share_before: float
++    usable_share_after: float
++    dead_recovery_rate: float
++
++
++@dataclass(frozen=True, slots=True)
++class EvaluationVerdict:
++    non_regressing: bool
++    strict_overall_improvement: bool
++    all_fixed_targets_hit_at_1: bool
++
++
++@dataclass(frozen=True, slots=True)
++class EvaluationReport:
++    fixture_version: int
++    fixture_description: str
++    metrics: dict[str, BeforeAfterMetrics]
++    scenarios: tuple[ScenarioEvaluation, ...]
++    evidence_recovery: tuple[EvidenceRecoveryEvaluation, ...]
++    verdict: EvaluationVerdict
++
++    def to_dict(self) -> dict[str, object]:
++        return asdict(self)
++
++
++def load_fixture(path: Path) -> RankingEvaluationFixture:
++    """Load and strictly validate one ranking-evaluation fixture."""
++
++    return RankingEvaluationFixture.model_validate_json(path.read_text(encoding="utf-8"))
++
++
++def _safe_fixture_path(repo_root: Path, relative_path: str) -> Path:
++    candidate = Path(relative_path)
++    if candidate.is_absolute():
++        raise ValueError(f"present_paths entries must be repo-relative: {relative_path}")
++    resolved = (repo_root / candidate).resolve(strict=False)
++    try:
++        resolved.relative_to(repo_root)
++    except ValueError as exc:
++        raise ValueError(f"fixture path escapes repo root: {relative_path}") from exc
++    return resolved
++
++
++def _materialize_present_paths(repo_root: Path, paths: tuple[str, ...]) -> None:
++    for relative_path in paths:
++        path = _safe_fixture_path(repo_root, relative_path)
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(f"# fixture: {relative_path}\n", encoding="utf-8")
++
++
++def _profile_from_fixture(candidate: CandidateFixture, repo_root: Path) -> SessionProfileInsight:
++    profile_repo_root = candidate.repo_root_alias or str(repo_root)
++    return SessionProfileInsight(
++        session_id=candidate.session_id,
++        logical_session_id=candidate.logical_session_id,
++        origin="claude-code",
++        title=candidate.title,
++        provenance=ArchiveInsightProvenance(
++            materializer_version=1,
++            materialized_at=candidate.last_message_at,
++            source_updated_at=candidate.last_message_at,
++        ),
++        evidence=SessionEvidencePayload(
++            last_message_at=candidate.last_message_at,
++            repo_paths=(profile_repo_root,),
++            cwd_paths=candidate.cwd_paths,
++            file_paths_touched=candidate.file_paths_touched,
++            parent_id=candidate.parent_session_id,
++            logical_session_id=candidate.logical_session_id,
++        ),
++        inference=SessionInferencePayload(
++            terminal_state=candidate.terminal_state,
++            workflow_shape=candidate.workflow_shape,
++        ),
++    )
++
++
++def _lineage_targets(scenario: RankingScenarioFixture) -> tuple[str, ...]:
++    current = scenario.current
++    target_logical_ids: set[str] = set()
++    for candidate in scenario.candidates:
++        same_logical_family = candidate.logical_session_id == current.logical_session_id
++        true_parent = current.parent_session_id is not None and candidate.session_id == current.parent_session_id
++        true_sibling = (
++            current.parent_session_id is not None
++            and candidate.parent_session_id is not None
++            and candidate.parent_session_id == current.parent_session_id
++        )
++        if same_logical_family or true_parent or true_sibling:
++            target_logical_ids.add(candidate.logical_session_id)
++    if not target_logical_ids:
++        raise ValueError(f"scenario {scenario.id!r} has no lineage-derived resume target")
++    return tuple(sorted(target_logical_ids))
++
++
++def _first_relevant_rank(candidates: tuple[ResumeCandidate, ...], targets: tuple[str, ...]) -> int | None:
++    target_set = set(targets)
++    for rank, candidate in enumerate(candidates, start=1):
++        if candidate.logical_session_id in target_set:
++            return rank
++    return None
++
++
++def _target_basis(candidates: tuple[ResumeCandidate, ...], targets: tuple[str, ...]) -> dict[str, object]:
++    target_set = set(targets)
++    for candidate in candidates:
++        if candidate.logical_session_id in target_set:
++            return candidate.overlap_basis.model_dump(mode="json")
++    return {}
++
++
++def evaluate_scenario(scenario: RankingScenarioFixture) -> ScenarioEvaluation:
++    """Run one fixture through the production legacy and fixed rankers."""
++
++    with tempfile.TemporaryDirectory(prefix=f"polylogue-resume-eval-{scenario.id}-") as temporary:
++        repo_root = Path(temporary).resolve()
++        _materialize_present_paths(repo_root, scenario.present_paths)
++        profiles = [_profile_from_fixture(candidate, repo_root) for candidate in scenario.candidates]
++        target_ids = _lineage_targets(scenario)
++        logical_pool_size = len({candidate.logical_session_id for candidate in scenario.candidates})
++        before = _rank_resume_profiles(
++            profiles,
++            repo_path=str(repo_root),
++            cwd=scenario.current.cwd,
++            recent_files=scenario.current.recent_files,
++            limit=logical_pool_size,
++            overlap_mode="legacy",
++        )
++        after = _rank_resume_profiles(
++            profiles,
++            repo_path=str(repo_root),
++            cwd=scenario.current.cwd,
++            recent_files=scenario.current.recent_files,
++            limit=logical_pool_size,
++            overlap_mode="refactor-aware",
++        )
++
++    return ScenarioEvaluation(
++        scenario_id=scenario.id,
++        source=scenario.source,
++        target_logical_session_ids=target_ids,
++        before_rank=_first_relevant_rank(before, target_ids),
++        after_rank=_first_relevant_rank(after, target_ids),
++        before_order=tuple(candidate.logical_session_id for candidate in before),
++        after_order=tuple(candidate.logical_session_id for candidate in after),
++        after_overlap_basis=_target_basis(after, target_ids),
++    )
++
++
++def _ranking_metrics(rows: tuple[ScenarioEvaluation, ...], *, use_after: bool) -> RankingMetrics:
++    if not rows:
++        return RankingMetrics(scenarios=0, hit_at_1=0.0, hit_at_3=0.0, mrr=0.0)
++    ranks = [row.after_rank if use_after else row.before_rank for row in rows]
++    count = len(ranks)
++    return RankingMetrics(
++        scenarios=count,
++        hit_at_1=round(sum(rank is not None and rank <= 1 for rank in ranks) / count, 6),
++        hit_at_3=round(sum(rank is not None and rank <= 3 for rank in ranks) / count, 6),
++        mrr=round(sum(0.0 if rank is None else 1.0 / rank for rank in ranks) / count, 6),
++    )
++
++
++def _evaluate_evidence_sample(sample: EvidenceSampleFixture) -> EvidenceRecoveryEvaluation:
++    with tempfile.TemporaryDirectory(prefix=f"polylogue-resume-evidence-{sample.id}-") as temporary:
++        repo_root = Path(temporary).resolve()
++        resolvable = tuple(f"mass/live/file_{index:03d}.py" for index in range(sample.resolvable_count))
++        recoverable_dead = tuple(
++            f"mass/refactor/retired_{index:03d}.py" for index in range(sample.recoverable_dead_count)
++        )
++        replacement_files = tuple(
++            f"mass/refactor/current_{index:03d}.py" for index in range(sample.recoverable_dead_count)
++        )
++        unrecoverable_dead = tuple(
++            f"retired/area_{index:03d}/ghost.py" for index in range(sample.unrecoverable_dead_count)
++        )
++        _materialize_present_paths(repo_root, (*resolvable, *replacement_files))
++        score = _score_file_overlap(
++            context=_PathResolutionContext.from_repo_path(str(repo_root)),
++            recent_files=set(replacement_files),
++            candidate_paths={*resolvable, *recoverable_dead, *unrecoverable_dead},
++        )
++
++    path_count = sample.resolvable_count + sample.recoverable_dead_count + sample.unrecoverable_dead_count
++    resolvable_count = len(score.resolvable_paths)
++    dead_count = len(score.dead_paths)
++    recovered_count = len(score.basis.dir)
++    dead_excluded_count = len(score.basis.dead_excluded)
++    if not score.resolution_available:
++        raise RuntimeError(f"evidence sample {sample.id!r} could not resolve its temporary repo root")
++    expected_dead = sample.recoverable_dead_count + sample.unrecoverable_dead_count
++    if (resolvable_count, dead_count, recovered_count, dead_excluded_count) != (
++        sample.resolvable_count,
++        expected_dead,
++        sample.recoverable_dead_count,
++        sample.unrecoverable_dead_count,
++    ):
++        raise RuntimeError(
++            f"evidence sample {sample.id!r} did not exercise the intended partition: "
++            f"resolved={resolvable_count}, dead={dead_count}, recovered={recovered_count}, "
++            f"excluded={dead_excluded_count}"
++        )
++    return EvidenceRecoveryEvaluation(
++        sample_id=sample.id,
++        source=sample.source,
++        path_count=path_count,
++        resolvable_count=resolvable_count,
++        dead_count=dead_count,
++        directory_recovered_count=recovered_count,
++        dead_excluded_count=dead_excluded_count,
++        usable_share_before=round(resolvable_count / path_count, 6),
++        usable_share_after=round((resolvable_count + recovered_count) / path_count, 6),
++        dead_recovery_rate=round(recovered_count / dead_count, 6) if dead_count else 0.0,
++    )
++
++
++def evaluate_fixture(fixture: RankingEvaluationFixture) -> EvaluationReport:
++    """Evaluate every cohort and evidence-recovery sample in one fixture."""
++
++    scenario_rows = tuple(evaluate_scenario(scenario) for scenario in fixture.scenarios)
++    cohorts: dict[str, list[ScenarioEvaluation]] = defaultdict(list)
++    cohorts["overall"].extend(scenario_rows)
++    for row in scenario_rows:
++        cohorts[row.source].append(row)
++    metrics = {
++        cohort: BeforeAfterMetrics(
++            before=_ranking_metrics(tuple(rows), use_after=False),
++            after=_ranking_metrics(tuple(rows), use_after=True),
++        )
++        for cohort, rows in sorted(cohorts.items())
++    }
++    evidence_rows = tuple(_evaluate_evidence_sample(sample) for sample in fixture.evidence_samples)
++    non_regressing = all(
++        metric.after.hit_at_1 >= metric.before.hit_at_1
++        and metric.after.hit_at_3 >= metric.before.hit_at_3
++        and metric.after.mrr >= metric.before.mrr
++        for metric in metrics.values()
++    )
++    overall = metrics["overall"]
++    strict_improvement = (
++        overall.after.hit_at_1 > overall.before.hit_at_1
++        or overall.after.hit_at_3 > overall.before.hit_at_3
++        or overall.after.mrr > overall.before.mrr
++    )
++    return EvaluationReport(
++        fixture_version=fixture.version,
++        fixture_description=fixture.description,
++        metrics=metrics,
++        scenarios=scenario_rows,
++        evidence_recovery=evidence_rows,
++        verdict=EvaluationVerdict(
++            non_regressing=non_regressing,
++            strict_overall_improvement=strict_improvement,
++            all_fixed_targets_hit_at_1=all(row.after_rank == 1 for row in scenario_rows),
++        ),
++    )
++
++
++def _pct(value: float) -> str:
++    return f"{value * 100:.1f}%"
++
++
++def format_report(report: EvaluationReport) -> str:
++    lines = [
++        "Resume ranking evaluation",
++        f"Fixture v{report.fixture_version}: {report.fixture_description}",
++        "",
++        "Ranking quality (before -> after)",
++    ]
++    for cohort, metrics in report.metrics.items():
++        lines.append(
++            f"  {cohort:16} n={metrics.before.scenarios:<2d} "
++            f"hit@1 {_pct(metrics.before.hit_at_1)} -> {_pct(metrics.after.hit_at_1)}; "
++            f"hit@3 {_pct(metrics.before.hit_at_3)} -> {_pct(metrics.after.hit_at_3)}; "
++            f"MRR {metrics.before.mrr:.3f} -> {metrics.after.mrr:.3f}"
++        )
++    lines.extend(("", "Scenario ranks (before -> after)"))
++    for row in report.scenarios:
++        before_rank = str(row.before_rank) if row.before_rank is not None else "miss"
++        after_rank = str(row.after_rank) if row.after_rank is not None else "miss"
++        lines.append(f"  {row.scenario_id:48} {before_rank} -> {after_rank}")
++    if report.evidence_recovery:
++        lines.extend(("", "Evidence usability"))
++        for evidence_row in report.evidence_recovery:
++            lines.append(
++                f"  {evidence_row.sample_id}: "
++                f"{_pct(evidence_row.usable_share_before)} -> {_pct(evidence_row.usable_share_after)} usable; "
++                f"{_pct(evidence_row.dead_recovery_rate)} of dead paths directory-recovered "
++                f"({evidence_row.directory_recovered_count}/{evidence_row.dead_count})"
++            )
++    lines.extend(
++        (
++            "",
++            "Verdict: "
++            f"non-regressing={str(report.verdict.non_regressing).lower()}, "
++            f"strict-overall-improvement={str(report.verdict.strict_overall_improvement).lower()}, "
++            f"all-fixed-targets-hit@1={str(report.verdict.all_fixed_targets_hit_at_1).lower()}",
++        )
++    )
++    return "\n".join(lines)
++
++
++def _parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(
++        prog="python -m devtools.resume_ranking_eval",
++        description="Compare legacy and refactor-aware resume ranking over lineage-grounded offline fixtures.",
++    )
++    parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE, help="Path to a v1 evaluation fixture.")
++    parser.add_argument("--json", action="store_true", help="Emit the complete machine-readable report.")
++    return parser
++
++
++def main(argv: list[str] | None = None) -> int:
++    args = _parser().parse_args(argv)
++    try:
++        report = evaluate_fixture(load_fixture(args.fixture))
++    except (OSError, ValueError, ValidationError, RuntimeError) as exc:
++        print(f"resume-ranking-eval: {type(exc).__name__}: {exc}", file=sys.stderr)
++        return 2
++    if args.json:
++        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
++    else:
++        print(format_report(report))
++    return 0 if report.verdict.non_regressing else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docs/generated/mcp-equivalence.json b/docs/generated/mcp-equivalence.json
+index 97145a7e1883eee24c2e7aace8c8edbc31d07d81..3c67efa6d7d6bb4655252ba2180e26633202ca69 100644
+--- a/docs/generated/mcp-equivalence.json
++++ b/docs/generated/mcp-equivalence.json
+@@ -6658,7 +6658,7 @@
+         "notes": "This route is intentionally budgeted context/orientation, not an exhaustive archive relation."
+       },
+       "deprecation_state": "retained",
+-      "description": "Get a typed resume brief for one archived session.",
++      "description": "Get a typed resume brief, optionally explaining current-work path overlap.",
+       "field_discovery": [
+         "action_affordances"
+       ],
+@@ -6698,7 +6698,7 @@
+           }
+         ],
+         "declaration_id": "mcp.tool.get_resume_brief",
+-        "discovery_text": "Get a typed resume brief for one archived session.",
++        "discovery_text": "Get a typed resume brief, optionally explaining current-work path overlap.",
+         "examples": [
+           {
+             "arguments": [
+diff --git a/polylogue/api/archive.py b/polylogue/api/archive.py
+index 438e5f899864ad966efa35da1126160c0ed2188e..d3c47ab2cf082d008669cbf951c957a2e98fb169 100644
+--- a/polylogue/api/archive.py
++++ b/polylogue/api/archive.py
+@@ -4599,11 +4599,19 @@ class PolylogueArchiveMixin:
+         session_id: str,
+         *,
+         related_limit: int = 6,
++        repo_path: str | None = None,
++        recent_files: Sequence[str] = (),
+     ) -> ResumeBrief | None:
+         """Build a compact handoff brief for an archived session."""
+         from polylogue.insights.resume import ResumeOperations, build_resume_brief
+ 
+-        return await build_resume_brief(cast(ResumeOperations, self), session_id, related_limit=related_limit)
++        return await build_resume_brief(
++            cast(ResumeOperations, self),
++            session_id,
++            related_limit=related_limit,
++            repo_path=repo_path,
++            recent_files=recent_files,
++        )
+ 
+     async def find_resume_candidates(
+         self, *, repo_path: str, cwd: str | None = None, recent_files: Sequence[str] = (), limit: int = 10
+diff --git a/polylogue/cli/query_verbs.py b/polylogue/cli/query_verbs.py
+index b834f3632636653bc7e7a638a69fc068df457ef6..03be9d5b47e74462d67a896bed9b649dee32e831 100644
+--- a/polylogue/cli/query_verbs.py
++++ b/polylogue/cli/query_verbs.py
+@@ -484,7 +484,12 @@ def _emit_continue_candidates(
+         emit_success(payload)
+         return
+     for candidate in candidates:
+-        click.echo(f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title}")
++        basis = candidate.overlap_basis
++        click.echo(
++            f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title} "
++            f"[overlap exact={len(basis.exact)} dir={len(basis.dir)} "
++            f"dead-excluded={len(basis.dead_excluded)}]"
++        )
+ 
+ 
+ def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+diff --git a/polylogue/context/preamble.py b/polylogue/context/preamble.py
+index 45d130eebb1a86eb2375f9b93b80b676f9633418..5dcd49c8704bd4b94beb47f541c4a6f827ce608b 100644
+--- a/polylogue/context/preamble.py
++++ b/polylogue/context/preamble.py
+@@ -14,6 +14,7 @@ from polylogue.surfaces.payloads import (
+     ContextPreambleAssertionGuidance,
+     ContextPreambleGuidance,
+     ContextPreambleLineage,
++    ContextPreambleOverlapBasis,
+     ContextPreambleProjectState,
+     ContextPreambleQuotedEvidence,
+     ContextPreambleSession,
+@@ -26,6 +27,17 @@ if TYPE_CHECKING:
+ logger = get_logger(__name__)
+ 
+ 
++def _candidate_overlap_basis(candidate: object) -> ContextPreambleOverlapBasis | None:
++    basis = getattr(candidate, "overlap_basis", None)
++    model_dump = getattr(basis, "model_dump", None)
++    if not callable(model_dump):
++        return None
++    raw = model_dump(mode="json")
++    if not isinstance(raw, dict):
++        return None
++    return ContextPreambleOverlapBasis.model_validate(raw)
++
++
+ async def build_context_preamble_payload(
+     polylogue: object,
+     *,
+@@ -85,6 +97,7 @@ async def build_context_preamble_payload(
+                     terminal_state=getattr(c, "terminal_state", None),
+                     summary=getattr(c, "summary", None),
+                     origin=getattr(c, "origin", None),
++                    overlap_basis=_candidate_overlap_basis(c),
+                 )
+             )
+     except Exception as exc:
+diff --git a/polylogue/insights/resume.py b/polylogue/insights/resume.py
+index a89c13c34ac9854e69f5f47ad9a9085a26f62746..eca4c6a237edcd4aa46c5154ea6601a1d1839be6 100644
+--- a/polylogue/insights/resume.py
++++ b/polylogue/insights/resume.py
+@@ -2,11 +2,13 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ from collections import Counter
+ from collections.abc import Mapping, Sequence
++from dataclasses import dataclass, field
+ from datetime import datetime, timezone
+-from pathlib import PurePath
+-from typing import TYPE_CHECKING, Protocol
++from pathlib import Path, PurePath
++from typing import TYPE_CHECKING, Literal, Protocol
+ 
+ from pydantic import Field, field_validator
+ 
+@@ -28,7 +30,7 @@ if TYPE_CHECKING:
+     from polylogue.archive.message.models import Message
+ 
+ 
+-RESUME_BRIEF_MATERIALIZER_VERSION = 1
++RESUME_BRIEF_MATERIALIZER_VERSION = 2
+ """Bumped whenever the resume-brief composition contract changes shape.
+ 
+ Owned by ``polylogue/insights/resume.py``. The brief is composed on read
+@@ -136,6 +138,17 @@ class ResumeProvenance(ArchiveInsightModel):
+     cited_thread_id: str | None = None
+ 
+ 
++class ResumePathOverlap(ArchiveInsightModel):
++    candidate_path: str
++    recent_file: str
++
++
++class ResumeOverlapBasis(ArchiveInsightModel):
++    exact: tuple[ResumePathOverlap, ...] = ()
++    dir: tuple[ResumePathOverlap, ...] = ()
++    dead_excluded: tuple[str, ...] = ()
++
++
+ class ResumeBrief(ArchiveInsightModel):
+     session_id: str
+     facts: ResumeFacts
+@@ -143,6 +156,7 @@ class ResumeBrief(ArchiveInsightModel):
+     related_sessions: tuple[ResumeRelatedSession, ...] = ()
+     uncertainties: tuple[ResumeUncertainty, ...] = ()
+     next_steps: tuple[str, ...] = ()
++    overlap_basis: ResumeOverlapBasis | None = None
+     provenance: ResumeProvenance = Field(
+         default_factory=lambda: ResumeProvenance(
+             materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
+@@ -159,6 +173,7 @@ class ResumeCandidate(ArchiveInsightModel):
+     terminal_state: str = "unknown"
+     workflow_shape: str = "unknown"
+     file_overlap: tuple[str, ...] = ()
++    overlap_basis: ResumeOverlapBasis = Field(default_factory=ResumeOverlapBasis)
+     score: float
+     score_breakdown: dict[str, float]
+     brief_url: str
+@@ -214,12 +229,336 @@ def _normalize_path(value: str) -> str:
+     return text
+ 
+ 
++@dataclass(frozen=True)
++class _PathEvidence:
++    display: str
++    local_path: Path | None
++
++
++@dataclass(frozen=True)
++class _ResolvedCandidatePath:
++    evidence: _PathEvidence
++    local_path: Path
++
++
++@dataclass(frozen=True)
++class _FileOverlapScore:
++    score: float
++    file_overlap: tuple[str, ...]
++    basis: ResumeOverlapBasis
++    resolvable_paths: tuple[str, ...] = ()
++    dead_paths: tuple[str, ...] = ()
++    resolution_available: bool = False
++
++
++@dataclass
++class _PathResolutionContext:
++    repo_root: Path | None
++    exists_cache: dict[Path, bool] = field(default_factory=dict)
++
++    @classmethod
++    def from_repo_path(cls, repo_path: str) -> _PathResolutionContext:
++        return cls(repo_root=_resume_repo_root(repo_path))
++
++    def exists(self, path: Path) -> bool:
++        cached = self.exists_cache.get(path)
++        if cached is not None:
++            return cached
++        try:
++            exists = os.path.exists(path)
++        except OSError:
++            exists = False
++        self.exists_cache[path] = exists
++        return exists
++
++
++_ResumeOverlapMode = Literal["legacy", "refactor-aware"]
++
++
+ def _path_matches_prefix(path: str, prefix: str) -> bool:
+     if not path or not prefix:
+         return False
+     return path == prefix or path.startswith(f"{prefix}/")
+ 
+ 
++def _resume_repo_root(repo_path: str) -> Path | None:
++    normalized = _normalize_path(repo_path)
++    if not normalized:
++        return None
++    try:
++        root = Path(normalized).expanduser().resolve(strict=False)
++        return root if os.path.isdir(root) else None
++    except OSError:
++        return None
++
++
++def _absolute_root(value: str) -> Path | None:
++    normalized = _normalize_path(value)
++    if not normalized:
++        return None
++    path = Path(normalized).expanduser()
++    if not path.is_absolute():
++        return None
++    try:
++        return path.resolve(strict=False)
++    except OSError:
++        return None
++
++
++def _inferred_candidate_repo_roots(
++    candidate_paths: set[str],
++    recent_files: set[str],
++) -> tuple[str, ...]:
++    """Infer captured checkout roots from an exact repo-relative suffix.
++
++    Some older profiles have absolute file touches but no ``repo_paths`` evidence.
++    A current relative path is sufficient to recover the old checkout root only when
++    the complete relative path is an exact suffix of the captured absolute path.
++    """
++    recent_parts = {
++        tuple(path.parts)
++        for display in recent_files
++        if (path := Path(display)).parts and not path.is_absolute() and ".." not in path.parts
++    }
++    roots: set[str] = set()
++    for display in candidate_paths:
++        absolute = _absolute_root(display)
++        if absolute is None:
++            continue
++        for parts in recent_parts:
++            if len(absolute.parts) <= len(parts) or tuple(absolute.parts[-len(parts) :]) != parts:
++                continue
++            root = absolute
++            for _ in parts:
++                root = root.parent
++            roots.add(root.as_posix())
++    return tuple(sorted(roots))
++
++
++def _repo_local_path(
++    repo_root: Path,
++    display: str,
++    *,
++    candidate_repo_roots: Sequence[str] = (),
++) -> Path | None:
++    path = Path(display).expanduser()
++    try:
++        if not path.is_absolute():
++            local = (repo_root / path).resolve(strict=False)
++            local.relative_to(repo_root)
++            return local
++
++        absolute = path.resolve(strict=False)
++        try:
++            absolute.relative_to(repo_root)
++        except ValueError:
++            historical_roots = sorted(
++                (root for value in candidate_repo_roots if (root := _absolute_root(value)) is not None),
++                key=lambda root: len(root.parts),
++                reverse=True,
++            )
++            for historical_root in historical_roots:
++                try:
++                    relative = absolute.relative_to(historical_root)
++                except ValueError:
++                    continue
++                local = (repo_root / relative).resolve(strict=False)
++                local.relative_to(repo_root)
++                return local
++            return None
++        return absolute
++    except (OSError, ValueError):
++        return None
++
++
++def _partition_candidate_paths(
++    context: _PathResolutionContext,
++    candidate_paths: set[str],
++    *,
++    candidate_repo_roots: Sequence[str],
++) -> tuple[tuple[_ResolvedCandidatePath, ...], tuple[_PathEvidence, ...]]:
++    repo_root = context.repo_root
++    if repo_root is None:
++        return (), ()
++
++    resolved: list[_ResolvedCandidatePath] = []
++    dead: list[_PathEvidence] = []
++    for display in sorted(candidate_paths):
++        evidence = _PathEvidence(
++            display=display,
++            local_path=_repo_local_path(
++                repo_root,
++                display,
++                candidate_repo_roots=candidate_repo_roots,
++            ),
++        )
++        local_path = evidence.local_path
++        if local_path is None:
++            dead.append(evidence)
++            continue
++        if context.exists(local_path):
++            resolved.append(_ResolvedCandidatePath(evidence=evidence, local_path=local_path))
++            continue
++        if local_path.suffix == ".py" and local_path.name != "__init__.py":
++            package_init = local_path.with_suffix("") / "__init__.py"
++            if context.exists(package_init):
++                resolved.append(_ResolvedCandidatePath(evidence=evidence, local_path=package_init))
++                continue
++        dead.append(evidence)
++    return tuple(resolved), tuple(dead)
++
++
++def _path_identity(evidence: _PathEvidence) -> str:
++    if evidence.local_path is None:
++        return f"raw:{evidence.display}"
++    return evidence.local_path.as_posix()
++
++
++def _is_path_prefix(prefix: Path, path: Path) -> bool:
++    return prefix == path or prefix in path.parents
++
++
++def _directory_overlap_pairs(
++    repo_root: Path,
++    dead_paths: Sequence[_PathEvidence],
++    recent_paths: Sequence[_PathEvidence],
++) -> tuple[ResumePathOverlap, ...]:
++    scored_pairs: list[tuple[int, int, str, str]] = []
++    for dead in dead_paths:
++        if dead.local_path is None:
++            continue
++        dead_parent = dead.local_path.parent
++        if dead_parent == repo_root:
++            continue
++        for recent in recent_paths:
++            if recent.local_path is None:
++                continue
++            recent_parent = recent.local_path.parent
++            try:
++                dead_parent.relative_to(repo_root)
++                recent_parent.relative_to(repo_root)
++            except ValueError:
++                continue
++            if not (_is_path_prefix(dead_parent, recent_parent) or _is_path_prefix(recent_parent, dead_parent)):
++                continue
++            shorter = dead_parent if len(dead_parent.parts) <= len(recent_parent.parts) else recent_parent
++            if shorter == repo_root:
++                continue
++            common_depth = len(shorter.relative_to(repo_root).parts)
++            distance = abs(len(dead_parent.parts) - len(recent_parent.parts))
++            scored_pairs.append((-common_depth, distance, dead.display, recent.display))
++
++    matched_dead: set[str] = set()
++    matched_recent: set[str] = set()
++    matches: list[ResumePathOverlap] = []
++    for _, _, dead_display, recent_display in sorted(scored_pairs):
++        if dead_display in matched_dead or recent_display in matched_recent:
++            continue
++        matched_dead.add(dead_display)
++        matched_recent.add(recent_display)
++        matches.append(
++            ResumePathOverlap(
++                candidate_path=dead_display,
++                recent_file=recent_display,
++            )
++        )
++    return tuple(matches)
++
++
++def _legacy_file_overlap(*, recent_files: set[str], candidate_paths: set[str]) -> _FileOverlapScore:
++    exact_paths = tuple(sorted(recent_files & candidate_paths))
++    union = recent_files | candidate_paths
++    score = len(exact_paths) / len(union) if recent_files and union else 0.0
++    return _FileOverlapScore(
++        score=score,
++        file_overlap=exact_paths,
++        basis=ResumeOverlapBasis(
++            exact=tuple(ResumePathOverlap(candidate_path=path, recent_file=path) for path in exact_paths)
++        ),
++    )
++
++
++def _score_file_overlap(
++    *,
++    context: _PathResolutionContext,
++    recent_files: set[str],
++    candidate_paths: set[str],
++    candidate_repo_roots: Sequence[str] = (),
++    mode: _ResumeOverlapMode = "refactor-aware",
++) -> _FileOverlapScore:
++    legacy = _legacy_file_overlap(recent_files=recent_files, candidate_paths=candidate_paths)
++    if mode == "legacy" or context.repo_root is None:
++        return legacy
++
++    repo_root = context.repo_root
++    recent_evidence = tuple(
++        _PathEvidence(
++            display=display,
++            local_path=_repo_local_path(repo_root, display),
++        )
++        for display in sorted(recent_files)
++    )
++    recent_by_identity = {_path_identity(evidence): evidence for evidence in recent_evidence}
++    effective_repo_roots = tuple(
++        sorted(
++            {
++                *candidate_repo_roots,
++                *_inferred_candidate_repo_roots(candidate_paths, recent_files),
++            }
++        )
++    )
++    resolved, dead = _partition_candidate_paths(
++        context,
++        candidate_paths,
++        candidate_repo_roots=effective_repo_roots,
++    )
++
++    resolved_by_identity: dict[str, _ResolvedCandidatePath] = {}
++    for resolved_candidate in resolved:
++        resolved_by_identity.setdefault(resolved_candidate.local_path.as_posix(), resolved_candidate)
++
++    exact_matches: list[ResumePathOverlap] = []
++    exact_recent_identities: set[str] = set()
++    for identity, recent in sorted(recent_by_identity.items()):
++        matched_candidate = resolved_by_identity.get(identity)
++        if matched_candidate is None:
++            continue
++        exact_recent_identities.add(identity)
++        exact_matches.append(
++            ResumePathOverlap(
++                candidate_path=matched_candidate.evidence.display,
++                recent_file=recent.display,
++            )
++        )
++
++    available_recent = tuple(
++        evidence for identity, evidence in sorted(recent_by_identity.items()) if identity not in exact_recent_identities
++    )
++    directory_matches = _directory_overlap_pairs(repo_root, dead, available_recent)
++    recent_identity_by_display = {evidence.display: identity for identity, evidence in recent_by_identity.items()}
++    directory_recent_identities = {recent_identity_by_display[match.recent_file] for match in directory_matches}
++    matched_dead = {match.candidate_path for match in directory_matches}
++
++    candidate_identities = set(resolved_by_identity) | directory_recent_identities
++    overlap_identities = exact_recent_identities | directory_recent_identities
++    union = set(recent_by_identity) | candidate_identities
++    score = len(overlap_identities) / len(union) if recent_by_identity and union else 0.0
++    file_overlap = tuple(sorted(recent_by_identity[identity].display for identity in overlap_identities))
++    basis = ResumeOverlapBasis(
++        exact=tuple(exact_matches),
++        dir=directory_matches,
++        dead_excluded=tuple(sorted(path.display for path in dead if path.display not in matched_dead)),
++    )
++    return _FileOverlapScore(
++        score=score,
++        file_overlap=file_overlap,
++        basis=basis,
++        resolvable_paths=tuple(sorted(candidate.evidence.display for candidate in resolved)),
++        dead_paths=tuple(sorted(path.display for path in dead)),
++        resolution_available=True,
++    )
++
++
+ def _parse_timestamp(value: str | None) -> datetime | None:
+     if not value:
+         return None
+@@ -310,6 +649,13 @@ def _profile_cwds(profile: SessionProfileInsight) -> set[str]:
+     return {_normalize_path(path) for path in evidence.cwd_paths if _normalize_path(path)}
+ 
+ 
++def _profile_repo_roots(profile: SessionProfileInsight) -> set[str]:
++    evidence = profile.evidence
++    if evidence is None:
++        return set()
++    return {_normalize_path(path) for path in evidence.repo_paths if _normalize_path(path)}
++
++
+ def _profile_repo_matches(profile: SessionProfileInsight, repo_path: str) -> bool:
+     evidence = profile.evidence
+     if evidence is None:
+@@ -559,8 +905,13 @@ async def build_resume_brief(
+     session_id: str,
+     *,
+     related_limit: int = 6,
++    repo_path: str | None = None,
++    recent_files: Sequence[str] = (),
+ ) -> ResumeBrief | None:
+     """Build a compact handoff brief for one archived session."""
++    if repo_path is None and recent_files:
++        raise ValueError("repo_path is required when recent_files are supplied")
++
+     session = await operations.get_session(session_id)
+     if session is None:
+         return None
+@@ -638,6 +989,44 @@ async def build_resume_brief(
+         cited_thread_id=thread.thread_id if thread is not None else None,
+     )
+ 
++    overlap_basis: ResumeOverlapBasis | None = None
++    if repo_path is not None:
++        try:
++            ranking_profiles = await operations.list_session_profile_insights(
++                SessionProfileInsightQuery(
++                    sort="last-message",
++                    tier="merged",
++                    limit=None,
++                )
++            )
++            logical_session_id = (
++                str(profile.logical_session_id or profile.session_id) if profile is not None else session_id
++            )
++            members = [
++                candidate
++                for candidate in ranking_profiles
++                if str(candidate.logical_session_id or candidate.session_id) == logical_session_id
++            ]
++            if members:
++                normalized_recent = {_normalize_path(path) for path in recent_files if _normalize_path(path)}
++                all_paths = set().union(*(_profile_paths(member) for member in members))
++                candidate_repo_roots = set().union(*(_profile_repo_roots(member) for member in members))
++                overlap_basis = _score_file_overlap(
++                    context=_PathResolutionContext.from_repo_path(repo_path),
++                    recent_files=normalized_recent,
++                    candidate_paths=all_paths,
++                    candidate_repo_roots=tuple(sorted(candidate_repo_roots)),
++                ).basis
++            else:
++                uncertainties.append(
++                    ResumeUncertainty(
++                        source="resume_overlap",
++                        detail="no merged session profile was available for overlap explanation",
++                    )
++                )
++        except ArchiveInsightUnavailableError as exc:
++            uncertainties.append(ResumeUncertainty(source="resume_overlap", detail=str(exc)))
++
+     return ResumeBrief(
+         session_id=session_id,
+         facts=_facts_from_session(session, profile),
+@@ -645,30 +1034,24 @@ async def build_resume_brief(
+         related_sessions=related_sessions,
+         uncertainties=tuple(uncertainties),
+         next_steps=_next_steps(session, inferences),
++        overlap_basis=overlap_basis,
+         provenance=provenance,
+     )
+ 
+ 
+-async def find_resume_candidates(
+-    operations: ResumeOperations,
++def _rank_resume_profiles(
++    profiles: Sequence[SessionProfileInsight],
+     *,
+     repo_path: str,
+     cwd: str | None = None,
+     recent_files: Sequence[str] = (),
+     limit: int = 10,
++    overlap_mode: _ResumeOverlapMode = "refactor-aware",
+ ) -> tuple[ResumeCandidate, ...]:
+-    """Rank logical sessions likely to match the operator's current context."""
+-
+     normalized_repo = _normalize_path(repo_path)
+     normalized_cwd = _normalize_path(cwd or "")
+     normalized_recent = {_normalize_path(path) for path in recent_files if _normalize_path(path)}
+-    profiles = await operations.list_session_profile_insights(
+-        SessionProfileInsightQuery(
+-            sort="last-message",
+-            tier="merged",
+-            limit=None,
+-        )
+-    )
++    path_context = _PathResolutionContext.from_repo_path(normalized_repo)
+     grouped: dict[str, list[SessionProfileInsight]] = {}
+     for profile in profiles:
+         logical_id = str(profile.logical_session_id or profile.session_id)
+@@ -705,11 +1088,13 @@ async def find_resume_candidates(
+         last_dt = _parse_timestamp(last_message_at)
+         all_paths = set().union(*(_profile_paths(member) for member in members))
+         all_cwds = set().union(*(_profile_cwds(member) for member in members))
+-        file_overlap = tuple(sorted(normalized_recent & all_paths))
+-        file_overlap_score = (
+-            len(file_overlap) / len(normalized_recent | all_paths)
+-            if normalized_recent and (normalized_recent | all_paths)
+-            else 0.0
++        candidate_repo_roots = set().union(*(_profile_repo_roots(member) for member in members))
++        overlap_score = _score_file_overlap(
++            context=path_context,
++            recent_files=normalized_recent,
++            candidate_paths=all_paths,
++            candidate_repo_roots=tuple(sorted(candidate_repo_roots)),
++            mode=overlap_mode,
+         )
+         cwd_score = (
+             1.0
+@@ -729,7 +1114,7 @@ async def find_resume_candidates(
+         workflow_shape = _strongest_workflow_shape(members)
+         breakdown = {
+             "recency": round(recency_score, 4),
+-            "file_overlap": round(file_overlap_score, 4),
++            "file_overlap": round(overlap_score.score, 4),
+             "cwd_match": round(cwd_score, 4),
+             "terminal_state": round(_terminal_weight(terminal_state), 4),
+             "workflow_shape": round(_workflow_weight(workflow_shape), 4),
+@@ -750,7 +1135,8 @@ async def find_resume_candidates(
+                 title=_candidate_title(representative),
+                 terminal_state=terminal_state,
+                 workflow_shape=workflow_shape,
+-                file_overlap=file_overlap,
++                file_overlap=overlap_score.file_overlap,
++                overlap_basis=overlap_score.basis,
+                 score=score,
+                 score_breakdown=breakdown,
+                 brief_url=f"polylogue://resume/{logical_id}",
+@@ -769,6 +1155,32 @@ async def find_resume_candidates(
+     return tuple(candidates[: max(0, int(limit))])
+ 
+ 
++async def find_resume_candidates(
++    operations: ResumeOperations,
++    *,
++    repo_path: str,
++    cwd: str | None = None,
++    recent_files: Sequence[str] = (),
++    limit: int = 10,
++) -> tuple[ResumeCandidate, ...]:
++    """Rank logical sessions likely to match the operator's current context."""
++
++    profiles = await operations.list_session_profile_insights(
++        SessionProfileInsightQuery(
++            sort="last-message",
++            tier="merged",
++            limit=None,
++        )
++    )
++    return _rank_resume_profiles(
++        profiles,
++        repo_path=repo_path,
++        cwd=cwd,
++        recent_files=recent_files,
++        limit=limit,
++    )
++
++
+ __all__ = [
+     "RESUME_BRIEF_MATERIALIZER_VERSION",
+     "ResumeBrief",
+@@ -777,6 +1189,8 @@ __all__ = [
+     "ResumeInferences",
+     "ResumeLastMessage",
+     "ResumeOperations",
++    "ResumeOverlapBasis",
++    "ResumePathOverlap",
+     "ResumePhase",
+     "ResumeProvenance",
+     "ResumeRelatedSession",
+diff --git a/polylogue/mcp/declarations/registry.py b/polylogue/mcp/declarations/registry.py
+index 38fbfd6be158f1fc0e6de5af73a6d3f6e9dc5a50..dce6e134d919d3bc93a320ee8f9975c7edb4d83f 100644
+--- a/polylogue/mcp/declarations/registry.py
++++ b/polylogue/mcp/declarations/registry.py
+@@ -820,7 +820,7 @@ _TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
+     ),
+     _ToolRow(
+         "get_resume_brief",
+-        "Get a typed resume brief for one archived session.",
++        "Get a typed resume brief, optionally explaining current-work path overlap.",
+         "polylogue.mcp.server_insight_tools",
+         "register_insight_tools",
+         "read",
+diff --git a/polylogue/mcp/server_insight_tools.py b/polylogue/mcp/server_insight_tools.py
+index b5ee2b82a38164273ad27d1ddc4518269aaa3a74..23e14b98964c05c76ff2896cd523c7aca76d7f0e 100644
+--- a/polylogue/mcp/server_insight_tools.py
++++ b/polylogue/mcp/server_insight_tools.py
+@@ -256,18 +256,36 @@ def register_insight_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+         return await hooks.async_safe_call("session_profile", run, session_id=session_id)
+ 
+     @mcp.tool()
+-    async def get_resume_brief(session_id: str, related_limit: int = 6) -> str:
++    async def get_resume_brief(
++        session_id: str,
++        related_limit: int = 6,
++        repo_path: str | None = None,
++        recent_files: tuple[str, ...] = (),
++    ) -> str:
+         """Get a typed resume brief for one archived session.
+ 
+         The brief composes already-materialized session insights (profile,
+         enrichment, work events, phases, work thread) into a handoff
+         payload. Provenance fields cite the session, message, work-event,
+-        and phase IDs that contributed.
++        and phase IDs that contributed. When current repository context is
++        supplied, ``overlap_basis`` explains the exact, directory-recovered,
++        and dead-excluded file evidence used by resume ranking.
+         """
+ 
+         async def run() -> str:
++            if repo_path is None and recent_files:
++                return hooks.error_json(
++                    "repo_path is required when recent_files are supplied.",
++                    code="invalid_argument",
++                    tool="get_resume_brief",
++                )
+             poly = hooks.get_polylogue()
+-            brief = await poly.resume_brief(session_id, related_limit=related_limit)
++            brief = await poly.resume_brief(
++                session_id,
++                related_limit=related_limit,
++                repo_path=repo_path,
++                recent_files=recent_files,
++            )
+             if brief is None:
+                 return hooks.error_json("Session not found", code="not_found", session_id=session_id)
+             return hooks.json_payload(brief, exclude_none=False)
+diff --git a/polylogue/mcp/server_prompts.py b/polylogue/mcp/server_prompts.py
+index fc2846db3b6f2aa7c39c1f45f9dfe6f17aa98fda..10675e3ba92968fdc2ac98effca489d96d6f95ce 100644
+--- a/polylogue/mcp/server_prompts.py
++++ b/polylogue/mcp/server_prompts.py
+@@ -459,8 +459,8 @@ Session summaries:
+         return f"""Rebuild working context for repo '{repo_name}' from the Polylogue archive.
+ 
+ Call sequence:
+-1. find_resume_candidates(repo_path="{cwd}", limit={limit}) — ranked resumable logical sessions for this checkout.
+-2. get_resume_brief(session_id=<top candidate>) — typed brief: goals, open threads, next actions, provenance refs.
++1. find_resume_candidates(repo_path="{cwd}", cwd=<current cwd>, recent_files=<recent files>, limit={limit}) — ranked resumable logical sessions for this checkout.
++2. get_resume_brief(session_id=<top candidate>, repo_path="{cwd}", recent_files=<same recent files>) — typed brief: goals, open threads, next actions, provenance refs, and overlap_basis.
+ 3. agent_coordination_brief(view="self") — check concurrent agents/worktrees before claiming work.
+ 4. blackboard_list(scope_repo="{repo_name}", unresolved=True) — unresolved notes/handoffs addressed to agents here.
+ 
+diff --git a/polylogue/surfaces/payloads.py b/polylogue/surfaces/payloads.py
+index 333b4be7e7f3ed167e47ae3adc999cac0498f46b..b7e8bd1955598df871924f6e311d581fbcfce176 100644
+--- a/polylogue/surfaces/payloads.py
++++ b/polylogue/surfaces/payloads.py
+@@ -3386,6 +3386,25 @@ class ContextPreambleLineage(SurfacePayloadModel):
+     model_config = ConfigDict(extra="forbid", frozen=True)
+ 
+ 
++class ContextPreamblePathOverlap(SurfacePayloadModel):
++    """One candidate-to-current path match used by resume ranking."""
++
++    candidate_path: str
++    recent_file: str
++
++    model_config = ConfigDict(extra="forbid", frozen=True)
++
++
++class ContextPreambleOverlapBasis(SurfacePayloadModel):
++    """Explainable file evidence behind a related-session ranking."""
++
++    exact: list[ContextPreamblePathOverlap] = Field(default_factory=list)
++    dir: list[ContextPreamblePathOverlap] = Field(default_factory=list)
++    dead_excluded: list[str] = Field(default_factory=list)
++
++    model_config = ConfigDict(extra="forbid", frozen=True)
++
++
+ class ContextPreambleSession(SurfacePayloadModel):
+     """A recent related session for the context preamble."""
+ 
+@@ -3395,6 +3414,7 @@ class ContextPreambleSession(SurfacePayloadModel):
+     terminal_state: str | None = None
+     summary: str | None = None
+     origin: str | None = None
++    overlap_basis: ContextPreambleOverlapBasis | None = None
+ 
+     model_config = ConfigDict(extra="forbid", frozen=True)
+ 
+@@ -3554,6 +3574,8 @@ __all__ = [
+     "ContextPreambleBlackboardNote",
+     "ContextPreambleIssue",
+     "ContextPreambleLineage",
++    "ContextPreambleOverlapBasis",
++    "ContextPreamblePathOverlap",
+     "ContextPreambleProjectState",
+     "ContextPreambleSession",
+     "SessionNeighborCandidatePayload",
+diff --git a/tests/data/resume-ranking-eval-v1.json b/tests/data/resume-ranking-eval-v1.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..ed9e2aa438bb4d81ee9c2484a61cabc2b3821d4f
+--- /dev/null
++++ b/tests/data/resume-ranking-eval-v1.json
+@@ -0,0 +1,327 @@
++{
++  "version": 1,
++  "description": "Offline resume-ranking fixtures with lineage-derived ground truth and refactor paths sampled from the 2026-07-17 Polylogue snapshot history.",
++  "scenarios": [
++    {
++      "id": "synthetic-dead-shared-directory",
++      "source": "synthetic",
++      "present_paths": [
++        "src/feature/current.py",
++        "other/a.py",
++        "other/b.py",
++        "other/c.py"
++      ],
++      "current": {
++        "session_id": "current-synthetic-dir",
++        "logical_session_id": "z-family-synthetic-dir",
++        "parent_session_id": "parent-synthetic-dir",
++        "recent_files": [
++          "src/feature/current.py"
++        ]
++      },
++      "candidates": [
++        {
++          "session_id": "parent-synthetic-dir",
++          "logical_session_id": "z-family-synthetic-dir",
++          "title": "Refactor the feature implementation",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "src/feature/retired.py"
++          ]
++        },
++        {
++          "session_id": "distractor-a-dir",
++          "logical_session_id": "a-distractor-synthetic-dir",
++          "title": "Unrelated A",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "other/a.py"
++          ]
++        },
++        {
++          "session_id": "distractor-b-dir",
++          "logical_session_id": "b-distractor-synthetic-dir",
++          "title": "Unrelated B",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "other/b.py"
++          ]
++        },
++        {
++          "session_id": "distractor-c-dir",
++          "logical_session_id": "c-distractor-synthetic-dir",
++          "title": "Unrelated C",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "other/c.py"
++          ]
++        }
++      ]
++    },
++    {
++      "id": "synthetic-dead-union-deflation",
++      "source": "synthetic",
++      "present_paths": [
++        "src/alpha/current_one.py",
++        "src/alpha/current_two.py"
++      ],
++      "current": {
++        "session_id": "current-synthetic-union",
++        "logical_session_id": "z-family-synthetic-union",
++        "parent_session_id": "parent-synthetic-union",
++        "recent_files": [
++          "src/alpha/current_one.py",
++          "src/alpha/current_two.py"
++        ]
++      },
++      "candidates": [
++        {
++          "session_id": "parent-synthetic-union",
++          "logical_session_id": "z-family-synthetic-union",
++          "title": "Correct ancestor with dead baggage",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "src/alpha/current_one.py",
++            "src/alpha/current_two.py",
++            "retired/one/ghost.py",
++            "retired/two/ghost.py",
++            "retired/three/ghost.py",
++            "retired/four/ghost.py",
++            "retired/five/ghost.py",
++            "retired/six/ghost.py"
++          ]
++        },
++        {
++          "session_id": "distractor-a-union",
++          "logical_session_id": "a-distractor-synthetic-union",
++          "title": "Partial overlap A",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "src/alpha/current_one.py"
++          ]
++        },
++        {
++          "session_id": "distractor-b-union",
++          "logical_session_id": "b-distractor-synthetic-union",
++          "title": "Partial overlap B",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "src/alpha/current_one.py"
++          ]
++        },
++        {
++          "session_id": "distractor-c-union",
++          "logical_session_id": "c-distractor-synthetic-union",
++          "title": "Partial overlap C",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "src/alpha/current_one.py"
++          ]
++        },
++        {
++          "session_id": "distractor-d-union",
++          "logical_session_id": "d-distractor-synthetic-union",
++          "title": "Partial overlap D",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "src/alpha/current_one.py"
++          ]
++        }
++      ]
++    },
++    {
++      "id": "synthetic-live-exact-control",
++      "source": "synthetic",
++      "present_paths": [
++        "src/control/live.py",
++        "other/control_a.py",
++        "other/control_b.py",
++        "other/control_c.py"
++      ],
++      "current": {
++        "session_id": "current-exact-control",
++        "logical_session_id": "z-family-exact-control",
++        "parent_session_id": "parent-exact-control",
++        "recent_files": [
++          "src/control/live.py"
++        ]
++      },
++      "candidates": [
++        {
++          "session_id": "parent-exact-control",
++          "logical_session_id": "z-family-exact-control",
++          "title": "Exact live ancestor",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "src/control/live.py"
++          ]
++        },
++        {
++          "session_id": "distractor-a-control",
++          "logical_session_id": "a-distractor-exact-control",
++          "title": "Control distractor A",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "other/control_a.py"
++          ]
++        },
++        {
++          "session_id": "distractor-b-control",
++          "logical_session_id": "b-distractor-exact-control",
++          "title": "Control distractor B",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "other/control_b.py"
++          ]
++        },
++        {
++          "session_id": "distractor-c-control",
++          "logical_session_id": "c-distractor-exact-control",
++          "title": "Control distractor C",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "file_paths_touched": [
++            "other/control_c.py"
++          ]
++        }
++      ]
++    },
++    {
++      "id": "snapshot-storage-repository-file-to-package",
++      "source": "snapshot-derived",
++      "present_paths": [
++        "polylogue/storage/repository/__init__.py",
++        "other/snapshot_a.py",
++        "other/snapshot_b.py",
++        "other/snapshot_c.py"
++      ],
++      "current": {
++        "session_id": "current-snapshot-repository",
++        "logical_session_id": "z-family-snapshot-repository",
++        "parent_session_id": "parent-snapshot-repository",
++        "recent_files": [
++          "polylogue/storage/repository/__init__.py"
++        ]
++      },
++      "candidates": [
++        {
++          "session_id": "parent-snapshot-repository",
++          "logical_session_id": "z-family-snapshot-repository",
++          "title": "Repository split ancestor",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
++          "file_paths_touched": [
++            "/snapshot/polylogue-before-fa56862b/polylogue/storage/repository.py"
++          ]
++        },
++        {
++          "session_id": "distractor-a-repository",
++          "logical_session_id": "a-distractor-snapshot-repository",
++          "title": "Snapshot distractor A",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
++          "file_paths_touched": [
++            "other/snapshot_a.py"
++          ]
++        },
++        {
++          "session_id": "distractor-b-repository",
++          "logical_session_id": "b-distractor-snapshot-repository",
++          "title": "Snapshot distractor B",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
++          "file_paths_touched": [
++            "other/snapshot_b.py"
++          ]
++        },
++        {
++          "session_id": "distractor-c-repository",
++          "logical_session_id": "c-distractor-snapshot-repository",
++          "title": "Snapshot distractor C",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-fa56862b",
++          "file_paths_touched": [
++            "other/snapshot_c.py"
++          ]
++        }
++      ]
++    },
++    {
++      "id": "snapshot-pipeline-runner-directory-recovery",
++      "source": "snapshot-derived",
++      "present_paths": [
++        "polylogue/pipeline/service.py",
++        "other/pipeline_a.py",
++        "other/pipeline_b.py",
++        "other/pipeline_c.py"
++      ],
++      "current": {
++        "session_id": "current-snapshot-pipeline",
++        "logical_session_id": "z-family-snapshot-pipeline",
++        "parent_session_id": "parent-snapshot-pipeline",
++        "recent_files": [
++          "polylogue/pipeline/service.py"
++        ]
++      },
++      "candidates": [
++        {
++          "session_id": "parent-snapshot-pipeline",
++          "logical_session_id": "z-family-snapshot-pipeline",
++          "title": "Pipeline runner ancestor",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
++          "file_paths_touched": [
++            "/snapshot/polylogue-before-be1fc005/polylogue/pipeline/runner.py"
++          ]
++        },
++        {
++          "session_id": "sibling-snapshot-pipeline",
++          "logical_session_id": "z-family-snapshot-pipeline",
++          "parent_session_id": "parent-snapshot-pipeline",
++          "title": "Sibling pipeline exploration",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
++          "file_paths_touched": []
++        },
++        {
++          "session_id": "distractor-a-pipeline",
++          "logical_session_id": "a-distractor-snapshot-pipeline",
++          "title": "Pipeline distractor A",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
++          "file_paths_touched": [
++            "other/pipeline_a.py"
++          ]
++        },
++        {
++          "session_id": "distractor-b-pipeline",
++          "logical_session_id": "b-distractor-snapshot-pipeline",
++          "title": "Pipeline distractor B",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
++          "file_paths_touched": [
++            "other/pipeline_b.py"
++          ]
++        },
++        {
++          "session_id": "distractor-c-pipeline",
++          "logical_session_id": "c-distractor-snapshot-pipeline",
++          "title": "Pipeline distractor C",
++          "last_message_at": "2026-07-17T10:00:00+00:00",
++          "repo_root_alias": "/snapshot/polylogue-before-be1fc005",
++          "file_paths_touched": [
++            "other/pipeline_c.py"
++          ]
++        }
++      ]
++    }
++  ],
++  "evidence_samples": [
++    {
++      "id": "seeded-live-mass-equivalent",
++      "source": "synthetic",
++      "resolvable_count": 570,
++      "recoverable_dead_count": 254,
++      "unrecoverable_dead_count": 176
++    }
++  ]
++}
+diff --git a/tests/data/witnesses/mcp-tool-schemas.json b/tests/data/witnesses/mcp-tool-schemas.json
+index 8f8dcb8952689b5b0082730c9c318de667e84a0a..77ff7ac03c612e58303a85fda009a9d0deb5a5a8 100644
+--- a/tests/data/witnesses/mcp-tool-schemas.json
++++ b/tests/data/witnesses/mcp-tool-schemas.json
+@@ -1476,6 +1476,26 @@
+           "default": 6,
+           "title": "Related Limit",
+           "type": "integer"
++        },
++        "repo_path": {
++          "anyOf": [
++            {
++              "type": "string"
++            },
++            {
++              "type": "null"
++            }
++          ],
++          "default": null,
++          "title": "Repo Path"
++        },
++        "recent_files": {
++          "default": [],
++          "items": {
++            "type": "string"
++          },
++          "title": "Recent Files",
++          "type": "array"
+         }
+       },
+       "required": [
+diff --git a/tests/unit/cli/test_continue_absorption.py b/tests/unit/cli/test_continue_absorption.py
+index 06e20b3c48f022b1b8c7552fdaf05c4c796695cd..b491d4124e610c8bd9b825ebb632fc6868a53d7b 100644
+--- a/tests/unit/cli/test_continue_absorption.py
++++ b/tests/unit/cli/test_continue_absorption.py
+@@ -99,3 +99,26 @@ def test_continue_candidates_json_repeats_recent_files(cli_workspace: dict[str,
+     assert result_payload["total"] >= 1
+     assert result_payload["candidates"][0]["logical_session_id"] == NID_CONTINUE_ROOT
+     assert "score_breakdown" in result_payload["candidates"][0]
++    assert "overlap_basis" in result_payload["candidates"][0]
++
++
++def test_continue_candidates_terminal_renders_overlap_basis(cli_workspace: dict[str, Path]) -> None:
++    _seed_continuation_session(cli_workspace["db_path"])
++
++    result = CliRunner().invoke(
++        cli,
++        [
++            "continue",
++            "--candidates",
++            "--repo",
++            "/workspace/polylogue",
++            "--recent",
++            "/workspace/polylogue/polylogue/cli/query_verbs.py",
++        ],
++        catch_exceptions=False,
++    )
++
++    assert result.exit_code == 0
++    assert "[overlap exact=" in result.output
++    assert " dir=" in result.output
++    assert " dead-excluded=" in result.output
+diff --git a/tests/unit/core/test_resume.py b/tests/unit/core/test_resume.py
+index 87b6fa46d5f6c52a4652bc19df1baaae75ef761b..b37942731ff87a7047be9658cdc862feaa72e321 100644
+--- a/tests/unit/core/test_resume.py
++++ b/tests/unit/core/test_resume.py
+@@ -4,11 +4,16 @@ from __future__ import annotations
+ 
+ import sqlite3
+ from pathlib import Path
++from types import SimpleNamespace
++from typing import cast
+ from unittest.mock import AsyncMock
+ 
+ import pytest
+ 
+ from polylogue.api import Polylogue
++from polylogue.insights.archive import ArchiveInsightProvenance, SessionProfileInsight
++from polylogue.insights.archive_models import SessionEvidencePayload
++from polylogue.insights.resume import ResumeOperations
+ from tests.infra.storage_records import SessionBuilder
+ 
+ # Archive session ids derived from the builder's provider_session_id
+@@ -282,3 +287,228 @@ async def test_resume_candidates_empty_context_prefers_unfinished_sessions(
+ 
+     assert candidates
+     assert all(candidate.terminal_state != "clean_finish" for candidate in candidates)
++
++
++def _synthetic_ranking_profile(
++    session_id: str,
++    *,
++    logical_session_id: str,
++    repo_root: Path,
++    file_paths: tuple[str, ...],
++    last_message_at: str = "2026-07-17T10:00:00+00:00",
++) -> SessionProfileInsight:
++    return SessionProfileInsight(
++        session_id=session_id,
++        logical_session_id=logical_session_id,
++        origin="claude-code",
++        title=session_id,
++        provenance=ArchiveInsightProvenance(
++            materializer_version=1,
++            materialized_at=last_message_at,
++            source_updated_at=last_message_at,
++        ),
++        evidence=SessionEvidencePayload(
++            last_message_at=last_message_at,
++            repo_paths=(str(repo_root),),
++            file_paths_touched=file_paths,
++        ),
++    )
++
++
++def _ranking_operations(profiles: list[SessionProfileInsight]) -> ResumeOperations:
++    return cast(
++        ResumeOperations,
++        SimpleNamespace(list_session_profile_insights=AsyncMock(return_value=profiles)),
++    )
++
++
++@pytest.mark.asyncio
++async def test_resume_candidates_recover_100_percent_dead_session_by_directory(tmp_path: Path) -> None:
++    """Directory recovery must exercise the production scorer, not a test-only matcher."""
++    from polylogue.insights.resume import find_resume_candidates
++
++    repo_root = tmp_path / "repo"
++    current = repo_root / "polylogue" / "pipeline" / "service.py"
++    current.parent.mkdir(parents=True)
++    current.write_text("# current pipeline service\n", encoding="utf-8")
++    profile = _synthetic_ranking_profile(
++        "parent-session",
++        logical_session_id="fork-family",
++        repo_root=repo_root,
++        file_paths=("polylogue/pipeline/runner.py",),
++    )
++
++    candidates = await find_resume_candidates(
++        _ranking_operations([profile]),
++        repo_path=str(repo_root),
++        recent_files=("polylogue/pipeline/service.py",),
++    )
++
++    assert len(candidates) == 1
++    candidate = candidates[0]
++    assert candidate.score_breakdown["file_overlap"] > 0
++    assert candidate.file_overlap == ("polylogue/pipeline/service.py",)
++    assert candidate.overlap_basis.exact == ()
++    assert [(match.candidate_path, match.recent_file) for match in candidate.overlap_basis.dir] == [
++        ("polylogue/pipeline/runner.py", "polylogue/pipeline/service.py")
++    ]
++    assert candidate.overlap_basis.dead_excluded == ()
++
++
++@pytest.mark.asyncio
++async def test_resume_candidates_do_not_recover_repo_root_only_directory_prefix(tmp_path: Path) -> None:
++    """Directory fallback must not turn every top-level file into a match."""
++    from polylogue.insights.resume import find_resume_candidates
++
++    repo_root = tmp_path / "repo"
++    current = repo_root / "README.md"
++    current.parent.mkdir(parents=True)
++    current.write_text("# current root file\n", encoding="utf-8")
++    profile = _synthetic_ranking_profile(
++        "parent-session",
++        logical_session_id="fork-family",
++        repo_root=repo_root,
++        file_paths=("src/retired.py",),
++    )
++
++    candidate = (
++        await find_resume_candidates(
++            _ranking_operations([profile]),
++            repo_path=str(repo_root),
++            recent_files=("README.md",),
++        )
++    )[0]
++
++    assert candidate.score_breakdown["file_overlap"] == 0
++    assert candidate.overlap_basis.dir == ()
++    assert candidate.overlap_basis.dead_excluded == ("src/retired.py",)
++
++
++@pytest.mark.asyncio
++async def test_resume_candidates_exclude_unmatched_dead_paths_from_jaccard_union(tmp_path: Path) -> None:
++    """Removing dead-path exclusion should make the two production-route scores diverge."""
++    from polylogue.insights.resume import find_resume_candidates
++
++    repo_root = tmp_path / "repo"
++    current = repo_root / "polylogue" / "insights" / "resume.py"
++    current.parent.mkdir(parents=True)
++    current.write_text("# scorer\n", encoding="utf-8")
++    shared = ("polylogue/insights/resume.py",)
++    profiles = [
++        _synthetic_ranking_profile(
++            "candidate-a",
++            logical_session_id="candidate-a",
++            repo_root=repo_root,
++            file_paths=shared,
++        ),
++        _synthetic_ranking_profile(
++            "candidate-b",
++            logical_session_id="candidate-b",
++            repo_root=repo_root,
++            file_paths=(*shared, "retired/unrelated/ghost.py"),
++        ),
++    ]
++
++    candidates = await find_resume_candidates(
++        _ranking_operations(profiles),
++        repo_path=str(repo_root),
++        recent_files=shared,
++    )
++    by_id = {candidate.logical_session_id: candidate for candidate in candidates}
++
++    assert by_id["candidate-a"].score_breakdown["file_overlap"] == by_id["candidate-b"].score_breakdown["file_overlap"]
++    assert by_id["candidate-a"].score == by_id["candidate-b"].score
++    assert by_id["candidate-b"].overlap_basis.dead_excluded == ("retired/unrelated/ghost.py",)
++
++
++def test_resume_candidates_preserve_resolvable_exact_jaccard(tmp_path: Path) -> None:
++    """Replacing the fixed scorer with legacy mode must not change an all-live exact case."""
++    from polylogue.insights.resume import _rank_resume_profiles
++
++    repo_root = tmp_path / "repo"
++    current = repo_root / "polylogue" / "insights" / "resume.py"
++    current.parent.mkdir(parents=True)
++    current.write_text("# scorer\n", encoding="utf-8")
++    profile = _synthetic_ranking_profile(
++        "candidate",
++        logical_session_id="candidate",
++        repo_root=repo_root,
++        file_paths=("polylogue/insights/resume.py",),
++    )
++
++    legacy = _rank_resume_profiles(
++        [profile],
++        repo_path=str(repo_root),
++        recent_files=("polylogue/insights/resume.py",),
++        overlap_mode="legacy",
++    )[0]
++    fixed = _rank_resume_profiles(
++        [profile],
++        repo_path=str(repo_root),
++        recent_files=("polylogue/insights/resume.py",),
++    )[0]
++
++    assert fixed.score_breakdown["file_overlap"] == legacy.score_breakdown["file_overlap"]
++    assert fixed.file_overlap == legacy.file_overlap == ("polylogue/insights/resume.py",)
++    assert [(match.candidate_path, match.recent_file) for match in fixed.overlap_basis.exact] == [
++        ("polylogue/insights/resume.py", "polylogue/insights/resume.py")
++    ]
++
++
++def test_resume_candidates_credit_file_to_package_correction(tmp_path: Path) -> None:
++    """The scorer must resolve the repository.py -> repository/__init__.py history shape."""
++    from polylogue.insights.resume import _rank_resume_profiles
++
++    repo_root = tmp_path / "repo"
++    current = repo_root / "polylogue" / "storage" / "repository" / "__init__.py"
++    current.parent.mkdir(parents=True)
++    current.write_text("# package replacement\n", encoding="utf-8")
++    historical_root = Path("/historic/worktree/polylogue")
++    profile = _synthetic_ranking_profile(
++        "refactor-parent",
++        logical_session_id="refactor-family",
++        repo_root=historical_root,
++        file_paths=(str(historical_root / "polylogue/storage/repository.py"),),
++    )
++
++    candidate = _rank_resume_profiles(
++        [profile],
++        repo_path=str(repo_root),
++        recent_files=("polylogue/storage/repository/__init__.py",),
++    )[0]
++
++    assert candidate.score_breakdown["file_overlap"] > 0
++    assert [(match.candidate_path, match.recent_file) for match in candidate.overlap_basis.exact] == [
++        (
++            "/historic/worktree/polylogue/polylogue/storage/repository.py",
++            "polylogue/storage/repository/__init__.py",
++        )
++    ]
++
++
++@pytest.mark.asyncio
++async def test_resume_brief_projects_overlap_basis_for_current_work(
++    cli_workspace: dict[str, Path],
++    tmp_path: Path,
++) -> None:
++    """The facade brief route must project the same scorer explanation used by ranking."""
++    db_path = cli_workspace["db_path"]
++    _seed_resume_sessions(db_path)
++    repo_root = tmp_path / "repo"
++    current = repo_root / "polylogue" / "cli" / "click_app.py"
++    current.parent.mkdir(parents=True)
++    current.write_text("# current CLI\n", encoding="utf-8")
++
++    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
++    await archive.rebuild_insights()
++    brief = await archive.resume_brief(
++        ROOT_ID,
++        repo_path=str(repo_root),
++        recent_files=("polylogue/cli/click_app.py",),
++    )
++
++    assert brief is not None
++    assert brief.overlap_basis is not None
++    assert [(match.candidate_path, match.recent_file) for match in brief.overlap_basis.exact] == [
++        ("/workspace/polylogue/polylogue/cli/click_app.py", "polylogue/cli/click_app.py")
++    ]
+diff --git a/tests/unit/devtools/test_resume_ranking_eval.py b/tests/unit/devtools/test_resume_ranking_eval.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..df09ebf6e0a5846d128747648e9b65e8ea5e3e54
+--- /dev/null
++++ b/tests/unit/devtools/test_resume_ranking_eval.py
+@@ -0,0 +1,105 @@
++"""Contracts for the offline resume-ranking quality evaluator."""
++
++from __future__ import annotations
++
++import json
++
++import pytest
++
++from devtools import resume_ranking_eval
++
++
++def test_resume_ranking_eval_improves_lineage_grounded_metrics() -> None:
++    fixture = resume_ranking_eval.load_fixture(resume_ranking_eval.DEFAULT_FIXTURE)
++
++    report = resume_ranking_eval.evaluate_fixture(fixture)
++
++    overall = report.metrics["overall"]
++    assert overall.before == resume_ranking_eval.RankingMetrics(
++        scenarios=5,
++        hit_at_1=0.2,
++        hit_at_3=0.2,
++        mrr=0.39,
++    )
++    assert overall.after == resume_ranking_eval.RankingMetrics(
++        scenarios=5,
++        hit_at_1=1.0,
++        hit_at_3=1.0,
++        mrr=1.0,
++    )
++    assert report.metrics["synthetic"].before.hit_at_1 == 0.333333
++    assert report.metrics["snapshot-derived"].before.mrr == 0.25
++    assert report.verdict.non_regressing is True
++    assert report.verdict.strict_overall_improvement is True
++    assert report.verdict.all_fixed_targets_hit_at_1 is True
++
++
++def test_resume_ranking_eval_catches_legacy_dead_path_anti_selection() -> None:
++    """Replacing refactor-aware mode with legacy mode makes every asserted repair fail."""
++    report = resume_ranking_eval.evaluate_fixture(resume_ranking_eval.load_fixture(resume_ranking_eval.DEFAULT_FIXTURE))
++    by_id = {row.scenario_id: row for row in report.scenarios}
++
++    assert by_id["synthetic-dead-shared-directory"].before_rank == 4
++    assert by_id["synthetic-dead-shared-directory"].after_rank == 1
++    assert by_id["synthetic-dead-union-deflation"].before_rank == 5
++    assert by_id["synthetic-dead-union-deflation"].after_rank == 1
++    assert by_id["snapshot-storage-repository-file-to-package"].before_rank == 4
++    assert by_id["snapshot-storage-repository-file-to-package"].after_rank == 1
++    assert by_id["snapshot-pipeline-runner-directory-recovery"].before_rank == 4
++    assert by_id["snapshot-pipeline-runner-directory-recovery"].after_rank == 1
++    assert by_id["synthetic-live-exact-control"].before_rank == 1
++    assert by_id["synthetic-live-exact-control"].after_rank == 1
++
++
++def test_resume_ranking_eval_reproduces_seeded_evidence_recovery() -> None:
++    report = resume_ranking_eval.evaluate_fixture(resume_ranking_eval.load_fixture(resume_ranking_eval.DEFAULT_FIXTURE))
++
++    assert len(report.evidence_recovery) == 1
++    evidence = report.evidence_recovery[0]
++    assert evidence.path_count == 1000
++    assert evidence.resolvable_count == 570
++    assert evidence.dead_count == 430
++    assert evidence.directory_recovered_count == 254
++    assert evidence.dead_excluded_count == 176
++    assert evidence.usable_share_before == 0.57
++    assert evidence.usable_share_after == 0.824
++    assert evidence.dead_recovery_rate == pytest.approx(254 / 430, abs=1e-6)
++
++
++def test_resume_ranking_fixture_has_no_manual_relevance_labels() -> None:
++    raw = json.loads(resume_ranking_eval.DEFAULT_FIXTURE.read_text(encoding="utf-8"))
++
++    for scenario in raw["scenarios"]:
++        assert "relevant" not in scenario
++        assert "expected_target" not in scenario
++        assert scenario["current"]["logical_session_id"]
++        assert scenario["current"]["parent_session_id"]
++
++
++def test_resume_ranking_metrics_assign_zero_reciprocal_rank_to_a_miss() -> None:
++    row = resume_ranking_eval.ScenarioEvaluation(
++        scenario_id="missing-target",
++        source="synthetic",
++        target_logical_session_ids=("target",),
++        before_rank=None,
++        after_rank=1,
++        before_order=("distractor",),
++        after_order=("target",),
++        after_overlap_basis={},
++    )
++
++    before = resume_ranking_eval._ranking_metrics((row,), use_after=False)
++
++    assert before.hit_at_1 == 0
++    assert before.hit_at_3 == 0
++    assert before.mrr == 0
++
++
++def test_resume_ranking_eval_main_emits_json(capsys: pytest.CaptureFixture[str]) -> None:
++    exit_code = resume_ranking_eval.main(["--fixture", str(resume_ranking_eval.DEFAULT_FIXTURE), "--json"])
++
++    assert exit_code == 0
++    payload = json.loads(capsys.readouterr().out)
++    assert payload["metrics"]["overall"]["before"]["hit_at_1"] == 0.2
++    assert payload["metrics"]["overall"]["after"]["hit_at_1"] == 1.0
++    assert payload["evidence_recovery"][0]["usable_share_after"] == 0.824
+diff --git a/tests/unit/mcp/test_compose_context_preamble.py b/tests/unit/mcp/test_compose_context_preamble.py
+index b8356947bf0ce3ccca595a865b74e640bbd3b35d..b3d779c4e67184901d93fe648dd934df22d65978 100644
+--- a/tests/unit/mcp/test_compose_context_preamble.py
++++ b/tests/unit/mcp/test_compose_context_preamble.py
+@@ -29,6 +29,7 @@ def _make_candidate(
+     c.terminal_state = terminal_state
+     c.summary = summary
+     c.origin = origin
++    c.overlap_basis = None
+     return c
+ 
+ 
+@@ -110,6 +111,44 @@ class TestComposeContextPreambleHappyPath:
+         assert sessions[0]["terminal_state"] == "completed"
+         assert sessions[0]["origin"] == "claude-code-session"
+ 
++    @pytest.mark.asyncio
++    async def test_recent_sessions_project_overlap_basis(self, mcp_server: MCPServerUnderTest) -> None:
++        """SessionStart context keeps the ranking explanation instead of dropping it."""
++        from polylogue.insights.resume import ResumeOverlapBasis, ResumePathOverlap
++
++        candidate = _make_candidate()
++        candidate.overlap_basis = ResumeOverlapBasis(
++            dir=(
++                ResumePathOverlap(
++                    candidate_path="polylogue/pipeline/runner.py",
++                    recent_file="polylogue/pipeline/service.py",
++                ),
++            ),
++            dead_excluded=("polylogue/lib/models.py",),
++        )
++
++        with (
++            patch("polylogue.mcp.server._get_polylogue") as mock_get_poly,
++            patch("subprocess.run", return_value=_mock_subprocess_failure()),
++        ):
++            mock_poly = make_polylogue_mock()
++            mock_poly.find_resume_candidates = AsyncMock(return_value=(candidate,))
++            mock_get_poly.return_value = mock_poly
++
++            raw = await invoke_surface_async(
++                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
++                repo_path=".",
++            )
++
++        basis = json.loads(raw)["recent_related_sessions"][0]["overlap_basis"]
++        assert basis["dir"] == [
++            {
++                "candidate_path": "polylogue/pipeline/runner.py",
++                "recent_file": "polylogue/pipeline/service.py",
++            }
++        ]
++        assert basis["dead_excluded"] == ["polylogue/lib/models.py"]
++
+     @pytest.mark.asyncio
+     async def test_candidate_without_logical_session_id_falls_back(self, mcp_server: MCPServerUnderTest) -> None:
+         """When logical_session_id is absent, session_id is used."""
+@@ -121,6 +160,7 @@ class TestComposeContextPreambleHappyPath:
+         c.terminal_state = None
+         c.summary = None
+         c.origin = None
++        c.overlap_basis = None
+ 
+         with (
+             patch("polylogue.mcp.server._get_polylogue") as mock_get_poly,
+diff --git a/tests/unit/mcp/test_contract_evidence.py b/tests/unit/mcp/test_contract_evidence.py
+index 348e9ad0553f91d506809d828e8741bbff461ea6..28ba07461efba7f7ed150f0594e9c3c5b231c43b 100644
+--- a/tests/unit/mcp/test_contract_evidence.py
++++ b/tests/unit/mcp/test_contract_evidence.py
+@@ -238,6 +238,8 @@ class TestToolErrorEnvelopes:
+             ResumeBrief,
+             ResumeFacts,
+             ResumeInferences,
++            ResumeOverlapBasis,
++            ResumePathOverlap,
+             ResumeProvenance,
+         )
+ 
+@@ -245,6 +247,15 @@ class TestToolErrorEnvelopes:
+             session_id="conv-123",
+             facts=ResumeFacts(session_id="conv-123", origin="claude-code", message_count=2),
+             inferences=ResumeInferences(),
++            overlap_basis=ResumeOverlapBasis(
++                dir=(
++                    ResumePathOverlap(
++                        candidate_path="polylogue/pipeline/runner.py",
++                        recent_file="polylogue/pipeline/service.py",
++                    ),
++                ),
++                dead_excluded=("polylogue/lib/models.py",),
++            ),
+             provenance=ResumeProvenance(
+                 materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
+                 computed_at="2026-05-17T00:00:00+00:00",
+@@ -260,18 +271,47 @@ class TestToolErrorEnvelopes:
+             result = invoke_surface(
+                 mcp_server._tool_manager._tools["get_resume_brief"].fn,
+                 session_id="conv-123",
++                repo_path="/workspace/polylogue",
++                recent_files=("polylogue/pipeline/service.py",),
+             )
+ 
+         payload = json.loads(result)
+         assert payload["session_id"] == "conv-123"
+         assert payload["provenance"]["materializer_version"] == RESUME_BRIEF_MATERIALIZER_VERSION
+         assert "conv-123" in payload["provenance"]["cited_session_ids"]
++        assert payload["overlap_basis"]["dir"] == [
++            {
++                "candidate_path": "polylogue/pipeline/runner.py",
++                "recent_file": "polylogue/pipeline/service.py",
++            }
++        ]
++        assert payload["overlap_basis"]["dead_excluded"] == ["polylogue/lib/models.py"]
++        mock_poly.resume_brief.assert_awaited_once_with(
++            "conv-123",
++            related_limit=6,
++            repo_path="/workspace/polylogue",
++            recent_files=("polylogue/pipeline/service.py",),
++        )
++
++    def test_get_resume_brief_rejects_context_without_repo(
++        self,
++        mcp_server: MCPServerUnderTest,
++    ) -> None:
++        result = invoke_surface(
++            mcp_server._tool_manager._tools["get_resume_brief"].fn,
++            session_id="conv-123",
++            recent_files=("polylogue/pipeline/service.py",),
++        )
++
++        body = _structured_error(result)
++        assert body["code"] == "invalid_argument"
++        assert "repo_path is required" in body["message"]
+ 
+     def test_find_resume_candidates_returns_ranked_envelope(
+         self,
+         mcp_server: MCPServerUnderTest,
+     ) -> None:
+-        from polylogue.insights.resume import ResumeCandidate
++        from polylogue.insights.resume import ResumeCandidate, ResumeOverlapBasis, ResumePathOverlap
+ 
+         candidate = ResumeCandidate(
+             logical_session_id="root",
+@@ -281,6 +321,15 @@ class TestToolErrorEnvelopes:
+             terminal_state="question_left",
+             workflow_shape="agentic_loop",
+             file_overlap=("polylogue/daemon/convergence.py",),
++            overlap_basis=ResumeOverlapBasis(
++                exact=(
++                    ResumePathOverlap(
++                        candidate_path="polylogue/daemon/convergence.py",
++                        recent_file="polylogue/daemon/convergence.py",
++                    ),
++                ),
++                dead_excluded=("polylogue/daemon/legacy.py",),
++            ),
+             score=0.91,
+             score_breakdown={"recency": 1.0, "file_overlap": 0.4},
+             brief_url="polylogue://resume/root",
+@@ -302,6 +351,10 @@ class TestToolErrorEnvelopes:
+         assert payload["total"] == 1
+         assert payload["candidates"][0]["logical_session_id"] == "root"
+         assert payload["candidates"][0]["score_breakdown"]["recency"] == 1.0
++        assert payload["candidates"][0]["overlap_basis"]["exact"][0]["candidate_path"] == (
++            "polylogue/daemon/convergence.py"
++        )
++        assert payload["candidates"][0]["overlap_basis"]["dead_excluded"] == ["polylogue/daemon/legacy.py"]
+         mock_poly.find_resume_candidates.assert_awaited_once()
+ 
+     def test_bulk_tag_validation_returns_structured_error(
+diff --git a/tests/unit/mcp/test_server_surfaces.py b/tests/unit/mcp/test_server_surfaces.py
+index 92ea8addc8e5b95be35d47db053aca24eaa69f79..3e4364578eb308be4fb56b179192559fcc97e762 100644
+--- a/tests/unit/mcp/test_server_surfaces.py
++++ b/tests/unit/mcp/test_server_surfaces.py
+@@ -1448,6 +1448,9 @@ class TestPromptSurfaces:
+         assert cwd.name in resume
+         assert "POLYLOGUE_ARCHIVE_ROOT" in resume
+         assert "refs" in resume.lower()
++        assert "recent_files=<recent files>" in resume
++        assert "recent_files=<same recent files>" in resume
++        assert "overlap_basis" in resume
+ 
+         override = await invoke_surface_async(prompts["resume_context"].fn, repo="sinex")
+         assert "'sinex'" in override

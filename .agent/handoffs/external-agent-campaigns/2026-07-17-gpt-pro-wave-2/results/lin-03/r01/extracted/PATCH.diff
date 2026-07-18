@@ -1,0 +1,817 @@
+diff --git a/docs/design/session-lineage-model.md b/docs/design/session-lineage-model.md
+index 406199bf0c958d714a5ce44d5b37901706d9ca18..f7ea5d3cc022df43a9815ac821d8bf7ed687ec39 100644
+--- a/docs/design/session-lineage-model.md
++++ b/docs/design/session-lineage-model.md
+@@ -56,16 +56,17 @@ subsequent turns, by a **summary**. From that point the model sees
+ - **Claude Code inline**: a `type=user`, `isCompactSummary: true` record
+   ("This session is being continued from a previous conversation that ran out of
+   context…") inserted in the same session; prior messages retained.
+-- **Claude Code auto-compact agent** (`agent-acompact-*`): an agent that
+-  re-reads the whole conversation to produce the summary; its transcript is a
+-  **100 % copy of the parent + ~2 unique blocks** (the summary). 187 such
+-  sessions; polylogue currently mis-stores each as a full duplicate subagent.
+-
+-Same concept, three encodings. We model it **one way**: a compaction boundary at
+-point N with a summary message S; messages before N stay stored once; effective
+-context after N = `[S] + post-N`. The `agent-acompact-*` copy is just "a
+-compaction that the provider implemented as a copy" — both concept #1 (it is a
+-copy → normalize) and #2 (it carries a summary → boundary) apply.
++- **Claude Code auto-compact agent** (`agent-acompact-*`): an overloaded
++  artifact family. Roughly 148/187 observed files replay the main-session
++  transcript and add a small summary tail; ~39 are Task-subagent
++  self-compactions with less than 90% parent membership (9 observed at 0%).
++
++Same concept, three encodings. We model a true main-session auto-compact as a
++compaction boundary at point N with a summary message S: messages before N stay
++stored once; effective context after N = `[S] + post-N`. A Task self-compaction
++under the same filename prefix is instead a fresh sidechain: its messages stay
++whole and its parent edge is `spawned-fresh`, so composition never prepends the
++main transcript.
+ 
+ ChatGPT / Gemini / Antigravity have neither concept (confirmed: no compaction or
+ fork machinery in their parsers).
+@@ -178,9 +179,11 @@ official export zips; repo tarballs regenerable) — re-ingest classifies each.
+ 
+ Status as of the prefix-inheritance slices (index schema **v12**):
+ 
+-0. **Done** — `agent-acompact-*` is classified as a compaction continuation, not
+-   a generic subagent; Codex `forked_from_id` / `source.subagent.thread_spawn`
+-   are detected and set `branch_type` SUBAGENT/FORK.
++0. **Done** — `agent-acompact-*` uses a fresh Task-head marker or a bounded
++   parent-content membership test: true main-session copies are continuations,
++   while mismatched Task self-compactions are `SIDECHAIN` + `spawned-fresh`.
++   Codex `forked_from_id` / `source.subagent.thread_spawn` are detected and set
++   `branch_type` SUBAGENT/FORK.
+ 1. **Done (prefix-inheritance)** — `session_links` carries
+    `branch_point_message_id` + `inheritance` (`prefix-sharing` / `spawned-fresh`).
+    Compaction boundaries (range columns) + attachment real-blob-hash remain for
+@@ -211,7 +214,7 @@ composed read reconstructs the full 180-message transcript exactly.
+   cost fix; aggregate excess = fork replay.
+ - Claude per-model vs `stats-cache.json`: 1.09× (stale window + attribution), no
+   resume duplication.
+-- `agent-acompact-*`: 100 % parent overlap, ~2 unique blocks (n=5 sampled),
+-  187 total.
++- `agent-acompact-*`: 187 total in the measured corpus; roughly 148 main-session
++  copies and ~39 Task self-compactions below 90% parent membership (9 at 0%).
+ - Fork families: real on-disk rollouts, `forked_from_id` explicit, 100 % block
+   overlap with parent, ~30 unique blocks each.
+diff --git a/polylogue/sources/dispatch.py b/polylogue/sources/dispatch.py
+index 8755607c101da716bbb53e37c933fbe1b05351f1..3b6f541f0f124bb1147ebde8e90ac6e322474eae 100644
+--- a/polylogue/sources/dispatch.py
++++ b/polylogue/sources/dispatch.py
+@@ -403,8 +403,12 @@ def _claude_code_grouped_record_specs(payloads: PayloadSequence, fallback_id: st
+     if len(groups) <= 1:
+         return [_grouped_records_spec(Provider.CLAUDE_CODE, payloads, fallback_id)]
+     return [
+-        _grouped_records_spec(Provider.CLAUDE_CODE, group_payloads, group_id)
+-        for group_id, group_payloads in groups.items()
++        _grouped_records_spec(
++            Provider.CLAUDE_CODE,
++            group_payloads,
++            fallback_id if index == 0 else group_id,
++        )
++        for index, (group_id, group_payloads) in enumerate(groups.items())
+     ]
+ 
+ 
+diff --git a/polylogue/sources/parsers/claude/code_parser.py b/polylogue/sources/parsers/claude/code_parser.py
+index 88ceb4d0cbd7eb6485649312d1fd040093d3ab0b..f9f335215eea24ac950c7775ef4035ee6be263f1 100644
+--- a/polylogue/sources/parsers/claude/code_parser.py
++++ b/polylogue/sources/parsers/claude/code_parser.py
+@@ -252,6 +252,33 @@ def _string_field(item: dict[str, object], key: str) -> str | None:
+     return value if isinstance(value, str) and value else None
+ 
+ 
++def _is_fresh_task_prompt_head(item: dict[str, object]) -> bool:
++    """Return whether ``item`` is a structurally fresh Task-agent prompt.
++
++    Claude Code can emit ``agent-acompact-*`` artifacts for two different
++    shapes: a main-session compactor replaying the parent transcript, and a
++    Task subagent compacting its own fresh transcript.  The parser normally
++    sees only this one sidecar, not the main-session file, so it cannot always
++    perform the authoritative content-membership comparison here.  A root
++    sidechain user prompt with explicit Task prompt/agent identifiers is the
++    provider's positive fresh-spawn marker.  Keep the predicate deliberately
++    narrow; ambiguous artifacts remain continuations until the archive writer
++    can compare them against the resolved parent content.
++    """
++    if item.get("type") != "user":
++        return False
++    if item.get("parentUuid") is not None or item.get("isSidechain") is not True:
++        return False
++    if item.get("isMeta") or item.get("isCompactSummary") or item.get("toolUseResult") is not None:
++        return False
++    if _record_origin_kind(item) == "human":
++        return False
++    message = item.get("message")
++    if not isinstance(message, dict) or message.get("role") != "user":
++        return False
++    return _string_field(item, "agentId") is not None and _string_field(item, "promptId") is not None
++
++
+ def _background_task_id(item: dict[str, object]) -> str | None:
+     tool_result = item.get("toolUseResult")
+     if not isinstance(tool_result, dict):
+@@ -386,6 +413,8 @@ def _parse_code_records(
+     saw_cost_field = False
+     saw_duration_field = False
+     has_sidechain = False
++    fresh_task_prompt_head = False
++    saw_plain_user_head = False
+     cwds: set[str] = set()
+     models: set[str] = set()
+     message_position = 0
+@@ -474,6 +503,9 @@ def _parse_code_records(
+         message_type = _message_type_from_code_record(item, text)
+         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
+             message_type = MessageType.CONTEXT
++        if not saw_plain_user_head and envelope_role is Role.USER and message_type is MessageType.MESSAGE:
++            saw_plain_user_head = True
++            fresh_task_prompt_head = _is_fresh_task_prompt_head(item)
+         # Claude Code records carry per-message token usage at
+         # ``record.message.usage``; propagate so MaterializedMessage and the
+         # downstream cost estimator see real numbers instead of zeros.
+@@ -600,13 +632,12 @@ def _parse_code_records(
+             first_duplicate_uuid,
+         )
+ 
+-    # `agent-acompact-*` is Claude Code's auto-compaction agent: it re-reads the
+-    # whole conversation to emit a summary, so its transcript is a 100% copy of
+-    # the parent plus the summary. It is a compaction continuation of the parent,
+-    # NOT distinct subagent work. It still carries the same `agent-` prefix and
+-    # parent linkage as a real subagent, so keep the composed id / parent link but
+-    # classify the relationship as a continuation. Slice C folds it into a typed
+-    # compaction boundary; here we at least stop counting it as a subagent.
++    # `agent-acompact-*` is overloaded by Claude Code. A main-session compactor
++    # replays the parent transcript and is a continuation; a Task subagent can
++    # also self-compact under the same filename prefix. A structurally fresh Task
++    # prompt is positive evidence for sidechain topology. Ambiguous cases stay
++    # continuations here and are reclassified by the archive writer after its
++    # bounded content-membership check against the resolved parent transcript.
+     parent_session_id: str | None = None
+     if is_agent and session_id:
+         composed_session_id = f"{session_id}:{fallback_id}"
+@@ -614,8 +645,10 @@ def _parse_code_records(
+     else:
+         composed_session_id = session_id or fallback_id
+ 
+-    if is_acompact:
+-        branch_type: BranchType | None = BranchType.CONTINUATION
++    if is_acompact and fresh_task_prompt_head:
++        branch_type: BranchType | None = BranchType.SIDECHAIN
++    elif is_acompact:
++        branch_type = BranchType.CONTINUATION
+     elif is_agent:
+         branch_type = BranchType.SUBAGENT
+     elif has_sidechain:
+diff --git a/polylogue/storage/sqlite/archive_tiers/write.py b/polylogue/storage/sqlite/archive_tiers/write.py
+index 3ea6cdab4066b06094011f7f8b712ad85914e1d9..4092c60e461e785c92825c3950f237257f109a71 100644
+--- a/polylogue/storage/sqlite/archive_tiers/write.py
++++ b/polylogue/storage/sqlite/archive_tiers/write.py
+@@ -21,10 +21,11 @@ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import cast
+ 
++from polylogue.archive.message.types import MessageType
+ from polylogue.archive.session.branch_type import BranchType
+ from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
+ from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
+-from polylogue.core.enums import BlockType, PasteBoundary, SessionKind
++from polylogue.core.enums import BlockType, PasteBoundary, Provider, SessionKind
+ from polylogue.core.identity_law import message_id as archive_message_id
+ from polylogue.core.identity_law import session_id as archive_session_id
+ from polylogue.core.json import JSONValue
+@@ -70,6 +71,7 @@ from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_f
+ logger = get_logger(__name__)
+ 
+ _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
++_ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD = 0.90
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -256,13 +258,41 @@ def write_parsed_session_to_archive(
+     inherited_source_message_ids: dict[str, str] = {}
+     if not merge_append:
+         parent_session_id = _existing_parent_session_id(conn, session, origin.value)
++        acompact = _is_claude_code_acompact_session(session)
++        force_spawned_fresh = False
+         if parent_session_id is not None and messages:
+-            (
+-                branch_point_message_id,
+-                lineage_inheritance,
+-                messages,
+-                inherited_source_message_ids,
+-            ) = _extract_prefix_tail(conn, parent_session_id, messages, cache=signature_cache)
++            parent_composed: list[tuple[str, str]] | None = None
++            if acompact:
++                parent_composed = _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
++                membership = _acompact_content_membership_ratio(
++                    parent_composed,
++                    _parsed_acompact_prefix_signatures(messages),
++                )
++                if membership is not None:
++                    if membership < _ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD:
++                        session = session.model_copy(update={"branch_type": BranchType.SIDECHAIN})
++                        lineage_inheritance = "spawned-fresh"
++                        force_spawned_fresh = True
++                    elif session.branch_type is BranchType.SIDECHAIN:
++                        # Parent content is authoritative over a conservative
++                        # fresh-head parser hint when both are available.
++                        session = session.model_copy(update={"branch_type": BranchType.CONTINUATION})
++                elif session.branch_type is BranchType.SIDECHAIN:
++                    lineage_inheritance = "spawned-fresh"
++                    force_spawned_fresh = True
++            if not force_spawned_fresh:
++                (
++                    branch_point_message_id,
++                    lineage_inheritance,
++                    messages,
++                    inherited_source_message_ids,
++                ) = _extract_prefix_tail(
++                    conn,
++                    parent_session_id,
++                    messages,
++                    cache=signature_cache,
++                    parent_composed=parent_composed,
++                )
+     duplicate_message_native_ids = _duplicate_message_native_ids(messages)
+     active_leaf_message_id = _active_leaf_message_id(
+         session_id,
+@@ -3255,6 +3285,88 @@ def _parsed_message_signature(message: ParsedMessage) -> str:
+     return _message_signature_from_blocks(role, fields)
+ 
+ 
++def _is_acompact_native_id(native_id: str) -> bool:
++    return native_id.rsplit(":", 1)[-1].startswith("agent-acompact-")
++
++
++def _is_claude_code_acompact_session(session: ParsedSession) -> bool:
++    return session.source_name is Provider.CLAUDE_CODE and _is_acompact_native_id(session.provider_session_id)
++
++
++def _parsed_acompact_prefix_signatures(messages: Sequence[ParsedMessage]) -> list[str]:
++    """Return content signatures before the compaction summary boundary.
++
++    The summary is expected to be unique output even for a true main-session
++    compactor, so it cannot count against parent membership.  Later records are
++    outside the copied prefix and are likewise excluded once a summary appears.
++    """
++    signatures: list[str] = []
++    for message in messages:
++        if message.message_type is MessageType.SUMMARY:
++            break
++        signatures.append(_parsed_message_signature(message))
++    return signatures
++
++
++def _acompact_content_membership_ratio(
++    parent_composed: Sequence[tuple[str, str]],
++    child_prefix_signatures: Sequence[str],
++) -> float | None:
++    """Return multiset content membership of an acompact prefix in its parent.
++
++    Classification uses membership rather than contiguous alignment: the former
++    answers whether this artifact belongs to the asserted parent at all, while
++    `_extract_prefix_tail` remains the stricter loss-prevention gate for deleting
++    inherited rows.  Duplicate signatures are bounded by parent multiplicity so
++    repeated boilerplate cannot manufacture overlap.
++    """
++    if not child_prefix_signatures:
++        return None
++    if not parent_composed:
++        return 0.0
++    parent_counts = Counter(signature for _message_id, signature in parent_composed)
++    matching_count = 0
++    for signature in child_prefix_signatures:
++        if parent_counts[signature] <= 0:
++            continue
++        parent_counts[signature] -= 1
++        matching_count += 1
++    return matching_count / len(child_prefix_signatures)
++
++
++def _db_acompact_prefix_signatures(
++    conn: sqlite3.Connection,
++    session_id: str,
++    child_composed: Sequence[tuple[str, str]],
++) -> list[str]:
++    summary_message_ids = {
++        str(row[0])
++        for row in conn.execute(
++            "SELECT message_id FROM messages WHERE session_id = ? AND message_type = 'summary'",
++            (session_id,),
++        ).fetchall()
++    }
++    signatures: list[str] = []
++    for message_id, signature in child_composed:
++        if message_id in summary_message_ids:
++            break
++        signatures.append(signature)
++    return signatures
++
++
++def _db_claude_acompact_branch_type(conn: sqlite3.Connection, session_id: str) -> str | None:
++    row = conn.execute(
++        "SELECT origin, native_id, branch_type FROM sessions WHERE session_id = ?",
++        (session_id,),
++    ).fetchone()
++    if row is None:
++        return None
++    origin, native_id, branch_type = row
++    if origin != origin_from_provider(Provider.CLAUDE_CODE).value or not _is_acompact_native_id(str(native_id)):
++        return None
++    return str(branch_type) if branch_type is not None else ""
++
++
+ def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[str, str]]:
+     """Return ``[(message_id, signature), ...]`` for ``session_id``'s OWN stored
+     message rows (no inherited prefix). This is the expensive SQL+SHA-256 leg of
+@@ -3454,26 +3566,86 @@ def _reextract_prefix_tail_db(
+         composed_cache=composed_cache,
+     )
+     record_substage("child_composed", t0)
+-    t0 = time.perf_counter()
+-    k = 0
+-    limit = min(len(parent_composed), len(child_composed))
+-    while k < limit and parent_composed[k][1] == child_composed[k][1]:
+-        k += 1
+-    record_substage("signature_compare", t0)
+ 
+-    def _set_edge(branch_point_message_id: str | None, inheritance: str) -> None:
++    def _set_edge(
++        branch_point_message_id: str | None,
++        inheritance: str,
++        *,
++        next_link_type: str | None = None,
++    ) -> None:
++        current_link_type = str(link_type)
++        target_link_type = next_link_type or current_link_type
++        if target_link_type != current_link_type:
++            # One parsed parent assertion should yield one edge. Remove a stale
++            # duplicate of the target natural key before changing the PK lane so
++            # a rebuild remains convergent even after interrupted older repairs.
++            conn.execute(
++                """
++                DELETE FROM session_links
++                WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
++                """,
++                (child_session_id, dst_origin, dst_native_id, target_link_type),
++            )
+         conn.execute(
+             """
+             UPDATE session_links
+-            SET branch_point_message_id = ?, inheritance = ?
++            SET link_type = ?, branch_point_message_id = ?, inheritance = ?
+             WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+             """,
+-            (branch_point_message_id, inheritance, child_session_id, dst_origin, dst_native_id, link_type),
++            (
++                target_link_type,
++                branch_point_message_id,
++                inheritance,
++                child_session_id,
++                dst_origin,
++                dst_native_id,
++                current_link_type,
++            ),
+         )
+ 
++    t0 = time.perf_counter()
++    acompact_branch_type = _db_claude_acompact_branch_type(conn, child_session_id)
++    force_spawned_fresh = False
++    resolved_link_type: str | None = None
++    if acompact_branch_type is not None:
++        membership = _acompact_content_membership_ratio(
++            parent_composed,
++            _db_acompact_prefix_signatures(conn, child_session_id, child_composed),
++        )
++        if membership is not None:
++            if membership < _ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD:
++                force_spawned_fresh = True
++            else:
++                # The parser's fresh-head signal is intentionally conservative.
++                # Once the parent exists, content membership is authoritative.
++                resolved_link_type = TopologyEdgeType.CONTINUATION.value
++                conn.execute(
++                    "UPDATE sessions SET branch_type = ? WHERE session_id = ?",
++                    (BranchType.CONTINUATION.value, child_session_id),
++                )
++        elif acompact_branch_type == BranchType.SIDECHAIN.value:
++            force_spawned_fresh = True
++    record_substage("acompact_membership", t0)
++    if force_spawned_fresh:
++        t0 = time.perf_counter()
++        _set_edge(None, "spawned-fresh", next_link_type=TopologyEdgeType.SIDECHAIN.value)
++        conn.execute(
++            "UPDATE sessions SET branch_type = ? WHERE session_id = ?",
++            (BranchType.SIDECHAIN.value, child_session_id),
++        )
++        record_substage("acompact_reclassify", t0)
++        return
++
++    t0 = time.perf_counter()
++    k = 0
++    limit = min(len(parent_composed), len(child_composed))
++    while k < limit and parent_composed[k][1] == child_composed[k][1]:
++        k += 1
++    record_substage("signature_compare", t0)
++
+     if k == 0:
+         t0 = time.perf_counter()
+-        _set_edge(None, "spawned-fresh")
++        _set_edge(None, "spawned-fresh", next_link_type=resolved_link_type)
+         record_substage("edge_update", t0)
+         return
+     prefix_message_ids = [child_composed[i][0] for i in range(k)]
+@@ -3514,7 +3686,11 @@ def _reextract_prefix_tail_db(
+         cache.pop(child_session_id, None)
+     if composed_cache is not None:
+         composed_cache.pop(child_session_id, None)
+-    _set_edge(parent_composed[k - 1][0], "prefix-sharing")
++    _set_edge(
++        parent_composed[k - 1][0],
++        "prefix-sharing",
++        next_link_type=resolved_link_type,
++    )
+     record_substage("edge_update", t0)
+     t0 = time.perf_counter()
+     _refresh_session_counts(conn, child_session_id)
+@@ -3868,6 +4044,7 @@ def _extract_prefix_tail(
+     messages: list[ParsedMessage],
+     *,
+     cache: dict[str, list[tuple[str, str]]] | None = None,
++    parent_composed: list[tuple[str, str]] | None = None,
+ ) -> tuple[str | None, str | None, list[ParsedMessage], dict[str, str]]:
+     """Align ``messages`` (the child's full parsed messages, which replay the
+     parent's prefix) against the parent's composed transcript. Returns
+@@ -3875,7 +4052,8 @@ def _extract_prefix_tail(
+     ``inherited_refs`` maps unambiguous provider-local child message ids to the
+     canonical parent message rows that physically own the replayed prefix.
+     """
+-    parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
++    if parent_composed is None:
++        parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
+     if not parent_composed:
+         return (None, "spawned-fresh", messages, {})
+     child_sigs = [_parsed_message_signature(m) for m in messages]
+diff --git a/tests/fixtures/claude-code/normalization-lineage-subagent-acompact.jsonl b/tests/fixtures/claude-code/normalization-lineage-subagent-acompact.jsonl
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5845af0d39cdd042e23131fca0ceaee0d875912
+--- /dev/null
++++ b/tests/fixtures/claude-code/normalization-lineage-subagent-acompact.jsonl
+@@ -0,0 +1,3 @@
++{"type":"user","uuid":"task-compact-u","parentUuid":null,"sessionId":"claude-lineage-parent","timestamp":"2026-07-01T12:10:00Z","isSidechain":true,"userType":"external","agentId":"task-agent-12-change-proof","promptId":"task-prompt-12-change-proof","message":{"role":"user","content":"Validate the synthetic twelve-change overhaul and report only task-local evidence."}}
++{"type":"assistant","uuid":"task-compact-a","parentUuid":"task-compact-u","sessionId":"claude-lineage-parent","timestamp":"2026-07-01T12:10:01Z","isSidechain":true,"agentId":"task-agent-12-change-proof","message":{"role":"assistant","model":"claude-sonnet-4-5-20250929","content":"The task-local verification matrix is complete."}}
++{"type":"summary","uuid":"task-compact-summary","parentUuid":"task-compact-a","sessionId":"claude-lineage-parent","timestamp":"2026-07-01T12:10:02Z","isSidechain":true,"agentId":"task-agent-12-change-proof","message":{"role":"system","content":"Compressed task-local verification context."}}
+diff --git a/tests/unit/sources/test_claude_code_normalization_laws.py b/tests/unit/sources/test_claude_code_normalization_laws.py
+index aabacb760e44b932e3eb2f7bf926fa11ef192bcf..4e1410273065dbaba34f1c589b25489133e31dc2 100644
+--- a/tests/unit/sources/test_claude_code_normalization_laws.py
++++ b/tests/unit/sources/test_claude_code_normalization_laws.py
+@@ -31,11 +31,13 @@ _FAMILY_FIXTURE = _FIXTURE_ROOT / "normalization-family.jsonl"
+ _AGENT_FIXTURE = _FIXTURE_ROOT / "normalization-agent.jsonl"
+ _PARENT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-parent.jsonl"
+ _ACOMPACT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-acompact.jsonl"
++_SUBAGENT_ACOMPACT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-subagent-acompact.jsonl"
+ 
+ _MAIN_SESSION_ID = "claude-normalization-main"
+ _PARENT_SESSION_ID = "claude-lineage-parent"
+ _AGENT_FALLBACK_ID = "agent-normalization-proof"
+ _ACOMPACT_FALLBACK_ID = "agent-acompact-normalization-proof"
++_SUBAGENT_ACOMPACT_FALLBACK_ID = "agent-acompact-task-normalization-proof"
+ _ARCHIVE_SESSION_ID = "claude-code-session:claude-normalization-main"
+ _EXPECTED_ARCHIVE_MESSAGE_IDS = (
+     "claude-code-session:claude-normalization-main:main-u1",
+@@ -370,6 +372,225 @@ def test_acompact_resume_replayed_prefix_is_stored_once_and_composed(
+     ]
+ 
+ 
++@pytest.mark.parametrize("write_parent_first", [True, False])
++def test_parent_membership_overrides_conservative_fresh_head_hint(
++    tmp_path: Path,
++    write_parent_first: bool,
++) -> None:
++    """Production dependency: resolved-parent membership outranks parser hints.
++
++    The copied transcript is structurally decorated like a fresh Task head, so
++    the one-file parser conservatively says sidechain. Parent content proves a
++    true continuation. Removing the parent-known correction or its delayed twin
++    leaves the wrong sidechain edge, whole replayed rows, or an uncomposed read.
++    """
++    parent = parse_payload(Provider.CLAUDE_CODE, _records(_PARENT_FIXTURE), "lineage-parent")[0]
++    hinted_records = _records(_ACOMPACT_FIXTURE)
++    head = hinted_records[0]
++    assert isinstance(head, dict)
++    head.update(
++        {
++            "isSidechain": True,
++            "agentId": "conservative-hint-agent",
++            "promptId": "conservative-hint-prompt",
++        }
++    )
++    child = parse_payload(
++        Provider.CLAUDE_CODE,
++        hinted_records,
++        "agent-acompact-conservative-hint-proof",
++    )[0]
++    assert child.branch_type is BranchType.SIDECHAIN
++
++    with ArchiveStore(tmp_path / ("hint-parent-first" if write_parent_first else "hint-child-first")) as archive:
++        if write_parent_first:
++            archive.write_parsed(parent)
++            child_id = archive.write_parsed(child)
++        else:
++            child_id = archive.write_parsed(child)
++            archive.write_parsed(parent)
++        positions = archive._conn.execute(
++            "SELECT position FROM messages WHERE session_id = ? ORDER BY position",
++            (child_id,),
++        ).fetchall()
++        link = archive._conn.execute(
++            """
++            SELECT link_type, inheritance, branch_point_message_id
++            FROM session_links WHERE src_session_id = ?
++            """,
++            (child_id,),
++        ).fetchone()
++        envelope = read_archive_session_envelope(archive._conn, child_id)
++
++    assert [row[0] for row in positions] == [2]
++    assert tuple(link[:2]) == ("continuation", "prefix-sharing")
++    assert link[2] is not None
++    assert envelope.branch_type == "continuation"
++    assert _wire_texts(envelope) == [
++        "Plan the release.",
++        "I will inspect the checks.",
++        "Compressed release context.",
++    ]
++
++
++@pytest.mark.parametrize("write_parent_first", [True, False])
++def test_subagent_self_compaction_stays_whole_and_never_composes_main_prefix(
++    tmp_path: Path,
++    write_parent_first: bool,
++) -> None:
++    """Production dependencies: fresh-head parser classification and lineage reads.
++
++    Mutation: make every ``agent-acompact-*`` a continuation, ignore the
++    sidechain inheritance guard, or compose every resolved parent edge. The
++    topology, physical rows, or explicit no-main-prefix assertion fails.
++    """
++    parent = parse_payload(Provider.CLAUDE_CODE, _records(_PARENT_FIXTURE), "lineage-parent")[0]
++    child = parse_payload(
++        Provider.CLAUDE_CODE,
++        _records(_SUBAGENT_ACOMPACT_FIXTURE),
++        _SUBAGENT_ACOMPACT_FALLBACK_ID,
++    )[0]
++
++    assert child.parent_session_provider_id == _PARENT_SESSION_ID
++    assert child.branch_type is BranchType.SIDECHAIN
++
++    with ArchiveStore(tmp_path / ("task-parent-first" if write_parent_first else "task-child-first")) as archive:
++        if write_parent_first:
++            archive.write_parsed(parent)
++            child_id = archive.write_parsed(child)
++        else:
++            child_id = archive.write_parsed(child)
++            archive.write_parsed(parent)
++
++        stored_count = archive._conn.execute(
++            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
++            (child_id,),
++        ).fetchone()[0]
++        link = archive._conn.execute(
++            """
++            SELECT link_type, inheritance, branch_point_message_id, resolved_dst_session_id
++            FROM session_links WHERE src_session_id = ?
++            """,
++            (child_id,),
++        ).fetchone()
++        envelope = read_archive_session_envelope(archive._conn, child_id)
++
++    assert stored_count == 3
++    assert tuple(link[:3]) == ("sidechain", "spawned-fresh", None)
++    assert link[3] is not None
++    assert envelope.branch_type == "sidechain"
++    assert _wire_texts(envelope) == [
++        "Validate the synthetic twelve-change overhaul and report only task-local evidence.",
++        "The task-local verification matrix is complete.",
++        "Compressed task-local verification context.",
++    ]
++    assert [message.role for message in envelope.messages] == ["user", "assistant", "system"]
++    assert [message.material_origin for message in envelope.messages] == [
++        "generated_context_pack",
++        "assistant_authored",
++        "generated_context_pack",
++    ]
++    assert "Plan the release." not in _wire_texts(envelope)
++    assert "I will inspect the checks." not in _wire_texts(envelope)
++
++
++@pytest.mark.parametrize("write_parent_first", [True, False])
++def test_ambiguous_acompact_is_reclassified_by_parent_content_membership(
++    tmp_path: Path,
++    write_parent_first: bool,
++) -> None:
++    """Production dependency: writer membership gate, including late resolution.
++
++    This shape deliberately omits the fresh Task-head marker, so the parser is
++    conservatively a continuation. One accidental main-session match followed
++    by task-local content is below the 90% membership threshold. Removing the
++    writer gate, changing it to filename-only classification, or skipping the
++    delayed child-before-parent path makes the edge prefix-sharing and deletes
++    the first physical child row.
++    """
++    parent = parse_payload(Provider.CLAUDE_CODE, _records(_PARENT_FIXTURE), "lineage-parent")[0]
++    child_records: list[object] = [
++        {
++            "type": "user",
++            "uuid": "ambiguous-u1",
++            "sessionId": _PARENT_SESSION_ID,
++            "timestamp": "2026-07-01T12:20:00Z",
++            "message": {"role": "user", "content": "Plan the release."},
++        },
++        {
++            "type": "assistant",
++            "uuid": "ambiguous-a1",
++            "parentUuid": "ambiguous-u1",
++            "sessionId": _PARENT_SESSION_ID,
++            "timestamp": "2026-07-01T12:20:01Z",
++            "message": {"role": "assistant", "content": "Inspect only the task-local shard."},
++        },
++        {
++            "type": "user",
++            "uuid": "ambiguous-u2",
++            "parentUuid": "ambiguous-a1",
++            "sessionId": _PARENT_SESSION_ID,
++            "timestamp": "2026-07-01T12:20:02Z",
++            "message": {"role": "user", "content": "Verify the isolated mutation matrix."},
++        },
++        {
++            "type": "assistant",
++            "uuid": "ambiguous-a2",
++            "parentUuid": "ambiguous-u2",
++            "sessionId": _PARENT_SESSION_ID,
++            "timestamp": "2026-07-01T12:20:03Z",
++            "message": {"role": "assistant", "content": "The isolated matrix passes."},
++        },
++        {
++            "type": "summary",
++            "uuid": "ambiguous-summary",
++            "parentUuid": "ambiguous-a2",
++            "sessionId": _PARENT_SESSION_ID,
++            "timestamp": "2026-07-01T12:20:04Z",
++            "message": {"role": "system", "content": "Compressed isolated task context."},
++        },
++    ]
++    child = parse_payload(
++        Provider.CLAUDE_CODE,
++        child_records,
++        "agent-acompact-ambiguous-membership-proof",
++    )[0]
++    assert child.branch_type is BranchType.CONTINUATION
++
++    with ArchiveStore(
++        tmp_path / ("membership-parent-first" if write_parent_first else "membership-child-first")
++    ) as archive:
++        if write_parent_first:
++            archive.write_parsed(parent)
++            child_id = archive.write_parsed(child)
++        else:
++            child_id = archive.write_parsed(child)
++            archive.write_parsed(parent)
++        stored_count = archive._conn.execute(
++            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
++            (child_id,),
++        ).fetchone()[0]
++        link = archive._conn.execute(
++            """
++            SELECT link_type, inheritance, branch_point_message_id
++            FROM session_links WHERE src_session_id = ?
++            """,
++            (child_id,),
++        ).fetchone()
++        envelope = read_archive_session_envelope(archive._conn, child_id)
++
++    assert stored_count == 5
++    assert tuple(link) == ("sidechain", "spawned-fresh", None)
++    assert envelope.branch_type == "sidechain"
++    assert _wire_texts(envelope) == [
++        "Plan the release.",
++        "Inspect only the task-local shard.",
++        "Verify the isolated mutation matrix.",
++        "The isolated matrix passes.",
++        "Compressed isolated task context.",
++    ]
++
++
+ def test_subagent_child_arriving_before_parent_resolves_as_spawned_fresh(tmp_path: Path) -> None:
+     """Production dependency: child-first topology resolution without prefix theft.
+ 
+diff --git a/tests/unit/sources/test_compaction.py b/tests/unit/sources/test_compaction.py
+index ce8fe0f2aa09851e0053f17dd778df0905a2e14d..d53a4a6b8fd866b5f0e470400c2de259f8eb4e8b 100644
+--- a/tests/unit/sources/test_compaction.py
++++ b/tests/unit/sources/test_compaction.py
+@@ -158,9 +158,7 @@ class TestClaudeCodeRecordCompaction:
+ 
+ 
+ class TestClaudeCodeAcompactClassification:
+-    """`agent-acompact-*` is auto-compaction (a copy of the parent + summary),
+-    not distinct subagent work. It must link to the parent but classify as a
+-    continuation rather than a subagent."""
++    """The overloaded ``agent-acompact-*`` marker needs structural evidence."""
+ 
+     def _payload(self) -> list[object]:
+         return [
+@@ -180,6 +178,27 @@ class TestClaudeCodeAcompactClassification:
+         # Identity preserved as a distinct artifact composed under the parent.
+         assert result.provider_session_id == "parent-sess:agent-acompact-0fdce0d10b47bcc9"
+ 
++    def test_fresh_task_prompt_head_classifies_acompact_as_sidechain(self) -> None:
++        payload = [
++            {
++                "type": "user",
++                "uuid": "task-u1",
++                "parentUuid": None,
++                "sessionId": "parent-sess",
++                "timestamp": "2024-01-01T10:00:00Z",
++                "isSidechain": True,
++                "agentId": "task-agent-proof",
++                "promptId": "task-prompt-proof",
++                "message": {"role": "user", "content": "Perform task-local verification."},
++            }
++        ]
++
++        result = parse_code(payload, "agent-acompact-task-proof")
++
++        assert result.parent_session_provider_id == "parent-sess"
++        assert result.branch_type == BranchType.SIDECHAIN
++        assert result.provider_session_id == "parent-sess:agent-acompact-task-proof"
++
+     def test_real_subagent_still_classified_as_subagent(self) -> None:
+         result = parse_code(self._payload(), "agent-a1b2c3d4e5f6")
+         assert result.parent_session_provider_id == "parent-sess"
+diff --git a/tests/unit/sources/test_dispatch_payloads.py b/tests/unit/sources/test_dispatch_payloads.py
+index d421a18c31da893fb3b2fdd2e7a5e145dcf20f7a..6863d95d79f1f6ec48e2b5945aad0df52e3ccbb0 100644
+--- a/tests/unit/sources/test_dispatch_payloads.py
++++ b/tests/unit/sources/test_dispatch_payloads.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ from decimal import Decimal
+ from pathlib import Path
+ 
++from polylogue.archive.session.branch_type import BranchType
+ from polylogue.config import Source
+ from polylogue.core.enums import Provider
+ from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload, parse_stream_payload
+@@ -161,6 +162,52 @@ def test_parse_stream_payload_splits_claude_code_aggregate_by_session_id() -> No
+     assert [len(session.messages) for session in sessions] == [2, 1]
+ 
+ 
++def test_claude_acompact_classifier_matches_eager_and_memory_bounded_routes() -> None:
++    """Production dependencies: first-group fallback identity and shared parser.
++
++    Mutation: let eager grouping replace the first fallback with ``sessionId`` or
++    duplicate the classifier in only one route. The model equality and acompact
++    identity/topology assertions fail.
++    """
++    payload = [
++        {
++            "type": "user",
++            "uuid": "task-u",
++            "parentUuid": None,
++            "sessionId": "parent-session",
++            "isSidechain": True,
++            "agentId": "task-agent",
++            "promptId": "task-prompt",
++            "message": {"role": "user", "content": "Task-local head."},
++        },
++        {
++            "type": "assistant",
++            "uuid": "task-a",
++            "parentUuid": "task-u",
++            "sessionId": "parent-session",
++            "isSidechain": True,
++            "message": {"role": "assistant", "content": "Task-local answer."},
++        },
++        {
++            "type": "user",
++            "uuid": "other-u",
++            "sessionId": "other-session",
++            "message": {"role": "user", "content": "Other session."},
++        },
++    ]
++    fallback_id = "agent-acompact-route-parity"
++
++    eager = parse_payload(Provider.CLAUDE_CODE, payload, fallback_id)
++    streamed = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), fallback_id)
++
++    assert [session.model_dump(mode="json") for session in streamed] == [
++        session.model_dump(mode="json") for session in eager
++    ]
++    assert eager[0].provider_session_id == "parent-session:agent-acompact-route-parity"
++    assert eager[0].parent_session_provider_id == "parent-session"
++    assert eager[0].branch_type is BranchType.SIDECHAIN
++
++
+ def test_parse_one_source_path_treats_jsonl_text_json_wrappers_as_jsonl(tmp_path: Path) -> None:
+     source_path = tmp_path / "session.jsonl.txt.json"
+     source_path.write_text(

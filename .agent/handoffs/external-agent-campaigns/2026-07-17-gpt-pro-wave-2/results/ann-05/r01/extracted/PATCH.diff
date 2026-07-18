@@ -1,0 +1,4112 @@
+diff --git a/README.md b/README.md
+index 51719da56ea125d18f6f4f2a9bc7e3312a139a6d..c237891d714bcdfd50f020cecec093b313736b5b 100644
+--- a/README.md
++++ b/README.md
+@@ -9,6 +9,7 @@
+   <a href="https://github.com/Sinity/homebrew-polylogue"><img src="https://img.shields.io/badge/Homebrew-tap-fbb040?logo=homebrew&logoColor=111827" alt="Homebrew tap"></a>
+ </p>
+ 
++<!-- public-claim:category.local-evidence-system -->
+ **Polylogue is a local evidence system for AI work.** It turns ChatGPT, Claude, Codex, Gemini, Antigravity, Hermes, and coding-agent histories into one evidence-addressable archive: search what happened, read tool activity as work rather than chat, audit claims against structural outcomes, understand cost and lineage, and give the next agent reviewed context.
+ 
+ Polylogue answers questions that transcript folders and vendor chat history do not:
+@@ -101,7 +102,7 @@ polylogue find 'origin:codex-session' then read --first --view messages
+ 
+ The important distinction is not lexical search. `grep` can find the word `pytest`; Polylogue can pair a provider-native tool call with its result, classify failure from `exit_code` or `is_error`, identify whether a later assistant turn acknowledged it, compose copied lineage without double-counting it, and resolve a derived result to source evidence.
+ 
+-See [Proof Artifacts](docs/proof-artifacts.md) for bounded claims and their evidence. Current examples include:
++See [Proof Artifacts](docs/proof-artifacts.md) for bounded claims and their evidence. The generated [README public-claims view](docs/generated/public-claims/readme.md) shows each claim's current review and evidence-integrity status. Current examples include:
+ 
+ - a deterministic private-data-free corpus and one-command tour;
+ - a crafted cross-provider cost-accounting proof;
+diff --git a/devtools/command_catalog.py b/devtools/command_catalog.py
+index 64498683234ddd7f433c5b823d538f0610ce7bd8..ff4332e249ce6092f42c3386149f62662dc539b2 100644
+--- a/devtools/command_catalog.py
++++ b/devtools/command_catalog.py
+@@ -213,6 +213,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
+             "devtools render product-workflows --check",
+         ),
+     ),
++    CommandSpec(
++        "render public-claims",
++        "generated surfaces",
++        "Render README, launch, findings-page, and verified-export claim views from FINDING assertions.",
++        "devtools.render_public_claims",
++        use_when=(
++            "Refresh public claim Markdown/JSON and the generated YAML compatibility view after changing "
++            "FINDING seeds, judgments, capability declarations, or 37t.14 verdict receipts."
++        ),
++        examples=(
++            "devtools render public-claims",
++            "devtools render public-claims --check",
++            "devtools render public-claims --archive-root /path/to/archive --verdicts /path/to/verdicts.json",
++        ),
++    ),
+     CommandSpec(
+         "render pages",
+         "generated surfaces",
+@@ -245,11 +260,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
+     CommandSpec(
+         "verify public-claims",
+         "verification",
+-        "Validate public claims, evidence paths, Beads owners, and retired copy.",
++        "Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy.",
+         "devtools.public_claims",
+         use_when=(
+-            "Check externally visible claims after changing README, demos, findings, proof artifacts, "
+-            "or the claims ledger."
++            "Check externally visible claims after changing README, demos, findings, FINDING assertions, "
++            "capability declarations, or evidence-integrity receipts."
+         ),
+         examples=(
+             "devtools verify public-claims",
+diff --git a/devtools/docs_surface.py b/devtools/docs_surface.py
+index 971630db2ef6c7b3bf896a340d3cd8423a41b27d..9fae712471aa5cbe63ba33d79146f57fd35dbcf4 100644
+--- a/devtools/docs_surface.py
++++ b/devtools/docs_surface.py
+@@ -211,6 +211,30 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
+         "Claim-to-proof map for public-facing demo and evidence claims.",
+         "evidence",
+     ),
++    _entry(
++        "README Public-Claims View",
++        "generated/public-claims/readme.md",
++        "Generated compact status view for claims used in README-facing copy.",
++        "evidence",
++    ),
++    _entry(
++        "Launch Public-Claims View",
++        "generated/public-claims/launch.md",
++        "Generated launch-copy claim status with evidence blockers and remediation refs.",
++        "evidence",
++    ),
++    _entry(
++        "Findings-Page Public-Claims View",
++        "generated/public-claims/findings-page.md",
++        "Generated finding status with judgment, privacy, evidence, epoch, and frame qualifiers.",
++        "evidence",
++    ),
++    _entry(
++        "Verified Public-Claims Export",
++        "generated/public-claims/verified-export.md",
++        "Generated full public-claim projection corresponding to the machine-readable export.",
++        "evidence",
++    ),
+     _entry(
+         "Structured Failure Follow-Up",
+         "findings/claim-vs-evidence.md",
+diff --git a/devtools/generated_surfaces.py b/devtools/generated_surfaces.py
+index 6399db9b9e83f1dc942fb6e57e2e082415457a19..02f00c161fc34d06c1283fbb009900396cfe6cfc 100644
+--- a/devtools/generated_surfaces.py
++++ b/devtools/generated_surfaces.py
+@@ -16,6 +16,7 @@ from devtools import (
+     render_openapi,
+     render_pages,
+     render_product_workflows,
++    render_public_claims,
+     render_quality_reference,
+     render_topology_status,
+ )
+@@ -164,6 +165,24 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
+             "polylogue/archive/viewport/profiles.py",
+         ),
+     ),
++    GeneratedSurface(
++        name="public-claims",
++        label="Public claims",
++        description="Render all public-claim presets and the generated YAML compatibility view.",
++        command=control_plane_argv("render public-claims"),
++        main=render_public_claims.main,
++        inputs=(
++            "devtools/render_public_claims.py",
++            "devtools/public_claims.py",
++            "polylogue/insights/measurement/public_claims.py",
++            "polylogue/scenarios/corpus.py",
++            "polylogue/storage/sqlite/archive_tiers/user_write.py",
++            "polylogue/storage/sqlite/finding_provenance.py",
++            "README.md",
++            "docs/demos.md",
++            "docs/findings/claim-vs-evidence.md",
++        ),
++    ),
+     GeneratedSurface(
+         name="docs-surface",
+         label="Docs surface",
+diff --git a/devtools/public_claims.py b/devtools/public_claims.py
+index 3c8b5a85c1f0bc0a7bf295a7957fba7e20587c90..9b844ec372080c8bea5334fc80de489de9efdcef 100644
+--- a/devtools/public_claims.py
++++ b/devtools/public_claims.py
+@@ -1,27 +1,57 @@
+-"""Validate the public claims ledger and its evidence bindings."""
++"""Verify the generated public-claims projection and its coverage markers."""
+ 
+ from __future__ import annotations
+ 
+ import argparse
+-import glob
+ import json
+ import re
++import sqlite3
++import tempfile
++from collections import Counter, defaultdict
++from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+-from pathlib import Path
++from pathlib import Path, PurePosixPath, PureWindowsPath
+ from typing import Any
+ 
+ import yaml
+ 
++from devtools.command_catalog import control_plane_command
++from polylogue.insights.measurement.public_claims import (
++    CapabilityClaimInput,
++    EvidenceIntegrityStatus,
++    EvidenceIntegrityVerdict,
++    MappingEvidenceIntegrityProvider,
++    PublicClaimPresetName,
++    PublicClaimProjection,
++    build_public_claims_payload,
++    project_public_claims,
++    render_public_claims_json,
++    render_public_claims_markdown,
++)
++from polylogue.scenarios.corpus import claim_vs_evidence_findings
++from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
++from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
++from polylogue.storage.sqlite.archive_tiers.user_write import upsert_findings_as_assertions
++from polylogue.storage.sqlite.finding_provenance import list_public_finding_inputs
++
+ ROOT = Path(__file__).resolve().parents[1]
+-DEFAULT_LEDGER = ROOT / "docs" / "public-claims.yaml"
+-SUPPORTED_SCHEMA = "external-claims-ledger/v2"
+-_CLAIM_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+-_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")
++DEFAULT_OUTPUT_DIR = ROOT / "docs" / "generated" / "public-claims"
++DEFAULT_COMPATIBILITY_PATH = ROOT / "docs" / "public-claims.yaml"
++COMPATIBILITY_SCHEMA = "polylogue.public-claims-compatibility-view.v1"
++VERDICT_EXPORT_SCHEMA = "polylogue.evidence-integrity-verdicts.v1"
++PUBLIC_SURFACES = (
++    Path("README.md"),
++    Path("docs/demos.md"),
++    Path("docs/findings/claim-vs-evidence.md"),
++)
++RETIRED_PHRASES = ("your AI memory",)
++_MARKER_RE = re.compile(r"<!--\s*public-claim:([a-z0-9][a-z0-9._-]*)\s*-->")
++_FORBIDDEN_PUBLIC_PATH_RE = re.compile(r"(?:^|[\s`'\"])(?:/home/|/realm/|[A-Za-z]:\\)", re.MULTILINE)
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+ class ClaimProblem:
+-    """One bounded validation problem."""
++    """One bounded verification problem."""
+ 
+     claim_id: str | None
+     message: str
+@@ -30,234 +60,303 @@ class ClaimProblem:
+         return {"claim_id": self.claim_id, "message": self.message}
+ 
+ 
+-def _load_yaml(path: Path) -> Any:
+-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+-
+-
+-def _load_bead_ids(root: Path) -> set[str]:
+-    path = root / ".beads" / "issues.jsonl"
+-    if not path.exists():
+-        return set()
+-    ids: set[str] = set()
+-    with path.open(encoding="utf-8") as handle:
+-        for line_number, line in enumerate(handle, start=1):
+-            if not line.strip():
+-                continue
++REPOSITORY_CAPABILITY_CLAIMS: tuple[CapabilityClaimInput, ...] = (
++    CapabilityClaimInput(
++        claim_key="category.local-evidence-system",
++        publication="Polylogue is a local evidence system for AI work.",
++        scope="The current local archive, query, evidence, judgment, and context surfaces.",
++        caveat="This is a product-category capability statement, not a measured performance or prevalence claim.",
++        public_evidence_refs=(
++            "file:README.md",
++            "file:docs/architecture.md",
++            "file:docs/proof-artifacts.md",
++        ),
++        presets=tuple(PublicClaimPresetName),
++    ),
++)
++
++
++def load_integrity_verdicts(path: Path | None) -> MappingEvidenceIntegrityProvider:
++    """Load a bounded 37t.14 receipt export; absence means uncomputed/unresolved."""
++
++    if path is None:
++        return MappingEvidenceIntegrityProvider({})
++    document = json.loads(path.read_text(encoding="utf-8"))
++    if not isinstance(document, dict) or document.get("schema") != VERDICT_EXPORT_SCHEMA:
++        raise ValueError(f"integrity verdict export must use schema {VERDICT_EXPORT_SCHEMA!r}")
++    raw_verdicts = document.get("verdicts")
++    if not isinstance(raw_verdicts, list):
++        raise ValueError("integrity verdict export verdicts must be a list")
++
++    verdicts: dict[str, EvidenceIntegrityVerdict] = {}
++    for raw in raw_verdicts:
++        if not isinstance(raw, dict):
++            raise ValueError("every integrity verdict must be a mapping")
++        finding_ref = _required_string(raw.get("finding_ref"), field="finding_ref")
++        if finding_ref in verdicts:
++            raise ValueError(f"duplicate integrity verdict for {finding_ref!r}")
++        try:
++            status = EvidenceIntegrityStatus(_required_string(raw.get("status"), field="status"))
++        except ValueError as exc:
++            raise ValueError(f"unknown integrity status for {finding_ref!r}") from exc
++        verdicts[finding_ref] = EvidenceIntegrityVerdict(
++            finding_ref=finding_ref,
++            status=status,
++            public_evidence_refs=_string_tuple(raw.get("public_evidence_refs")),
++            reason_codes=_string_tuple(raw.get("reason_codes")),
++            blind_spot_codes=_string_tuple(raw.get("blind_spot_codes")),
++            as_of_epoch=_optional_string(raw.get("as_of_epoch")),
++            frame_ref=_optional_string(raw.get("frame_ref")),
++            definition_ref=_optional_string(raw.get("definition_ref")),
++            public_remediation_refs=_string_tuple(raw.get("public_remediation_refs")),
++        )
++    return MappingEvidenceIntegrityProvider(verdicts)
++
++
++def build_repository_projection(
++    *,
++    archive_root: Path | None = None,
++    verdicts_path: Path | None = None,
++) -> tuple[PublicClaimProjection, ...]:
++    """Build one projection from a live user.db or the deterministic seed population."""
++
++    integrity = load_integrity_verdicts(verdicts_path)
++    if archive_root is not None:
++        user_db_path = archive_root / "user.db"
++        if not user_db_path.exists():
++            raise ValueError(f"archive user tier does not exist: {user_db_path}")
++        conn = sqlite3.connect(user_db_path)
++        conn.row_factory = sqlite3.Row
++        try:
++            findings = list_public_finding_inputs(conn)
++        finally:
++            conn.close()
++    else:
++        with tempfile.TemporaryDirectory(prefix="polylogue-public-claims-") as temp_dir:
++            user_db_path = Path(temp_dir) / "user.db"
++            initialize_archive_database(user_db_path, ArchiveTier.USER)
++            conn = sqlite3.connect(user_db_path)
++            conn.row_factory = sqlite3.Row
+             try:
+-                payload = json.loads(line)
+-            except json.JSONDecodeError as exc:
+-                raise ValueError(f"invalid Beads JSONL at {path}:{line_number}: {exc}") from exc
+-            bead_id = payload.get("id")
+-            if isinstance(bead_id, str):
+-                ids.add(bead_id)
+-    return ids
+-
+-
+-def _as_string_list(value: object, *, field: str, claim_id: str | None, problems: list[ClaimProblem]) -> list[str]:
+-    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item.strip() for item in value):
+-        problems.append(ClaimProblem(claim_id, f"{field} must be a non-empty list of strings"))
+-        return []
+-    return [item.strip() for item in value]
+-
+-
+-def _existing_evidence_paths(root: Path, evidence: list[str]) -> tuple[list[str], list[str]]:
+-    present: list[str] = []
+-    missing: list[str] = []
+-    for raw in evidence:
+-        path_text = raw.split("#", maxsplit=1)[0]
+-        matches = [Path(match) for match in glob.glob(str(root / path_text), recursive=True)]
+-        if matches and any(path.exists() for path in matches):
+-            present.append(raw)
+-        else:
+-            missing.append(raw)
+-    return present, missing
+-
+-
+-def _expanded_public_surfaces(root: Path, patterns: list[str]) -> list[Path]:
+-    paths: set[Path] = set()
+-    for pattern in patterns:
+-        for match in glob.glob(str(root / pattern), recursive=True):
+-            path = Path(match)
+-            if path.is_file():
+-                paths.add(path)
+-    return sorted(paths)
+-
+-
+-def build_report(*, ledger_path: Path = DEFAULT_LEDGER, root: Path = ROOT) -> dict[str, Any]:
+-    """Return a machine-readable claims-ledger validation report."""
+-
+-    problems: list[ClaimProblem] = []
+-    if not ledger_path.exists():
+-        return {
+-            "ok": False,
+-            "ledger": str(ledger_path),
+-            "schema": None,
+-            "claim_count": 0,
+-            "surface_count": 0,
+-            "problems": [ClaimProblem(None, "claims ledger does not exist").to_payload()],
+-        }
+-
+-    try:
+-        document = _load_yaml(ledger_path)
+-    except (OSError, yaml.YAMLError) as exc:
+-        return {
+-            "ok": False,
+-            "ledger": str(ledger_path),
+-            "schema": None,
+-            "claim_count": 0,
+-            "surface_count": 0,
+-            "problems": [ClaimProblem(None, f"could not load claims ledger: {exc}").to_payload()],
+-        }
++                upsert_findings_as_assertions(conn, claim_vs_evidence_findings(), now_ms=1_720_080_953_667)
++                conn.commit()
++                findings = list_public_finding_inputs(conn)
++            finally:
++                conn.close()
++
++    return project_public_claims(
++        findings,
++        REPOSITORY_CAPABILITY_CLAIMS,
++        integrity=integrity,
++    )
+ 
+-    if not isinstance(document, dict):
+-        document = {}
+-        problems.append(ClaimProblem(None, "ledger root must be a mapping"))
+ 
+-    schema = document.get("schema")
+-    if schema != SUPPORTED_SCHEMA:
+-        problems.append(ClaimProblem(None, f"schema must be {SUPPORTED_SCHEMA!r}, got {schema!r}"))
++def rendered_artifacts(
++    claims: Sequence[PublicClaimProjection],
++    *,
++    output_dir: Path = DEFAULT_OUTPUT_DIR,
++    compatibility_path: Path = DEFAULT_COMPATIBILITY_PATH,
++) -> dict[Path, str]:
++    """Return every Markdown/JSON preset plus the generated YAML compatibility view."""
+ 
+-    statuses = _as_string_list(document.get("statuses"), field="statuses", claim_id=None, problems=problems)
+-    evidence_classes = _as_string_list(
+-        document.get("evidence_classes"),
+-        field="evidence_classes",
+-        claim_id=None,
+-        problems=problems,
++    generated_note = (
++        f"<!-- Generated by `{control_plane_command('render public-claims')}`. "
++        "Edit FINDING assertions/capability declarations or supply a 37t.14 verdict receipt instead. -->\n\n"
+     )
+-    public_surface_patterns = _as_string_list(
+-        document.get("public_surfaces"),
+-        field="public_surfaces",
+-        claim_id=None,
+-        problems=problems,
++    artifacts: dict[Path, str] = {}
++    for preset in PublicClaimPresetName:
++        artifacts[output_dir / f"{preset.value}.md"] = generated_note + render_public_claims_markdown(claims, preset)
++        artifacts[output_dir / f"{preset.value}.json"] = render_public_claims_json(claims, preset)
++
++    compatibility = build_public_claims_payload(claims, PublicClaimPresetName.VERIFIED_EXPORT)
++    compatibility_document = {
++        "schema": COMPATIBILITY_SCHEMA,
++        "generated_by": control_plane_command("render public-claims"),
++        "authority": compatibility["authority"],
++        "preset": compatibility["preset"],
++        "claim_count": compatibility["claim_count"],
++        "publishable_claim_keys": compatibility["publishable_claim_keys"],
++        "claims": compatibility["claims"],
++    }
++    artifacts[compatibility_path] = yaml.safe_dump(
++        compatibility_document,
++        sort_keys=False,
++        allow_unicode=True,
++        width=120,
+     )
+-    retired_phrases_raw = document.get("retired_phrases", [])
+-    if not isinstance(retired_phrases_raw, list) or not all(isinstance(item, str) for item in retired_phrases_raw):
+-        problems.append(ClaimProblem(None, "retired_phrases must be a list of strings"))
+-        retired_phrases: list[str] = []
+-    else:
+-        retired_phrases = [item.strip() for item in retired_phrases_raw if item.strip()]
++    return artifacts
+ 
+-    claims_raw = document.get("claims")
+-    if not isinstance(claims_raw, list) or not claims_raw:
+-        problems.append(ClaimProblem(None, "claims must be a non-empty list"))
+-        claims: list[dict[str, Any]] = []
+-    else:
+-        claims = [item for item in claims_raw if isinstance(item, dict)]
+-        if len(claims) != len(claims_raw):
+-            problems.append(ClaimProblem(None, "every claims entry must be a mapping"))
+ 
+-    try:
+-        bead_ids = _load_bead_ids(root)
+-    except ValueError as exc:
+-        bead_ids = set()
+-        problems.append(ClaimProblem(None, str(exc)))
++def build_report(
++    *,
++    root: Path = ROOT,
++    claims: Sequence[PublicClaimProjection] | None = None,
++    output_dir: Path | None = None,
++    compatibility_path: Path | None = None,
++) -> dict[str, Any]:
++    """Return a machine-readable generated-view, parity, and coverage report."""
+ 
+-    seen_ids: set[str] = set()
+-    status_counts: dict[str, int] = dict.fromkeys(statuses, 0)
+-    evidence_path_count = 0
+-    proof_command_count = 0
++    problems: list[ClaimProblem] = []
++    resolved_claims = tuple(claims) if claims is not None else build_repository_projection()
++    resolved_output_dir = output_dir or root / "docs" / "generated" / "public-claims"
++    resolved_compatibility_path = compatibility_path or root / "docs" / "public-claims.yaml"
++    expected = rendered_artifacts(
++        resolved_claims,
++        output_dir=resolved_output_dir,
++        compatibility_path=resolved_compatibility_path,
++    )
+ 
+-    for claim in claims:
+-        claim_id_raw = claim.get("id")
+-        claim_id = claim_id_raw if isinstance(claim_id_raw, str) else None
+-        if claim_id is None or not _CLAIM_ID_RE.fullmatch(claim_id):
+-            problems.append(ClaimProblem(claim_id, "id must match ^[a-z0-9][a-z0-9._-]*$"))
+-            continue
+-        if claim_id in seen_ids:
+-            problems.append(ClaimProblem(claim_id, "duplicate claim id"))
+-        seen_ids.add(claim_id)
+-
+-        status = claim.get("status")
+-        if not isinstance(status, str) or status not in statuses:
+-            problems.append(ClaimProblem(claim_id, f"unknown status {status!r}"))
+-        else:
+-            status_counts[status] = status_counts.get(status, 0) + 1
+-
+-        evidence_class = claim.get("evidence_class")
+-        if not isinstance(evidence_class, str) or evidence_class not in evidence_classes:
+-            problems.append(ClaimProblem(claim_id, f"unknown evidence_class {evidence_class!r}"))
+-
+-        for required_field in ("publication", "scope", "caveat"):
+-            value = claim.get(required_field)
+-            if not isinstance(value, str) or not value.strip():
+-                problems.append(ClaimProblem(claim_id, f"{required_field} must be a non-empty string"))
+-
+-        publication = claim.get("publication")
+-        if isinstance(publication, str) and _NUMBER_RE.search(publication):
+-            scope = claim.get("scope")
+-            caveat = claim.get("caveat")
+-            if not isinstance(scope, str) or len(scope.strip()) < 12:
+-                problems.append(ClaimProblem(claim_id, "quantitative publication requires a specific scope"))
+-            if not isinstance(caveat, str) or len(caveat.strip()) < 12:
+-                problems.append(ClaimProblem(claim_id, "quantitative publication requires a substantive caveat"))
+-
+-        evidence = _as_string_list(claim.get("evidence"), field="evidence", claim_id=claim_id, problems=problems)
+-        evidence_path_count += len(evidence)
+-        _, missing = _existing_evidence_paths(root, evidence)
+-        for path in missing:
+-            problems.append(ClaimProblem(claim_id, f"evidence path does not exist: {path}"))
+-
+-        owner_beads = claim.get("owner_beads", [])
+-        if not isinstance(owner_beads, list) or not all(isinstance(item, str) and item for item in owner_beads):
+-            problems.append(ClaimProblem(claim_id, "owner_beads must be a list of Bead ids"))
+-        elif bead_ids:
+-            for bead_id in owner_beads:
+-                if bead_id not in bead_ids:
+-                    problems.append(ClaimProblem(claim_id, f"owner Bead does not exist: {bead_id}"))
+-
+-        proof_commands = claim.get("proof_commands", [])
+-        if not isinstance(proof_commands, list) or not all(
+-            isinstance(item, str) and item.strip() for item in proof_commands
+-        ):
+-            problems.append(ClaimProblem(claim_id, "proof_commands must be a list of non-empty strings"))
+-        else:
+-            proof_command_count += len(proof_commands)
+-            if status == "proven" and not proof_commands:
+-                problems.append(ClaimProblem(claim_id, "proven claim must name at least one proof command"))
+-
+-        if status == "proven" and evidence_class in {"architecture_decision", "hypothesis"}:
++    for path, rendered in expected.items():
++        current = path.read_text(encoding="utf-8") if path.exists() else ""
++        if current != rendered:
+             problems.append(
+-                ClaimProblem(claim_id, "proven claim cannot use an architecture-decision or hypothesis evidence class")
++                ClaimProblem(None, f"generated public-claims artifact is out of sync: {_display_path(path, root)}")
+             )
+-        if status == "aspirational" and evidence_class not in {"architecture_decision", "hypothesis"}:
+-            problems.append(ClaimProblem(claim_id, "aspirational claim must use architecture_decision or hypothesis"))
+-
+-    public_surfaces = _expanded_public_surfaces(root, public_surface_patterns)
+-    if not public_surfaces:
+-        problems.append(ClaimProblem(None, "public_surfaces patterns matched no files"))
+-    for phrase in retired_phrases:
+-        needle = phrase.casefold()
+-        for surface_path in public_surfaces:
+-            try:
+-                text = surface_path.read_text(encoding="utf-8")
+-            except OSError as exc:
+-                problems.append(ClaimProblem(None, f"could not read public surface {surface_path}: {exc}"))
+-                continue
+-            if needle in text.casefold():
+-                problems.append(
+-                    ClaimProblem(None, f"retired phrase {phrase!r} appears in {surface_path.relative_to(root)}")
++        if _FORBIDDEN_PUBLIC_PATH_RE.search(current):
++            problems.append(
++                ClaimProblem(
++                    None,
++                    f"checked-in generated artifact contains an absolute private path: {_display_path(path, root)}",
+                 )
++            )
++        if _FORBIDDEN_PUBLIC_PATH_RE.search(rendered):
++            problems.append(
++                ClaimProblem(None, f"generated artifact contains an absolute private path: {_display_path(path, root)}")
++            )
++
++    problems.extend(_preset_parity_problems(resolved_claims))
++    problems.extend(_coverage_problems(root, resolved_claims))
++    problems.extend(_retired_phrase_problems(root))
++    problems.extend(_public_ref_problems(resolved_claims))
+ 
++    status_counts = Counter(claim.status.value for claim in resolved_claims)
++    integrity_counts = Counter(
++        claim.integrity_status.value for claim in resolved_claims if claim.integrity_status is not None
++    )
+     return {
+         "ok": not problems,
+-        "ledger": str(ledger_path.relative_to(root) if ledger_path.is_relative_to(root) else ledger_path),
+-        "schema": schema,
+-        "claim_count": len(claims),
+-        "status_counts": status_counts,
+-        "evidence_path_count": evidence_path_count,
+-        "proof_command_count": proof_command_count,
+-        "surface_count": len(public_surfaces),
+-        "public_surfaces": [str(path.relative_to(root)) for path in public_surfaces],
++        "schema": COMPATIBILITY_SCHEMA,
++        "claim_count": len(resolved_claims),
++        "status_counts": dict(sorted(status_counts.items())),
++        "integrity_status_counts": dict(sorted(integrity_counts.items())),
++        "artifact_count": len(expected),
++        "surface_count": len(PUBLIC_SURFACES),
++        "public_surfaces": [path.as_posix() for path in PUBLIC_SURFACES],
++        "claim_keys": [claim.claim_key for claim in resolved_claims],
+         "problems": [problem.to_payload() for problem in problems],
+     }
+ 
+ 
+-def _print_human(report: dict[str, Any]) -> None:
++def _preset_parity_problems(claims: Sequence[PublicClaimProjection]) -> list[ClaimProblem]:
++    statuses_by_key: dict[str, set[str]] = defaultdict(set)
++    for preset in PublicClaimPresetName:
++        payload = build_public_claims_payload(claims, preset)
++        raw_claims = payload.get("claims")
++        if not isinstance(raw_claims, list):
++            return [ClaimProblem(None, f"preset {preset.value!r} did not render a claims list")]
++        for raw in raw_claims:
++            if isinstance(raw, dict) and isinstance(raw.get("claim_key"), str) and isinstance(raw.get("status"), str):
++                statuses_by_key[raw["claim_key"]].add(raw["status"])
++    return [
++        ClaimProblem(claim_key, f"status differs across presets: {sorted(statuses)!r}")
++        for claim_key, statuses in sorted(statuses_by_key.items())
++        if len(statuses) != 1
++    ]
++
++
++def _coverage_problems(root: Path, claims: Sequence[PublicClaimProjection]) -> list[ClaimProblem]:
++    known = {claim.claim_key for claim in claims}
++    covered: set[str] = set()
++    problems: list[ClaimProblem] = []
++    for relative_path in PUBLIC_SURFACES:
++        path = root / relative_path
++        if not path.exists():
++            problems.append(ClaimProblem(None, f"public surface does not exist: {relative_path.as_posix()}"))
++            continue
++        text = path.read_text(encoding="utf-8")
++        for marker in _MARKER_RE.findall(text):
++            if marker not in known:
++                problems.append(
++                    ClaimProblem(marker, f"public surface marker has no projected claim: {relative_path.as_posix()}")
++                )
++            else:
++                covered.add(marker)
++    for claim_key in sorted(known - covered):
++        problems.append(ClaimProblem(claim_key, "projected claim is not covered by a public-surface marker"))
++    return problems
++
++
++def _retired_phrase_problems(root: Path) -> list[ClaimProblem]:
++    problems: list[ClaimProblem] = []
++    for relative_path in PUBLIC_SURFACES:
++        path = root / relative_path
++        if not path.exists():
++            continue
++        text = path.read_text(encoding="utf-8").casefold()
++        for phrase in RETIRED_PHRASES:
++            if phrase.casefold() in text:
++                problems.append(ClaimProblem(None, f"retired phrase {phrase!r} appears in {relative_path.as_posix()}"))
++    return problems
++
++
++def _public_ref_problems(claims: Sequence[PublicClaimProjection]) -> list[ClaimProblem]:
++    problems: list[ClaimProblem] = []
++    for claim in claims:
++        if not claim.public_evidence_refs and claim.privacy_review != "held_private":
++            problems.append(ClaimProblem(claim.claim_key, "claim publishes no evidence refs"))
++        for ref in (*claim.public_evidence_refs, *claim.public_remediation_refs):
++            if _public_ref_is_unsafe(ref):
++                problems.append(ClaimProblem(claim.claim_key, f"unsafe public ref: {ref}"))
++    return problems
++
++
++def _public_ref_is_unsafe(ref: str) -> bool:
++    _kind, separator, object_id = ref.partition(":")
++    if not separator or not object_id:
++        return True
++    path_text = object_id.split("#", maxsplit=1)[0]
++    if ref.startswith("file:"):
++        return (
++            path_text.startswith("~")
++            or PurePosixPath(path_text).is_absolute()
++            or PureWindowsPath(path_text).is_absolute()
++            or ".." in PurePosixPath(path_text).parts
++            or ".." in PureWindowsPath(path_text).parts
++        )
++    return False
++
++
++def _display_path(path: Path, root: Path) -> str:
++    try:
++        return path.relative_to(root).as_posix()
++    except ValueError:
++        return str(path)
++
++
++def _required_string(value: object, *, field: str) -> str:
++    if not isinstance(value, str) or not value.strip():
++        raise ValueError(f"{field} must be a non-empty string")
++    return value.strip()
++
++
++def _optional_string(value: object) -> str | None:
++    if value is None:
++        return None
++    return _required_string(value, field="optional verdict field")
++
++
++def _string_tuple(value: object) -> tuple[str, ...]:
++    if value is None:
++        return ()
++    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
++        raise ValueError("verdict list fields must contain strings")
++    return tuple(dict.fromkeys(item.strip() for item in value))
++
++
++def _print_human(report: Mapping[str, Any]) -> None:
+     print(f"public claims: {'ok' if report['ok'] else 'FAIL'}")
+-    print(f"ledger: {report['ledger']}")
+     print(f"claims: {report['claim_count']}")
+-    print(f"evidence paths: {report['evidence_path_count']}")
+-    print(f"proof commands: {report['proof_command_count']}")
++    print(f"generated artifacts: {report['artifact_count']}")
+     print(f"public surfaces: {report['surface_count']}")
+     for problem in report["problems"]:
+         prefix = f"{problem['claim_id']}: " if problem["claim_id"] else ""
+@@ -266,11 +365,19 @@ def _print_human(report: dict[str, Any]) -> None:
+ 
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
+     parser.add_argument("--json", action="store_true")
+     args = parser.parse_args(argv)
+ 
+-    report = build_report(ledger_path=args.ledger)
++    try:
++        report = build_report()
++    except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as exc:
++        report = {
++            "ok": False,
++            "claim_count": 0,
++            "artifact_count": 0,
++            "surface_count": len(PUBLIC_SURFACES),
++            "problems": [ClaimProblem(None, str(exc)).to_payload()],
++        }
+     if args.json:
+         print(json.dumps(report, indent=2, sort_keys=True))
+     else:
+diff --git a/devtools/release_readiness.py b/devtools/release_readiness.py
+index b30ad972d81ca339fadab4c925bc2de3d973c52b..88ab2d660dadce8636e4e83a4517e96c1a0b7431 100644
+--- a/devtools/release_readiness.py
++++ b/devtools/release_readiness.py
+@@ -26,7 +26,7 @@ class GateCommand:
+ REQUIRED_COMMANDS: tuple[GateCommand, ...] = (
+     GateCommand(("devtools", "release", "readiness"), True, "release gate definition"),
+     GateCommand(("devtools", "verify", "--quick"), True, "static/generated baseline"),
+-    GateCommand(("devtools", "verify", "public-claims"), True, "public claim/evidence ledger"),
++    GateCommand(("devtools", "verify", "public-claims"), True, "generated public-claims projection"),
+     GateCommand(("devtools", "verify", "--lab"), True, "lab baseline"),
+     GateCommand(("devtools", "release", "build-package"), True, "wheel/sdist/Nix package smoke"),
+     GateCommand(("devtools", "render", "pages"), True, "documentation site build"),
+diff --git a/devtools/render_public_claims.py b/devtools/render_public_claims.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c16f17b0b87630408f73c7f07abb5f59ff6d5939
+--- /dev/null
++++ b/devtools/render_public_claims.py
+@@ -0,0 +1,106 @@
++"""Render public-claims presets from FINDING assertions and 37t.14 verdict receipts."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sqlite3
++import sys
++from pathlib import Path
++
++from devtools.command_catalog import control_plane_command
++from devtools.public_claims import (
++    DEFAULT_COMPATIBILITY_PATH,
++    DEFAULT_OUTPUT_DIR,
++    build_repository_projection,
++    rendered_artifacts,
++)
++from devtools.render_support import write_if_changed
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--output-dir",
++        type=Path,
++        default=DEFAULT_OUTPUT_DIR,
++        help=f"Markdown/JSON preset directory (default: {DEFAULT_OUTPUT_DIR})",
++    )
++    parser.add_argument(
++        "--compatibility-path",
++        type=Path,
++        default=DEFAULT_COMPATIBILITY_PATH,
++        help=f"generated YAML compatibility view (default: {DEFAULT_COMPATIBILITY_PATH})",
++    )
++    parser.add_argument("--archive-root", type=Path, help="read public FINDING rows from this archive's user.db")
++    parser.add_argument("--verdicts", type=Path, help="37t.14 JSON verdict receipt export")
++    parser.add_argument("--check", action="store_true", help="exit non-zero when any generated artifact is out of sync")
++    parser.add_argument("--json", action="store_true", help="emit a machine-readable render report")
++    args = parser.parse_args(argv)
++
++    try:
++        claims = build_repository_projection(archive_root=args.archive_root, verdicts_path=args.verdicts)
++        artifacts = rendered_artifacts(
++            claims,
++            output_dir=args.output_dir,
++            compatibility_path=args.compatibility_path,
++        )
++    except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as exc:
++        if args.json:
++            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
++        else:
++            print(f"render public-claims: {exc}", file=sys.stderr)
++        return 2
++
++    changed = [
++        path
++        for path, rendered in artifacts.items()
++        if (path.read_text(encoding="utf-8") if path.exists() else "") != rendered
++    ]
++    if args.check:
++        ok = not changed
++        if args.json:
++            print(
++                json.dumps(
++                    {
++                        "ok": ok,
++                        "claim_count": len(claims),
++                        "artifact_count": len(artifacts),
++                        "out_of_sync": [str(path) for path in changed],
++                    },
++                    indent=2,
++                    sort_keys=True,
++                )
++            )
++        elif ok:
++            print("render public-claims: sync OK")
++        else:
++            print("render public-claims: out of sync:", file=sys.stderr)
++            for path in changed:
++                print(f"  - {path}", file=sys.stderr)
++            print(
++                f"render public-claims: run: {control_plane_command('render public-claims')}",
++                file=sys.stderr,
++            )
++        return 0 if ok else 1
++
++    for path, rendered in artifacts.items():
++        write_if_changed(path, rendered)
++    if args.json:
++        print(
++            json.dumps(
++                {
++                    "ok": True,
++                    "claim_count": len(claims),
++                    "artifact_count": len(artifacts),
++                    "written": [str(path) for path in changed],
++                },
++                indent=2,
++                sort_keys=True,
++            )
++        )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docs/README.md b/docs/README.md
+index a7be365d4c83d6832450964191d3463750e9700f..79f6d566de67ff717ec54e512ed0faee0c8bb499 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -81,6 +81,10 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
+ |----------|-------------|
+ | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
+ | [Proof Artifacts](proof-artifacts.md) | Claim-to-proof map for public-facing demo and evidence claims. |
++| [README Public-Claims View](generated/public-claims/readme.md) | Generated compact status view for claims used in README-facing copy. |
++| [Launch Public-Claims View](generated/public-claims/launch.md) | Generated launch-copy claim status with evidence blockers and remediation refs. |
++| [Findings-Page Public-Claims View](generated/public-claims/findings-page.md) | Generated finding status with judgment, privacy, evidence, epoch, and frame qualifiers. |
++| [Verified Public-Claims Export](generated/public-claims/verified-export.md) | Generated full public-claim projection corresponding to the machine-readable export. |
+ | [Structured Failure Follow-Up](findings/claim-vs-evidence.md) | Bounded field finding with oracle, sample frame, calibration, and caveats. |
+ | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
+ | [Insights Rigor Matrix](insights-rigor-matrix.md) | Evidence strengths and limitations for insight families. |
+diff --git a/docs/demos.md b/docs/demos.md
+index 362111725d51f1eee0b20ad1955c0e31e2de3051..49c9042e55728f5438ca89de4a7213fa035ee7f0 100644
+--- a/docs/demos.md
++++ b/docs/demos.md
+@@ -57,9 +57,10 @@ The full fixture audit remains machine-readable in `report.json`, so the public
+ 
+ ## Field finding: claim versus structural failure
+ 
+-A bounded private-archive study sampled 5,000 structured failures from a frame of 42,033. It classified 1,205 cases as silent proceed on the next assistant turn, a 24.1% lower bound, while 3,375 cases remained ambiguous. This is a field observation from one archive and one method—not a population estimate.
++<!-- public-claim:finding.silent-proceed-lower-bound -->
++The historical packet generated on 2026-07-04 sampled 5,000 structured failures from a frame of 42,033. It classified 1,205 cases as silent proceed on the next assistant turn, a 24.1% lower bound, while 3,375 cases remained ambiguous. This is a field observation from one archive and one method—not a population estimate or an automatically current claim.
+ 
+-Read the full [finding, method, calibration, and caveats](findings/claim-vs-evidence.md).
++Read the full [finding, method, calibration, and caveats](findings/claim-vs-evidence.md), then check the generated [findings-page claim status](generated/public-claims/findings-page.md) before reusing the number.
+ 
+ ## Flagship demonstrations under construction
+ 
+diff --git a/docs/devtools.md b/docs/devtools.md
+index 7a83045e9ce7bae5f25e15a7a425c5c29c1d5f34..c7ada58611d91dbaa2b58dbd3f373bb57557f4de 100644
+--- a/docs/devtools.md
++++ b/docs/devtools.md
+@@ -111,6 +111,7 @@ These are the commands worth remembering during normal repo work:
+ | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
+ | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
+ | `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
++| `devtools render public-claims` | Render README, launch, findings-page, and verified-export claim views from FINDING assertions. |
+ | `devtools render quality-reference` | Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries. |
+ | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
+ | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
+@@ -172,7 +173,7 @@ These are the commands worth remembering during normal repo work:
+ | `devtools verify evidence` | Render the pytest-first evidence dashboard or a changed-path trace. |
+ | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
+ | `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
+-| `devtools verify public-claims` | Validate public claims, evidence paths, Beads owners, and retired copy. |
++| `devtools verify public-claims` | Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy. |
+ | `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
+ | `devtools verify test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
+ | `devtools verify test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
+diff --git a/docs/findings/claim-vs-evidence.md b/docs/findings/claim-vs-evidence.md
+index 064d7978440ddb9a572eff3396d240654956ee7c..7b8cc61723579a2da853f0c1ef7d466e213c63e9 100644
+--- a/docs/findings/claim-vs-evidence.md
++++ b/docs/findings/claim-vs-evidence.md
+@@ -2,7 +2,10 @@
+ 
+ ## Claim
+ 
+-In one bounded private-archive sample, at least 24.1% of sampled structured failures were followed by an assistant turn that proceeded without an acknowledgment marker. Most sampled cases remained ambiguous.
++<!-- public-claim:finding.silent-proceed-lower-bound -->
++The historical packet generated on 2026-07-04 reported that, in one bounded private-archive sample, at least 24.1% of sampled structured failures were followed by an assistant turn that proceeded without an acknowledgment marker. Most sampled cases remained ambiguous.
++
++The generated [findings-page public-claims view](../generated/public-claims/findings-page.md) is the authority for whether this historical number is currently supported, stale, private-held, or unresolved.
+ 
+ This is a lower-bound field observation from one archive and one method. It is not a prevalence estimate for all agents, models, users, providers, or tasks.
+ 
+@@ -19,6 +22,33 @@ The tracked packet was generated on 2026-07-04 against archive schema v24.
+ 
+ The next-turn silent lower bound is therefore 1,205 / 5,000 = 24.1%.
+ 
++
++## Handler-class split
++
++<!-- public-claim:finding.handler-class-split -->
++The packet partitioned the same 5,000 inspected failures using explicit tool-name methodology classes:
++
++| Handler class | Inspected failures | Silent proceed | Ambiguous | Silent lower bound |
++| --- | ---: | ---: | ---: | ---: |
++| Consequential | 4,175 | 930 | 2,842 | 22.3% |
++| Benign recovery | 634 | 172 | 455 | 27.1% |
++| Other | 191 | 103 | 78 | 53.9% |
++
++These are method-defined groups, not severity labels. The ambiguous remainder remains visible in every class.
++
++## Per-origin inspection counts
++
++<!-- public-claim:finding.per-origin-inspection-counts -->
++The bounded origin-stratified allocation was:
++
++| Origin | Inspected | Requested | Complete origin frame |
++| --- | ---: | ---: | ---: |
++| `claude-code-session` | 3,752 | 3,752 | 31,555 |
++| `codex-session` | 1,241 | 1,241 | 10,429 |
++| `claude-ai-export` | 7 | 7 | 49 |
++
++These are inspection/frame counts determined by this archive and allocation rule, not provider prevalence estimates.
++
+ ## Structural oracle
+ 
+ A failure enters the frame from normalized tool-result evidence:
+diff --git a/docs/generated/public-claims/findings-page.json b/docs/generated/public-claims/findings-page.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b1777bff24caa42bd63d2b67e88f270b4d6f668
+GIT binary patch
+literal 9327
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/generated/public-claims/findings-page.md b/docs/generated/public-claims/findings-page.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..22818750d020692200f8e8c60b4e72bb9d2d89a0
+GIT binary patch
+literal 4561
+zcmeH~%Wm8@6o&VHic<tdTT~j))vm{N0oQQ?qp58;PK%%@YL0YfhKWR~BsJrCvhMq2
+z{Ygq1-;gfaMHXJ!&`^ix`ki0jf03s2niU)2IH%c$ZgO5ZtqV(rRnCU0dRE9R%?cq)
+zd()%STsnGncK-70{51({**K|{-OWTLX0niOLpkF#Ec)l94cWS?iVX=G?YrJ!Oe;3I
+z%p7jWSXPdtvW`XGqcr_tXXgdIk}8*KVbe>oV7d$r&`EG$XXkn;EzM=Ygujc<^|{gI
+z6K*Ax38j_HL_r_wd{MG;WF4YSNT{6LlF2TGLGZkiIjf9QsT?ni52SIlN5?c1IefvD
+zg0k8mH?GM{2s4<hZ9+;roUrxGI_YZ1G)MgYl1%ypw|Ddq<_o&X;KxFnO|Q^!Fl~QL
+z?FI=cZ|Jv^<ICe8&)%F}zo(1yH}8Mn*}2rkrqGMJ@g=<2nWgw*xb*mp*4li;O)0(2
+zbj4G;_I@<Z#}|dkmU4w${8_WvB%Pt8OIA!%rje6dWUe-Ik+JQ;=!sadaNa7i5)xAx
+zo!6O5+pv)Pt|vmyefHZNl`LQlIjPtnNu@yQeX~@CSEBHRpwM&vs?(-4Q@Zh$pI)6F
+zzx?^MSLQcK^CZ`q-3`$=&K&GM`Vr3Qc`DGYh`?F@ySH5FY`Hr(qC|c|@zAR1mKpl%
+z>!;j5#3|~0H*D*|eFH;RC?2n;+le?*yCS*UBS)fw4=c{`)X0^{Hg}%1y?KOY<=7na
+zI0d~W`m|u<C(zo|!aax1cz6EO`Ngm2^!H!%?)>WX?Zum4PG6!w&J@~Bpi-i&3KTXp
+zIC7>?78FscIyP*f*BI`Zt}z5_VQDz*jlK+xgJYJ_4>*jWX>Lbr5BGb6cw)v%E>w!~
+zML1@2=Zqhz$*6Y_&uLt4x?dl5B0OZ8B>jHBaW<#9kOgXo%PL<e50FSDA4MgykL<p(
+z#J9dgpwPX{peSysbB*EHOlh19_9t{Nl!W$1V|w6wZ12IrfP%C4`#N+W2#29J+}KZZ
+zMq%KUhh(aJ3=5;{s+oPu$cRTrA!c0ILt>FF;|bu-37`&q0387nG<yjE7@uZQ&g7!j
+zwa0FWQy}kCjUU>)X$&COBQags4jgxzz6W+Hx0`dRpE$YOVBOYbDFC1kR;zB9{^ixj
+z*BY+0anZ=bp=!J(9LbhP!~SqD?eC}k@pb>Z>0~lRx9sihj|PKp`~7LZf7mh?gOuv|
+zQLR2Iy;g@He%J{VM)fFA;J>)}BF@Jj!QA%JXuZ4ClPJ#1|8OG+FK2Np9%4lzpwQrL
+zh)*&E%PW_8*jBM%VR(-!tY$38El9ct_c;RcW7UPG5-6|@{0y&x(T!za^={*(&BjZC
+zLhz!ju)+c-uejt~hTCCehHX8q+D(+kwSIFSTflm%ja*2Dg=#BM8Pg1#wQ}|o{PH`h
+zdCfYXt+~Xo#cFw>;0@uyDA}J3y(Xx0rW2imbc19#9)$mI<5c@uRP7n8L)gQ13OlC-
+z4cZB^A>J2T3xZ`%qd_v6OklE~jE4u&+V}vY8RJ-Sv3W?dZDU8MZk-N2m5}8kx}Gy;
+zzC`sQ5zrG5Mvz_61%Jv~<O$pcUgE`Z$D}2G@p8zEl#mtkU<<S5z^QGvgTe{dgM>cs
+zargQy1S|JeEyEcPBM{58w$TNEZIhc)-gbH^EDgj5-yvIkS<%ihCiZWa&*XY0SI3w8
+z8mI$RD}lNPpAWfgluH<sj5$w(Qc6S9e}Y@kT@WkX?1%6iLvIFw-N`XPsz33FiNa?K
+zw5Q+%h2}pXFlK9v8z>Py^Ri|u<S>1HVwIQY5Qw0Pz_$r72Z#t7j=gBRBlhlc>jDlp
+zj<yqjh$(-9zrowo=ygltz)eBpVbULs;tw5N(}u1Qs1VGLT|=%sLLYxb#P6p{S9KA|
+z(t_y_$R9z{!G~5Oc?7kxsUbc-G$BN&tgVC6^B<Va4x{xFyTB)^{m6=fB)PMR69gW8
+arVP?@5kGStetSGiuqcwACD`XE!Ttg37F9z4
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/generated/public-claims/launch.json b/docs/generated/public-claims/launch.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d8af64d291c6919c89755091bd4bb26ab063385
+GIT binary patch
+literal 8681
+zcmeHNU60!~7JbjJAY3f=p_Zd>S(B%1l3fg%ofO@)i=qt-N~CRNBvBP5PmCh}eGf^A
+zl0BZJyG?;jksuF_ctu|F9-e#dRepU$$b$CWUbIDbTwIY~@c@tVk`|T3zZXxX<ZV}o
+z`kSI=tG{30JiosA2l<-tcTHL3MMrYl(5xu&I$<2|wNzQl#nQ}F)E(aqlP?-k9!s(7
+zxf3Ma$_vShL&12R^Xt*-2i~$G@5Z;AR=nl8no#*-Uw>TGve@lA`MBa#_ARe?-92vl
+z3@&Yq@2lpxfCulD8)iG3T=aE^dBW+L+Tu^zQL}N_W|Zx?TJ5K2PrrTox9gYJuYV-3
+zZeITQW^hW`lsJryY($4i8P~JCF&oySBERMBrJ<Z2I8{C@UhfM@@Rt(ok@b1!<P;|*
+z+T;90Wrv4qb4yZ-4#vZN8EJUC6>UXvcto_Agdb?Bj*{s8uO?^pzc;sBg?BM7vMNPR
+zONS5V@5rOXLeon&Y#Zf5uXb4XWoh>~jUP<JHt;~gQ5bG%DY>=O&%5cMHNIL-S;g&g
+zIJA=Xb-tfJ+2V|gdMBNRA|T^@FvW_+w&2VG21VPcFsnaP00tn8o7=Q}d$#_zDEZZQ
+zFP=XC=ZjUv=9B9YCUW_hw)wv3fIi^sK_diDY#oXlvZZ+^mEA+`D3r27-wx~1xzBo3
+z#p&DerWlOqXpwP4#6*h#0OaX4xfAW}EZ)ELv{dKQsy&ae#<4Mu6D`zTQp=wO6ypj&
+zy>;*Y_z;f`Zv+B$iU+(t4sTmp@yjcWP@!@owhzrS8lBHG9IL+2D%=ZTNMbJ+E}+as
+zqp$GmJ+4FFw!kGZN2r5(;7jsL&)ehD9_f<2?b*)UG+Hx~3oz2Vj(}VcST1MhD@EVt
+zd~*wU;uLVBM*g!fS_~%lk9nbPQz5$|KRZA@ps(3%LPyl4X0d_Chz;kArM|!U=H}JE
+zZ^+NR>t+f0{^q+E|9bWEhZoQPcfJ~qdI~DI33ri!i|(U)PHCEakT5`NEeBU2uP{gB
+zjx*8;Q93oiL3XX^8)+y_a&?`NJW87JQa&M^=6hp7THaAGJ!lVUWv6+rf)8y$OG2xx
+z*!7~9u&Q9icsq;H3Fi&ST<x)mlD7^9rF10n*O+Ip(}~b5;Vt?aoF>WxpBQ3hHv;wZ
+zBR)-U!>P!}`mCITw8`KS*{#6ANU@Ap;=&t4>UCsaRkS^>-r{1~+n`|ty8Xx$_uXj0
+zG;L=l`)^2ff^UX2b7fV-AUf_t*yIb#z1KDA_7r!YR!s@2=)fWp38O}i1}zk|VM#E`
+z9dAhnRl&#|mBjZ~!Cy2f!%T8842%KQ0e1krpR7D%k@33N)lSQE0URA?Hi~_sV3is>
+zfyG-pIz#v;V|ftw?+ngYP!dIEbl+*zbpp3Uzwli@cHG2q!`JTmDvGYK&p1v3&->bS
+zuUz-i%kwnw30yTX-RN28%Z-=$k4a4vA}!50!-@`c9bi>8eFvJk2lJCu2Io16magj#
+z*ksUJMG1WZY&A-RsO%1^&5jzh4TTQv{wgQ2enNo*K?^AIqf*6Q5~;j5A$LjQAS7o{
+zT@r;*FZGDV<_wZ&iE$tpd&;L-aRClCg~gTq<qWS}<yjV{ak9;Q76du>120Y1SrVsV
+z>buc8ifO!N>%ff}4e{G^w_&o*v(OJi=2NzwtvSoLGc6<<mAW%Xh+8J^PPnRvMpA>a
+zYoW?<wrn#VvYi%`ro@uc7}KP9XpRcv$K2|(VHnt~g`qHtCQ+*ujamoGiM|6MbX9@#
+zKeI7J1hp-44!~RyFYzy%;6n0^=BSP4DA>9yKk@uD2$CpB!@x(xEi|phP_Dq$6C`|i
+zC;mD-_u>9lLM(RK(P=Mf;9fSlycge3qA*N7*Gtkkbdv}7qLKRHJtXV1mGAEWm_M_*
+z9}G9RY;th}2!bCct`{Y4ymn)M?!W#0e)u&B-?>1!trdK=$zU)7^8ZyLO0LBrbX{XA
+zd(9`BkikBv&<9}%RH)+gq_pKw&PoA7CaR=7h<Okk+84W`CROoH&!z@7=D~%uRLWlw
+zBl;5%k5y4~^>#I5u8VRJ6}DsMbtY#))yhT71T#H256c(bs0zZ5>k6a1{v^8bHBdJI
+z2FU}EQ%#B?Q<DKgcn~a;$S2Rx@L-%gL;Gk+yrmy{`u97NUR708k2Warr(|R^KH0XS
+z8iB8`53a$M1l}@2Vj-Tp4E@y17N#hY%ym2P@;C$j7Zv$HLG!_C<g3qGMNTT*a-`W0
+z5Cws`B$Ah4W*~LsOWm*lj~<n<GzeE#Qi4=b9-*!`I0MM~vU4C^B+5miTD$rZv>#}n
+z{0@~!S?1+lO7k#fQML{uH;Q?@=9%YbX|PV?D8|z~=9%lUXzQjtODKyOi}G#4*{rCa
+zcV))>2?_KEsYGB4SKpz<*uXqhkyuy<V$+F^mQXEWdZsBXmtZhC8*5eFiC(Ufh7Sv(
+z!3EVjbA~|Pmq({w1fJp*D@(LSoI3(dc`gFyzNq2Z%T~<{T9fg2zts`XRm3)%3kNoL
+z!~>U}4bL4>!?Tx1c?J19JhiUPdUAdJ*$FN4dBJ=&XhhSOMgxr!>Iw1?VnSMRH@47}
+zSQ@)(LmKKE)q){aFFVwM$RcB<O78YZP)cXnrnK%0FF_i((z*~`f-4NCkQ{~Q?xc&V
+z33mJ{F_6G&=&}q2fuoBT#}qGPM862GFO9nKdmtKhXm{8w*0jX|#R0y?;KR)UJ-eZQ
+z2X*B}N*kHhiRFrmstPSVjvgM0hCAE`<U4~&{XxKX{!mLO=-28C0lF8+j}%`R&@4bY
+zq{I(Zmv7b`{35tMUJ3k31=lO!bHL?Tu0BDDdZA9x;B-L8W5uBLJtb(ZxIthBY)i@+
+zT2h8ypIkyBuEvSf|8(6s9x<Bc>oxOoKZuzZ#o>CJM`*ky>lA%C8gJ3mSo=xB*I^#}
+zVaD>5Cwao$Ac@!MR6IYRyKEMMCQ-erk^7P8At?nac-n~;gArPxv%$KrIO;Av<l)ZG
+zhK!V(cf)3bW6Mv~Y{Ghn)y5_t`es%%d|VztN4!z9FU+TJ_&NW&z0ftU+|#V&=Km_F
+oEI56i{@5paJG;!$#Gq<+`-NjQ)YJMhN#{`TyVb#4JbM4=KjAYKwEzGB
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/generated/public-claims/launch.md b/docs/generated/public-claims/launch.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7a3b51405ac741b6fa239e91054dac010177f0b
+GIT binary patch
+literal 4226
+zcmeHKU2oeq6n)RHxI-~)!$e2^N)~$^kfmu6EOUw^-B1j}OiQ%QRw6Z$vg2R2_x-XR
+zl9KX??xEXTfB+6G>V6!ad+zb~Uob{*gc623k<(&F^IUA4)`cY_R4xov^`ej&%L*<_
+zJMYnHE*-r-o4q=ly&-O`FivV^_cLDcg)F4oQ7&*A5&ie14cWS?iXCwp9=cwCL>pmp
+znK@+0gsdD%Wu4%8j~M%5Z|?=2^IBzVdK)s+NyxmncfFRDma-6p&sA6R(&+MudJ@XG
+z(n@B$pbvGvDur@n9okHYtDM|gkX>_wuEj>?LS=$U<;2SP4w?#kbW97LuR=;rS#1D{
+zYaj{zg^;yPNNI-#ZN0Egy4nd^qH&)jlOEYNM-TnIpm~NmR@&@(g+_s_eah?(NR)H>
+z?d16F@sDTcXV>rPVs`%i_r1Nhy4V$ZRX4SS7rU?&Ukpi)&uFX7M`U7jmFY@M=-SuO
+z6dzyYCR@u5u=ukUW|wq<k`Am0Q>KB*4UntNl4rv95cGs^1b03vE&_j?Dx>o{bF6I(
+z*mq<In0xeFj7q@~4VYBI0Hl%wde4%|hz&3NMNlA{Pj%W{&4lLu<|mh@$FF`q?UngF
+zX}-yIX7@ukPGk;oA3a2IddWCwiVmFh&wb=dXY2i?;U(}1mj{l5Eer7L>!-?};uLkY
+z8)56heG_kUDOE1js<#HQ3Ss=LSj#NpIb7wt*-x{JUuX39U-WKvd3tqm{>$krT<Dns
+zKRBS}WmVuN0wd9+0**jksyZ^P&|8e*Lf2sJmRlMOdc!ZnP2-pqxIi2R%bV=r;^45?
+zk0%yF$(3RlG!07c?ws*6Fdp`f;yI1vrhEF3I;c?4I7!pADK@7imj%E^vdSatM?LC?
+z@1o+_N8!G*ByK#W(2IM>07bXfxdxke6B;G`!!g}!C82}ih#u4)`Pe_|Qz-U65d&qQ
+zMIfUQO?;LMTnwu6a>kVJVP$k(HN$EJ5b?8K@P#Pslmv(7gcA@Z$015!HgpWr4|bNA
+zSmR;l<wCA%U3-BnaS9sw6jK8)8)85ly@s)k?I!&$OM4t@=Js<@>L*U_Hv(+yvgA;V
+z4_2#={r~dn<FrOp+PE0x;S@C05{_i+mxFY0z|upOj;_=1Cgbr0Y&keM9QOO)rs*V2
+zr>#h02{65US*wpqZ`BkM9j1Z8Y`qL)`#EL4i1YDB2zQ$_M(>h(>4@|4A7q3i%SGH@
+zQ!Fzy6bRn72;8o)NCE>mZo>w33Qa=+@tK1w{))PN!kT@;AT${6vciH0Ds(AIk;^dW
+z2(rKuoK&sOv$!qi_caEh$+VFxsj#kW1<k|gA!e<d{e;-~4bZ%1oo{U^F&PnBzkhuo
+zd@)Q8#{<7{>s-)@&LK<vWH9Q7|8L?5`oU4{87v#bgZ2kSZ&d+zkEI;*MIOKhENR$J
+z#^W(Urpah<6r+ufFh{YEjVN{xrRSD~Q2}p@4g^TZiXxVt3k+z9tHJ`t1;TH@&BPM?
+zDQkffL>5{Q6GsJSC7xjZ$XkGbig~c(gcU(lZqW|@A*6?FdEDb>!=CZm>fRy~D8?%X
+z<i!hPvvr}24K}5`>D)+Ac=U(bVG8`Uf_t$i;omNwW#(CCqPG73GGn6=0jDz|auz%Y
+z3k>~)$iUIS26Tg38My)XVZDOa?2HZ+B^`S`h?e43eV$ShcpvYjF%w(N21Yto<_*KG
+zMZ&1~@lxKY!g@ghIBYsJ2@}t0F!FZjj*Yr2G8ZVgDYPBWDMs=Mu?*ERqqnVW29e`5
+z8YJm(7$0;}$Qmh(>Id)mxHMqp_3p8sjz1+TUDZXDfmTJP(B~n{5^8AOhu4eNkTmj)
+zA6r=QRMytPL-`+B&BCGW8p7>?YJYFURiE71aS0laHB$!Dwu+Abp$&gFH_?7Pn;RJD
+I&oejw0KSme+5i9m
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/generated/public-claims/readme.json b/docs/generated/public-claims/readme.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e6f3b36ca70094446535c516ac0aa13c0bcf9a9
+GIT binary patch
+literal 8100
+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
+b>e<I$`l7EdO-fYGuHbizoi}^&;l;lI(^7Hg
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/generated/public-claims/readme.md b/docs/generated/public-claims/readme.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b74634755d4e913257d38f514834bd63d1655d4
+GIT binary patch
+literal 4010
+zcmeHKU2oeq6n)RHxI-~)!z4%kN)~$^kfmu6taFMs-B1j}LQB^+TZz<2%87s3-uKIP
+zNJ`2l+K26J1p+v*sQYnv&bim$f03s2f)yL#xS-{ZE(_i|txHRWRl$bpW?9NS%}XIG
+zdpV%fLOObWws>~7ctOHiHco0~_j6H;r7We}QNcKki2i%hhHO*U<&Ff658Yrmp)H$2
+z<_;NhmbD|PtYc9OC{2IZ+j~N<PmiDdd`hoEW;zL(_x3I}($Y$nO!!>)HLr}W9;qjx
+zTqvz%E=qde6zhtWBkRy+LP8bfHcWOS47%p6ELi27O67QMd<SiX13IRqDApmRpu8~v
+z#kG)x{zAycCZx1OgSJ^(Ctc&1R%qNO$)!iO%P~NIPv|m79cyiNgHofww0oM`9gwIl
+z>9>>PSI0k|y*#^kN9T)|?|$Fgd!@@=sn<<gOL(ylOYy~!^!SXfwE2KcDZR;c%`>|2
+zb+pCD7lp|;atkc}Y}o9QK2Xww6=BLXFu4YDjaiAD?Epbf#FmBgQE?IY6I2^rG`UN=
+zwt#(4hJd+8zr(0vfoQ;_W&@Ba0q8wTYQtMm`ir1IHlOOWy_y+a`kS9cW(=z0GHJgl
+zbZ+-UH;!|MxDOtpIK4^*Xo?P;_0N6eTIZYnl@S&236}?sf-Ot%>+8qLpW_tuwHvlg
+z>As1#xss}oYCYJ1SS1^;6>C$Acn(+jcJb5V{MQBj{TIDmygq$%{_>a8XSmQa1%3!X
+zE2_H0O$0`wNd+8%x>QYMSgEfd!=-M(+ACpcG#ZS*3^$EqmT`eN43@Xq!Nt+xU>Hv<
+zS;@6ZAv6t2?{1y(8kmj;NAa9Sa??M(PaRaqG)=NBYl|&tC1eS(k*xN}dZ|bM@Lkj*
+z|G@4mOMLAyg<sr31}M6XE;QJ@o6#g09!}{_D+wKpCv>m&$j9N)kV3I{i5MsYF9I12
+zxAD`0aWSaM+gYl74{M{Fx)rNsAmX)NiY1qJPAu|GJON{J0;U9J!^fb0u(N_<jfYuO
+zOSx`z;|;RHDR|^#Obxtji2-x;9+qxxuk_n29SFFY+b_7%kDT0Z4cInSCEytEtyVqz
+zKk@3rw1#VKTnutw1#Pv2Bl+g(C>tH5*<qSZF0$`t)9DOsIXE~R4~O4o*(}TEok?N{
+zq<ZzVQ6H4PQgc{zPy+>RJq@z`H)TGF`uHP+yGa_O_es5VM7{h68DYtC8Ryp=!wd}t
+zf_E(fx7S>8A%i|)O-l@~S>5?_8mHXlU2lNdrP|1~R2Vb1hF3u{5PGAW{fJ3;=WbuK
+z&X=^3V047U&rKf)UyPH(>BvvYreHeJ1?*&)j3&eI|8<m(C%o#;U`QYyJUcjXr)Jz4
+zhH1<f?+^2PMdM*IolX%lOD3bE7;SO{{>MJHT<-2$#tnO-bKMjjE-oR<Wh}j52&)3b
+z7@PnedjhtQSb{%gEpUQ4Lc=j}bl$YW6X=Hg=nklud$Wlx2Q#=qJIwu%9(Ln#j}r;=
+z!B3ex1Bg+KS3GRN8(KRp;b<*3mAvk^h~UiV54B^M`)dVfVo&Vfu0GqtXM6aRJ=i$-
+z!Nr`pNW;ue1G7G24%i?tc6))<MsC4btU6)0>lX_+K{oX|jwAfWH6C*S>>7S|1(&bD
+zX-F|v<_Gl6N&<>|St!35V%33k1=eDC36v^mH1X@lt+nO0Ih>>5w$M&ib4ckClMB_R
+zMqhPy7tBe}WRzs%aeUBQSlU`xbS>;^4@(19-lrb!uW@y+b={OvzMcB#@YOMv6V%X6
+zd$03u0cdR%KW;EmscNjl&f<U6=&Hsq0Bma;7_JAZ+wbFOO>WJU1dYd<DaVqujvMy<
+PwfFNf5y$=ic$xSIcBY5J
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/generated/public-claims/verified-export.json b/docs/generated/public-claims/verified-export.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..d083fbfeb6db1fc470ae22184e1e6a8f77888129
+GIT binary patch
+literal 9329
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/generated/public-claims/verified-export.md b/docs/generated/public-claims/verified-export.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf5b695dfd3ac463b9b02f0038e02de390d5c6b
+GIT binary patch
+literal 4563
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index 9360f9fa915b8821111de2dac9d5af5899d78d44..ab6365a0494f4a102526d3d3badce1271125ae48 100644
+GIT binary patch
+delta 250
+zcmZpA$ua#E$A<UT)0K=FB_?k$;@d20b9ke4L1|J>W^#OTPGV+mv0gzXmjV#v<R@Dx
+zSWXsvsWh4Q9S;w(n#q9=On`!to1eZd_hd3QpUyagQF8i!Ge)lIp5~0a+xyHJcjq#i
+zO|M(R=)ZmDQpPY<CUb-750@}{OrL+6k!`yDX-08I!|An9fulgB6E`v{O!q&-$TvNE
+zJ0s`x{#A^j(+`|w<eqMKmQi4OLntHL<Qbxp(;u8;6y6RLQr2TK0h)LbsOi8*M$ze>
+lzZr$5`+s1x-~RG9;}2#=qv;0Q85O60c*)4Vm5Zsu1ORjiUf}=$
+
+delta 163
+zcmbRKilgZz$A<UT({J!GN=)8h#J5@0=J3YJ>)!Ehu6kGQIbC2LqxAF!3r5cAcg-33
+zrvEQsRGDsI#mKSU--59}m(g^3z*<K4>HC%fMf8?2hN&`}SsFmZ&YfnIWim2@bJ(U^
+zonhS1Xfi#}nNf23g$s;a+hxx(-qd3>o_?{GQEGa@7e<-s_kJ@9ZMXl!XwEXZE?;Wv
+I1g3Tq0B0ONBLDyZ
+
+diff --git a/docs/public-claims.yaml b/docs/public-claims.yaml
+index 6e3a78bc157ae5f4c44f5dbe4ca5e8e3438d79e3..9d303dc4b6183ff62cc8477cf8c006f43473cfbb 100644
+--- a/docs/public-claims.yaml
++++ b/docs/public-claims.yaml
+@@ -1,106 +1,211 @@
+-schema: external-claims-ledger/v2
+-statuses: [proven, capability, aspirational, retired]
+-evidence_classes:
+-  - deterministic_product_proof
+-  - field_observation
+-  - implementation_contract
+-  - architecture_decision
+-  - hypothesis
+-public_surfaces:
+-  - README.md
+-  - docs/demos.md
+-  - docs/findings/*.md
+-  - docs/sinex-interop.md
+-  - docs/site/pages.toml
+-retired_phrases:
+-  - your AI memory
++schema: polylogue.public-claims-compatibility-view.v1
++generated_by: devtools render public-claims
++authority:
++  claims: AssertionKind.FINDING + explicit capability declarations
++  integrity: polylogue-37t.14 EvidenceIntegrityVerdict
++  projection: polylogue/insights/measurement/public_claims.py
++preset: verified-export
++claim_count: 4
++publishable_claim_keys:
++- category.local-evidence-system
+ claims:
+-  - id: category.local-evidence-system
+-    status: capability
+-    evidence_class: implementation_contract
+-    publication: Polylogue is a local evidence system for AI work.
+-    scope: Product category for the current local archive, query, evidence, and context surfaces.
+-    evidence: [README.md, docs/architecture.md, docs/proof-artifacts.md]
+-    caveat: Pre-1.0; not every planned memory or coordination feature is complete.
+-    owner_beads: [polylogue-3tl.12, polylogue-3tl.8]
+-    proof_commands: []
+-
+-  - id: analogy.flight-recorder
+-    status: capability
+-    evidence_class: implementation_contract
+-    publication: Polylogue can be described as a flight recorder for AI work when the analogy is qualified by its supported origins and evidence limits.
+-    scope: Explanatory analogy, not the primary product category or a forensic chain-of-custody claim.
+-    evidence: [docs/architecture.md, docs/proof-artifacts.md]
+-    caveat: The archive is not tamper-proof, universally complete, or a replacement for production agent observability.
+-    owner_beads: [polylogue-3tl.12, polylogue-3tl.16]
+-    proof_commands: []
+-
+-  - id: demo.private-data-free
+-    status: proven
+-    evidence_class: deterministic_product_proof
+-    publication: The deterministic tour exercises five origins, tool outcomes, lineage, subagents, context snapshots, attachments, and user overlays without private data.
+-    scope: The committed deterministic provider-shaped demo corpus and its declared construct verifier.
+-    evidence: [docs/plans/demo-corpus-construct-audit.md, docs/examples/demo-tour/report.md]
+-    caveat: Construct proof, not private-archive scale or real-world prevalence.
+-    owner_beads: [polylogue-212.7, polylogue-3tl.5]
+-    proof_commands: [polylogue demo tour]
+-
+-  - id: evidence.structured-outcomes
+-    status: proven
+-    evidence_class: deterministic_product_proof
+-    publication: Polylogue can compare an assistant claim with supported structural tool outcomes without treating prose keywords as the oracle.
+-    scope: Provider-normalized tool-result fields represented by the deterministic Evidence Lab receipts fixture.
+-    evidence: [docs/demos.md, polylogue/demo/receipts.py, tests/unit/cli/test_demo_command.py]
+-    caveat: Unsupported or malformed tool evidence remains explicit rather than being inferred.
+-    owner_beads: [polylogue-3tl.15, polylogue-212]
+-    proof_commands: [polylogue demo tour, polylogue demo receipts]
+-
+-  - id: finding.silent-proceed-lower-bound
+-    status: proven
+-    evidence_class: field_observation
+-    publication: In one private archive, a bounded sample found a 24.1% lower bound for silent continuation after structured failure; most cases remained ambiguous.
+-    scope: One private archive, a 5,000-row origin-stratified sample, and the documented classifier version.
+-    evidence: [docs/findings/claim-vs-evidence.md]
+-    caveat: This is not a population estimate and the large ambiguous remainder materially limits interpretation.
+-    owner_beads: [polylogue-xyel]
+-    proof_commands: [python -m devtools.claim_vs_evidence --help]
+-
+-  - id: context.compiler
+-    status: capability
+-    evidence_class: implementation_contract
+-    publication: Polylogue can compile bounded evidence-linked context and record omissions and delivery snapshots.
+-    scope: The current context compiler, context image, and delivery snapshot contracts.
+-    evidence: [polylogue/context/compiler.py, tests/unit/context/test_compiler.py]
+-    caveat: No general task-performance uplift claim follows from the existence of the compiler.
+-    owner_beads: [polylogue-37t]
+-    proof_commands: []
+-
+-  - id: memory.uplift
+-    status: aspirational
+-    evidence_class: hypothesis
+-    publication: Polylogue is testing whether reviewed evidence-linked context improves resumption.
+-    scope: Planned and pilot paired resumption experiments under fixed checkpoints and budgets.
+-    evidence: [.agent/demos/uplift-two-arm/current/report.md]
+-    caveat: The existing pilot is small and includes a stale-packet counterexample.
+-    owner_beads: [polylogue-37t]
+-    proof_commands: []
+-
+-  - id: sinex.backend
+-    status: aspirational
+-    evidence_class: architecture_decision
+-    publication: The maximal target is Sinex-backed Polylogue, with Sinex storing complete durable transcript evidence and Polylogue retaining AI-work semantics and product behavior.
+-    scope: Target architecture for Sinex-backed deployments; standalone SQLite Polylogue remains a supported profile.
+-    evidence: [docs/sinex-interop.md]
+-    caveat: The current bridge is metadata-thin; stable identity, revision settlement, and rebuild proofs have not landed.
+-    owner_beads: [polylogue-fs1.9]
+-    proof_commands: []
+-
+-  - id: positioning.your-ai-memory
+-    status: retired
+-    evidence_class: architecture_decision
+-    publication: Do not use this phrase as the primary product category.
+-    scope: First-contact copy in README, site, demos, and public findings.
+-    evidence: [docs/site/pages.toml, devtools/pages_templates.py]
+-    caveat: Memory remains a product capability and roadmap program, but not the external category definition.
+-    owner_beads: [polylogue-3tl.12]
+-    proof_commands: []
++- claim_key: category.local-evidence-system
++  source_kind: capability
++  source_ref: null
++  status: capability-only
++  integrity_status: null
++  integrity_verdict_present: false
++  badge: '[CAPABILITY ONLY]'
++  publication: Polylogue is a local evidence system for AI work.
++  scope: The current local archive, query, evidence, judgment, and context surfaces.
++  caveat: This is a product-category capability statement, not a measured performance or prevalence claim.
++  public_evidence_refs:
++  - file:README.md
++  - file:docs/architecture.md
++  - file:docs/proof-artifacts.md
++  public_remediation_refs: []
++  presets:
++  - readme
++  - launch
++  - findings-page
++  - verified-export
++  statistic: null
++  qualifiers:
++    finding_epoch: null
++    verdict_as_of_epoch: null
++    finding_frame_ref: null
++    verdict_frame_ref: null
++    evaluation_ref: null
++    definition_ref: null
++  review:
++    assertion_status: null
++    publication: approved
++    privacy: approved
++    judgment_ref: null
++  reason_codes: []
++  blind_spot_codes: []
++  blocker_codes: []
++- claim_key: finding.handler-class-split
++  source_kind: finding
++  source_ref: assertion:assertion-finding:cbb4967fc2d33ce231978b76949205856a68d8306da46a610f478cb4244d2ad8
++  status: unknown
++  integrity_status: unresolved
++  integrity_verdict_present: false
++  badge: '[UNKNOWN · UNRESOLVED]'
++  publication: In that sample, the silent-continuation lower bound was 22.3% for consequential handlers, 27.1% for benign-recovery
++    handlers, and 53.9% for other handlers.
++  scope: 'The same 5,000 sampled failures, partitioned by the packet''s explicit handler-class methodology: 4,175 consequential,
++    634 benign-recovery, and 191 other.'
++  caveat: The classes are method-defined tool-name groups, not severity labels; each group retains a large or material ambiguous
++    remainder.
++  public_evidence_refs:
++  - file:docs/findings/claim-vs-evidence.md
++  - file:.agent/demos/claim-vs-evidence/public-summary.json
++  - file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json
++  public_remediation_refs:
++  - bead:polylogue-37t.14
++  presets:
++  - readme
++  - launch
++  - findings-page
++  - verified-export
++  statistic:
++    op: breakdown
++    unit: structured_failures
++    value:
++      benign_recovery:
++        ambiguous: 455
++        failed_outcomes: 634
++        silent_proceed: 172
++        silent_rate_lower_bound: 0.27129337539432175
++      consequential:
++        ambiguous: 2842
++        failed_outcomes: 4175
++        silent_proceed: 930
++        silent_rate_lower_bound: 0.22275449101796407
++      other:
++        ambiguous: 78
++        failed_outcomes: 191
++        silent_proceed: 103
++        silent_rate_lower_bound: 0.5392670157068062
++  qualifiers:
++    finding_epoch: '2026-07-04T08:55:53.667311+00:00'
++    verdict_as_of_epoch: null
++    finding_frame_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame
++    verdict_frame_ref: null
++    evaluation_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration
++    definition_ref: null
++  review:
++    assertion_status: candidate
++    publication: pending
++    privacy: pending
++    judgment_ref: null
++  reason_codes:
++  - integrity-verdict-not-computed
++  blind_spot_codes: []
++  blocker_codes:
++  - finding-candidate
++- claim_key: finding.per-origin-inspection-counts
++  source_kind: finding
++  source_ref: assertion:assertion-finding:adb1c19ac49d5b835056e68eb12b9389656b83c6eb01d5f09eb7ad6dd5cf7edd
++  status: unknown
++  integrity_status: unresolved
++  integrity_verdict_present: false
++  badge: '[UNKNOWN · UNRESOLVED]'
++  publication: The origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven Claude AI structured failures
++    from origin frames of 31,555, 10,429, and 49 respectively.
++  scope: The 2026-07-04 bounded sample frame, selected deterministically by origin, session, tool, and result-message identifiers.
++  caveat: These are inspection and frame counts, not provider prevalence estimates; the archive's origin mix and the bounded
++    allocation determine them.
++  public_evidence_refs:
++  - file:docs/findings/claim-vs-evidence.md
++  - file:.agent/demos/claim-vs-evidence/public-summary.json
++  - file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json
++  public_remediation_refs:
++  - bead:polylogue-37t.14
++  presets:
++  - readme
++  - launch
++  - findings-page
++  - verified-export
++  statistic:
++    op: breakdown
++    unit: structured_failures
++    value:
++      claude-ai-export:
++        frame_total: 49
++        inspected: 7
++        requested: 7
++      claude-code-session:
++        frame_total: 31555
++        inspected: 3752
++        requested: 3752
++      codex-session:
++        frame_total: 10429
++        inspected: 1241
++        requested: 1241
++  qualifiers:
++    finding_epoch: '2026-07-04T08:55:53.667311+00:00'
++    verdict_as_of_epoch: null
++    finding_frame_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame
++    verdict_frame_ref: null
++    evaluation_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration
++    definition_ref: null
++  review:
++    assertion_status: candidate
++    publication: pending
++    privacy: pending
++    judgment_ref: null
++  reason_codes:
++  - integrity-verdict-not-computed
++  blind_spot_codes: []
++  blocker_codes:
++  - finding-candidate
++- claim_key: finding.silent-proceed-lower-bound
++  source_kind: finding
++  source_ref: assertion:assertion-finding:e5da9c88d1c236d15648fc52ad7898d8a6f7018277e84c624bdc9e7c7d037689
++  status: unknown
++  integrity_status: unresolved
++  integrity_verdict_present: false
++  badge: '[UNKNOWN · UNRESOLVED]'
++  publication: In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures were followed by silent
++    continuation on the next assistant turn, a 24.1% lower bound.
++  scope: One private archive; an origin-stratified 5,000-row sample from a 42,033-row structured-failure frame; next assistant
++    turn only.
++  caveat: This is not a population estimate; 3,375 rows remained ambiguous, and support must be recomputed when the evidence
++    epoch, definition, or frame changes.
++  public_evidence_refs:
++  - file:docs/findings/claim-vs-evidence.md
++  - file:.agent/demos/claim-vs-evidence/public-summary.json
++  - file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json
++  public_remediation_refs:
++  - bead:polylogue-37t.14
++  presets:
++  - readme
++  - launch
++  - findings-page
++  - verified-export
++  statistic:
++    ambiguous: 3375
++    denominator: 5000
++    numerator: 1205
++    op: lower_bound
++    unit: ratio
++    value: 0.241
++  qualifiers:
++    finding_epoch: '2026-07-04T08:55:53.667311+00:00'
++    verdict_as_of_epoch: null
++    finding_frame_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame
++    verdict_frame_ref: null
++    evaluation_ref: file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#calibration
++    definition_ref: null
++  review:
++    assertion_status: candidate
++    publication: pending
++    privacy: pending
++    judgment_ref: null
++  reason_codes:
++  - integrity-verdict-not-computed
++  blind_spot_codes: []
++  blocker_codes:
++  - finding-candidate
+diff --git a/docs/topology-status.md b/docs/topology-status.md
+index 24a2948fb84ea75f651ecdb84179ae0eb30540ac..8c68f540dbf3bca0092078fbb7959de6d6bfd2c0 100644
+GIT binary patch
+delta 26
+icmca3a7SRnLl#D}$&Xn27)>S@vZ^tfY@We-gb4tP1qoXK
+
+delta 26
+icmca3a7SRnLl#EU$&Xn27>y?vvZ^r}Z=S(=gb4tO;R#p(
+
+diff --git a/polylogue/insights/measurement/public_claims.py b/polylogue/insights/measurement/public_claims.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..52dba68191fe11690ae135aee6c5d2112b39eea9
+--- /dev/null
++++ b/polylogue/insights/measurement/public_claims.py
+@@ -0,0 +1,942 @@
++"""Public-claim projection over reviewed findings and evidence-integrity verdicts.
++
++This module deliberately does not walk evidence ancestry.  Bead
++``polylogue-37t.14`` owns support, drift, cycle, frame, and privacy semantics;
++this consumer accepts its bounded verdict through :class:`EvidenceIntegrityProvider`
++and applies only publication policy over existing FINDING assertion lifecycle
++facts.
++"""
++
++from __future__ import annotations
++
++import json
++import re
++from collections import defaultdict
++from collections.abc import Mapping, Sequence
++from dataclasses import dataclass
++from pathlib import PurePosixPath, PureWindowsPath
++from typing import Literal, Protocol
++
++from polylogue.core.enums import AssertionStatus, AssertionVisibility, PolylogueStrEnum
++from polylogue.core.json import JSONValue
++
++
++class EvidenceIntegrityStatus(PolylogueStrEnum):
++    """Authoritative 37t.14 evidence-integrity vocabulary."""
++
++    SUPPORTED = "supported"
++    PARTIALLY_SUPPORTED = "partially_supported"
++    NOT_SUPPORTED = "not_supported"
++    STALE = "stale"
++    CLOSED_LOOP = "closed_loop"
++    CYCLE = "cycle"
++    UNRESOLVED = "unresolved"
++    FRAME_INCOMPLETE = "frame_incomplete"
++    HELD_PRIVATE = "held_private"
++
++
++class PublicClaimStatus(PolylogueStrEnum):
++    """Stable public status vocabulary required by ``polylogue-3tl.16``."""
++
++    SUPPORTED = "supported"
++    PARTIALLY_SUPPORTED = "partially_supported"
++    NOT_SUPPORTED = "not_supported"
++    STALE_NEEDS_RERUN = "stale/needs-rerun"
++    HELD_PRIVATE = "held_private"
++    UNKNOWN = "unknown"
++    CAPABILITY_ONLY = "capability-only"
++
++
++class PublicClaimPresetName(PolylogueStrEnum):
++    """Named public surfaces that parameterize one projection."""
++
++    README = "readme"
++    LAUNCH = "launch"
++    FINDINGS_PAGE = "findings-page"
++    VERIFIED_EXPORT = "verified-export"
++
++
++PublicClaimSourceKind = Literal["finding", "capability"]
++PublicClaimDisclosure = Literal["public", "held_private"]
++PublicClaimReviewStatus = Literal["approved", "pending", "rejected", "deferred", "superseded", "unknown"]
++PublicClaimPrivacyStatus = Literal["approved", "held_private", "pending", "unknown"]
++
++_CLAIM_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
++_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
++_REF_KIND_RE = re.compile(r"^[a-z][a-z0-9-]*$")
++_PRIVATE_PATH_RE = re.compile(r"(?:/home/|/Users/|/realm/|/mnt/data/|[A-Za-z]:[\\/])")
++
++
++def _public_text(value: str, *, field: str) -> str:
++    normalized = value.strip()
++    if not normalized:
++        raise ValueError(f"public claim {field} must be non-empty")
++    if "\x00" in normalized or _PRIVATE_PATH_RE.search(normalized):
++        raise ValueError(f"public claim {field} contains a private or absolute path")
++    return normalized
++
++
++def _claim_key(value: str) -> str:
++    normalized = value.strip()
++    if not _CLAIM_KEY_RE.fullmatch(normalized):
++        raise ValueError(f"public claim key is invalid: {value!r}")
++    return normalized
++
++
++def _public_ref(value: str, *, field: str) -> str:
++    normalized = value.strip()
++    kind, separator, object_id = normalized.partition(":")
++    if (
++        not separator
++        or not _REF_KIND_RE.fullmatch(kind)
++        or not object_id
++        or any(char.isspace() for char in normalized)
++        or "\x00" in normalized
++    ):
++        raise ValueError(f"public claim {field} must be a non-empty typed ref: {value!r}")
++
++    path_text = object_id.split("#", maxsplit=1)[0]
++    if _PRIVATE_PATH_RE.search(normalized):
++        raise ValueError(f"public claim {field} contains a private or absolute path: {value!r}")
++    if kind == "file" and (
++        path_text.startswith("~")
++        or PurePosixPath(path_text).is_absolute()
++        or PureWindowsPath(path_text).is_absolute()
++        or ".." in PurePosixPath(path_text).parts
++        or ".." in PureWindowsPath(path_text).parts
++    ):
++        raise ValueError(f"public claim file ref must be repository-relative: {value!r}")
++    return normalized
++
++
++def _public_refs(values: Sequence[str], *, field: str, required: bool = False) -> tuple[str, ...]:
++    refs = tuple(dict.fromkeys(_public_ref(value, field=field) for value in values))
++    if required and not refs:
++        raise ValueError(f"public claim {field} must contain at least one ref")
++    return refs
++
++
++def _public_codes(values: Sequence[str], *, field: str) -> tuple[str, ...]:
++    codes = tuple(dict.fromkeys(value.strip() for value in values))
++    if any(not _CODE_RE.fullmatch(value) for value in codes):
++        raise ValueError(f"public claim {field} must contain stable code tokens")
++    return codes
++
++
++def _optional_public_ref(value: str | None, *, field: str) -> str | None:
++    return None if value is None else _public_ref(value, field=field)
++
++
++def _optional_public_text(value: str | None, *, field: str) -> str | None:
++    return None if value is None else _public_text(value, field=field)
++
++
++def _public_json_value(value: JSONValue, *, field: str) -> JSONValue:
++    """Copy one JSON value while rejecting private paths at every string leaf."""
++
++    if isinstance(value, str):
++        return _public_text(value, field=field)
++    if isinstance(value, list):
++        return [_public_json_value(item, field=f"{field}[]") for item in value]
++    if isinstance(value, dict):
++        sanitized: dict[str, JSONValue] = {}
++        for key, item in value.items():
++            public_key = _public_text(key, field=f"{field} key")
++            if public_key in sanitized:
++                raise ValueError(f"public claim {field} contains duplicate keys after normalization")
++            sanitized[public_key] = _public_json_value(item, field=f"{field}.{public_key}")
++        return sanitized
++    return value
++
++
++def _public_statistic(value: Mapping[str, JSONValue]) -> dict[str, JSONValue]:
++    sanitized: dict[str, JSONValue] = {}
++    for key, item in value.items():
++        public_key = _public_text(key, field="statistic key")
++        if public_key in sanitized:
++            raise ValueError("public claim statistic contains duplicate keys after normalization")
++        sanitized[public_key] = _public_json_value(item, field=f"statistic.{public_key}")
++    return sanitized
++
++
++@dataclass(frozen=True, slots=True)
++class EvidenceIntegrityVerdict:
++    """Narrow verdict interface consumed from the future 37t.14 evaluator.
++
++    Free-form ancestry details are intentionally absent.  Public consumers get
++    closed status/reason vocabularies and already-sanitized refs; decisive
++    private paths remain inside the evaluator/storage boundary.
++    """
++
++    finding_ref: str
++    status: EvidenceIntegrityStatus
++    public_evidence_refs: tuple[str, ...] = ()
++    reason_codes: tuple[str, ...] = ()
++    blind_spot_codes: tuple[str, ...] = ()
++    as_of_epoch: str | None = None
++    frame_ref: str | None = None
++    definition_ref: str | None = None
++    public_remediation_refs: tuple[str, ...] = ()
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "finding_ref", _public_ref(self.finding_ref, field="finding_ref"))
++        object.__setattr__(
++            self,
++            "public_evidence_refs",
++            _public_refs(self.public_evidence_refs, field="public_evidence_refs"),
++        )
++        object.__setattr__(
++            self,
++            "public_remediation_refs",
++            _public_refs(self.public_remediation_refs, field="public_remediation_refs"),
++        )
++        object.__setattr__(self, "reason_codes", _public_codes(self.reason_codes, field="reason_codes"))
++        object.__setattr__(
++            self,
++            "blind_spot_codes",
++            _public_codes(self.blind_spot_codes, field="blind_spot_codes"),
++        )
++        object.__setattr__(
++            self,
++            "as_of_epoch",
++            _optional_public_text(self.as_of_epoch, field="as_of_epoch"),
++        )
++        object.__setattr__(
++            self,
++            "frame_ref",
++            _optional_public_ref(self.frame_ref, field="frame_ref"),
++        )
++        object.__setattr__(
++            self,
++            "definition_ref",
++            _optional_public_ref(self.definition_ref, field="definition_ref"),
++        )
++        if self.status in {
++            EvidenceIntegrityStatus.SUPPORTED,
++            EvidenceIntegrityStatus.PARTIALLY_SUPPORTED,
++        } and (not self.as_of_epoch or not self.frame_ref or not self.definition_ref):
++            raise ValueError("supported evidence-integrity verdicts require as_of_epoch, frame_ref, and definition_ref")
++
++
++class EvidenceIntegrityProvider(Protocol):
++    """37t.14 dependency seam; implementations return one current verdict."""
++
++    def verdict_for(self, finding_ref: str) -> EvidenceIntegrityVerdict | None:
++        """Return the authoritative verdict for ``finding_ref`` when computed."""
++
++
++@dataclass(frozen=True, slots=True)
++class MappingEvidenceIntegrityProvider:
++    """Small adapter for persisted/exported verdict receipts and tests."""
++
++    verdicts: Mapping[str, EvidenceIntegrityVerdict]
++
++    def verdict_for(self, finding_ref: str) -> EvidenceIntegrityVerdict | None:
++        return self.verdicts.get(finding_ref)
++
++
++@dataclass(frozen=True, slots=True)
++class PublicFindingInput:
++    """Storage-neutral projection input for one FINDING assertion row."""
++
++    assertion_ref: str
++    claim_key: str
++    publication: str
++    scope: str
++    caveat: str
++    public_evidence_refs: tuple[str, ...]
++    presets: tuple[PublicClaimPresetName, ...]
++    disclosure: PublicClaimDisclosure
++    statistic: Mapping[str, JSONValue]
++    finding_epoch: str | None
++    evaluation_ref: str | None
++    frame_ref: str | None
++    assertion_status: AssertionStatus
++    assertion_visibility: AssertionVisibility
++    author_kind: str
++    judgment_ref: str | None
++    judgment_decision: str | None
++    supersedes: tuple[str, ...]
++    updated_at_ms: int
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "assertion_ref", _public_ref(self.assertion_ref, field="assertion_ref"))
++        object.__setattr__(self, "claim_key", _claim_key(self.claim_key))
++        for field_name in ("publication", "scope", "caveat"):
++            object.__setattr__(self, field_name, _public_text(getattr(self, field_name), field=field_name))
++        object.__setattr__(
++            self,
++            "public_evidence_refs",
++            _public_refs(self.public_evidence_refs, field="public_evidence_refs", required=True),
++        )
++        object.__setattr__(
++            self,
++            "finding_epoch",
++            _optional_public_text(self.finding_epoch, field="finding_epoch"),
++        )
++        object.__setattr__(
++            self,
++            "evaluation_ref",
++            _optional_public_ref(self.evaluation_ref, field="evaluation_ref"),
++        )
++        object.__setattr__(
++            self,
++            "frame_ref",
++            _optional_public_ref(self.frame_ref, field="frame_ref"),
++        )
++        object.__setattr__(
++            self,
++            "judgment_ref",
++            _optional_public_ref(self.judgment_ref, field="judgment_ref"),
++        )
++        object.__setattr__(
++            self,
++            "supersedes",
++            _public_refs(self.supersedes, field="supersedes"),
++        )
++        object.__setattr__(self, "statistic", _public_statistic(self.statistic))
++        if not self.presets:
++            raise ValueError("public finding must name at least one preset")
++        if not self.author_kind.strip():
++            raise ValueError("public finding author_kind must be non-empty")
++
++
++@dataclass(frozen=True, slots=True)
++class CapabilityClaimInput:
++    """Explicit non-measurement claim; no FINDING or support verdict is implied."""
++
++    claim_key: str
++    publication: str
++    scope: str
++    caveat: str
++    public_evidence_refs: tuple[str, ...]
++    presets: tuple[PublicClaimPresetName, ...]
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "claim_key", _claim_key(self.claim_key))
++        for field_name in ("publication", "scope", "caveat"):
++            object.__setattr__(self, field_name, _public_text(getattr(self, field_name), field=field_name))
++        object.__setattr__(
++            self,
++            "public_evidence_refs",
++            _public_refs(self.public_evidence_refs, field="public_evidence_refs", required=True),
++        )
++        if not self.presets:
++            raise ValueError("capability claim must name at least one preset")
++
++
++@dataclass(frozen=True, slots=True)
++class PublicClaimProjection:
++    """One sanitized, rendered claim row shared by every public preset."""
++
++    claim_key: str
++    source_kind: PublicClaimSourceKind
++    source_ref: str | None
++    status: PublicClaimStatus
++    integrity_status: EvidenceIntegrityStatus | None
++    integrity_verdict_present: bool
++    publication: str
++    scope: str
++    caveat: str
++    public_evidence_refs: tuple[str, ...]
++    public_remediation_refs: tuple[str, ...]
++    reason_codes: tuple[str, ...]
++    blind_spot_codes: tuple[str, ...]
++    presets: tuple[PublicClaimPresetName, ...]
++    statistic: Mapping[str, JSONValue] | None
++    finding_epoch: str | None
++    verdict_as_of_epoch: str | None
++    finding_frame_ref: str | None
++    verdict_frame_ref: str | None
++    evaluation_ref: str | None
++    definition_ref: str | None
++    assertion_status: AssertionStatus | None
++    publication_review: PublicClaimReviewStatus
++    privacy_review: PublicClaimPrivacyStatus
++    judgment_ref: str | None
++    blocker_codes: tuple[str, ...]
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "claim_key", _claim_key(self.claim_key))
++        for field_name in ("publication", "scope", "caveat"):
++            object.__setattr__(self, field_name, _public_text(getattr(self, field_name), field=field_name))
++        object.__setattr__(
++            self,
++            "public_evidence_refs",
++            _public_refs(
++                self.public_evidence_refs,
++                field="public_evidence_refs",
++                required=self.privacy_review != "held_private",
++            ),
++        )
++        object.__setattr__(
++            self,
++            "public_remediation_refs",
++            _public_refs(self.public_remediation_refs, field="public_remediation_refs"),
++        )
++        object.__setattr__(self, "reason_codes", _public_codes(self.reason_codes, field="reason_codes"))
++        object.__setattr__(
++            self,
++            "blind_spot_codes",
++            _public_codes(self.blind_spot_codes, field="blind_spot_codes"),
++        )
++        object.__setattr__(
++            self,
++            "blocker_codes",
++            _public_codes(self.blocker_codes, field="blocker_codes"),
++        )
++        for field_name in (
++            "source_ref",
++            "finding_frame_ref",
++            "verdict_frame_ref",
++            "evaluation_ref",
++            "definition_ref",
++            "judgment_ref",
++        ):
++            object.__setattr__(
++                self,
++                field_name,
++                _optional_public_ref(getattr(self, field_name), field=field_name),
++            )
++        for field_name in ("finding_epoch", "verdict_as_of_epoch"):
++            object.__setattr__(
++                self,
++                field_name,
++                _optional_public_text(getattr(self, field_name), field=field_name),
++            )
++        if self.statistic is not None:
++            object.__setattr__(self, "statistic", _public_statistic(self.statistic))
++        if not self.presets:
++            raise ValueError("public claim projection must name at least one preset")
++        if self.source_kind == "capability":
++            if (
++                self.source_ref is not None
++                or self.statistic is not None
++                or self.integrity_status is not None
++                or self.status is not PublicClaimStatus.CAPABILITY_ONLY
++            ):
++                raise ValueError("capability-only projections cannot carry finding or integrity state")
++        elif (
++            self.source_ref is None
++            or (self.statistic is None and self.privacy_review != "held_private")
++            or self.status is PublicClaimStatus.CAPABILITY_ONLY
++        ):
++            raise ValueError("finding projections require a source ref/statistic and cannot be capability-only")
++        if self.status in {PublicClaimStatus.SUPPORTED, PublicClaimStatus.PARTIALLY_SUPPORTED}:
++            expected_integrity = (
++                EvidenceIntegrityStatus.SUPPORTED
++                if self.status is PublicClaimStatus.SUPPORTED
++                else EvidenceIntegrityStatus.PARTIALLY_SUPPORTED
++            )
++            if (
++                self.integrity_status is not expected_integrity
++                or not self.integrity_verdict_present
++                or self.publication_review != "approved"
++                or self.privacy_review != "approved"
++                or not self.verdict_as_of_epoch
++                or not self.verdict_frame_ref
++                or not self.definition_ref
++            ):
++                raise ValueError("supported public claims require an approved qualified integrity verdict")
++
++    @property
++    def badge(self) -> str:
++        """Return the compact badge used by every Markdown rendering."""
++
++        if self.status is PublicClaimStatus.CAPABILITY_ONLY:
++            return "[CAPABILITY ONLY]"
++        if self.status is PublicClaimStatus.STALE_NEEDS_RERUN:
++            return "[STALE / NEEDS RERUN]"
++        if self.status is PublicClaimStatus.PARTIALLY_SUPPORTED:
++            return "[PARTIALLY SUPPORTED]"
++        if self.status is PublicClaimStatus.NOT_SUPPORTED:
++            return "[NOT SUPPORTED]"
++        if self.status is PublicClaimStatus.HELD_PRIVATE:
++            return "[HELD PRIVATE]"
++        if self.status is PublicClaimStatus.SUPPORTED:
++            return "[SUPPORTED]"
++        if self.integrity_status is not None:
++            detail = self.integrity_status.value.replace("_", " ").upper()
++            return f"[UNKNOWN · {detail}]"
++        return "[UNKNOWN]"
++
++    def to_payload(
++        self,
++        *,
++        include_review: bool = True,
++        include_reason_codes: bool = True,
++    ) -> dict[str, object]:
++        payload: dict[str, object] = {
++            "claim_key": self.claim_key,
++            "source_kind": self.source_kind,
++            "source_ref": self.source_ref,
++            "status": self.status.value,
++            "integrity_status": None if self.integrity_status is None else self.integrity_status.value,
++            "integrity_verdict_present": self.integrity_verdict_present,
++            "badge": self.badge,
++            "publication": self.publication,
++            "scope": self.scope,
++            "caveat": self.caveat,
++            "public_evidence_refs": list(self.public_evidence_refs),
++            "public_remediation_refs": list(self.public_remediation_refs),
++            "presets": [preset.value for preset in self.presets],
++            "statistic": None if self.statistic is None else dict(self.statistic),
++            "qualifiers": {
++                "finding_epoch": self.finding_epoch,
++                "verdict_as_of_epoch": self.verdict_as_of_epoch,
++                "finding_frame_ref": self.finding_frame_ref,
++                "verdict_frame_ref": self.verdict_frame_ref,
++                "evaluation_ref": self.evaluation_ref,
++                "definition_ref": self.definition_ref,
++            },
++        }
++        if include_review:
++            payload["review"] = {
++                "assertion_status": None if self.assertion_status is None else self.assertion_status.value,
++                "publication": self.publication_review,
++                "privacy": self.privacy_review,
++                "judgment_ref": self.judgment_ref,
++            }
++        if include_reason_codes:
++            payload.update(
++                {
++                    "reason_codes": list(self.reason_codes),
++                    "blind_spot_codes": list(self.blind_spot_codes),
++                    "blocker_codes": list(self.blocker_codes),
++                }
++            )
++        return payload
++
++
++@dataclass(frozen=True, slots=True)
++class PublicClaimPreset:
++    name: PublicClaimPresetName
++    title: str
++    include_review: bool
++    include_reason_codes: bool
++
++
++PUBLIC_CLAIM_PRESETS: Mapping[PublicClaimPresetName, PublicClaimPreset] = {
++    PublicClaimPresetName.README: PublicClaimPreset(
++        PublicClaimPresetName.README,
++        "README Public Claims",
++        include_review=False,
++        include_reason_codes=False,
++    ),
++    PublicClaimPresetName.LAUNCH: PublicClaimPreset(
++        PublicClaimPresetName.LAUNCH,
++        "Launch Public Claims",
++        include_review=False,
++        include_reason_codes=True,
++    ),
++    PublicClaimPresetName.FINDINGS_PAGE: PublicClaimPreset(
++        PublicClaimPresetName.FINDINGS_PAGE,
++        "Findings-Page Public Claims",
++        include_review=True,
++        include_reason_codes=True,
++    ),
++    PublicClaimPresetName.VERIFIED_EXPORT: PublicClaimPreset(
++        PublicClaimPresetName.VERIFIED_EXPORT,
++        "Verified Public-Claims Export",
++        include_review=True,
++        include_reason_codes=True,
++    ),
++}
++
++
++def project_public_claims(
++    findings: Sequence[PublicFindingInput],
++    capabilities: Sequence[CapabilityClaimInput],
++    *,
++    integrity: EvidenceIntegrityProvider,
++) -> tuple[PublicClaimProjection, ...]:
++    """Project one stable row per claim key without evaluating ancestry locally."""
++
++    grouped: dict[str, list[PublicFindingInput]] = defaultdict(list)
++    for finding in findings:
++        grouped[finding.claim_key].append(finding)
++
++    capability_by_key: dict[str, CapabilityClaimInput] = {}
++    for capability in capabilities:
++        if capability.claim_key in capability_by_key or capability.claim_key in grouped:
++            raise ValueError(f"duplicate public claim key: {capability.claim_key}")
++        capability_by_key[capability.claim_key] = capability
++
++    projected: list[PublicClaimProjection] = []
++    for claim_key in sorted(grouped):
++        selected, selection_conflict = _select_current_finding(grouped[claim_key])
++        projected.append(_project_finding(selected, integrity=integrity, selection_conflict=selection_conflict))
++
++    for claim_key in sorted(capability_by_key):
++        capability = capability_by_key[claim_key]
++        projected.append(
++            PublicClaimProjection(
++                claim_key=capability.claim_key,
++                source_kind="capability",
++                source_ref=None,
++                status=PublicClaimStatus.CAPABILITY_ONLY,
++                integrity_status=None,
++                integrity_verdict_present=False,
++                publication=capability.publication,
++                scope=capability.scope,
++                caveat=capability.caveat,
++                public_evidence_refs=tuple(dict.fromkeys(capability.public_evidence_refs)),
++                public_remediation_refs=(),
++                reason_codes=(),
++                blind_spot_codes=(),
++                presets=capability.presets,
++                statistic=None,
++                finding_epoch=None,
++                verdict_as_of_epoch=None,
++                finding_frame_ref=None,
++                verdict_frame_ref=None,
++                evaluation_ref=None,
++                definition_ref=None,
++                assertion_status=None,
++                publication_review="approved",
++                privacy_review="approved",
++                judgment_ref=None,
++                blocker_codes=(),
++            )
++        )
++
++    return tuple(sorted(projected, key=lambda claim: claim.claim_key))
++
++
++def _select_current_finding(findings: Sequence[PublicFindingInput]) -> tuple[PublicFindingInput, bool]:
++    superseded_refs = {ref for finding in findings for ref in finding.supersedes}
++    live = [
++        finding
++        for finding in findings
++        if finding.assertion_ref not in superseded_refs
++        and finding.assertion_status not in {AssertionStatus.SUPERSEDED, AssertionStatus.DELETED}
++    ]
++    if not live:
++        live = list(findings)
++
++    active = [finding for finding in live if finding.assertion_status is AssertionStatus.ACTIVE]
++    if active:
++        selected = max(active, key=lambda item: (item.updated_at_ms, item.assertion_ref))
++        return selected, len(active) > 1
++
++    selected = max(live, key=lambda item: (item.updated_at_ms, item.assertion_ref))
++    return selected, False
++
++
++def _publication_review(finding: PublicFindingInput) -> PublicClaimReviewStatus:
++    status = finding.assertion_status
++    if status is AssertionStatus.REJECTED:
++        return "rejected"
++    if status is AssertionStatus.DEFERRED:
++        return "deferred"
++    if status is AssertionStatus.SUPERSEDED:
++        return "superseded"
++    if status is AssertionStatus.CANDIDATE:
++        return "pending"
++    if status is AssertionStatus.ACCEPTED:
++        return "approved"
++    if status is not AssertionStatus.ACTIVE:
++        return "unknown"
++
++    promoted_review = finding.judgment_ref is not None and finding.judgment_decision in {"accept", "supersede"}
++    direct_user_review = finding.author_kind == "user" and not finding.supersedes
++    return "approved" if promoted_review or direct_user_review else "pending"
++
++
++def _privacy_review(
++    finding: PublicFindingInput,
++    publication_review: PublicClaimReviewStatus,
++) -> PublicClaimPrivacyStatus:
++    if finding.disclosure == "held_private":
++        return "held_private"
++    if publication_review != "approved":
++        return "pending"
++    if finding.assertion_visibility is AssertionVisibility.PUBLIC or finding.disclosure == "public":
++        return "approved"
++    return "unknown"
++
++
++def _project_finding(
++    finding: PublicFindingInput,
++    *,
++    integrity: EvidenceIntegrityProvider,
++    selection_conflict: bool,
++) -> PublicClaimProjection:
++    verdict = integrity.verdict_for(finding.assertion_ref)
++    verdict_present = verdict is not None
++    if verdict is None:
++        verdict = EvidenceIntegrityVerdict(
++            finding_ref=finding.assertion_ref,
++            status=EvidenceIntegrityStatus.UNRESOLVED,
++            reason_codes=("integrity-verdict-not-computed",),
++            public_remediation_refs=("bead:polylogue-37t.14",),
++        )
++    elif verdict.finding_ref != finding.assertion_ref:
++        raise ValueError(
++            f"evidence-integrity verdict ref mismatch: {verdict.finding_ref!r} != {finding.assertion_ref!r}"
++        )
++
++    publication_review = _publication_review(finding)
++    privacy_review = _privacy_review(finding, publication_review)
++    if verdict.status is EvidenceIntegrityStatus.HELD_PRIVATE:
++        privacy_review = "held_private"
++    status, blocker_codes = _public_status(
++        finding,
++        verdict,
++        selection_conflict=selection_conflict,
++        publication_review=publication_review,
++        privacy_review=privacy_review,
++    )
++    evidence_refs = tuple(dict.fromkeys((*finding.public_evidence_refs, *verdict.public_evidence_refs)))
++    publication = finding.publication
++    scope = finding.scope
++    caveat = finding.caveat
++    statistic: Mapping[str, JSONValue] | None = dict(finding.statistic)
++    finding_epoch = finding.finding_epoch
++    finding_frame_ref = finding.frame_ref
++    evaluation_ref = finding.evaluation_ref
++    verdict_as_of_epoch = verdict.as_of_epoch
++    verdict_frame_ref = verdict.frame_ref
++    definition_ref = verdict.definition_ref
++    if privacy_review == "held_private":
++        publication = "Claim text withheld pending public privacy review."
++        scope = "The stable claim key remains visible; claim content and evidence are withheld."
++        caveat = "No inference should be drawn from a privacy hold."
++        evidence_refs = ()
++        statistic = None
++        finding_epoch = None
++        finding_frame_ref = None
++        evaluation_ref = None
++        verdict_as_of_epoch = None
++        verdict_frame_ref = None
++        definition_ref = None
++
++    return PublicClaimProjection(
++        claim_key=finding.claim_key,
++        source_kind="finding",
++        source_ref=finding.assertion_ref,
++        status=status,
++        integrity_status=verdict.status,
++        integrity_verdict_present=verdict_present,
++        publication=publication,
++        scope=scope,
++        caveat=caveat,
++        public_evidence_refs=evidence_refs,
++        public_remediation_refs=verdict.public_remediation_refs,
++        reason_codes=verdict.reason_codes,
++        blind_spot_codes=verdict.blind_spot_codes,
++        presets=finding.presets,
++        statistic=statistic,
++        finding_epoch=finding_epoch,
++        verdict_as_of_epoch=verdict_as_of_epoch,
++        finding_frame_ref=finding_frame_ref,
++        verdict_frame_ref=verdict_frame_ref,
++        evaluation_ref=evaluation_ref,
++        definition_ref=definition_ref,
++        assertion_status=finding.assertion_status,
++        publication_review=publication_review,
++        privacy_review=privacy_review,
++        judgment_ref=finding.judgment_ref,
++        blocker_codes=blocker_codes,
++    )
++
++
++def _public_status(
++    finding: PublicFindingInput,
++    verdict: EvidenceIntegrityVerdict,
++    *,
++    selection_conflict: bool,
++    publication_review: PublicClaimReviewStatus,
++    privacy_review: PublicClaimPrivacyStatus,
++) -> tuple[PublicClaimStatus, tuple[str, ...]]:
++    blockers: list[str] = []
++    if privacy_review == "held_private":
++        if finding.disclosure == "held_private":
++            blockers.append("publication-held-private")
++        if verdict.status is EvidenceIntegrityStatus.HELD_PRIVATE:
++            blockers.append("integrity-held_private")
++        return PublicClaimStatus.HELD_PRIVATE, tuple(blockers)
++
++    if selection_conflict:
++        blockers.append("multiple-live-findings")
++        return PublicClaimStatus.UNKNOWN, tuple(blockers)
++
++    if finding.assertion_status is AssertionStatus.REJECTED:
++        blockers.append("finding-rejected")
++        return PublicClaimStatus.NOT_SUPPORTED, tuple(blockers)
++    if finding.assertion_status in {
++        AssertionStatus.CANDIDATE,
++        AssertionStatus.ACCEPTED,
++        AssertionStatus.DEFERRED,
++        AssertionStatus.SUPERSEDED,
++        AssertionStatus.DELETED,
++    }:
++        blockers.append(f"finding-{finding.assertion_status.value}")
++        return PublicClaimStatus.UNKNOWN, tuple(blockers)
++
++    if publication_review != "approved":
++        blockers.append("publication-review-pending")
++        return PublicClaimStatus.UNKNOWN, tuple(blockers)
++    if privacy_review != "approved":
++        blockers.append("privacy-review-pending")
++        return PublicClaimStatus.UNKNOWN, tuple(blockers)
++
++    status_map: Mapping[EvidenceIntegrityStatus, PublicClaimStatus] = {
++        EvidenceIntegrityStatus.SUPPORTED: PublicClaimStatus.SUPPORTED,
++        EvidenceIntegrityStatus.PARTIALLY_SUPPORTED: PublicClaimStatus.PARTIALLY_SUPPORTED,
++        EvidenceIntegrityStatus.NOT_SUPPORTED: PublicClaimStatus.NOT_SUPPORTED,
++        EvidenceIntegrityStatus.STALE: PublicClaimStatus.STALE_NEEDS_RERUN,
++        EvidenceIntegrityStatus.HELD_PRIVATE: PublicClaimStatus.HELD_PRIVATE,
++        EvidenceIntegrityStatus.CLOSED_LOOP: PublicClaimStatus.UNKNOWN,
++        EvidenceIntegrityStatus.CYCLE: PublicClaimStatus.UNKNOWN,
++        EvidenceIntegrityStatus.UNRESOLVED: PublicClaimStatus.UNKNOWN,
++        EvidenceIntegrityStatus.FRAME_INCOMPLETE: PublicClaimStatus.UNKNOWN,
++    }
++    projected = status_map[verdict.status]
++    if projected is not PublicClaimStatus.SUPPORTED:
++        blockers.append(f"integrity-{verdict.status.value}")
++    return projected, tuple(blockers)
++
++
++def claims_for_preset(
++    claims: Sequence[PublicClaimProjection],
++    preset_name: PublicClaimPresetName,
++) -> tuple[PublicClaimProjection, ...]:
++    """Filter one already-computed projection; status is never recomputed."""
++
++    return tuple(claim for claim in claims if preset_name in claim.presets)
++
++
++def build_public_claims_payload(
++    claims: Sequence[PublicClaimProjection],
++    preset_name: PublicClaimPresetName,
++) -> dict[str, object]:
++    """Return the shared machine rendering for one preset."""
++
++    preset = PUBLIC_CLAIM_PRESETS[preset_name]
++    selected = claims_for_preset(claims, preset_name)
++    return {
++        "schema": "polylogue.public-claims-view.v1",
++        "preset": preset_name.value,
++        "authority": {
++            "claims": "AssertionKind.FINDING + explicit capability declarations",
++            "integrity": "polylogue-37t.14 EvidenceIntegrityVerdict",
++            "projection": "polylogue/insights/measurement/public_claims.py",
++        },
++        "claim_count": len(selected),
++        "publishable_claim_keys": [
++            claim.claim_key
++            for claim in selected
++            if claim.status
++            in {
++                PublicClaimStatus.SUPPORTED,
++                PublicClaimStatus.PARTIALLY_SUPPORTED,
++                PublicClaimStatus.CAPABILITY_ONLY,
++            }
++        ],
++        "claims": [
++            claim.to_payload(
++                include_review=preset.include_review,
++                include_reason_codes=preset.include_reason_codes,
++            )
++            for claim in selected
++        ],
++    }
++
++
++def render_public_claims_json(
++    claims: Sequence[PublicClaimProjection],
++    preset_name: PublicClaimPresetName,
++) -> str:
++    return json.dumps(build_public_claims_payload(claims, preset_name), indent=2, sort_keys=True) + "\n"
++
++
++def render_public_claims_markdown(
++    claims: Sequence[PublicClaimProjection],
++    preset_name: PublicClaimPresetName,
++) -> str:
++    """Render one preset through the same generic Markdown implementation."""
++
++    preset = PUBLIC_CLAIM_PRESETS[preset_name]
++    selected = claims_for_preset(claims, preset_name)
++    lines = [
++        f"# {preset.title}",
++        "",
++        (
++            "This file is generated from FINDING assertions, canonical judgment state, and the shared "
++            "evidence-integrity verdict. A badge is a current publication status, not a substitute for the cited evidence."
++        ),
++        "",
++    ]
++    for claim in selected:
++        lines.extend(
++            [
++                f"## `{claim.claim_key}` {claim.badge}",
++                "",
++                claim.publication,
++                "",
++                f"- Scope: {claim.scope}",
++                f"- Caveat: {claim.caveat}",
++                "- Evidence: " + _markdown_refs(claim.public_evidence_refs),
++                "- Epoch/frame: " + _markdown_qualifiers(claim),
++            ]
++        )
++        if preset.include_review:
++            lines.append(
++                "- Review: "
++                f"assertion={_optional_enum(claim.assertion_status)}, "
++                f"publication={claim.publication_review}, privacy={claim.privacy_review}, "
++                f"judgment={claim.judgment_ref or 'none'}"
++            )
++        if preset.include_reason_codes and (claim.reason_codes or claim.blocker_codes):
++            codes = tuple(dict.fromkeys((*claim.blocker_codes, *claim.reason_codes)))
++            lines.append("- Status reasons: " + ", ".join(f"`{code}`" for code in codes))
++        if claim.public_remediation_refs:
++            lines.append("- Remediation: " + _markdown_refs(claim.public_remediation_refs))
++        lines.append("")
++    return "\n".join(lines).rstrip() + "\n"
++
++
++def _optional_enum(value: AssertionStatus | None) -> str:
++    return "n/a" if value is None else value.value
++
++
++def _markdown_refs(refs: Sequence[str]) -> str:
++    if not refs:
++        return "none published"
++    return ", ".join(f"`{ref}`" for ref in refs)
++
++
++def _markdown_qualifiers(claim: PublicClaimProjection) -> str:
++    if claim.source_kind == "capability":
++        return "not applicable (capability statement; no measured result)"
++    values = (
++        f"finding epoch={claim.finding_epoch or 'unknown'}",
++        f"verdict as-of={claim.verdict_as_of_epoch or 'unknown'}",
++        f"finding frame={claim.finding_frame_ref or 'unknown'}",
++        f"verdict frame={claim.verdict_frame_ref or 'unknown'}",
++        f"evaluation={claim.evaluation_ref or 'unknown'}",
++        f"definition={claim.definition_ref or 'unknown'}",
++    )
++    return "; ".join(values)
++
++
++__all__ = [
++    "CapabilityClaimInput",
++    "EvidenceIntegrityProvider",
++    "EvidenceIntegrityStatus",
++    "EvidenceIntegrityVerdict",
++    "MappingEvidenceIntegrityProvider",
++    "PUBLIC_CLAIM_PRESETS",
++    "PublicClaimDisclosure",
++    "PublicClaimPreset",
++    "PublicClaimPresetName",
++    "PublicClaimProjection",
++    "PublicClaimStatus",
++    "PublicFindingInput",
++    "build_public_claims_payload",
++    "claims_for_preset",
++    "project_public_claims",
++    "render_public_claims_json",
++    "render_public_claims_markdown",
++]
+diff --git a/polylogue/scenarios/corpus.py b/polylogue/scenarios/corpus.py
+index 802d8414dab950025f18abc3677901fa8b0ef9af..500d92a4757c35e319ed3496845be76fb78892df 100644
+--- a/polylogue/scenarios/corpus.py
++++ b/polylogue/scenarios/corpus.py
+@@ -9,6 +9,7 @@ from enum import Enum
+ from pathlib import Path
+ from typing import TYPE_CHECKING
+ 
++from polylogue.core.json import JSONValue
+ from polylogue.insights.authored_payloads import (
+     PayloadDict,
+     PayloadMap,
+@@ -27,6 +28,7 @@ from .specs import ScenarioSpec
+ if TYPE_CHECKING:
+     from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
+     from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
++    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion
+ 
+ 
+ def _coerce_optional_float(value: object) -> float | None:
+@@ -821,6 +823,169 @@ def _resolve_existing_demo_session(archive: object, session_id: str) -> str | No
+         return None
+ 
+ 
++def claim_vs_evidence_findings() -> tuple[FindingAssertion, ...]:
++    """Return the three public claim-vs-evidence FINDING seeds from the 2026-07-04 packet.
++
++    The return annotation stays storage-neutral at module import time; callers
++    receive ``FindingAssertion`` instances.  Values are copied from the
++    snapshot's sanitized ``.agent/demos/claim-vs-evidence`` report, while the
++    actual support status remains a live 37t.14 verdict rather than a seed.
++    """
++
++    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, PublicClaimDeclaration
++
++    report_ref = "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json"
++    public_summary_ref = "file:.agent/demos/claim-vs-evidence/public-summary.json"
++    finding_doc_ref = "file:docs/findings/claim-vs-evidence.md"
++
++    def finding(
++        *,
++        claim_key: str,
++        body_text: str,
++        statistic: Mapping[str, JSONValue],
++        public_claim: PublicClaimDeclaration,
++    ) -> FindingAssertion:
++        return FindingAssertion(
++            claim_key=claim_key,
++            target_ref="analysis:claim-vs-evidence-2026-07-04",
++            body_text=body_text,
++            finding_kind="claim-vs-evidence",
++            statistic=statistic,
++            n=5_000,
++            query_ref=f"{report_ref}#definition",
++            result_set_ref=f"{report_ref}#totals",
++            detector_ref="run:claim-vs-evidence-2026-07-04",
++            evidence_refs=(report_ref, public_summary_ref, finding_doc_ref),
++            confidence=None,
++            source_epoch="2026-07-04T08:55:53.667311+00:00",
++            evaluation_ref=f"{report_ref}#calibration",
++            frame_ref=f"{report_ref}#sample_frame",
++            public_claim=public_claim,
++        )
++
++    public_refs = (finding_doc_ref, public_summary_ref, report_ref)
++    return (
++        finding(
++            claim_key="finding.silent-proceed-lower-bound",
++            body_text=(
++                "In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures "
++                "were followed by silent continuation on the next assistant turn, a 24.1% lower bound."
++            ),
++            statistic={
++                "op": "lower_bound",
++                "value": 0.241,
++                "unit": "ratio",
++                "numerator": 1_205,
++                "denominator": 5_000,
++                "ambiguous": 3_375,
++            },
++            public_claim=PublicClaimDeclaration(
++                publication=(
++                    "In one bounded private-archive sample, 1,205 of 5,000 inspected structured failures "
++                    "were followed by silent continuation on the next assistant turn, a 24.1% lower bound."
++                ),
++                scope=(
++                    "One private archive; an origin-stratified 5,000-row sample from a 42,033-row "
++                    "structured-failure frame; next assistant turn only."
++                ),
++                caveat=(
++                    "This is not a population estimate; 3,375 rows remained ambiguous, and support must be "
++                    "recomputed when the evidence epoch, definition, or frame changes."
++                ),
++                public_evidence_refs=public_refs,
++                disclosure="public",
++            ),
++        ),
++        finding(
++            claim_key="finding.handler-class-split",
++            body_text=(
++                "The same sample's silent-continuation lower bounds were 22.3% for consequential handlers, "
++                "27.1% for benign-recovery handlers, and 53.9% for other handlers."
++            ),
++            statistic={
++                "op": "breakdown",
++                "value": {
++                    "consequential": {
++                        "failed_outcomes": 4_175,
++                        "silent_proceed": 930,
++                        "ambiguous": 2_842,
++                        "silent_rate_lower_bound": 0.22275449101796407,
++                    },
++                    "benign_recovery": {
++                        "failed_outcomes": 634,
++                        "silent_proceed": 172,
++                        "ambiguous": 455,
++                        "silent_rate_lower_bound": 0.27129337539432175,
++                    },
++                    "other": {
++                        "failed_outcomes": 191,
++                        "silent_proceed": 103,
++                        "ambiguous": 78,
++                        "silent_rate_lower_bound": 0.5392670157068062,
++                    },
++                },
++                "unit": "structured_failures",
++            },
++            public_claim=PublicClaimDeclaration(
++                publication=(
++                    "In that sample, the silent-continuation lower bound was 22.3% for consequential "
++                    "handlers, 27.1% for benign-recovery handlers, and 53.9% for other handlers."
++                ),
++                scope=(
++                    "The same 5,000 sampled failures, partitioned by the packet's explicit handler-class "
++                    "methodology: 4,175 consequential, 634 benign-recovery, and 191 other."
++                ),
++                caveat=(
++                    "The classes are method-defined tool-name groups, not severity labels; each group retains "
++                    "a large or material ambiguous remainder."
++                ),
++                public_evidence_refs=public_refs,
++                disclosure="public",
++            ),
++        ),
++        finding(
++            claim_key="finding.per-origin-inspection-counts",
++            body_text=(
++                "The bounded origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven "
++                "Claude AI structured failures."
++            ),
++            statistic={
++                "op": "breakdown",
++                "value": {
++                    "claude-code-session": {
++                        "inspected": 3_752,
++                        "requested": 3_752,
++                        "frame_total": 31_555,
++                    },
++                    "codex-session": {
++                        "inspected": 1_241,
++                        "requested": 1_241,
++                        "frame_total": 10_429,
++                    },
++                    "claude-ai-export": {"inspected": 7, "requested": 7, "frame_total": 49},
++                },
++                "unit": "structured_failures",
++            },
++            public_claim=PublicClaimDeclaration(
++                publication=(
++                    "The origin-stratified sample inspected 3,752 Claude Code, 1,241 Codex, and seven "
++                    "Claude AI structured failures from origin frames of 31,555, 10,429, and 49 respectively."
++                ),
++                scope=(
++                    "The 2026-07-04 bounded sample frame, selected deterministically by origin, session, "
++                    "tool, and result-message identifiers."
++                ),
++                caveat=(
++                    "These are inspection and frame counts, not provider prevalence estimates; the archive's "
++                    "origin mix and the bounded allocation determine them."
++                ),
++                public_evidence_refs=public_refs,
++                disclosure="public",
++            ),
++        ),
++    )
++
++
+ def seed_demo_user_overlays(
+     archive_root: Path,
+     *,
+@@ -842,6 +1007,7 @@ def seed_demo_user_overlays(
+         list_assertions_for_target,
+         upsert_assertion,
+         upsert_blackboard_note,
++        upsert_findings_as_assertions,
+         upsert_mark,
+         upsert_saved_view,
+     )
+@@ -920,6 +1086,11 @@ def seed_demo_user_overlays(
+             context_policy={"inject": False, "demo": True},
+             now_ms=now_ms + 4_000,
+         )
++        finding_assertions = upsert_findings_as_assertions(
++            conn,
++            claim_vs_evidence_findings(),
++            now_ms=now_ms + 5_000,
++        )
+         assertions = list_assertions_for_target(conn, f"session:{DEMO_CLAUDE_CODE_SESSION_ID}")
+         conn.commit()
+     finally:
+@@ -931,7 +1102,14 @@ def seed_demo_user_overlays(
+         mark_id=mark.mark_id,
+         note_id=note.note_id,
+         saved_view_id=saved_view.view_id,
+-        assertion_ids=tuple(dict.fromkeys(assertion.assertion_id for assertion in assertions)),
++        assertion_ids=tuple(
++            dict.fromkeys(
++                [
++                    *(assertion.assertion_id for assertion in assertions),
++                    *(assertion.assertion_id for assertion in finding_assertions),
++                ]
++            )
++        ),
+     )
+ 
+ 
+diff --git a/polylogue/storage/sqlite/archive_tiers/user_write.py b/polylogue/storage/sqlite/archive_tiers/user_write.py
+index 15a07547b1205022a2dd5e4f88b84ad9a2c6df01..a691300b714924ceac5d4b0a9a2f27884f098e03 100644
+--- a/polylogue/storage/sqlite/archive_tiers/user_write.py
++++ b/polylogue/storage/sqlite/archive_tiers/user_write.py
+@@ -14,6 +14,7 @@ import sqlite3
+ from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+ from datetime import UTC, datetime
++from pathlib import PurePosixPath, PureWindowsPath
+ from typing import TYPE_CHECKING, Final
+ 
+ from polylogue.core.assertions import (
+@@ -472,6 +473,23 @@ class ArchiveAssertionCandidateReviewEnvelope:
+     latest_judgment: ArchiveAssertionEnvelope | None = None
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class PublicClaimDeclaration:
++    """Sanitized publication fields embedded in a FINDING assertion value.
++
++    This is not a support ledger.  The assertion remains the claim owner and
++    the 37t.14 verdict remains the evidence-status owner; these fields merely
++    bound which prose and refs a reviewed public projection may expose.
++    """
++
++    publication: str
++    scope: str
++    caveat: str
++    public_evidence_refs: Sequence[str]
++    presets: Sequence[str] = ("readme", "launch", "findings-page", "verified-export")
++    disclosure: str = "held_private"
++
++
+ @dataclass(frozen=True, slots=True)
+ class FindingAssertion:
+     """One detector-produced claim stored through the assertion lifecycle.
+@@ -496,6 +514,10 @@ class FindingAssertion:
+     evidence_refs: Sequence[str] = ()
+     scope_ref: str | None = None
+     confidence: float | None = None
++    source_epoch: str | None = None
++    evaluation_ref: str | None = None
++    frame_ref: str | None = None
++    public_claim: PublicClaimDeclaration | None = None
+ 
+ 
+ def upsert_suppression(
+@@ -1358,6 +1380,10 @@ def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudg
+ _FINDING_KINDS: Final[frozenset[str]] = frozenset(
+     {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence"}
+ )
++_PUBLIC_CLAIM_PRESETS: Final[frozenset[str]] = frozenset({"readme", "launch", "findings-page", "verified-export"})
++_PUBLIC_EVIDENCE_REF_KINDS: Final[frozenset[str]] = frozenset(
++    {"file", "commit", "github-issue", "github-pr", "assertion", "finding", "analysis", "run"}
++)
+ 
+ 
+ def _validate_finding_ref(value: str, *, field: str) -> str:
+@@ -1369,6 +1395,57 @@ def _validate_finding_ref(value: str, *, field: str) -> str:
+     return normalized
+ 
+ 
++def _validate_public_claim_text(value: str, *, field: str) -> str:
++    normalized = value.strip()
++    if not normalized:
++        raise ValueError(f"public claim {field} must be non-empty")
++    return normalized
++
++
++def _validate_public_evidence_ref(value: str) -> str:
++    normalized = _validate_finding_ref(value, field="public_evidence_ref")
++    try:
++        parsed = ObjectRef.parse(normalized)
++    except ValueError as exc:
++        raise ValueError(f"public claim evidence ref must be an ObjectRef: {normalized!r}") from exc
++    if parsed.kind not in _PUBLIC_EVIDENCE_REF_KINDS:
++        raise ValueError(f"public claim evidence ref kind is not publishable: {parsed.kind!r}")
++    if parsed.kind == "file":
++        path = parsed.object_id.split("#", maxsplit=1)[0]
++        if (
++            not path
++            or path.startswith("~")
++            or PurePosixPath(path).is_absolute()
++            or PureWindowsPath(path).is_absolute()
++            or ".." in PurePosixPath(path).parts
++            or ".." in PureWindowsPath(path).parts
++        ):
++            raise ValueError(f"public claim file ref must be repository-relative: {normalized!r}")
++    return normalized
++
++
++def _public_claim_value(declaration: PublicClaimDeclaration) -> dict[str, object]:
++    disclosure = declaration.disclosure.strip()
++    if disclosure not in {"public", "held_private"}:
++        raise ValueError("public claim disclosure must be 'public' or 'held_private'")
++    presets = tuple(dict.fromkeys(item.strip() for item in declaration.presets if item.strip()))
++    if not presets or any(item not in _PUBLIC_CLAIM_PRESETS for item in presets):
++        raise ValueError(f"public claim presets must be drawn from {sorted(_PUBLIC_CLAIM_PRESETS)!r}")
++    public_evidence_refs = tuple(
++        dict.fromkeys(_validate_public_evidence_ref(ref) for ref in declaration.public_evidence_refs)
++    )
++    if not public_evidence_refs:
++        raise ValueError("public claim must expose at least one sanitized evidence ref")
++    return {
++        "publication": _validate_public_claim_text(declaration.publication, field="publication"),
++        "scope": _validate_public_claim_text(declaration.scope, field="scope"),
++        "caveat": _validate_public_claim_text(declaration.caveat, field="caveat"),
++        "public_evidence_refs": list(public_evidence_refs),
++        "presets": list(presets),
++        "disclosure": disclosure,
++    }
++
++
+ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
+     """Validate and project the additive ``polylogue.finding.v1`` payload."""
+ 
+@@ -1405,6 +1482,14 @@ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
+         # Future rigor work can add bands, tolerances, or direction-only
+         # expectations without a user-tier schema migration.
+         value["expected"] = expected
++    if finding.source_epoch is not None:
++        value["source_epoch"] = _validate_public_claim_text(finding.source_epoch, field="source_epoch")
++    if finding.evaluation_ref is not None:
++        value["evaluation_ref"] = _validate_finding_ref(finding.evaluation_ref, field="evaluation_ref")
++    if finding.frame_ref is not None:
++        value["frame_ref"] = _validate_finding_ref(finding.frame_ref, field="frame_ref")
++    if finding.public_claim is not None:
++        value["public_claim"] = _public_claim_value(finding.public_claim)
+     return value
+ 
+ 
+@@ -1432,10 +1517,15 @@ def upsert_findings_as_assertions(
+             result_set_ref,
+             *(_validate_finding_ref(ref, field="evidence_ref") for ref in finding.evidence_refs),
+         ]
+-        for field in ("baseline_ref", "current_ref"):
++        for field in ("baseline_ref", "current_ref", "evaluation_ref", "frame_ref"):
+             ref = value.get(field)
+             if isinstance(ref, str):
+                 evidence_refs.append(ref)
++        public_claim = value.get("public_claim")
++        if isinstance(public_claim, dict):
++            public_refs = public_claim.get("public_evidence_refs")
++            if isinstance(public_refs, list):
++                evidence_refs.extend(str(ref) for ref in public_refs)
+         evidence_refs = sorted(set(evidence_refs))
+         detector_ref = _validate_finding_ref(finding.detector_ref, field="detector_ref")
+         assertion_id = assertion_id_for_finding(
+@@ -2251,6 +2341,7 @@ __all__ = [
+     "ArchiveSavedViewEnvelope",
+     "ArchiveWorkspaceEnvelope",
+     "FindingAssertion",
++    "PublicClaimDeclaration",
+     "AssertionKind",
+     "AssertionStatus",
+     "AssertionVisibility",
+diff --git a/polylogue/storage/sqlite/finding_provenance.py b/polylogue/storage/sqlite/finding_provenance.py
+index 46e78683321ae7a8e0fbd0ff4ce273a2e1e6cba9..acd702ef197ecba07e1af1ce71e2e7b870af88e7 100644
+--- a/polylogue/storage/sqlite/finding_provenance.py
++++ b/polylogue/storage/sqlite/finding_provenance.py
+@@ -10,18 +10,30 @@ against live user-tier storage, and reports an honest current/stale/unknown
+ staleness verdict. It does not (yet) carry a code SHA or corpus-datasheet
+ hash -- those require build-info threading that is out of scope here and
+ tracked as a named follow-up (see the module docstring in
+-``polylogue.surfaces.payloads.FindingProvenancePayload``).
++``polylogue.surfaces.payloads.FindingProvenancePayload``).  This legacy
++current/stale helper is not the 37t.14 evidence-integrity authority and is not
++used to compute public-claim support.
+ """
+ 
+ from __future__ import annotations
+ 
+ import sqlite3
+ from dataclasses import dataclass
+-from typing import Literal
++from typing import Literal, cast
+ 
+ from polylogue.core.enums import AssertionKind
+ from polylogue.core.refs import ObjectRef
+-from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope, read_assertion_envelope
++from polylogue.insights.measurement.public_claims import (
++    PublicClaimDisclosure,
++    PublicClaimPresetName,
++    PublicFindingInput,
++)
++from polylogue.storage.sqlite.archive_tiers.user_write import (
++    ArchiveAssertionEnvelope,
++    list_assertion_claims,
++    read_assertion_envelope,
++    read_latest_candidate_judgment,
++)
+ from polylogue.storage.sqlite.query_objects import get_query, get_result_set
+ 
+ StalenessVerdict = Literal["current", "stale", "unknown"]
+@@ -126,9 +138,116 @@ def _str_or_none(value: object) -> str | None:
+     return value if isinstance(value, str) else None
+ 
+ 
++def list_public_finding_inputs(conn: sqlite3.Connection) -> tuple[PublicFindingInput, ...]:
++    """Adapt public-declared FINDING rows to the storage-neutral projection input.
++
++    This function reads lifecycle and judgment facts only.  It never resolves
++    evidence refs or computes support, cycle, staleness, frame, or privacy
++    ancestry verdicts; those enter later through the 37t.14 provider seam.
++    """
++
++    findings = list_assertion_claims(conn, kinds=(AssertionKind.FINDING,), statuses=None)
++    return tuple(_public_finding_input(conn, finding) for finding in findings if _has_public_claim(finding))
++
++
++def _has_public_claim(envelope: ArchiveAssertionEnvelope) -> bool:
++    return isinstance(envelope.value, dict) and isinstance(envelope.value.get("public_claim"), dict)
++
++
++def _public_finding_input(conn: sqlite3.Connection, envelope: ArchiveAssertionEnvelope) -> PublicFindingInput:
++    value = envelope.value if isinstance(envelope.value, dict) else {}
++    declaration = value.get("public_claim")
++    if not isinstance(declaration, dict):
++        raise ValueError(f"finding {envelope.assertion_id!r} has no public_claim declaration")
++
++    publication = _required_str(declaration.get("publication"), field="publication", assertion_id=envelope.assertion_id)
++    scope = _required_str(declaration.get("scope"), field="scope", assertion_id=envelope.assertion_id)
++    caveat = _required_str(declaration.get("caveat"), field="caveat", assertion_id=envelope.assertion_id)
++    disclosure_value = _required_str(
++        declaration.get("disclosure"), field="disclosure", assertion_id=envelope.assertion_id
++    )
++    if disclosure_value not in {"public", "held_private"}:
++        raise ValueError(f"finding {envelope.assertion_id!r} has invalid public disclosure {disclosure_value!r}")
++    disclosure = cast(PublicClaimDisclosure, disclosure_value)
++
++    public_refs = _required_str_list(
++        declaration.get("public_evidence_refs"),
++        field="public_evidence_refs",
++        assertion_id=envelope.assertion_id,
++    )
++    preset_values = _required_str_list(
++        declaration.get("presets"),
++        field="presets",
++        assertion_id=envelope.assertion_id,
++    )
++    try:
++        presets = tuple(PublicClaimPresetName(item) for item in preset_values)
++    except ValueError as exc:
++        raise ValueError(f"finding {envelope.assertion_id!r} has an unknown public-claim preset") from exc
++
++    statistic = value.get("statistic")
++    if not isinstance(statistic, dict):
++        raise ValueError(f"finding {envelope.assertion_id!r} statistic must be a mapping")
++
++    judgment_ref, judgment_decision = _finding_judgment(conn, envelope)
++    return PublicFindingInput(
++        assertion_ref=f"assertion:{envelope.assertion_id}",
++        claim_key=_required_str(envelope.key, field="claim key", assertion_id=envelope.assertion_id),
++        publication=publication,
++        scope=scope,
++        caveat=caveat,
++        public_evidence_refs=public_refs,
++        presets=presets,
++        disclosure=disclosure,
++        statistic=statistic,
++        finding_epoch=_str_or_none(value.get("source_epoch")),
++        evaluation_ref=_str_or_none(value.get("evaluation_ref")),
++        frame_ref=_str_or_none(value.get("frame_ref")),
++        assertion_status=envelope.status,
++        assertion_visibility=envelope.visibility,
++        author_kind=_required_str(envelope.author_kind, field="author kind", assertion_id=envelope.assertion_id),
++        judgment_ref=judgment_ref,
++        judgment_decision=judgment_decision,
++        supersedes=tuple(envelope.supersedes),
++        updated_at_ms=envelope.updated_at_ms,
++    )
++
++
++def _finding_judgment(conn: sqlite3.Connection, envelope: ArchiveAssertionEnvelope) -> tuple[str | None, str | None]:
++    candidate_ids: list[str] = []
++    if envelope.status.value in {"candidate", "accepted", "rejected", "deferred", "superseded"}:
++        candidate_ids.append(envelope.assertion_id)
++    candidate_ids.extend(ref.removeprefix("assertion:") for ref in envelope.supersedes if ref.startswith("assertion:"))
++
++    resulting_ref = f"assertion:{envelope.assertion_id}"
++    for candidate_id in candidate_ids:
++        judgment = read_latest_candidate_judgment(conn, candidate_id)
++        if judgment is None or not isinstance(judgment.value, dict):
++            continue
++        decision = _str_or_none(judgment.value.get("decision"))
++        declared_result = _str_or_none(judgment.value.get("resulting_assertion_ref"))
++        if envelope.status.value == "active" and declared_result != resulting_ref:
++            continue
++        return f"assertion:{judgment.assertion_id}", decision
++    return None, None
++
++
++def _required_str(value: object, *, field: str, assertion_id: str) -> str:
++    if not isinstance(value, str) or not value.strip():
++        raise ValueError(f"finding {assertion_id!r} public {field} must be a non-empty string")
++    return value.strip()
++
++
++def _required_str_list(value: object, *, field: str, assertion_id: str) -> tuple[str, ...]:
++    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item.strip() for item in value):
++        raise ValueError(f"finding {assertion_id!r} public {field} must be a non-empty string list")
++    return tuple(dict.fromkeys(item.strip() for item in value))
++
++
+ __all__ = [
+     "FindingEvidenceResolution",
+     "FindingProvenance",
+     "StalenessVerdict",
+     "compute_finding_provenance",
++    "list_public_finding_inputs",
+ ]
+diff --git a/tests/unit/devtools/test_public_claims.py b/tests/unit/devtools/test_public_claims.py
+index a148eccfa2ea0a7444abf7fb0cc7e9f7710b2b7d..4f7695ca0145863a520d7bdc3a6050e855a92b29 100644
+--- a/tests/unit/devtools/test_public_claims.py
++++ b/tests/unit/devtools/test_public_claims.py
+@@ -1,85 +1,233 @@
+ from __future__ import annotations
+ 
++import json
+ from pathlib import Path
+-from typing import Any, cast
+ 
+-import yaml
++from devtools import public_claims, render_public_claims
++from polylogue.insights.measurement.public_claims import (
++    EvidenceIntegrityStatus,
++    PublicClaimPresetName,
++    PublicClaimProjection,
++    PublicClaimStatus,
++    build_public_claims_payload,
++)
++
++
++def _write_generated_repo(root: Path) -> tuple[PublicClaimProjection, ...]:
++    claims = public_claims.build_repository_projection()
++    (root / "docs" / "generated" / "public-claims").mkdir(parents=True)
++    (root / "docs" / "findings").mkdir(parents=True)
++    (root / "README.md").write_text(
++        "<!-- public-claim:category.local-evidence-system -->\nPolylogue is a local evidence system.\n",
++        encoding="utf-8",
++    )
++    (root / "docs" / "demos.md").write_text(
++        "<!-- public-claim:finding.silent-proceed-lower-bound -->\nSee the generated claim view.\n",
++        encoding="utf-8",
++    )
++    (root / "docs" / "findings" / "claim-vs-evidence.md").write_text(
++        "\n".join(
++            (
++                "<!-- public-claim:finding.silent-proceed-lower-bound -->",
++                "<!-- public-claim:finding.handler-class-split -->",
++                "<!-- public-claim:finding.per-origin-inspection-counts -->",
++            )
++        )
++        + "\n",
++        encoding="utf-8",
++    )
++    artifacts = public_claims.rendered_artifacts(
++        claims,
++        output_dir=root / "docs" / "generated" / "public-claims",
++        compatibility_path=root / "docs" / "public-claims.yaml",
++    )
++    for path, content in artifacts.items():
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(content, encoding="utf-8")
++    return claims
+ 
+-from devtools import public_claims
+ 
++def test_repository_projection_has_seeded_findings_and_honest_current_statuses() -> None:
++    claims = public_claims.build_repository_projection()
++    by_key = {claim.claim_key: claim for claim in claims}
+ 
+-def _write_minimal_repo(tmp_path: Path) -> Path:
+-    (tmp_path / "docs").mkdir()
+-    (tmp_path / ".beads").mkdir()
+-    (tmp_path / "README.md").write_text("Evidence-first product.\n", encoding="utf-8")
+-    (tmp_path / "docs" / "proof.md").write_text("proof\n", encoding="utf-8")
+-    (tmp_path / ".beads" / "issues.jsonl").write_text(
+-        '{"_type":"issue","id":"polylogue-demo","status":"open"}\n',
+-        encoding="utf-8",
+-    )
+-    return tmp_path
+-
+-
+-def _ledger() -> dict[str, object]:
+-    return {
+-        "schema": public_claims.SUPPORTED_SCHEMA,
+-        "statuses": ["proven", "capability", "aspirational", "retired"],
+-        "evidence_classes": [
+-            "deterministic_product_proof",
+-            "field_observation",
+-            "implementation_contract",
+-            "architecture_decision",
+-            "hypothesis",
+-        ],
+-        "public_surfaces": ["README.md"],
+-        "retired_phrases": ["old slogan"],
+-        "claims": [
+-            {
+-                "id": "demo.receipt",
+-                "status": "proven",
+-                "evidence_class": "deterministic_product_proof",
+-                "publication": "The receipt is structurally verified.",
+-                "scope": "One deterministic provider-shaped fixture.",
+-                "evidence": ["docs/proof.md"],
+-                "caveat": "This does not establish private-archive prevalence.",
+-                "owner_beads": ["polylogue-demo"],
+-                "proof_commands": ["polylogue demo receipts"],
+-            }
+-        ],
++    assert set(by_key) == {
++        "category.local-evidence-system",
++        "finding.handler-class-split",
++        "finding.per-origin-inspection-counts",
++        "finding.silent-proceed-lower-bound",
+     }
++    assert by_key["category.local-evidence-system"].status is PublicClaimStatus.CAPABILITY_ONLY
++    for key in (
++        "finding.handler-class-split",
++        "finding.per-origin-inspection-counts",
++        "finding.silent-proceed-lower-bound",
++    ):
++        assert by_key[key].status is PublicClaimStatus.UNKNOWN
++        assert by_key[key].integrity_status is EvidenceIntegrityStatus.UNRESOLVED
++        assert by_key[key].integrity_verdict_present is False
++        assert by_key[key].publication_review == "pending"
++
++
++def test_rendered_artifacts_are_one_projection_across_four_presets(tmp_path: Path) -> None:
++    claims = public_claims.build_repository_projection()
++    artifacts = public_claims.rendered_artifacts(
++        claims,
++        output_dir=tmp_path / "generated",
++        compatibility_path=tmp_path / "public-claims.yaml",
++    )
++
++    assert len(artifacts) == 9
++    statuses_by_preset: dict[str, dict[str, str]] = {}
++    for preset in PublicClaimPresetName:
++        json_path = tmp_path / "generated" / f"{preset.value}.json"
++        payload = json.loads(artifacts[json_path])
++        statuses_by_preset[preset.value] = {claim["claim_key"]: claim["status"] for claim in payload["claims"]}
++        markdown = artifacts[tmp_path / "generated" / f"{preset.value}.md"]
++        assert "Generated by `devtools render public-claims`" in markdown
++        assert "[UNKNOWN · UNRESOLVED]" in markdown
++        assert "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json" in markdown
++
++    assert len({tuple(sorted(statuses.items())) for statuses in statuses_by_preset.values()}) == 1
++    compatibility = artifacts[tmp_path / "public-claims.yaml"]
++    assert "schema: polylogue.public-claims-compatibility-view.v1" in compatibility
++    assert "authority:" in compatibility
++    assert "external-claims-ledger" not in compatibility
+ 
+ 
+-def test_build_report_accepts_grounded_ledger(tmp_path: Path) -> None:
+-    root = _write_minimal_repo(tmp_path)
+-    ledger_path = root / "docs" / "public-claims.yaml"
+-    ledger_path.write_text(yaml.safe_dump(_ledger(), sort_keys=False), encoding="utf-8")
++def test_build_report_accepts_generated_view_and_detects_unknown_or_uncovered_markers(tmp_path: Path) -> None:
++    claims = _write_generated_repo(tmp_path)
+ 
+-    report = public_claims.build_report(ledger_path=ledger_path, root=root)
++    report = public_claims.build_report(root=tmp_path, claims=claims)
+ 
+     assert report["ok"] is True
+-    assert report["claim_count"] == 1
+-    assert report["evidence_path_count"] == 1
+-    assert report["proof_command_count"] == 1
+-
+-
+-def test_build_report_rejects_missing_evidence_unknown_bead_and_retired_copy(tmp_path: Path) -> None:
+-    root = _write_minimal_repo(tmp_path)
+-    (root / "README.md").write_text("The old slogan returned.\n", encoding="utf-8")
+-    ledger = _ledger()
+-    claims = cast(list[dict[str, Any]], ledger["claims"])
+-    claim = claims[0]
+-    claim["evidence"] = ["docs/missing.md"]
+-    claim["owner_beads"] = ["polylogue-missing"]
+-    ledger_path = root / "docs" / "public-claims.yaml"
+-    ledger_path.write_text(yaml.safe_dump(ledger, sort_keys=False), encoding="utf-8")
+-
+-    report = public_claims.build_report(ledger_path=ledger_path, root=root)
++    assert report["claim_count"] == 4
++    assert report["artifact_count"] == 9
++
++    readme = tmp_path / "README.md"
++    readme.write_text(readme.read_text(encoding="utf-8") + "<!-- public-claim:finding.unowned -->\n", encoding="utf-8")
++    broken = public_claims.build_report(root=tmp_path, claims=claims)
++    messages = [problem["message"] for problem in broken["problems"]]
++    assert "public surface marker has no projected claim: README.md" in messages
++
++    readme.write_text("No marker here.\n", encoding="utf-8")
++    uncovered = public_claims.build_report(root=tmp_path, claims=claims)
++    uncovered_messages = [(problem["claim_id"], problem["message"]) for problem in uncovered["problems"]]
++    assert (
++        "category.local-evidence-system",
++        "projected claim is not covered by a public-surface marker",
++    ) in uncovered_messages
++
++
++def test_build_report_detects_generated_drift_and_private_paths(tmp_path: Path) -> None:
++    claims = _write_generated_repo(tmp_path)
++    readme_json = tmp_path / "docs" / "generated" / "public-claims" / "readme.json"
++    readme_json.write_text(readme_json.read_text(encoding="utf-8") + "/home/operator/archive\n", encoding="utf-8")
++
++    report = public_claims.build_report(root=tmp_path, claims=claims)
+     messages = [problem["message"] for problem in report["problems"]]
+ 
+-    assert report["ok"] is False
+-    assert "evidence path does not exist: docs/missing.md" in messages
+-    assert "owner Bead does not exist: polylogue-missing" in messages
+-    assert any("retired phrase" in message for message in messages)
++    assert "generated public-claims artifact is out of sync: docs/generated/public-claims/readme.json" in messages
++    assert (
++        "checked-in generated artifact contains an absolute private path: docs/generated/public-claims/readme.json"
++        in messages
++    )
++
++
++def test_integrity_receipt_loader_requires_schema_and_support_qualifiers(tmp_path: Path) -> None:
++    claims = public_claims.build_repository_projection()
++    finding = next(claim for claim in claims if claim.source_kind == "finding")
++    assert finding.source_ref is not None
++    receipt = tmp_path / "verdicts.json"
++    receipt.write_text(
++        json.dumps(
++            {
++                "schema": public_claims.VERDICT_EXPORT_SCHEMA,
++                "verdicts": [
++                    {
++                        "finding_ref": finding.source_ref,
++                        "status": "supported",
++                        "public_evidence_refs": ["file:docs/findings/claim-vs-evidence.md"],
++                        "as_of_epoch": "2026-07-04T08:55:53.667311+00:00",
++                        "frame_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
++                        "definition_ref": "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
++                    }
++                ],
++            }
++        ),
++        encoding="utf-8",
++    )
++
++    provider = public_claims.load_integrity_verdicts(receipt)
++    verdict = provider.verdict_for(finding.source_ref)
++
++    assert verdict is not None
++    assert verdict.status is EvidenceIntegrityStatus.SUPPORTED
++    assert verdict.as_of_epoch == "2026-07-04T08:55:53.667311+00:00"
++
++    receipt.write_text(
++        json.dumps(
++            {
++                "schema": public_claims.VERDICT_EXPORT_SCHEMA,
++                "verdicts": [
++                    {
++                        "finding_ref": finding.source_ref,
++                        "status": "stale",
++                        "public_remediation_refs": ["run:/home/operator/private-rerun"],
++                    }
++                ],
++            }
++        ),
++        encoding="utf-8",
++    )
++    try:
++        public_claims.load_integrity_verdicts(receipt)
++    except ValueError as exc:
++        assert "private or absolute path" in str(exc)
++    else:
++        raise AssertionError("unsafe public receipt ref was accepted")
++
++    receipt.write_text(
++        json.dumps(
++            {
++                "schema": public_claims.VERDICT_EXPORT_SCHEMA,
++                "verdicts": [{"finding_ref": finding.source_ref, "status": "supported"}],
++            }
++        ),
++        encoding="utf-8",
++    )
++    try:
++        public_claims.load_integrity_verdicts(receipt)
++    except ValueError as exc:
++        assert "require as_of_epoch, frame_ref, and definition_ref" in str(exc)
++    else:
++        raise AssertionError("supported verdict without qualifiers was accepted")
++
++
++def test_render_command_writes_then_checks_same_projection(tmp_path: Path) -> None:
++    output_dir = tmp_path / "generated"
++    compatibility = tmp_path / "public-claims.yaml"
++
++    assert render_public_claims.main(["--output-dir", str(output_dir), "--compatibility-path", str(compatibility)]) == 0
++    assert (
++        render_public_claims.main(
++            [
++                "--output-dir",
++                str(output_dir),
++                "--compatibility-path",
++                str(compatibility),
++                "--check",
++            ]
++        )
++        == 0
++    )
++
++    payload = build_public_claims_payload(
++        public_claims.build_repository_projection(),
++        PublicClaimPresetName.VERIFIED_EXPORT,
++    )
++    assert compatibility.exists()
++    assert payload["claim_count"] == 4
+ 
+ 
+ def test_public_claims_gate_is_declared_in_ci_and_release_readiness() -> None:
+diff --git a/tests/unit/insights/measurement/test_public_claims.py b/tests/unit/insights/measurement/test_public_claims.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7af52333acbc3ef708538a362b2fdfa7a3edc81
+--- /dev/null
++++ b/tests/unit/insights/measurement/test_public_claims.py
+@@ -0,0 +1,372 @@
++from __future__ import annotations
++
++from dataclasses import replace
++from typing import Any, cast
++
++import pytest
++
++from polylogue.core.enums import AssertionStatus, AssertionVisibility
++from polylogue.insights.measurement.public_claims import (
++    CapabilityClaimInput,
++    EvidenceIntegrityStatus,
++    EvidenceIntegrityVerdict,
++    MappingEvidenceIntegrityProvider,
++    PublicClaimPresetName,
++    PublicClaimStatus,
++    PublicFindingInput,
++    build_public_claims_payload,
++    project_public_claims,
++    render_public_claims_markdown,
++)
++
++
++def _finding(**overrides: object) -> PublicFindingInput:
++    values: dict[str, Any] = {
++        "assertion_ref": "assertion:finding-active",
++        "claim_key": "finding.demo",
++        "publication": "The bounded demo observed 3 of 10 rows.",
++        "scope": "One deterministic ten-row fixture.",
++        "caveat": "This is not a population estimate.",
++        "public_evidence_refs": ("file:docs/demo.md",),
++        "presets": tuple(PublicClaimPresetName),
++        "disclosure": "public",
++        "statistic": {"op": "ratio", "value": 0.3, "unit": "ratio"},
++        "finding_epoch": "epoch-1",
++        "evaluation_ref": "file:docs/demo.md#evaluation",
++        "frame_ref": "file:docs/demo.md#frame",
++        "assertion_status": AssertionStatus.ACTIVE,
++        "assertion_visibility": AssertionVisibility.PRIVATE,
++        "author_kind": "user",
++        "judgment_ref": None,
++        "judgment_decision": None,
++        "supersedes": (),
++        "updated_at_ms": 10,
++    }
++    values.update(overrides)
++    return PublicFindingInput(**values)
++
++
++def _verdict(
++    status: EvidenceIntegrityStatus,
++    *,
++    finding_ref: str = "assertion:finding-active",
++    reason_codes: tuple[str, ...] = (),
++) -> EvidenceIntegrityVerdict:
++    qualified = status in {
++        EvidenceIntegrityStatus.SUPPORTED,
++        EvidenceIntegrityStatus.PARTIALLY_SUPPORTED,
++    }
++    return EvidenceIntegrityVerdict(
++        finding_ref=finding_ref,
++        status=status,
++        public_evidence_refs=("file:docs/demo.md#receipt",),
++        reason_codes=reason_codes,
++        as_of_epoch="epoch-1" if qualified else None,
++        frame_ref="file:docs/demo.md#frame" if qualified else None,
++        definition_ref="file:docs/demo.md#definition" if qualified else None,
++    )
++
++
++@pytest.mark.parametrize(
++    ("integrity_status", "public_status", "badge"),
++    [
++        (EvidenceIntegrityStatus.SUPPORTED, PublicClaimStatus.SUPPORTED, "[SUPPORTED]"),
++        (
++            EvidenceIntegrityStatus.PARTIALLY_SUPPORTED,
++            PublicClaimStatus.PARTIALLY_SUPPORTED,
++            "[PARTIALLY SUPPORTED]",
++        ),
++        (EvidenceIntegrityStatus.NOT_SUPPORTED, PublicClaimStatus.NOT_SUPPORTED, "[NOT SUPPORTED]"),
++        (EvidenceIntegrityStatus.STALE, PublicClaimStatus.STALE_NEEDS_RERUN, "[STALE / NEEDS RERUN]"),
++        (EvidenceIntegrityStatus.HELD_PRIVATE, PublicClaimStatus.HELD_PRIVATE, "[HELD PRIVATE]"),
++        (EvidenceIntegrityStatus.CLOSED_LOOP, PublicClaimStatus.UNKNOWN, "[UNKNOWN · CLOSED LOOP]"),
++        (EvidenceIntegrityStatus.CYCLE, PublicClaimStatus.UNKNOWN, "[UNKNOWN · CYCLE]"),
++        (EvidenceIntegrityStatus.UNRESOLVED, PublicClaimStatus.UNKNOWN, "[UNKNOWN · UNRESOLVED]"),
++        (
++            EvidenceIntegrityStatus.FRAME_INCOMPLETE,
++            PublicClaimStatus.UNKNOWN,
++            "[UNKNOWN · FRAME INCOMPLETE]",
++        ),
++    ],
++)
++def test_integrity_verdicts_project_to_distinct_public_renderings(
++    integrity_status: EvidenceIntegrityStatus,
++    public_status: PublicClaimStatus,
++    badge: str,
++) -> None:
++    finding = _finding()
++    verdict = _verdict(integrity_status, reason_codes=(f"reason-{integrity_status.value}",))
++
++    projected = project_public_claims(
++        (finding,),
++        (),
++        integrity=MappingEvidenceIntegrityProvider({finding.assertion_ref: verdict}),
++    )[0]
++
++    assert projected.status is public_status
++    assert projected.integrity_status is integrity_status
++    assert projected.badge == badge
++    if public_status is not PublicClaimStatus.SUPPORTED:
++        assert f"integrity-{integrity_status.value}" in projected.blocker_codes
++
++
++def test_broken_reference_is_distinct_from_explicitly_unsupported_evidence() -> None:
++    finding = _finding()
++    broken = _verdict(
++        EvidenceIntegrityStatus.UNRESOLVED,
++        reason_codes=("broken-reference",),
++    )
++    unsupported = _verdict(
++        EvidenceIntegrityStatus.NOT_SUPPORTED,
++        reason_codes=("incompatible-grounding",),
++    )
++
++    broken_claim = project_public_claims(
++        (finding,),
++        (),
++        integrity=MappingEvidenceIntegrityProvider({finding.assertion_ref: broken}),
++    )[0]
++    unsupported_claim = project_public_claims(
++        (finding,),
++        (),
++        integrity=MappingEvidenceIntegrityProvider({finding.assertion_ref: unsupported}),
++    )[0]
++
++    assert (broken_claim.status, broken_claim.integrity_status, broken_claim.badge) == (
++        PublicClaimStatus.UNKNOWN,
++        EvidenceIntegrityStatus.UNRESOLVED,
++        "[UNKNOWN · UNRESOLVED]",
++    )
++    assert (unsupported_claim.status, unsupported_claim.integrity_status, unsupported_claim.badge) == (
++        PublicClaimStatus.NOT_SUPPORTED,
++        EvidenceIntegrityStatus.NOT_SUPPORTED,
++        "[NOT SUPPORTED]",
++    )
++
++
++def test_missing_integrity_verdict_fails_closed_as_unresolved() -> None:
++    finding = _finding()
++
++    projected = project_public_claims(
++        (finding,),
++        (),
++        integrity=MappingEvidenceIntegrityProvider({}),
++    )[0]
++
++    assert projected.status is PublicClaimStatus.UNKNOWN
++    assert projected.integrity_status is EvidenceIntegrityStatus.UNRESOLVED
++    assert projected.integrity_verdict_present is False
++    assert projected.reason_codes == ("integrity-verdict-not-computed",)
++    assert projected.public_remediation_refs == ("bead:polylogue-37t.14",)
++
++
++def test_review_and_privacy_block_supported_verdicts() -> None:
++    candidate = _finding(assertion_status=AssertionStatus.CANDIDATE, author_kind="detector")
++    private = _finding(disclosure="held_private")
++    rejected = _finding(assertion_status=AssertionStatus.REJECTED, author_kind="detector")
++    provider = MappingEvidenceIntegrityProvider(
++        {
++            candidate.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED),
++            private.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED),
++            rejected.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED),
++        }
++    )
++
++    candidate_claim = project_public_claims((candidate,), (), integrity=provider)[0]
++    private_claim = project_public_claims((private,), (), integrity=provider)[0]
++    rejected_claim = project_public_claims((rejected,), (), integrity=provider)[0]
++
++    assert candidate_claim.status is PublicClaimStatus.UNKNOWN
++    assert candidate_claim.blocker_codes == ("finding-candidate",)
++    assert private_claim.status is PublicClaimStatus.HELD_PRIVATE
++    assert private_claim.blocker_codes == ("publication-held-private",)
++    assert private_claim.publication == "Claim text withheld pending public privacy review."
++    assert private_claim.public_evidence_refs == ()
++    assert private_claim.statistic is None
++    assert rejected_claim.status is PublicClaimStatus.NOT_SUPPORTED
++    assert rejected_claim.blocker_codes == ("finding-rejected",)
++
++
++def test_integrity_or_declaration_privacy_hold_dominates_lifecycle_and_redacts() -> None:
++    finding = _finding(
++        assertion_status=AssertionStatus.CANDIDATE,
++        author_kind="detector",
++    )
++    integrity_held = project_public_claims(
++        (finding,),
++        (),
++        integrity=MappingEvidenceIntegrityProvider(
++            {finding.assertion_ref: _verdict(EvidenceIntegrityStatus.HELD_PRIVATE)}
++        ),
++    )[0]
++    declaration_held = project_public_claims(
++        (replace(finding, disclosure="held_private"),),
++        (),
++        integrity=MappingEvidenceIntegrityProvider(
++            {finding.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED)}
++        ),
++    )[0]
++
++    for claim in (integrity_held, declaration_held):
++        assert claim.status is PublicClaimStatus.HELD_PRIVATE
++        assert claim.privacy_review == "held_private"
++        assert claim.publication == "Claim text withheld pending public privacy review."
++        assert claim.public_evidence_refs == ()
++        assert claim.statistic is None
++        assert claim.finding_epoch is None
++        assert claim.evaluation_ref is None
++    assert integrity_held.blocker_codes == ("integrity-held_private",)
++    assert declaration_held.blocker_codes == ("publication-held-private",)
++
++
++def test_supersession_selects_one_live_finding_and_conflicting_actives_fail_closed() -> None:
++    old = _finding(assertion_ref="assertion:old", updated_at_ms=10)
++    current = _finding(
++        assertion_ref="assertion:current",
++        supersedes=("assertion:old",),
++        judgment_ref="assertion:judgment",
++        judgment_decision="accept",
++        updated_at_ms=20,
++    )
++    provider = MappingEvidenceIntegrityProvider(
++        {current.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED, finding_ref=current.assertion_ref)}
++    )
++
++    selected = project_public_claims((old, current), (), integrity=provider)[0]
++
++    assert selected.source_ref == current.assertion_ref
++    assert selected.status is PublicClaimStatus.SUPPORTED
++
++    conflicting = replace(current, assertion_ref="assertion:other", supersedes=(), updated_at_ms=30)
++    conflict_provider = MappingEvidenceIntegrityProvider(
++        {
++            current.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED, finding_ref=current.assertion_ref),
++            conflicting.assertion_ref: _verdict(
++                EvidenceIntegrityStatus.SUPPORTED, finding_ref=conflicting.assertion_ref
++            ),
++        }
++    )
++    failed_closed = project_public_claims((current, conflicting), (), integrity=conflict_provider)[0]
++
++    assert failed_closed.source_ref == conflicting.assertion_ref
++    assert failed_closed.status is PublicClaimStatus.UNKNOWN
++    assert failed_closed.blocker_codes == ("multiple-live-findings",)
++
++
++def test_evidence_epoch_advance_degrades_same_finding_without_rewriting_it() -> None:
++    finding = _finding()
++    supported_provider = MappingEvidenceIntegrityProvider(
++        {finding.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED)}
++    )
++    stale_provider = MappingEvidenceIntegrityProvider(
++        {
++            finding.assertion_ref: EvidenceIntegrityVerdict(
++                finding_ref=finding.assertion_ref,
++                status=EvidenceIntegrityStatus.STALE,
++                reason_codes=("source-epoch-advanced",),
++                as_of_epoch="epoch-2",
++                frame_ref="file:docs/demo.md#frame-v2",
++                definition_ref="file:docs/demo.md#definition",
++                public_remediation_refs=("run:demo-rerun",),
++            )
++        }
++    )
++
++    supported = project_public_claims((finding,), (), integrity=supported_provider)[0]
++    stale = project_public_claims((finding,), (), integrity=stale_provider)[0]
++
++    assert supported.source_ref == stale.source_ref == finding.assertion_ref
++    assert supported.finding_epoch == stale.finding_epoch == "epoch-1"
++    assert supported.status is PublicClaimStatus.SUPPORTED
++    assert stale.status is PublicClaimStatus.STALE_NEEDS_RERUN
++    assert stale.verdict_as_of_epoch == "epoch-2"
++    assert stale.reason_codes == ("source-epoch-advanced",)
++
++
++def test_all_presets_reuse_one_projection_status_and_include_qualifiers() -> None:
++    finding = _finding()
++    capability = CapabilityClaimInput(
++        claim_key="category.demo",
++        publication="The demo has a local evidence surface.",
++        scope="The deterministic fixture.",
++        caveat="This is a capability statement, not a measured outcome.",
++        public_evidence_refs=("file:README.md",),
++        presets=tuple(PublicClaimPresetName),
++    )
++    claims = project_public_claims(
++        (finding,),
++        (capability,),
++        integrity=MappingEvidenceIntegrityProvider(
++            {finding.assertion_ref: _verdict(EvidenceIntegrityStatus.PARTIALLY_SUPPORTED)}
++        ),
++    )
++
++    statuses: dict[PublicClaimPresetName, dict[str, object]] = {}
++    for preset in PublicClaimPresetName:
++        payload = build_public_claims_payload(claims, preset)
++        raw_claims = cast(list[dict[str, object]], payload["claims"])
++        statuses[preset] = {cast(str, item["claim_key"]): item["status"] for item in raw_claims}
++
++    assert len({tuple(sorted(status.items())) for status in statuses.values()}) == 1
++
++    readme_claim = cast(
++        list[dict[str, object]],
++        build_public_claims_payload(claims, PublicClaimPresetName.README)["claims"],
++    )[0]
++    launch_claim = cast(
++        list[dict[str, object]],
++        build_public_claims_payload(claims, PublicClaimPresetName.LAUNCH)["claims"],
++    )[0]
++    findings_claim = cast(
++        list[dict[str, object]],
++        build_public_claims_payload(claims, PublicClaimPresetName.FINDINGS_PAGE)["claims"],
++    )[0]
++    assert "review" not in readme_claim and "reason_codes" not in readme_claim
++    assert "review" not in launch_claim and "reason_codes" in launch_claim
++    assert "review" in findings_claim and "reason_codes" in findings_claim
++
++    markdown = render_public_claims_markdown(claims, PublicClaimPresetName.FINDINGS_PAGE)
++    assert "`finding.demo` [PARTIALLY SUPPORTED]" in markdown
++    assert "verdict as-of=epoch-1" in markdown
++    assert "definition=file:docs/demo.md#definition" in markdown
++    assert "`category.demo` [CAPABILITY ONLY]" in markdown
++
++
++def test_public_boundary_rejects_private_paths_in_copy_and_receipts() -> None:
++    with pytest.raises(ValueError, match="private or absolute path"):
++        CapabilityClaimInput(
++            claim_key="category.private",
++            publication="Read /home/operator/private/archive.db.",
++            scope="One local archive.",
++            caveat="Not public.",
++            public_evidence_refs=("file:README.md",),
++            presets=(PublicClaimPresetName.README,),
++        )
++
++    with pytest.raises(ValueError, match="private or absolute path"):
++        EvidenceIntegrityVerdict(
++            finding_ref="assertion:finding-active",
++            status=EvidenceIntegrityStatus.STALE,
++            public_remediation_refs=("run:/home/operator/rerun",),
++        )
++
++    with pytest.raises(ValueError, match="private or absolute path"):
++        _finding(statistic={"breakdown": {"receipt": "/home/operator/private/result.json"}})
++
++
++def test_supported_verdict_requires_epoch_frame_and_definition() -> None:
++    with pytest.raises(ValueError, match="require as_of_epoch, frame_ref, and definition_ref"):
++        EvidenceIntegrityVerdict(
++            finding_ref="assertion:finding-active",
++            status=EvidenceIntegrityStatus.SUPPORTED,
++        )
++
++
++def test_mismatched_verdict_ref_is_rejected() -> None:
++    finding = _finding()
++    provider = MappingEvidenceIntegrityProvider(
++        {finding.assertion_ref: _verdict(EvidenceIntegrityStatus.SUPPORTED, finding_ref="assertion:wrong")}
++    )
++
++    with pytest.raises(ValueError, match="verdict ref mismatch"):
++        project_public_claims((finding,), (), integrity=provider)
+diff --git a/tests/unit/storage/test_public_claims_projection.py b/tests/unit/storage/test_public_claims_projection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fa7b0af088588dc42803e163811bff2d20a1097f
+--- /dev/null
++++ b/tests/unit/storage/test_public_claims_projection.py
+@@ -0,0 +1,252 @@
++from __future__ import annotations
++
++import sqlite3
++from dataclasses import replace
++from pathlib import Path
++
++from polylogue.core.enums import AssertionStatus
++from polylogue.insights.measurement.public_claims import (
++    EvidenceIntegrityStatus,
++    EvidenceIntegrityVerdict,
++    MappingEvidenceIntegrityProvider,
++    PublicClaimStatus,
++    project_public_claims,
++)
++from polylogue.scenarios.corpus import claim_vs_evidence_findings
++from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
++from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
++from polylogue.storage.sqlite.archive_tiers.user_write import (
++    PublicClaimDeclaration,
++    judge_assertion_candidate,
++    upsert_findings_as_assertions,
++)
++from polylogue.storage.sqlite.finding_provenance import list_public_finding_inputs
++
++
++def _connect_user_db(tmp_path: Path) -> sqlite3.Connection:
++    path = tmp_path / "user.db"
++    initialize_archive_database(path, ArchiveTier.USER)
++    conn = sqlite3.connect(path)
++    conn.row_factory = sqlite3.Row
++    return conn
++
++
++def _supported_verdict(finding_ref: str) -> EvidenceIntegrityVerdict:
++    return EvidenceIntegrityVerdict(
++        finding_ref=finding_ref,
++        status=EvidenceIntegrityStatus.SUPPORTED,
++        public_evidence_refs=("file:docs/findings/claim-vs-evidence.md#verdict",),
++        as_of_epoch="2026-07-04T08:55:53.667311+00:00",
++        frame_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
++        definition_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
++    )
++
++
++def test_seed_population_uses_snapshot_values_and_sanitized_demo_refs() -> None:
++    findings = {finding.claim_key: finding for finding in claim_vs_evidence_findings()}
++
++    assert set(findings) == {
++        "finding.silent-proceed-lower-bound",
++        "finding.handler-class-split",
++        "finding.per-origin-inspection-counts",
++    }
++    silent = findings["finding.silent-proceed-lower-bound"]
++    assert silent.statistic == {
++        "op": "lower_bound",
++        "value": 0.241,
++        "unit": "ratio",
++        "numerator": 1_205,
++        "denominator": 5_000,
++        "ambiguous": 3_375,
++    }
++    handlers = findings["finding.handler-class-split"].statistic["value"]
++    assert handlers == {
++        "consequential": {
++            "failed_outcomes": 4_175,
++            "silent_proceed": 930,
++            "ambiguous": 2_842,
++            "silent_rate_lower_bound": 0.22275449101796407,
++        },
++        "benign_recovery": {
++            "failed_outcomes": 634,
++            "silent_proceed": 172,
++            "ambiguous": 455,
++            "silent_rate_lower_bound": 0.27129337539432175,
++        },
++        "other": {
++            "failed_outcomes": 191,
++            "silent_proceed": 103,
++            "ambiguous": 78,
++            "silent_rate_lower_bound": 0.5392670157068062,
++        },
++    }
++    origins = findings["finding.per-origin-inspection-counts"].statistic["value"]
++    assert isinstance(origins, dict)
++    assert origins["claude-code-session"] == {"inspected": 3_752, "requested": 3_752, "frame_total": 31_555}
++    assert origins["codex-session"] == {"inspected": 1_241, "requested": 1_241, "frame_total": 10_429}
++    assert origins["claude-ai-export"] == {"inspected": 7, "requested": 7, "frame_total": 49}
++    assert all(
++        ref.startswith("file:.agent/demos/claim-vs-evidence/") or ref == "file:docs/findings/claim-vs-evidence.md"
++        for finding in findings.values()
++        for ref in finding.evidence_refs
++    )
++
++
++def test_real_storage_lifecycle_controls_public_support(tmp_path: Path) -> None:
++    conn = _connect_user_db(tmp_path)
++    try:
++        candidates = upsert_findings_as_assertions(conn, claim_vs_evidence_findings(), now_ms=1_000)
++        conn.commit()
++        candidate = next(item for item in candidates if item.key == "finding.silent-proceed-lower-bound")
++
++        before = project_public_claims(
++            list_public_finding_inputs(conn),
++            (),
++            integrity=MappingEvidenceIntegrityProvider({}),
++        )
++        before_claim = next(item for item in before if item.claim_key == candidate.key)
++        assert before_claim.status is PublicClaimStatus.UNKNOWN
++        assert before_claim.assertion_status is AssertionStatus.CANDIDATE
++        assert before_claim.publication_review == "pending"
++
++        judged = judge_assertion_candidate(
++            conn,
++            candidate_ref=f"assertion:{candidate.assertion_id}",
++            decision="accept",
++            reason="Reviewed publication, sample frame, and caveat.",
++            now_ms=2_000,
++        )
++        conn.commit()
++        assert judged.resulting_assertion is not None
++        active_ref = f"assertion:{judged.resulting_assertion.assertion_id}"
++        rows_after_accept = int(conn.execute("SELECT count(*) FROM assertions").fetchone()[0])
++
++        accepted = project_public_claims(
++            list_public_finding_inputs(conn),
++            (),
++            integrity=MappingEvidenceIntegrityProvider({active_ref: _supported_verdict(active_ref)}),
++        )
++        accepted_claim = next(item for item in accepted if item.claim_key == candidate.key)
++
++        assert accepted_claim.source_ref == active_ref
++        assert accepted_claim.assertion_status is AssertionStatus.ACTIVE
++        assert accepted_claim.judgment_ref == f"assertion:{judged.judgment.assertion_id}"
++        assert accepted_claim.publication_review == "approved"
++        assert accepted_claim.privacy_review == "approved"
++        assert accepted_claim.status is PublicClaimStatus.SUPPORTED
++
++        upsert_findings_as_assertions(conn, claim_vs_evidence_findings(), now_ms=3_000)
++        conn.commit()
++        assert int(conn.execute("SELECT count(*) FROM assertions").fetchone()[0]) == rows_after_accept
++
++        stale = project_public_claims(
++            list_public_finding_inputs(conn),
++            (),
++            integrity=MappingEvidenceIntegrityProvider(
++                {
++                    active_ref: EvidenceIntegrityVerdict(
++                        finding_ref=active_ref,
++                        status=EvidenceIntegrityStatus.STALE,
++                        reason_codes=("source-epoch-advanced",),
++                        as_of_epoch="2026-07-17T00:00:00+00:00",
++                        frame_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame-v2",
++                        definition_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
++                        public_remediation_refs=("run:claim-vs-evidence-rerun",),
++                    )
++                }
++            ),
++        )
++        stale_claim = next(item for item in stale if item.claim_key == candidate.key)
++        assert stale_claim.source_ref == active_ref
++        assert stale_claim.status is PublicClaimStatus.STALE_NEEDS_RERUN
++        assert int(conn.execute("SELECT count(*) FROM assertions").fetchone()[0]) == rows_after_accept
++    finally:
++        conn.close()
++
++
++def test_rejected_candidate_cannot_render_supported(tmp_path: Path) -> None:
++    conn = _connect_user_db(tmp_path)
++    try:
++        candidate = upsert_findings_as_assertions(conn, claim_vs_evidence_findings()[:1], now_ms=1_000)[0]
++        judged = judge_assertion_candidate(
++            conn,
++            candidate_ref=f"assertion:{candidate.assertion_id}",
++            decision="reject",
++            reason="Publication claim not accepted.",
++            now_ms=2_000,
++        )
++        conn.commit()
++        candidate_ref = f"assertion:{candidate.assertion_id}"
++
++        claim = project_public_claims(
++            list_public_finding_inputs(conn),
++            (),
++            integrity=MappingEvidenceIntegrityProvider({candidate_ref: _supported_verdict(candidate_ref)}),
++        )[0]
++
++        assert judged.resulting_assertion is None
++        assert claim.assertion_status is AssertionStatus.REJECTED
++        assert claim.status is PublicClaimStatus.NOT_SUPPORTED
++        assert claim.blocker_codes == ("finding-rejected",)
++    finally:
++        conn.close()
++
++
++def test_public_claim_writer_rejects_absolute_or_parent_traversal_refs(tmp_path: Path) -> None:
++    conn = _connect_user_db(tmp_path)
++    finding = claim_vs_evidence_findings()[0]
++    assert finding.public_claim is not None
++    try:
++        for unsafe_ref in ("file:/home/operator/private.json", "file:../private.json", "file:C:\\private.json"):
++            unsafe = replace(
++                finding,
++                public_claim=replace(finding.public_claim, public_evidence_refs=(unsafe_ref,)),
++            )
++            try:
++                upsert_findings_as_assertions(conn, (unsafe,), now_ms=1_000)
++            except ValueError as exc:
++                assert "repository-relative" in str(exc)
++            else:
++                raise AssertionError(f"unsafe ref was accepted: {unsafe_ref}")
++    finally:
++        conn.close()
++
++
++def test_held_private_declaration_survives_storage_and_blocks_publication(tmp_path: Path) -> None:
++    conn = _connect_user_db(tmp_path)
++    finding = claim_vs_evidence_findings()[0]
++    assert finding.public_claim is not None
++    held = replace(
++        finding,
++        public_claim=PublicClaimDeclaration(
++            publication=finding.public_claim.publication,
++            scope=finding.public_claim.scope,
++            caveat=finding.public_claim.caveat,
++            public_evidence_refs=finding.public_claim.public_evidence_refs,
++            presets=finding.public_claim.presets,
++            disclosure="held_private",
++        ),
++    )
++    try:
++        candidate = upsert_findings_as_assertions(conn, (held,), now_ms=1_000)[0]
++        judged = judge_assertion_candidate(
++            conn,
++            candidate_ref=f"assertion:{candidate.assertion_id}",
++            decision="accept",
++            now_ms=2_000,
++        )
++        conn.commit()
++        assert judged.resulting_assertion is not None
++        active_ref = f"assertion:{judged.resulting_assertion.assertion_id}"
++
++        claim = project_public_claims(
++            list_public_finding_inputs(conn),
++            (),
++            integrity=MappingEvidenceIntegrityProvider({active_ref: _supported_verdict(active_ref)}),
++        )[0]
++
++        assert claim.publication_review == "approved"
++        assert claim.privacy_review == "held_private"
++        assert claim.status is PublicClaimStatus.HELD_PRIVATE
++    finally:
++        conn.close()
