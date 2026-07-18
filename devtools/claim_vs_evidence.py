@@ -8,6 +8,7 @@ import json
 import random
 import sys
 from collections.abc import Iterable, Mapping
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection
@@ -137,10 +138,149 @@ def _scalar_int(conn: Connection, sql: str, params: Iterable[object] = ()) -> in
     return int(row[0]) if row is not None and row[0] is not None else 0
 
 
+def _table_exists(conn: Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+
+def _economy_rows(
+    conn: Connection,
+    *,
+    session_ids: tuple[str, ...],
+    silent_by_origin: Mapping[str, int],
+) -> dict[str, list[dict[str, object]]]:
+    """Return explicitly separate token and money lanes for the sampled harness.
+
+    ``session_model_usage`` is the only rollup source.  It is itself populated
+    from provider usage events with Codex's inclusive input/cache and
+    output/reasoning fields split into disjoint billable lanes; profile text
+    token columns are deliberately never consulted here.
+    """
+    if not session_ids or not _table_exists(conn, "session_model_usage"):
+        return {"by_model": [], "by_origin": []}
+    placeholders = ", ".join("?" for _ in session_ids)
+    model_rows = _rows(
+        conn,
+        f"""
+        SELECT
+            s.origin,
+            u.model_name,
+            COUNT(*) AS session_model_rows,
+            SUM(u.input_tokens) AS input_tokens,
+            SUM(u.output_tokens) AS output_tokens,
+            SUM(u.cache_read_tokens) AS cache_read_tokens,
+            SUM(u.cache_write_tokens) AS cache_write_tokens,
+            SUM(CASE WHEN u.cost_provenance IN ('priced', 'estimated') THEN COALESCE(u.cost_usd, 0) ELSE 0 END)
+                AS catalog_cost_usd,
+            SUM(CASE WHEN u.cost_provenance = 'origin_reported' THEN COALESCE(u.cost_usd, 0) ELSE 0 END)
+                AS provider_reported_cost_usd
+        FROM session_model_usage AS u
+        JOIN sessions AS s ON s.session_id = u.session_id
+        WHERE u.session_id IN ({placeholders})
+        GROUP BY s.origin, u.model_name
+        ORDER BY s.origin, u.model_name
+        """,
+        session_ids,
+    )
+    event_rollups: dict[tuple[str, str], tuple[int, int | None]] = {}
+    if _table_exists(conn, "session_provider_usage_events"):
+        for row in _rows(
+            conn,
+            f"""
+            SELECT s.origin, COALESCE(NULLIF(e.model_name, ''), 'unknown') AS model_name,
+                   COUNT(*) AS api_call_count,
+                   MAX(CASE WHEN e.provider_event_type = 'message_usage' THEN 1 ELSE 0 END)
+                       AS has_reasoning_delta,
+                   SUM(CASE WHEN e.provider_event_type = 'message_usage'
+                            THEN COALESCE(e.last_reasoning_output_tokens, 0) ELSE 0 END)
+                       AS reasoning_tokens
+            FROM session_provider_usage_events AS e
+            JOIN sessions AS s ON s.session_id = e.session_id
+            WHERE e.session_id IN ({placeholders})
+            GROUP BY s.origin, COALESCE(NULLIF(e.model_name, ''), 'unknown')
+            """,
+            session_ids,
+        ):
+            has_reasoning_delta = _object_int(row["has_reasoning_delta"]) == 1
+            event_rollups[(str(row["origin"]), str(row["model_name"]))] = (
+                _object_int(row["api_call_count"]),
+                _object_int(row["reasoning_tokens"]) if has_reasoning_delta else None,
+            )
+
+    def decorate(row: dict[str, object], *, model_name: str | None) -> dict[str, object]:
+        origin = str(row["origin"])
+        input_tokens = _object_int(row["input_tokens"])
+        cache_read_tokens = _object_int(row["cache_read_tokens"])
+        catalog_cost = _object_float(row["catalog_cost_usd"])
+        provider_cost = _object_float(row["provider_reported_cost_usd"])
+        silent = silent_by_origin.get(origin, 0)
+        if model_name is not None:
+            api_call_count, reasoning_tokens = event_rollups.get((origin, model_name), (0, None))
+        else:
+            origin_events = [event for (event_origin, _model), event in event_rollups.items() if event_origin == origin]
+            api_call_count = sum(event[0] for event in origin_events)
+            reasoning_values = [event[1] for event in origin_events if event[1] is not None]
+            reasoning_tokens = sum(reasoning_values) if reasoning_values else None
+        return {
+            "origin": origin,
+            "model_name": model_name,
+            "session_model_rows": _object_int(row["session_model_rows"]),
+            "api_call_count": api_call_count,
+            "input_tokens": input_tokens,
+            "output_tokens": _object_int(row["output_tokens"]),
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": _object_int(row["cache_write_tokens"]),
+            "reasoning_tokens": reasoning_tokens,
+            "reasoning_token_note": (
+                "provider message_usage deltas only; cumulative token_count events are excluded"
+                if reasoning_tokens is not None
+                else "no provider message_usage reasoning delta in the sampled harness"
+            ),
+            "cache_read_share": cache_read_tokens / (input_tokens + cache_read_tokens)
+            if input_tokens + cache_read_tokens
+            else None,
+            "catalog_cost_usd": catalog_cost,
+            "provider_reported_cost_usd": provider_cost,
+            "silent_proceed_outcomes": silent,
+            "catalog_usd_per_silent_proceed": catalog_cost / silent if silent else None,
+            "provider_reported_usd_per_silent_proceed": provider_cost / silent if silent else None,
+            "token_source": "session_model_usage (provider-usage materialization; disjoint cache lanes)",
+        }
+
+    by_model = [decorate(row, model_name=str(row["model_name"])) for row in model_rows]
+    by_origin_source: dict[str, dict[str, object]] = {}
+    for row in model_rows:
+        origin = str(row["origin"])
+        aggregate = by_origin_source.setdefault(
+            origin,
+            {
+                "origin": origin,
+                "session_model_rows": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "catalog_cost_usd": 0.0,
+                "provider_reported_cost_usd": 0.0,
+            },
+        )
+        for key in ("session_model_rows", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+            aggregate[key] = _object_int(aggregate[key]) + _object_int(row[key])
+        for key in ("catalog_cost_usd", "provider_reported_cost_usd"):
+            aggregate[key] = _object_float(aggregate[key]) + _object_float(row[key])
+    return {
+        "by_model": by_model,
+        "by_origin": [decorate(row, model_name=None) for _, row in sorted(by_origin_source.items())],
+    }
+
+
 def _object_int(value: object) -> int:
     if value is None:
         return 0
     return int(str(value))
+
+
+def _object_float(value: object) -> float:
+    return 0.0 if value is None else float(str(value))
 
 
 def _object_str_list(value: object) -> list[str]:
@@ -773,6 +913,19 @@ def _calibration_metrics(label_rows: list[dict[str, str]], *, labels_path: Path 
     }
 
 
+def _calibration_frame_coverage(label_rows: list[dict[str, str]], samples: list[dict[str, object]]) -> dict[str, int]:
+    """State whether labels calibrate this report's actual current frame."""
+    sampled_refs = {str(sample["tool_result_message_ref"]) for sample in samples}
+    labeled_refs = {str(row.get("tool_result_message_ref", "")) for row in label_rows}
+    matched = sampled_refs & labeled_refs
+    return {
+        "labeled_sample_refs": len(labeled_refs),
+        "current_sample_refs": len(sampled_refs),
+        "labels_in_current_sample": len(matched),
+        "labels_outside_current_sample": len(labeled_refs - sampled_refs),
+    }
+
+
 def _calibration_labels_path(args: argparse.Namespace) -> Path | None:
     calibration_labels = args.calibration_labels
     if isinstance(calibration_labels, Path):
@@ -939,7 +1092,16 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "sample_file": _CALIBRATION_SAMPLE_FILE if args.out_dir is not None else None,
         "labels_file": _CALIBRATION_LABELS_FILE if args.out_dir is not None else None,
         "metrics": _calibration_metrics(calibration_label_rows, labels_path=calibration_labels_path),
+        "frame_coverage": _calibration_frame_coverage(calibration_label_rows, calibration_sample),
     }
+    silent_by_origin = {origin: counts["silent_proceed"] for origin, counts in by_origin.items()}
+    sampled_session_ids = tuple(sorted({str(row["session_id"]) for row in rows}))
+    with closing(open_readonly_connection(index_db)) as economy_conn:
+        economy = _economy_rows(
+            economy_conn,
+            session_ids=sampled_session_ids,
+            silent_by_origin=silent_by_origin,
+        )
     report: dict[str, Any] = {
         "report_version": 1,
         "captured_at": datetime.now(UTC).isoformat(),
@@ -1002,6 +1164,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "by_model": _ranked(by_model, n_min=args.n_min),
         "by_origin": _ranked(by_origin, n_min=args.n_min),
         "by_handler_class": _ranked(by_handler_class, n_min=args.n_min),
+        "economy": {
+            **economy,
+            "scope": "sessions represented in the paired structured-failure harness",
+            "sampled_session_count": len(sampled_session_ids),
+        },
         "handler_class_definition": {
             "benign_recovery": sorted(_BENIGN_RECOVERY_TOOLS),
             "consequential": sorted(_CONSEQUENTIAL_TOOLS),
@@ -1029,6 +1196,10 @@ def _format_rate_percent(value: int | float | str | None) -> str:
     return f"{float(value):.1%}"
 
 
+def _format_dollars(value: object) -> str:
+    return "not computable" if value is None else f"${_object_float(value):.2f}"
+
+
 def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
     totals = report["totals"]
     frame = report["sample_frame"]
@@ -1041,11 +1212,13 @@ def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
         "index_schema_version": report["index_schema_version"],
         "claim": (
             "Polylogue can ground a failure-follow-up finding in normalized tool-result outcomes, "
-            "state the bounded sample frame, and publish aggregate rates without exposing raw private transcripts."
+            "state the bounded sample frame, and publish aggregate rates only when the observable follow-up "
+            "classification has enough coverage."
         ),
         "non_claim": (
             "The live aggregate is not reproducible without the private archive; the deterministic demo archive "
-            "reproduces the method and artifact shape, not the private corpus rates."
+            "reproduces the method and artifact shape, not the private corpus rates. A missing acknowledgement "
+            "does not establish bad recovery behavior, and protocol-only reasoning is deliberately ambiguous."
         ),
         "proofs": [
             {
@@ -1091,6 +1264,7 @@ def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
             "Private live-archive counts are aggregate-only in this public summary.",
             "Deterministic demo reproduction validates the method and renderer, not the private rate estimates.",
             "The classifier is an explicit marker detector; ambiguous rows remain in the denominator.",
+            "A wordless retry or a recovery that fixes the problem can be operationally appropriate; this metric does not judge it.",
             "The report is bounded by --limit unless the limit exceeds the full structured-failure frame.",
             "Split cells below n_min are coverage-only and explicitly not supported for rate publication.",
         ],
@@ -1373,6 +1547,8 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "This demo anchors on structured tool-result evidence and asks what the next assistant",
         "turn did with that failure. It does not infer truth from assistant prose: the failure",
         "predicate is `is_error=1` or a non-zero `exit_code` on normalized `actions` rows.",
+        "`silent-proceed` is only an observable absence of an explicit acknowledgement marker in a visible",
+        "next assistant message. It is not a judgment that recovery was wrong, unhelpful, or unsuccessful.",
         "",
         "## Current Bounded Result",
         "",
@@ -1437,11 +1613,29 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- calibration sample size: {int(calibration['sample_size']):,}",
         f"- calibration seed: {int(calibration['sample_seed'])}",
         f"- labeled rows: {int(calibration_metrics['labeled_rows']):,}",
+        f"- labels in this current calibration sample: {int(calibration['frame_coverage']['labels_in_current_sample']):,}",
+        f"- labels outside this current calibration sample: {int(calibration['frame_coverage']['labels_outside_current_sample']):,}",
         (
             f"- acknowledged-marker precision: {float(precision):.1%}"
             if precision is not None
             else "- acknowledged-marker precision: not enough labels"
         ),
+        "",
+        "### Economy Lanes",
+        "",
+        "These lanes are restricted to sessions represented in this paired failure harness. Token and money",
+        "values come only from `session_model_usage` plus provider-usage event counts,",
+        "not profile text columns. Codex input/cache and output/reasoning semantics are kept disjoint by",
+        "the usage materializer. Provider-reported and catalog-derived money remain separate.",
+        *[
+            (
+                f"- {row['origin']}: calls {int(row['api_call_count']):,}; input {int(row['input_tokens']):,}; "
+                f"output {int(row['output_tokens']):,}; cache-read {int(row['cache_read_tokens']):,}; "
+                f"catalog ${float(row['catalog_cost_usd']):.2f}; provider-reported ${float(row['provider_reported_cost_usd']):.2f}; "
+                f"catalog $/silent {_format_dollars(row['catalog_usd_per_silent_proceed'])}"
+            )
+            for row in report["economy"]["by_origin"]
+        ],
         (
             f"- acknowledged-marker recall: {float(recall):.1%}"
             if recall is not None
