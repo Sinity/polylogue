@@ -130,9 +130,13 @@ jobs:
         working-directory: webui
       - run: npm run generate:check
         working-directory: webui
+      - run: npm run check:client
+        working-directory: webui
       - run: npm run lint
         working-directory: webui
       - run: npm test
+        working-directory: webui
+      - run: npm run test:client-contracts
         working-directory: webui
       - run: npm run build
         working-directory: webui
