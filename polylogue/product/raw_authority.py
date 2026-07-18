@@ -21,6 +21,7 @@ class RawMaterializationCounts:
 
     repaired_sessions: int = 0
     executed_plans: int = 0
+    remaining_candidates: int = 0
 
     @property
     def made_progress(self) -> bool:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import inspect
 import os
 import sqlite3
@@ -586,6 +587,10 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     assert counts.repaired_sessions == 7
     assert counts.executed_plans == 3
     assert order == ["restore", "recover-frontier", "materialize", "frontier"]
+
+    order.clear()
+    daemon_cli._drain_raw_materialization_once(limit=11, recover=False)
+    assert order == ["restore", "materialize", "frontier"]
     assert calls == {
         "restore_db_path": tmp_path / "archive" / "source.db",
         "restore_dry_run": False,
@@ -935,9 +940,10 @@ def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
     warning.assert_not_called()
 
 
-def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
+def test_periodic_raw_materialization_convergence_starts_without_catch_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Materializing durable local raws has no acquisition precondition."""
     from polylogue.daemon import cli as daemon_cli
 
     calls: list[str] = []
@@ -947,24 +953,99 @@ def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
         raise asyncio.CancelledError
 
     async def exercise() -> None:
-        catch_up_complete = asyncio.Event()
         monkeypatch.setattr(
             daemon_cli,
             "daemon_write_coordinator",
             lambda: SimpleNamespace(run_sync=fake_run_sync),
         )
-        task = asyncio.create_task(
-            daemon_cli._periodic_raw_materialization_convergence_after(catch_up_complete=catch_up_complete)
-        )
-        await asyncio.sleep(0)
-        assert calls == []
-        catch_up_complete.set()
+        task = asyncio.create_task(daemon_cli._periodic_raw_materialization_convergence())
         with pytest.raises(asyncio.CancelledError):
             await task
 
     asyncio.run(exercise())
 
     assert calls == ["drain"]
+
+
+def test_periodic_raw_materialization_bursts_through_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backlog drains in back-to-back bounded passes within one cycle,
+    recovery scans run on the first pass only, and quiescence returns the
+    loop to the plain interval sleep."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    remaining_schedule = [40, 24, 8, 0]
+    recover_flags: list[bool] = []
+    sleeps: list[float] = []
+
+    async def fake_run_sync(_actor: str, func: object, *args: object, **kwargs: object) -> object:
+        partial = cast(functools.partial[object], func)
+        recover_flags.append(bool(partial.keywords["recover"]))
+        remaining = remaining_schedule.pop(0)
+        return RawMaterializationCounts(
+            repaired_sessions=daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
+            executed_plans=0,
+            remaining_candidates=remaining,
+        )
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync=fake_run_sync),
+    )
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert remaining_schedule == []
+    assert recover_flags == [True, False, False, False]
+    assert sleeps == [
+        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
+        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
+        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
+        daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
+    ]
+
+
+def test_periodic_raw_materialization_burst_stops_without_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocked candidates must not hot-loop the burst: no progress ends it."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    drains = 0
+
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        nonlocal drains
+        drains += 1
+        return RawMaterializationCounts(
+            repaired_sessions=0,
+            executed_plans=0,
+            remaining_candidates=1906,
+        )
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync=fake_run_sync),
+    )
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert drains == 1
 
 
 def test_periodic_raw_materialization_yields_to_pending_browser_capture_spool(
@@ -2938,8 +3019,8 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(
             patch.object(
                 daemon_cli,
-                "_periodic_raw_materialization_convergence_after",
-                lambda _gate=None: fake_loop("raw-materialization"),
+                "_periodic_raw_materialization_convergence",
+                lambda: fake_loop("raw-materialization"),
             )
         )
         stack.enter_context(
@@ -2989,8 +3070,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")
-    assert events.index("drive-once") < events.index("watcher")
-    assert events.index("blob-publications") < events.index("drive-once")
+    # Drive catch-up is background work: it must never gate the watcher or
+    # the local convergence loops on serial network I/O.
+    assert "drive-once" not in events
     assert events.index("lineage") < events.index("convergence")
     assert events.index("lineage") < events.index("raw-materialization")
     assert events.index("lineage") < events.index("drive")
