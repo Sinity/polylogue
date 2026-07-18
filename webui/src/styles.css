@@ -389,6 +389,170 @@ a:focus-visible {
   font-size: 0.75rem;
 }
 
+.prose {
+  margin-bottom: 0.75rem;
+}
+
+.prose__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.chip {
+  padding: 0.1rem 0.45rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.prose__text {
+  overflow-wrap: anywhere;
+  margin-bottom: 0;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.notice {
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 0.3rem;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
+.card {
+  margin-bottom: 0.9rem;
+  padding: 0.9rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-inline-start: 0.25rem solid color-mix(in srgb, CanvasText 32%, Canvas 68%);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+}
+
+.card--shell { border-inline-start-color: slateblue; }
+.card--file_edit,
+.card--file_read { border-inline-start-color: seagreen; }
+.card--search { border-inline-start-color: teal; }
+.card--web { border-inline-start-color: steelblue; }
+.card--task { border-inline-start-color: darkorchid; }
+.card--mcp { border-inline-start-color: darkgoldenrod; }
+.card--lineage { border-inline-start-color: Highlight; }
+.card--attachment { border-inline-start-color: cadetblue; }
+.card--fallback { border-inline-start-color: color-mix(in srgb, CanvasText 45%, Canvas 55%); }
+
+.card__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.card__kind {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, CanvasText 12%, Canvas 88%);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.card__title {
+  font-weight: 700;
+}
+
+.card__outcome {
+  margin-inline-start: auto;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.card__outcome[data-outcome-state="succeeded"] { background: color-mix(in srgb, seagreen 30%, Canvas 70%); }
+.card__outcome[data-outcome-state="failed"] { background: color-mix(in srgb, crimson 30%, Canvas 70%); }
+.card__outcome[data-outcome-state="unknown"] { background: color-mix(in srgb, CanvasText 15%, Canvas 85%); }
+
+.card__summary {
+  margin-bottom: 0.6rem;
+  font-style: italic;
+}
+
+.card__field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.card__field-label {
+  min-width: 6rem;
+  font-weight: 700;
+}
+
+.card__field-value {
+  overflow-wrap: anywhere;
+}
+
+.card__preview {
+  margin: 0.6rem 0;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%);
+  border-radius: 0.3rem;
+}
+
+.card__preview summary {
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
+.card__preview pre {
+  overflow-x: auto;
+  margin: 0;
+  padding: 0.6rem;
+  border-top: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%);
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+}
+
+.diff-add { background: color-mix(in srgb, seagreen 22%, transparent); }
+.diff-del { background: color-mix(in srgb, crimson 22%, transparent); }
+.diff-hunk { color: color-mix(in srgb, CanvasText 66%, Canvas 34%); }
+
+.card__caveats {
+  margin: 0.6rem 0 0;
+  padding-inline-start: 1.2rem;
+  font-size: 0.8rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
+.card__source {
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+}
+
+.card__source summary {
+  cursor: pointer;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
+.card__source code {
+  display: block;
+  overflow-x: auto;
+  margin-top: 0.4rem;
+  white-space: pre-wrap;
+}
+
+.lineage-banner .card {
+  margin-bottom: 0;
+}
+
 @media (max-width: 42rem) {
   .site-header,
   .activity-panel__heading {
@@ -398,10 +562,5 @@ a:focus-visible {
 
   .site-header {
     flex-direction: column;
-  }
-
-  .session-facets {
-    grid-template-columns: 1fr;
-    align-items: stretch;
   }
 }

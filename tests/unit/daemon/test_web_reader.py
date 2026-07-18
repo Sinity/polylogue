@@ -2381,7 +2381,7 @@ class TestWebUIV2:
 
         assert status == HTTPStatus.OK
         assert 'class="lineage-banner"' in html_body
-        assert 'data-branch-type="fork"' in html_body
+        assert 'data-card-kind="lineage"' in html_body
         assert f'href="/app/sessions/{quote(parent_id, safe="")}"' in html_body
 
     def test_session_read_page_returns_semantic_not_found_for_missing_session(
@@ -2394,6 +2394,78 @@ class TestWebUIV2:
         assert status == HTTPStatus.NOT_FOUND
         assert "<h1>Session unavailable</h1>" in html_body
         assert "could not be found" in html_body
+
+    def test_session_read_page_renders_semantic_card_families_not_raw_placeholder(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """The webui-04 transcript renderer projects the shared semantic-card
+        registry (never a second, web-local classification): a failed shell
+        result renders as a shell card with its exit code, and an unrecognized
+        tool renders as an honest fallback card rather than being dropped."""
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            session_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="card-family-session",
+                    title="Card family session",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="a1",
+                            role=Role.ASSISTANT,
+                            text="running pytest",
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_USE,
+                                    tool_name="shell",
+                                    tool_id="tool-shell",
+                                    tool_input={"command": "pytest -k flaky"},
+                                ),
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_RESULT,
+                                    tool_id="tool-shell",
+                                    text="2 failed, 8 passed",
+                                    is_error=True,
+                                    exit_code=2,
+                                ),
+                            ],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="a2",
+                            role=Role.ASSISTANT,
+                            text="trying an unfamiliar tool",
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_USE,
+                                    tool_name="mystery_tool",
+                                    tool_id="tool-mystery",
+                                    tool_input={"payload": "not json-shaped"},
+                                ),
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_RESULT,
+                                    tool_id="tool-mystery",
+                                    text="unrecognized response",
+                                ),
+                            ],
+                        ),
+                    ],
+                )
+            )
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(session_id, safe='')}")
+
+        assert status == HTTPStatus.OK
+        assert 'data-card-kind="shell"' in html_body
+        assert 'data-card-kind="fallback"' in html_body
+        assert "pytest -k flaky" in html_body
+        assert 'data-outcome-state="failed"' in html_body
+        assert "exit 2" in html_body
 
 
 class TestReaderQueryUnits:

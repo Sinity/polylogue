@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { SessionMessageRow } from '../contracts/session-read';
+import { SemanticEntries } from '../design-system/semantic-cards';
 import { fetchSessionMessagesPage } from '../lib/api';
 
 type PageLoader = (
@@ -45,6 +46,9 @@ function MessageFlags({ message }: { readonly message: SessionMessageRow }) {
 }
 
 function MessageFlowItem({ message }: { readonly message: SessionMessageRow }) {
+  if (message.semantic_card_suppressed) {
+    return null;
+  }
   return (
     <li
       class="message-flow__item"
@@ -57,8 +61,14 @@ function MessageFlowItem({ message }: { readonly message: SessionMessageRow }) {
         <span class="message-flow__material-origin">{message.material_origin}</span>
         <span>{messageTimestamp(message.timestamp)}</span>
       </div>
-      <p class="message-flow__text">{message.text || '[empty message]'}</p>
-      <MessageFlags message={message} />
+      {message.semantic_entries.length > 0 ? (
+        <SemanticEntries entries={message.semantic_entries} />
+      ) : (
+        <>
+          <p class="message-flow__text">{message.text || '[empty message]'}</p>
+          <MessageFlags message={message} />
+        </>
+      )}
     </li>
   );
 }
