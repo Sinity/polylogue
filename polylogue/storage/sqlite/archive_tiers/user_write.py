@@ -1566,6 +1566,7 @@ ASSERTION_CANDIDATE_JUDGMENT_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.BLOCKER,
     AssertionKind.LESSON,
     AssertionKind.RUN_STATE,
+    AssertionKind.ONTOLOGY_CANDIDATE,
     AssertionKind.TRANSFORM_CANDIDATE,
     AssertionKind.PATHOLOGY,
     AssertionKind.FINDING,

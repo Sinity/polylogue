@@ -104,7 +104,7 @@ export type AssertionClaimPayload = {
   readonly visibility?: AssertionVisibility | null;
 };
 
-export type AssertionKind = "mark" | "highlight" | "annotation" | "correction" | "suppression" | "tag" | "metadata" | "saved_query" | "recall_pack" | "workspace_note" | "note" | "decision" | "caveat" | "lesson" | "blocker" | "handoff" | "judgment" | "run_state" | "prompt_eval" | "transform_candidate" | "pathology" | "finding" | "secret_candidate" | "excision_record" | "excision_request" | "comparative_judgment";
+export type AssertionKind = "mark" | "highlight" | "annotation" | "correction" | "suppression" | "tag" | "metadata" | "saved_query" | "recall_pack" | "workspace_note" | "note" | "decision" | "caveat" | "lesson" | "blocker" | "handoff" | "judgment" | "run_state" | "prompt_eval" | "ontology_candidate" | "ontology_governance" | "transform_candidate" | "pathology" | "finding" | "secret_candidate" | "excision_record" | "excision_request" | "comparative_judgment";
 
 export type AssertionQueryRowPayload = {
   readonly assertion_id: string;

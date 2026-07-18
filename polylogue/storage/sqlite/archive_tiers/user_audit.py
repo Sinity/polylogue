@@ -29,6 +29,8 @@ _ASSERTION_BACKED_SURFACES: dict[str, AssertionKind] = {
     "judgments": AssertionKind.JUDGMENT,
     "run_state": AssertionKind.RUN_STATE,
     "prompt_evals": AssertionKind.PROMPT_EVAL,
+    "ontology_candidates": AssertionKind.ONTOLOGY_CANDIDATE,
+    "ontology_governance_receipts": AssertionKind.ONTOLOGY_GOVERNANCE,
     "transform_candidates": AssertionKind.TRANSFORM_CANDIDATE,
     "pathologies": AssertionKind.PATHOLOGY,
     "findings": AssertionKind.FINDING,

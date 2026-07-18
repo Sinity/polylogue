@@ -202,6 +202,8 @@
         "judgment",
         "run_state",
         "prompt_eval",
+        "ontology_candidate",
+        "ontology_governance",
         "transform_candidate",
         "pathology",
         "finding",

@@ -14,9 +14,11 @@ that validates one row against a schema and then upserts it through the
 existing single assertion-write chokepoint
 (:func:`polylogue.storage.sqlite.archive_tiers.user_write.upsert_assertion`).
 
-The registry includes the production delegation-discourse v1 definition and
-each schema can be lowered to one canonical definition JSON/fingerprint for
-durable storage. Batch provenance is declared in
+The registry includes the production delegation-discourse v1 definition plus
+the governed seed ontology families (activity, prospective goal events,
+observed outcome evidence, knowledge artifacts, and reusability). Each schema
+can be lowered to one canonical definition JSON/fingerprint for durable
+storage. Batch provenance is declared in
 :mod:`polylogue.annotations.batch`; JSONL/CLI/MCP import remains a leaf
 surface owned by polylogue-rxdo.7.2.
 """
@@ -744,10 +746,364 @@ DELEGATION_DISCOURSE_SCHEMA = register_annotation_schema(
 )
 
 
+SEED_ACTIVITY_SCHEMA = register_annotation_schema(
+    AnnotationSchema(
+        schema_id="seed.activity",
+        version=1,
+        title="Activity",
+        description=(
+            "Primary activity at an explicit session or structural segment grain. "
+            "The target ref declares the grain: session is session-level; phase/message/block are segment-level."
+        ),
+        fields=(
+            AnnotationField(
+                name="activity",
+                value_type="enum",
+                description="Primary activity evidenced by the target.",
+                enum_values=(
+                    "debugging",
+                    "design",
+                    "implementation",
+                    "research",
+                    "writing",
+                    "ideation",
+                    "ops",
+                    "procurement",
+                ),
+            ),
+            AnnotationField(
+                name="confidence",
+                value_type="number",
+                description="Label confidence on the closed interval from zero to one.",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            AnnotationField(
+                name="abstain",
+                value_type="boolean",
+                required=False,
+                description="True when the available evidence does not support one primary activity.",
+            ),
+            AnnotationField(
+                name="rationale",
+                value_type="string",
+                required=False,
+                description="Concise evidence-grounded rationale for the label or abstention.",
+            ),
+        ),
+        target_ref_kinds=("session", "phase", "message", "block"),
+        abstain_field="abstain",
+        evidence_policy="required",
+        status="active",
+    )
+)
+
+
+SEED_GOAL_EVENT_SCHEMA = register_annotation_schema(
+    AnnotationSchema(
+        schema_id="seed.goal-event",
+        version=1,
+        title="Prospective goal event",
+        description=(
+            "Actor-declared prospective goal events. This construct never infers abandonment or unresolved state; "
+            "unresolved_inactive(H) belongs to the goal graph with a named horizon/frame/evaluation receipt."
+        ),
+        fields=(
+            AnnotationField(
+                name="event_type",
+                value_type="enum",
+                description="The prospective event actually declared by an actor.",
+                enum_values=(
+                    "opened",
+                    "blocked",
+                    "resumed",
+                    "declared_resolved",
+                    "superseded",
+                    "explicitly_abandoned",
+                ),
+            ),
+            AnnotationField(
+                name="goal_ref",
+                value_type="string",
+                description="Stable goal/question graph identity addressed by the declaration.",
+            ),
+            AnnotationField(
+                name="declared_by_ref",
+                value_type="string",
+                description="Actor ref whose declaration the annotation records.",
+            ),
+            AnnotationField(
+                name="declaration_authority",
+                value_type="enum",
+                description="Authority mode; the seed admits declarations, not inferred lifecycle states.",
+                enum_values=("actor_declared",),
+            ),
+            AnnotationField(
+                name="opening_event_ref",
+                value_type="string",
+                required=False,
+                description="Opening event ref for a close/block/resume/supersession declaration when known.",
+            ),
+            AnnotationField(
+                name="related_goal_ref",
+                value_type="string",
+                required=False,
+                description="Replacement or related goal identity for a supersession declaration.",
+            ),
+            AnnotationField(
+                name="confidence",
+                value_type="number",
+                description="Confidence that the evidence contains the declared event.",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            AnnotationField(
+                name="abstain",
+                value_type="boolean",
+                required=False,
+                description="True when declaration evidence is insufficient.",
+            ),
+            AnnotationField(
+                name="rationale",
+                value_type="string",
+                required=False,
+                description="Concise evidence-grounded rationale for the label or abstention.",
+            ),
+        ),
+        target_ref_kinds=("message", "block", "work_event", "observed-event"),
+        abstain_field="abstain",
+        evidence_policy="required",
+        status="active",
+    )
+)
+
+
+SEED_OUTCOME_EVIDENCE_SCHEMA = register_annotation_schema(
+    AnnotationSchema(
+        schema_id="seed.outcome-evidence",
+        version=1,
+        title="Outcome evidence",
+        description=(
+            "Observed outcome evidence, kept distinct from prospective goal events. Structural, rule-derived, "
+            "and judged authority remain explicit provenance; historical backfill is marked rather than rewritten "
+            "as prospective truth."
+        ),
+        fields=(
+            AnnotationField(
+                name="outcome_type",
+                value_type="enum",
+                description="Observed or explicitly unknown outcome evidence.",
+                enum_values=(
+                    "test_passed",
+                    "commit_observed",
+                    "deployment_observed",
+                    "user_accepted",
+                    "answer_declared",
+                    "unknown",
+                ),
+            ),
+            AnnotationField(
+                name="authority",
+                value_type="enum",
+                description="Authority class under which the evidence is asserted.",
+                enum_values=("structural", "rule", "judged"),
+            ),
+            AnnotationField(
+                name="authority_ref",
+                value_type="string",
+                description="Named parser, rule, metric, judgment, or operator authority.",
+            ),
+            AnnotationField(
+                name="temporal_mode",
+                value_type="enum",
+                description="Whether this is contemporaneous evidence or an explicit historical backfill.",
+                enum_values=("observed", "historical_backfill"),
+            ),
+            AnnotationField(
+                name="confidence",
+                value_type="number",
+                description="Evidence confidence on the closed interval from zero to one.",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            AnnotationField(
+                name="abstain",
+                value_type="boolean",
+                required=False,
+                description="True when available evidence cannot support an outcome classification.",
+            ),
+            AnnotationField(
+                name="rationale",
+                value_type="string",
+                required=False,
+                description="Concise evidence-grounded rationale for the label or abstention.",
+            ),
+        ),
+        target_ref_kinds=(
+            "session",
+            "work_event",
+            "observed-event",
+            "commit",
+            "check-run",
+            "github-pr",
+            "delegation",
+        ),
+        abstain_field="abstain",
+        evidence_policy="required",
+        status="active",
+    )
+)
+
+
+SEED_KNOWLEDGE_ARTIFACT_SCHEMA = register_annotation_schema(
+    AnnotationSchema(
+        schema_id="seed.knowledge-artifact",
+        version=1,
+        title="Knowledge artifact",
+        description=(
+            "Evidence-linked decisions, lessons, preferences, fact candidates/established facts under a named "
+            "authority, and commitments."
+        ),
+        fields=(
+            AnnotationField(
+                name="artifact_type",
+                value_type="enum",
+                description="Knowledge artifact family.",
+                enum_values=(
+                    "decision",
+                    "lesson",
+                    "preference",
+                    "fact_candidate",
+                    "fact_established",
+                    "commitment",
+                ),
+            ),
+            AnnotationField(
+                name="statement",
+                value_type="string",
+                description="The bounded proposition or commitment represented by the artifact.",
+            ),
+            AnnotationField(
+                name="authority",
+                value_type="enum",
+                description="Authority class under which the artifact is proposed or established.",
+                enum_values=("agent_candidate", "actor_declared", "structural", "rule", "operator_judged"),
+            ),
+            AnnotationField(
+                name="authority_ref",
+                value_type="string",
+                description="Named actor, parser, rule, or judgment authority.",
+            ),
+            AnnotationField(
+                name="confidence",
+                value_type="number",
+                description="Artifact confidence on the closed interval from zero to one.",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            AnnotationField(
+                name="abstain",
+                value_type="boolean",
+                required=False,
+                description="True when evidence is insufficient to classify the artifact.",
+            ),
+            AnnotationField(
+                name="rationale",
+                value_type="string",
+                required=False,
+                description="Concise evidence-grounded rationale for the label or abstention.",
+            ),
+        ),
+        target_ref_kinds=("session", "message", "block", "work_event", "assertion"),
+        abstain_field="abstain",
+        evidence_policy="required",
+        status="active",
+    )
+)
+
+
+SEED_REUSABILITY_SCHEMA = register_annotation_schema(
+    AnnotationSchema(
+        schema_id="seed.reusability",
+        version=1,
+        title="Reusability judgment",
+        description="Purpose-specific snippet, recipe, or demo reusability judgment.",
+        fields=(
+            AnnotationField(
+                name="purpose",
+                value_type="enum",
+                description="Reuse purpose being judged independently.",
+                enum_values=("snippet", "recipe", "demo"),
+            ),
+            AnnotationField(
+                name="worthy",
+                value_type="boolean",
+                description="Whether the target is worthy for the declared reuse purpose.",
+            ),
+            AnnotationField(
+                name="authority",
+                value_type="enum",
+                description="Authority class for the purpose-specific judgment.",
+                enum_values=("agent_candidate", "operator_judged"),
+            ),
+            AnnotationField(
+                name="authority_ref",
+                value_type="string",
+                description="Named classifier, agent, or operator judgment authority.",
+            ),
+            AnnotationField(
+                name="confidence",
+                value_type="number",
+                description="Judgment confidence on the closed interval from zero to one.",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            AnnotationField(
+                name="abstain",
+                value_type="boolean",
+                required=False,
+                description="True when available evidence cannot support this purpose-specific judgment.",
+            ),
+            AnnotationField(
+                name="rationale",
+                value_type="string",
+                required=False,
+                description="Concise evidence-grounded rationale for the label or abstention.",
+            ),
+        ),
+        target_ref_kinds=("session", "phase", "message", "block", "work_event", "assertion"),
+        abstain_field="abstain",
+        evidence_policy="required",
+        status="active",
+    )
+)
+
+
+SEED_ANNOTATION_SCHEMAS: tuple[AnnotationSchema, ...] = (
+    SEED_ACTIVITY_SCHEMA,
+    SEED_GOAL_EVENT_SCHEMA,
+    SEED_OUTCOME_EVIDENCE_SCHEMA,
+    SEED_KNOWLEDGE_ARTIFACT_SCHEMA,
+    SEED_REUSABILITY_SCHEMA,
+)
+
+BUILTIN_ANNOTATION_SCHEMAS: tuple[AnnotationSchema, ...] = (
+    DELEGATION_DISCOURSE_SCHEMA,
+    *SEED_ANNOTATION_SCHEMAS,
+)
+
+
 __all__ = [
     "ANNOTATION_SCHEMA_REGISTRY",
     "ANNOTATION_SCHEMA_DEFINITION_FORMAT",
+    "BUILTIN_ANNOTATION_SCHEMAS",
     "DELEGATION_DISCOURSE_SCHEMA",
+    "SEED_ACTIVITY_SCHEMA",
+    "SEED_ANNOTATION_SCHEMAS",
+    "SEED_GOAL_EVENT_SCHEMA",
+    "SEED_KNOWLEDGE_ARTIFACT_SCHEMA",
+    "SEED_OUTCOME_EVIDENCE_SCHEMA",
+    "SEED_REUSABILITY_SCHEMA",
     "AnnotationEvidencePolicy",
     "AnnotationField",
     "AnnotationFieldType",

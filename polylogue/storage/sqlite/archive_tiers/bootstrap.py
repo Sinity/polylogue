@@ -89,8 +89,18 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
 
         seed_price_catalog(conn)
+    if tier is ArchiveTier.USER:
+        _ensure_user_annotation_schemas(conn)
     conn.execute(f"PRAGMA user_version = {spec.version}")
     conn.commit()
+
+
+def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:
+    """Replay packaged schema rows without changing the user-tier DDL version."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_builtin_annotation_schemas
+
+    persist_builtin_annotation_schemas(conn, registered_at_ms=0)
 
 
 def _ensure_ops_runtime_columns(conn: sqlite3.Connection) -> None:
@@ -161,6 +171,9 @@ def initialize_archive_database(
             # archives receive newly introduced tables and indexes.
             if tier is ArchiveTier.OPS:
                 initialize_archive_tier(conn, tier)
+            elif tier is ArchiveTier.USER:
+                _ensure_user_annotation_schemas(conn)
+                conn.commit()
             return
         if (
             current_version != 0

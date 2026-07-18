@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from typing import cast
 
 from polylogue.annotations.batch import AnnotationBatch, AnnotationBatchError
-from polylogue.annotations.schema import AnnotationSchema, AnnotationSchemaError
+from polylogue.annotations.schema import (
+    BUILTIN_ANNOTATION_SCHEMAS,
+    AnnotationSchema,
+    AnnotationSchemaError,
+)
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text
@@ -129,6 +133,26 @@ def persist_annotation_schema(
     if persisted is None:  # pragma: no cover - INSERT followed by same-connection SELECT
         raise AnnotationSchemaError(f"annotation schema {schema.qualified_id!r} was not persisted")
     return persisted
+
+
+def persist_builtin_annotation_schemas(
+    conn: sqlite3.Connection,
+    *,
+    registered_at_ms: int = 0,
+) -> tuple[DurableAnnotationSchema, ...]:
+    """Ensure every packaged annotation construct has an immutable user-tier row.
+
+    Built-in vocabulary growth is data-only: ``annotation_schemas`` is already
+    the versioned registry and ``assertions.kind`` is plain ``TEXT``. Replaying
+    this function on a same-version ``user.db`` therefore adds missing rows
+    without a durable-tier schema migration, while ``persist_annotation_schema``
+    still fails closed if an existing identity has drifted.
+    """
+
+    return tuple(
+        persist_annotation_schema(conn, schema, registered_at_ms=registered_at_ms)
+        for schema in BUILTIN_ANNOTATION_SCHEMAS
+    )
 
 
 def _json_array_text(value: tuple[object, ...]) -> str:
@@ -356,6 +380,7 @@ __all__ = [
     "list_annotation_batches",
     "list_durable_annotation_schemas",
     "persist_annotation_batch",
+    "persist_builtin_annotation_schemas",
     "persist_annotation_schema",
     "read_annotation_batch",
     "read_durable_annotation_schema",
