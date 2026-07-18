@@ -102,8 +102,8 @@
         polylogue find 'repo:polylogue' then read --all --format ndjson
     Combined filters:
         polylogue --referenced-path README.md find 'repo:polylogue' then read
-        polylogue find 'actions where tool:bash AND text:pytest' then read --view
-  messages
+        polylogue find 'actions where tool:shell AND command:pytest' then read --v
+  iew messages
         polylogue --action-sequence file_read,file_edit,shell find 'repo:polylogue
   ' then analyze
         polylogue --action-text "pytest -q" find 'repo:polylogue' then read
@@ -111,9 +111,9 @@
   val-lane actions
         polylogue --origin claude-code-session --since 2026-01-01 find 'repo:polyl
   ogue' then analyze --by repo --format json
-        polylogue find 'actions where action:file_edit AND path:polylogue<PATH>' the
-  n read --view messages
-        polylogue find 'near:"sqlite locking bug in parser"' then read
+        polylogue find 'actions where session.repo:example-repo AND action:file_ed
+  it AND path:src<PATH>' then read --view messages
+        polylogue find 'near:"semantic search"' then read
     Modifiers (write operations):
         polylogue find "urgent" then mark --tag-add review
     See also:
@@ -293,8 +293,8 @@
     Combined filters:
         polylogue --referenced-path README.md find 'repo:polyl
   ogue' then read
-        polylogue find 'actions where tool:bash AND text:pytes
-  t' then read --view messages
+        polylogue find 'actions where tool:shell AND command:p
+  ytest' then read --view messages
         polylogue --action-sequence file_read,file_edit,shell
   find 'repo:polylogue' then analyze
         polylogue --action-text "pytest -q" find 'repo:polylog
@@ -304,10 +304,10 @@
         polylogue --origin claude-code-session --since 2026-01
   -01 find 'repo:polylogue' then analyze --by repo --format js
   on
-        polylogue find 'actions where action:file_edit AND pat
-  h:polylogue<PATH>' then read --view messages
-        polylogue find 'near:"sqlite locking bug in parser"' t
-  hen read
+        polylogue find 'actions where session.repo:example-rep
+  o AND action:file_edit AND path:src<PATH>' then read --view
+  messages
+        polylogue find 'near:"semantic search"' then read
     Modifiers (write operations):
         polylogue find "urgent" then mark --tag-add review
     See also:
@@ -539,14 +539,15 @@
         polylogue find 'repo:polylogue' then read --all --format ndjson
     Combined filters:
         polylogue --referenced-path README.md find 'repo:polylogue' then read
-        polylogue find 'actions where tool:bash AND text:pytest' then read --view messages
+        polylogue find 'actions where tool:shell AND command:pytest' then read --view messages
         polylogue --action-sequence file_read,file_edit,shell find 'repo:polylogue' then analyze
         polylogue --action-text "pytest -q" find 'repo:polylogue' then read
         polylogue find 'pytest -q tests<PATH>' --retrieval-lane actions
         polylogue --origin claude-code-session --since 2026-01-01 find 'repo:polylogue' then analyze --by repo --format js
   on
-        polylogue find 'actions where action:file_edit AND path:polylogue<PATH>' then read --view messages
-        polylogue find 'near:"sqlite locking bug in parser"' then read
+        polylogue find 'actions where session.repo:example-repo AND action:file_edit AND path:src<PATH>' then read --view
+  messages
+        polylogue find 'near:"semantic search"' then read
     Modifiers (write operations):
         polylogue find "urgent" then mark --tag-add review
     See also:
