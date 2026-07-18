@@ -917,21 +917,22 @@ def test_embed_stage_defers_to_pending_debt_while_predicate_holds(
     monkeypatch.setattr(stages, "_active_archive_index_path", lambda _db: db_path)
 
     embed_calls: list[str] = []
-    monkeypatch.setattr(
-        stages,
-        "_archive_embed_execute",
-        lambda _db, _path: embed_calls.append("execute") or True,
-    )
-    monkeypatch.setattr(
-        stages,
-        "_archive_embed_execute_many",
-        lambda _db, _paths: embed_calls.append("execute_many") or True,
-    )
-    monkeypatch.setattr(
-        stages,
-        "_archive_embed_execute_sessions",
-        lambda _db, _ids: embed_calls.append("execute_sessions") or True,
-    )
+
+    def fake_execute(_db: Path, _path: Path) -> bool:
+        embed_calls.append("execute")
+        return True
+
+    def fake_execute_many(_db: Path, _paths: object) -> bool:
+        embed_calls.append("execute_many")
+        return True
+
+    def fake_execute_sessions(_db: Path, _ids: object) -> bool:
+        embed_calls.append("execute_sessions")
+        return True
+
+    monkeypatch.setattr(stages, "_archive_embed_execute", fake_execute)
+    monkeypatch.setattr(stages, "_archive_embed_execute_many", fake_execute_many)
+    monkeypatch.setattr(stages, "_archive_embed_execute_sessions", fake_execute_sessions)
 
     deferring = True
     stage = stages.make_embed_stage(db_path, defer=lambda: deferring)
