@@ -678,13 +678,32 @@ def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: Ra
                 """,
                 (raw_id,),
             ).fetchone()
-            if existing is not None:
-                existing_values = tuple(existing)
-                if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
-                    existing_values, revision
-                ):
-                    return
-            raise ValueError(f"raw revision is already authoritative or missing: {raw_id}")
+            if existing is None:
+                raise ValueError(f"raw revision bind found no raw row: {raw_id}")
+            existing_values = tuple(existing)
+            if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
+                existing_values, revision
+            ):
+                return
+            field_names = (
+                "logical_source_key",
+                "revision_kind",
+                "source_revision",
+                "predecessor_source_revision",
+                "predecessor_raw_id",
+                "baseline_raw_id",
+                "append_start_offset",
+                "append_end_offset",
+                "acquisition_generation",
+                "revision_authority",
+            )
+            proposed_values = _revision_values(revision)
+            differing = ", ".join(
+                f"{name}: stored={stored!r} proposed={proposed!r}"
+                for name, stored, proposed in zip(field_names, existing_values, proposed_values, strict=True)
+                if stored != proposed
+            )
+            raise ValueError(f"raw revision is already authoritative and differs for {raw_id}: {differing}")
 
 
 def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> ArchiveRawSessionEnvelope:
