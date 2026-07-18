@@ -1505,6 +1505,106 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
         await archive.close()
 
 
+def _atof_record(*, session_id: str, uuid: str, timestamp: str, name: str = "hermes.turn.start") -> dict[str, object]:
+    return {
+        "atof_version": "0.1",
+        "kind": "mark",
+        "uuid": uuid,
+        "timestamp": timestamp,
+        "name": name,
+        "metadata": {"session_id": session_id},
+    }
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Confirmed data-loss bug, Ref polylogue-flxh: real ~/.hermes/observability/"
+        "nemo-relay/atof/events.jsonl is ONE file shared across every Hermes "
+        "session on the install (live evidence: 3+ distinct hermes session ids "
+        "interleaved in one file), unlike Claude Code/Codex where one JSONL file "
+        "is always exactly one session. The raw-revision-authority replay chain "
+        "(_parse_raw_revision_chain: 'raw revision did not replay to exactly one "
+        "session') and the append-ingest path (append_ingest.py: 'append payload "
+        "did not prove one session and cursor identity') both assume exactly one "
+        "logical session per raw revision. When a growth batch for an "
+        "already-tracked ATOF file contains events for a session that already "
+        "has prior accepted raw revisions (session A) AND a brand-new session "
+        "(session B), the reconciliation raises and the whole path/full-ingest "
+        "attempt is marked failed -- but session B's insert had already been "
+        "committed while session A's new event was not, so the overall failure "
+        "silently masks a real, permanent loss of session A's new evidence "
+        "(not a retry-safe deferral: the same bytes fail identically on retry, "
+        "and 5 consecutive failures quarantine the whole file). Remove this "
+        "xfail once fixed."
+    ),
+    strict=True,
+)
+@pytest.mark.asyncio
+async def test_live_append_atof_shared_file_multi_session_boundary_loses_events(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Empirically drive an append batch whose bytes span two distinct hermes
+    session ids -- the real shared-ATOF-file shape -- and prove session A's new
+    event (a-turn-2) is NOT silently lost while session B (b-turn-1) is created.
+
+    This must FAIL today (xfail, strict): direct sqlite inspection after the
+    growth batch shows session A still has only its original a-turn-1 event
+    while session B is fully present with b-turn-1 -- a-turn-2 never lands.
+    """
+    root = workspace_env["data_root"] / "hermes-observability"
+    root.mkdir(parents=True)
+    source_path = root / "events.jsonl"
+    db_path = workspace_env["data_root"] / "append-atof-boundary.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="hermes", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _atof_record(session_id="atof-session-a", uuid="a-turn-1", timestamp="2026-07-18T00:00:00Z"),
+            ],
+        )
+        await processor.ingest_files([source_path], emit_event=False)
+
+        # Growth batch spans a session boundary -- the real shared-file shape.
+        with source_path.open("a", encoding="utf-8") as handle:
+            for record in (
+                _atof_record(session_id="atof-session-a", uuid="a-turn-2", timestamp="2026-07-18T00:00:01Z"),
+                _atof_record(session_id="atof-session-b", uuid="b-turn-1", timestamp="2026-07-18T00:00:02Z"),
+            ):
+                handle.write(json.dumps(record) + "\n")
+        await processor.ingest_files([source_path], emit_event=False)
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT s.native_id, se.payload_json
+                FROM session_events se
+                JOIN sessions s ON s.session_id = se.session_id
+                WHERE se.event_type = 'hermes_context_span'
+                ORDER BY s.native_id, se.position
+                """
+            ).fetchall()
+        event_uuids_by_session: dict[str, list[str]] = {}
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            event_uuids_by_session.setdefault(row["native_id"], []).append(payload["event_uuid"])
+
+        assert event_uuids_by_session.get("observer:atof-session-a") == ["a-turn-1", "a-turn-2"]
+        assert event_uuids_by_session.get("observer:atof-session-b") == ["b-turn-1"]
+    finally:
+        await archive.close()
+
+
 @pytest.mark.asyncio
 async def test_live_append_merges_tail_visible_through_public_archive_read(workspace_env: dict[str, Path]) -> None:
     root = workspace_env["data_root"] / "claude-projects"

@@ -65,6 +65,23 @@ for the same logical Hermes session is a session-identity/lineage design
 decision (topology_edges / session_links) that is explicitly deferred, not
 silently assumed. Read-side correlation by the shared Hermes session id
 remains possible today via ``hermes_observer_session_id_for``.
+
+KNOWN LIVE INGESTION BUG (polylogue-flxh, confirmed 2026-07-18, not yet
+fixed): the real ATOF producer writes ONE shared ``events.jsonl`` file across
+every Hermes session on an install (live-verified: 3+ distinct session ids
+interleaved in one file), but the live-ingest raw-revision-authority replay
+chain (``polylogue/sources/live/batch.py``) and append path
+(``polylogue/sources/live/append_ingest.py``) both require exactly one
+logical session per raw revision. When a file-growth batch spans a Hermes
+session boundary (a new event for an already-tracked session lands alongside
+a brand-new session's first event), the new event for the ALREADY-TRACKED
+session is silently and permanently lost while the brand-new session is
+still created -- empirically proven by
+``tests/unit/sources/test_live_watcher.py::test_live_append_atof_shared_file_multi_session_boundary_loses_events``
+(``xfail(strict=True)`` pending the fix). This affects only the LIVE watcher
+ingestion path, not ``parse_atof_stream`` itself (which is correct and
+idempotent when given the full file, per this module's own tests) or the
+manual/CLI import path.
 """
 
 from __future__ import annotations
