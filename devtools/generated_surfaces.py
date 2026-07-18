@@ -18,6 +18,7 @@ from devtools import (
     render_product_workflows,
     render_quality_reference,
     render_topology_status,
+    render_webui_client,
     render_webui_design_system,
 )
 from devtools.command_catalog import control_plane_argv
@@ -115,6 +116,17 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "devtools/render_webui_design_system.py",
             "polylogue/core/enums.py",
             "polylogue/ui/theme.py",
+        ),
+    ),
+    GeneratedSurface(
+        name="webui-client",
+        label="WebUI client contracts",
+        description="Render the committed TypeScript client from the generated daemon OpenAPI schema.",
+        command=control_plane_argv("render webui-client"),
+        main=render_webui_client.main,
+        inputs=(
+            "docs/openapi/search.yaml",
+            "devtools/render_webui_client.py",
         ),
     ),
     GeneratedSurface(

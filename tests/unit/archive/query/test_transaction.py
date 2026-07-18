@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
 
 
@@ -56,3 +58,9 @@ def test_query_unit_envelope_can_adopt_the_caller_transaction_identity() -> None
 
     assert envelope.query_ref == transaction.query_ref
     assert envelope.result_ref == "result:" + transaction.query_ref.removeprefix("query:")
+
+
+@pytest.mark.parametrize("token", ["q1._", "q1.////", "q1.8J+SqQ"])
+def test_query_continuation_rejects_malformed_payloads_as_value_errors(token: str) -> None:
+    with pytest.raises(ValueError, match="invalid query continuation"):
+        QueryContinuation.decode(token)

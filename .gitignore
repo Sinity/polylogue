@@ -56,6 +56,7 @@ AGENTS.override.md
 browser-extension/node_modules/
 browser-extension/package-lock.json
 webui/node_modules/
+webui/.cache/
 webui/playwright-report/
 webui/test-results/
 

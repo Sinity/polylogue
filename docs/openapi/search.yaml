@@ -118,8 +118,8 @@ paths:
     get:
       summary: Ranked session search and list
       description: When ``query`` is supplied, returns a ranked search envelope (``SearchEnvelope``) with per-hit match evidence
-        and pagination handles. When ``query`` is omitted, returns the session list envelope. Both envelopes carry ``total``,
-        ``limit``, ``offset``, and ``next_cursor`` for cursor-based pagination.
+        and pagination handles. When ``query`` is omitted, returns ``SessionListResponse``. Ranked search exposes the opaque
+        ``next_cursor`` handle; the current list mode remains offset-based.
       operationId: searchSessions
       security:
       - machineBearer: []
@@ -187,7 +187,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchEnvelope'
+                oneOf:
+                - $ref: '#/components/schemas/SearchEnvelope'
+                - $ref: '#/components/schemas/SessionListResponse'
         '400':
           description: Malformed query or credential-shaped query parameter.
           content:
@@ -222,6 +224,28 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+      x-polylogue-page:
+        iterator: search
+        initial_required_parameters:
+        - query
+        response_schemas:
+        - SearchEnvelope
+        items_property: hits
+        cursor_property: next_cursor
+        cursor_parameter: cursor
+        continuation_request: merge
+        reset_parameters:
+        - offset
+        coverage:
+          total_property: total
+          exactness_property: exactness
+          exact_values:
+          - exact
+          default_exact: true
+          qualified_values:
+          - capped
+          - sampled
+          - estimate
   /api/query-units:
     get:
       summary: Terminal query-unit rows
@@ -235,13 +259,21 @@ paths:
       parameters:
       - name: expression
         in: query
-        description: 'Explicit unit-source expression. Examples: ``messages where session.repo:polylogue AND role:assistant
-          AND text:timeout``; ``actions where session.repo:polylogue AND tool:bash AND text:pytest``; ``blocks where session.origin:codex-session
-          AND type:code AND text:timeout``; ``assertions where kind:decision AND status:active AND text:review``; ``files
-          where session.repo:polylogue AND action:file_edit AND path:archive/query``; ``runs where session.repo:polylogue
-          AND role:main``; ``observed-events where kind:tool_finished AND status:failed | group by tool | count``; ``context-snapshots
-          where boundary:session_start``; ``delegations where mapping_state:resolved AND instruction:review``.'
-        required: true
+        description: 'Explicit unit-source expression for the first page. Omit it when passing an opaque ``continuation``.
+          Examples: ``messages where session.repo:polylogue AND role:assistant AND text:timeout``; ``actions where session.repo:polylogue
+          AND tool:bash AND text:pytest``; ``blocks where session.origin:codex-session AND type:code AND text:timeout``; ``assertions
+          where kind:decision AND status:active AND text:review``; ``files where session.repo:polylogue AND action:file_edit
+          AND path:archive/query``; ``runs where session.repo:polylogue AND role:main``; ``observed-events where kind:tool_finished
+          AND status:failed | group by tool | count``; ``context-snapshots where boundary:session_start``; ``delegations where
+          mapping_state:resolved AND instruction:review``.'
+        required: false
+        schema:
+          type: string
+      - name: continuation
+        in: query
+        description: Opaque QueryTransaction continuation returned by the previous page. Pass it back unchanged and without
+          any other query parameters.
+        required: false
         schema:
           type: string
       - name: limit
@@ -461,6 +493,23 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+      x-polylogue-page:
+        iterator: query
+        initial_required_parameters:
+        - expression
+        response_schemas:
+        - QueryUnitEnvelope
+        - QueryUnitAggregateEnvelope
+        items_property: items
+        cursor_property: continuation
+        cursor_parameter: continuation
+        continuation_request: cursor_only
+        query_ref_property: query_ref
+        result_ref_property: result_ref
+        coverage:
+          total_property: total
+          kind: qualified
+          qualification: page
   /api/sessions/{session_id}/read:
     get:
       summary: Execute a session read-view
@@ -1427,6 +1476,156 @@ components:
       - query
       - retrieval_lane
       title: SearchEnvelope
+      type: object
+    SessionFlagsPayload:
+      additionalProperties: false
+      description: Boolean flags summarizing session content characteristics.
+      properties:
+        has_tool_use:
+          default: false
+          title: Has Tool Use
+          type: boolean
+        has_thinking:
+          default: false
+          title: Has Thinking
+          type: boolean
+        has_paste_evidence:
+          default: false
+          title: Has Paste Evidence
+          type: boolean
+      title: SessionFlagsPayload
+      type: object
+    SessionListRowPayload:
+      additionalProperties: false
+      description: 'Session row payload used by CLI list, JSON, and YAML surfaces.
+
+
+        Carries the canonical row shape for the web reader contract (#848).'
+      properties:
+        id:
+          title: Id
+          type: string
+        origin:
+          title: Origin
+          type: string
+        title:
+          title: Title
+          type: string
+        target_ref:
+          anyOf:
+          - $ref: '#/components/schemas/TargetRefPayload'
+          - type: 'null'
+          default: null
+        anchor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Anchor
+        actions:
+          additionalProperties:
+            $ref: '#/components/schemas/ReaderActionAvailabilityPayload'
+          title: Actions
+          type: object
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Updated At
+        message_count:
+          default: 0
+          title: Message Count
+          type: integer
+        tags:
+          default: []
+          items:
+            type: string
+          title: Tags
+          type: array
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Summary
+        words:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Words
+        repo:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Repo
+        cwd_display:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Cwd Display
+        flags:
+          anyOf:
+          - $ref: '#/components/schemas/SessionFlagsPayload'
+          - type: 'null'
+          default: null
+      required:
+      - id
+      - origin
+      - title
+      title: SessionListRowPayload
+      type: object
+    SessionListResponse:
+      additionalProperties: false
+      description: 'Shared response envelope for list and search results.
+
+
+        All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.'
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/SessionListRowPayload'
+          title: Items
+          type: array
+        total:
+          title: Total
+          type: integer
+        limit:
+          title: Limit
+          type: integer
+        offset:
+          title: Offset
+          type: integer
+        query_description:
+          items:
+            type: string
+          title: Query Description
+          type: array
+        diagnostics:
+          anyOf:
+          - $ref: '#/components/schemas/QueryMissDiagnosticsPayload'
+          - type: 'null'
+          default: null
+        route_state:
+          anyOf:
+          - $ref: '#/components/schemas/RouteReadinessPayload'
+          - type: 'null'
+          default: null
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      title: SessionListResponse
       type: object
     ActionQueryRowPayload:
       additionalProperties: false
@@ -2722,113 +2921,6 @@ components:
       - total
       - limit
       title: AssertionClaimListPayload
-      type: object
-    SessionFlagsPayload:
-      additionalProperties: false
-      description: Boolean flags summarizing session content characteristics.
-      properties:
-        has_tool_use:
-          default: false
-          title: Has Tool Use
-          type: boolean
-        has_thinking:
-          default: false
-          title: Has Thinking
-          type: boolean
-        has_paste_evidence:
-          default: false
-          title: Has Paste Evidence
-          type: boolean
-      title: SessionFlagsPayload
-      type: object
-    SessionListRowPayload:
-      additionalProperties: false
-      description: 'Session row payload used by CLI list, JSON, and YAML surfaces.
-
-
-        Carries the canonical row shape for the web reader contract (#848).'
-      properties:
-        id:
-          title: Id
-          type: string
-        origin:
-          title: Origin
-          type: string
-        title:
-          title: Title
-          type: string
-        target_ref:
-          anyOf:
-          - $ref: '#/components/schemas/TargetRefPayload'
-          - type: 'null'
-          default: null
-        anchor:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Anchor
-        actions:
-          additionalProperties:
-            $ref: '#/components/schemas/ReaderActionAvailabilityPayload'
-          title: Actions
-          type: object
-        created_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Created At
-        updated_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Updated At
-        message_count:
-          default: 0
-          title: Message Count
-          type: integer
-        tags:
-          default: []
-          items:
-            type: string
-          title: Tags
-          type: array
-        summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Summary
-        words:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          default: null
-          title: Words
-        repo:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Repo
-        cwd_display:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Cwd Display
-        flags:
-          anyOf:
-          - $ref: '#/components/schemas/SessionFlagsPayload'
-          - type: 'null'
-          default: null
-      required:
-      - id
-      - origin
-      - title
-      title: SessionListRowPayload
       type: object
     WebCredentialReadyPayload:
       additionalProperties: false

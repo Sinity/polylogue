@@ -2151,6 +2151,62 @@ class TestReaderQueryUnits:
         second_items = cast(list[dict[str, object]], second["items"])
         assert first_items[0]["message_id"] != second_items[0]["message_id"]
 
+    def test_query_units_endpoint_consumes_opaque_continuations(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("messages where text:Hello")
+        pages: list[dict[str, object]] = []
+        path = f"/api/query-units?expression={expression}&limit=1"
+
+        with _running_server(workspace_env) as (_, base_url):
+            while True:
+                payload = cast(dict[str, object], _get_json(base_url, path))
+                pages.append(payload)
+                continuation = payload["continuation"]
+                if continuation is None:
+                    break
+                path = f"/api/query-units?continuation={quote(str(continuation), safe='')}"
+
+        assert [page["offset"] for page in pages] == [0, 1, 2]
+        assert len({str(page["query_ref"]) for page in pages}) == 1
+        assert len({str(page["result_ref"]) for page in pages}) == 1
+        item_ids = [cast(list[dict[str, object]], page["items"])[0]["message_id"] for page in pages]
+        assert len(set(item_ids)) == len(item_ids)
+
+    def test_query_units_endpoint_rejects_continuation_parameter_overrides(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        expression = quote("messages where text:Hello")
+        with _running_server(workspace_env) as (_, base_url):
+            first = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/query-units?expression={expression}&limit=1"),
+            )
+            continuation = quote(str(first["continuation"]), safe="")
+            status, payload = _request_json(
+                base_url,
+                "GET",
+                f"/api/query-units?continuation={continuation}&limit=10",
+            )
+
+        assert status == 400
+        assert payload == {
+            "ok": False,
+            "error": "invalid_continuation",
+            "detail": "continuation requests must not override the original query parameters",
+            "field": None,
+        }
+
+    def test_query_units_endpoint_rejects_malformed_continuation(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _request_json(
+                base_url,
+                "GET",
+                "/api/query-units?continuation=q1._",
+            )
+
+        assert status == 400
+        assert cast(dict[str, object], payload)["error"] == "invalid_continuation"
+
     def test_query_units_endpoint_applies_session_scope_filters(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("messages where text:Hello")
         with _running_server(workspace_env) as (_, base_url):

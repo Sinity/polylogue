@@ -162,6 +162,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "render webui-client",
+        "generated surfaces",
+        "Render the committed WebUI TypeScript client from docs/openapi/search.yaml.",
+        "devtools.render_webui_client",
+        use_when=(
+            "Refresh or verify WebUI request/response types and continuation iterators after changing "
+            "the generated daemon OpenAPI contract."
+        ),
+        examples=(
+            "devtools render webui-client",
+            "devtools render webui-client --check",
+        ),
+    ),
+    CommandSpec(
         "render devtools-reference",
         "generated surfaces",
         "Render the command catalog inside docs/devtools.md.",

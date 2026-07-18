@@ -3659,33 +3659,54 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.transaction import QueryContinuation
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
-        continuation = self._get_param(params, "continuation")
-        if continuation is not None:
-            try:
-                continuation_request = QueryContinuation.decode(continuation).request
-                if continuation_request.operation != "query_units":
-                    raise ValueError("continuation belongs to a different query operation")
-                expression_value = continuation_request.arguments.get("expression")
-                session_filters = continuation_request.arguments.get("session_filters")
-                if not isinstance(expression_value, str) or not isinstance(session_filters, dict):
-                    raise ValueError("continuation has invalid query arguments")
-                expression = expression_value
-                limit = clamp_query_limit(continuation_request.page_size, default=50)
-                offset = max(0, continuation_request.offset)
-                request = query_unit_request(
-                    expression=expression,
-                    limit=limit,
-                    offset=offset,
-                    session_filters=session_filters,
+        continuation_token = self._get_param(params, "continuation")
+        session_filters: Mapping[str, object] | None = None
+        if continuation_token is not None:
+            if set(params) != {"continuation"}:
+                self._send_error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_continuation",
+                    "continuation requests must not override the original query parameters",
                 )
-            except (ExpressionCompileError, ValueError) as exc:
+                return
+            try:
+                continuation = QueryContinuation.decode(continuation_token)
+                continuation_request = continuation.request
+                arguments = continuation_request.arguments
+                expression_value = arguments.get("expression")
+                filters_value = arguments.get("session_filters", {})
+                expected_result_ref = "result:" + continuation_request.query_ref.removeprefix("query:")
+                if (
+                    continuation_request.operation != "query_units"
+                    or continuation_request.projection != "terminal-unit-envelope"
+                    or continuation_request.stable_order != "canonical"
+                    or set(arguments) != {"expression", "session_filters"}
+                    or not isinstance(expression_value, str)
+                    or not expression_value.strip()
+                    or not isinstance(filters_value, Mapping)
+                    or continuation.result_ref != expected_result_ref
+                ):
+                    raise ValueError("continuation does not identify a query-unit result")
+                expression = expression_value
+                session_filters = {str(key): value for key, value in filters_value.items()}
+                limit = clamp_query_limit(continuation_request.page_size, default=50)
+                offset = continuation_request.offset
+            except (TypeError, ValueError) as exc:
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_continuation", str(exc))
                 return
         else:
             expression = self._get_param(params, "expression") or ""
             limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
             offset = max(0, self._get_int(params, "offset", 0))
-            try:
+        try:
+            if session_filters is not None:
+                request = query_unit_request(
+                    expression=expression,
+                    limit=limit,
+                    offset=offset,
+                    session_filters=session_filters,
+                )
+            else:
                 request = query_unit_request(
                     expression=expression,
                     limit=limit,
@@ -3718,9 +3739,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     max_words=self._get_param(params, "max_words"),
                     message_type=self._get_param(params, "message_type"),
                 )
-            except ExpressionCompileError as exc:
-                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_query", str(exc))
-                return
+        except ExpressionCompileError as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_query", str(exc))
+            return
         archive_root = _web_reader_archive_root()
         if archive_root is None:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
