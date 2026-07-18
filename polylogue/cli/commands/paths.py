@@ -36,21 +36,22 @@ def paths_command(output_format: str) -> None:
     blob store root, and whether any bind mounts are detected.
     """
     from polylogue.paths import (
-        active_index_db_path,
         archive_root,
         blob_store_root,
         config_home,
         data_home,
     )
+    from polylogue.storage.archive_identity import ArchiveLocation
 
-    archive = archive_root().resolve()
-    active_db = active_index_db_path().resolve()
+    location = ArchiveLocation.resolve(archive_root())
+    archive = location.configured_root.resolve()
+    active_db = location.active_index.resolved_path
     active_archive = active_db.parent.resolve()
-    db = (active_archive / "index.db").resolve()
-    source_db = (active_archive / "source.db").resolve()
-    embeddings_db = (active_archive / "embeddings.db").resolve()
-    ops_db = (active_archive / "ops.db").resolve()
-    user_db = (active_archive / "user.db").resolve()
+    db = location.active_tier("index").resolved_path
+    source_db = location.active_tier("source").resolved_path
+    embeddings_db = location.active_tier("embeddings").resolved_path
+    ops_db = location.active_tier("ops").resolved_path
+    user_db = location.active_tier("user").resolved_path
     tier_paths = {
         "source": source_db,
         "index": db,
@@ -116,6 +117,8 @@ def paths_command(output_format: str) -> None:
             "active_database_role": active_database_role,
             "active_database_exists": active_db.exists(),
             "active_database_size_bytes": active_db.stat().st_size if active_db.exists() else None,
+            "active_index_pointer": str(location.active_pointer) if location.active_pointer is not None else None,
+            "shadow_configured_index": location.shadow_index.as_dict() if location.shadow_index is not None else None,
             "storage_layout": storage_layout,
             "archive_ready": archive_ready,
             "archive_materialization_ready": archive_materialization_ready,

@@ -204,40 +204,6 @@ _TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "polylogue.api.Polylogue.archive_get_session",
     ),
     _ToolRow(
-        "archive_list_sessions",
-        "List sessions from the split archive store.",
-        "polylogue.mcp.server_tools",
-        "register_query_tools",
-        "read",
-        MCPVerb.QUERY,
-        ("session", "result-set"),
-        MCPResultSemantics.EXHAUSTIVE_PAGE,
-        "polylogue.mcp.server_tools.archive_list_sessions:inspect.signature",
-        (),
-        (("limit", 1),),
-        "envelope",
-        ("items", "limit", "offset", "total"),
-        "query-sessions",
-        "polylogue.api.Polylogue.archive_list_sessions",
-    ),
-    _ToolRow(
-        "archive_search_sessions",
-        "Search session block text.",
-        "polylogue.mcp.server_tools",
-        "register_query_tools",
-        "read",
-        MCPVerb.QUERY,
-        ("session", "result-set"),
-        MCPResultSemantics.TOP_K,
-        "polylogue.mcp.server_tools.archive_search_sessions:inspect.signature",
-        ("query",),
-        (("limit", 1), ("query", "hello")),
-        "envelope",
-        ("items", "limit", "query", "total"),
-        "query-sessions",
-        "polylogue.api.Polylogue.archive_search_sessions",
-    ),
-    _ToolRow(
         "blackboard_list",
         "List persistent agent blackboard notes, newest first (#1697).",
         "polylogue.mcp.server_tools",
@@ -1875,8 +1841,6 @@ _WORKFLOW_COVERAGE: Final[dict[str, tuple[str, ...]]] = {
     "archive_coverage": ("archive-evidence-read",),
     "archive_debt": ("archive-evidence-read",),
     "archive_get_session": ("archive-evidence-read",),
-    "archive_list_sessions": ("phrase-search", "structural-query", "continuation-recovery"),
-    "archive_search_sessions": ("phrase-search", "structural-query", "continuation-recovery"),
     "blackboard_list": ("multi-agent-coordination",),
     "blackboard_post": ("user-state-mutation",),
     "build_context_image": ("continuity-handoff", "bounded-context-delivery"),
@@ -1982,8 +1946,6 @@ _PROMPT_ALTERNATIVES: Final[dict[str, tuple[str, ...]]] = {
     "archive_coverage": (),
     "archive_debt": (),
     "archive_get_session": (),
-    "archive_list_sessions": (),
-    "archive_search_sessions": (),
     "blackboard_list": (),
     "blackboard_post": (),
     "build_context_image": (),
@@ -2089,8 +2051,6 @@ _RESOURCE_ALTERNATIVES: Final[dict[str, tuple[str, ...]]] = {
     "archive_coverage": (),
     "archive_debt": (),
     "archive_get_session": ("polylogue://session/{id}",),
-    "archive_list_sessions": ("polylogue://session/{id}", "polylogue://result-set/{id}"),
-    "archive_search_sessions": ("polylogue://session/{id}", "polylogue://result-set/{id}"),
     "blackboard_list": (),
     "blackboard_post": (),
     "build_context_image": ("polylogue://session/{id}",),
@@ -2196,16 +2156,6 @@ _DISCOVERY: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...], tuple[str, .
     "archive_coverage": (("action_affordances",), ("action_affordances",), ("query_completions",)),
     "archive_debt": (("action_affordances",), ("action_affordances",), ("query_completions",)),
     "archive_get_session": (("action_affordances",), ("action_affordances",), ("query_completions",)),
-    "archive_list_sessions": (
-        ("query_completions", "explain_query_expression"),
-        ("facets", "query_completions"),
-        ("query_completions",),
-    ),
-    "archive_search_sessions": (
-        ("query_completions", "explain_query_expression"),
-        ("facets", "query_completions"),
-        ("query_completions",),
-    ),
     "blackboard_list": (("action_affordances",), ("action_affordances",), ("query_completions",)),
     "blackboard_post": (("action_affordances",), ("action_affordances",), ("action_affordances",)),
     "build_context_image": (("action_affordances",), ("action_affordances",), ("query_completions",)),
@@ -2374,18 +2324,6 @@ _CONTINUATION: Final[dict[str, tuple[str, str | None, str | None, str]]] = {
         None,
         None,
         "The result is a single object, aggregate, or governed operation result with no row continuation.",
-    ),
-    "archive_list_sessions": (
-        "cursor_or_offset",
-        "result-set:{query-hash}:{cursor}",
-        "target:query(plan, projection, page)",
-        "Physical pages are bounded; logical completeness requires following the returned cursor/offset or the target query route.",
-    ),
-    "archive_search_sessions": (
-        "ranked_frontier",
-        None,
-        "target:query(plan, projection, page)",
-        "Ranking is not an exhaustive relation; the declaration names the exhaustive query route when one exists.",
     ),
     "blackboard_list": (
         "bounded_page",
@@ -2963,8 +2901,6 @@ _TARGET_ROUTE: Final[dict[str, str]] = {
     "archive_coverage": "target:read(ref, view, page)",
     "archive_debt": "target:status(ref-or-domain)",
     "archive_get_session": "target:read(ref, view, page)",
-    "archive_list_sessions": "target:query(plan, projection, page)",
-    "archive_search_sessions": "target:query(plan, projection, page)",
     "blackboard_list": "target:read(ref, view, page)",
     "blackboard_post": "target:write(operation, object-ref, authorization)",
     "build_context_image": "target:context(seed, policy, budget)",
@@ -3070,8 +3006,6 @@ _OBSERVED_USE: Final[dict[str, ObservedUse]] = {
     "archive_coverage": "unknown",
     "archive_debt": "unknown",
     "archive_get_session": "unknown",
-    "archive_list_sessions": "not_observed",
-    "archive_search_sessions": "not_observed",
     "blackboard_list": "unknown",
     "blackboard_post": "unknown",
     "build_context_image": "unknown",
@@ -3227,11 +3161,7 @@ def _build_declaration(row: _ToolRow) -> MCPToolDeclaration:
     grammar, fields, values = _DISCOVERY[row.name]
     continuation_mode, continuation_ref, exhaustive_route, continuation_notes = _CONTINUATION[row.name]
     retirement_owner = "polylogue-t46.8.2" if row.minimum_role == "read" else "polylogue-t46.8.3"
-    deprecation = (
-        MCPDeprecationState.COMPATIBILITY
-        if row.name in {"archive_list_sessions", "archive_search_sessions"}
-        else MCPDeprecationState.RETAINED
-    )
+    deprecation = MCPDeprecationState.RETAINED
     kernel = DeclarationSpec(
         declaration_id=f"mcp.tool.{row.name}",
         family_id=_family_id(row),
@@ -3325,8 +3255,6 @@ def _build_declaration(row: _ToolRow) -> MCPToolDeclaration:
                 "search",
                 "query_units",
                 "list_sessions",
-                "archive_list_sessions",
-                "archive_search_sessions",
                 "query_completions",
                 "explain_query_expression",
             }

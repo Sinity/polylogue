@@ -2,13 +2,52 @@
   "name": "polylogue-webui",
   "private": true,
   "version": "0.0.0",
+  "type": "module",
+  "description": "Polylogue progressive WebUI islands and browser contract tests",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens.css": "./src/generated/tokens.css",
+    "./design-system.css": "./src/design-system/design-system.css"
+  },
   "scripts": {
+    "generate": "cd .. && python3 -m devtools.render_webui_design_system",
+    "generate:check": "cd .. && python3 -m devtools.render_webui_design_system --check",
+    "generate:client": "cd .. && python3 -m devtools.render_webui_client",
+    "check:client": "cd .. && python3 -m devtools.render_webui_client --check",
+    "lint": "node scripts/lint-design-system.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:client-contracts": "rm -rf .cache/client-test && tsc -p tsconfig.client.json --outDir .cache/client-test && node --test tests/unit/*.test.mjs",
+    "build": "npm run typecheck && vite build",
+    "build:design-system": "vite build --config vite.client.config.ts && vite build --config vite.ssr.config.ts",
+    "dev": "vite",
+    "check": "npm run generate:check && npm run check:client && npm run lint && npm run typecheck && npm run test && npm run test:client-contracts && npm run build && npm run build:design-system",
     "install:e2e-browser": "playwright install chromium",
     "install:e2e-browser:ci": "playwright install --with-deps chromium",
-    "test:e2e": "playwright test"
+    "pretest:e2e": "npm run build:design-system",
+    "test:e2e": "playwright test",
+    "test:e2e:update": "npm run build:design-system && playwright test tests/design-system.spec.ts --update-snapshots",
+    "test:e2e:design-system": "npm run build:design-system && playwright test tests/design-system.spec.ts"
+  },
+  "dependencies": {
+    "preact": "10.29.7",
+    "preact-render-to-string": "6.6.2"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
     "@playwright/test": "1.61.1",
-    "typescript": "5.9.3"
-  }
+    "@preact/preset-vite": "2.10.2",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/preact": "3.2.4",
+    "@types/node": "24.10.1",
+    "jsdom": "27.2.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  },
+  "packageManager": "npm@10.9.2"
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 import click
 
 from polylogue.operations.archive_debt import archive_debt_list
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
 from polylogue.surfaces.payloads import ArchiveDebtListPayload
 
 _DEBT_KINDS = ("archive-tier", "assertion-candidate", "convergence", "embedding", "fts", "raw-materialization")
@@ -53,10 +53,10 @@ def debt_list_command(
     output_format: str,
 ) -> None:
     """List archive debt across assertions, tiers, raw ingest, convergence, embedding, and FTS signals."""
-    archive_root = active_index_db_path().parent
+    configured_root = archive_root()
     selected_statuses = statuses or _DEFAULT_DEBT_STATUSES
     payload = archive_debt_list(
-        archive_root=archive_root,
+        archive_root=configured_root,
         kinds=kinds,
         statuses=selected_statuses,
         only_actionable=only_actionable,

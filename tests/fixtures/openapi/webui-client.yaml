@@ -1,0 +1,108 @@
+openapi: 3.1.0
+info:
+  title: WebUI client generator fixture
+  version: "1"
+paths:
+  /api/items/{bucket}:
+    get:
+      operationId: queryItems
+      parameters:
+        - name: bucket
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: expression
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: continuation
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A bounded item page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemEnvelope"
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+      x-polylogue-page:
+        iterator: query
+        initial_required_parameters:
+          - bucket
+          - expression
+        response_schemas:
+          - ItemEnvelope
+        items_property: items
+        cursor_property: continuation
+        cursor_parameter: continuation
+        continuation_request: cursor_only
+        query_ref_property: query_ref
+        result_ref_property: result_ref
+        coverage:
+          total_property: total
+          kind: qualified
+          qualification: page
+components:
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        detail:
+          anyOf:
+            - type: string
+            - type: "null"
+    Item:
+      type: object
+      required:
+        - id
+        - tags
+      properties:
+        id:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    ItemEnvelope:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+        total:
+          type: integer
+        continuation:
+          anyOf:
+            - type: string
+            - type: "null"
+        query_ref:
+          anyOf:
+            - type: string
+            - type: "null"
+        result_ref:
+          anyOf:
+            - type: string
+            - type: "null"

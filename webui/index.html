@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Polylogue WebUI development</title>
+  </head>
+  <body>
+    <main class="page-shell">
+      <p class="eyebrow">Polylogue · Vite development mode</p>
+      <h1>Archive overview island</h1>
+      <p class="lede">API requests are proxied to the local daemon.</p>
+      <section class="activity-panel" aria-labelledby="recent-activity-title">
+        <h2 id="recent-activity-title">Recent archive messages</h2>
+        <div id="archive-overview-island" data-island="archive-overview"></div>
+      </section>
+    </main>
+    <script type="module" src="/src/entrypoints/archive-overview.tsx"></script>
+  </body>
+</html>

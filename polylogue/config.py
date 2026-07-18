@@ -158,6 +158,8 @@ def get_config() -> Config:
         archive_root=archive_root(),
         render_root=render_root(),
         sources=get_sources(),
+        # The configured root owns durable tiers; its active query tier may
+        # be selected by an atomic generation pointer elsewhere.
         db_path=default_db_path(),
         drive_config=get_drive_config(),
         index_config=get_index_config(),

@@ -51,6 +51,7 @@ from polylogue.surfaces.payloads import (
     QueryUnitAggregateEnvelope,
     QueryUnitEnvelope,
     SearchEnvelope,
+    SessionListResponse,
     SessionListRowPayload,
     SessionReadViewEnvelope,
     SessionSearchHitPayload,
@@ -63,6 +64,7 @@ POLYLOGUE_API_VERSION = "1"
 # Pydantic models whose JSON Schema is published in ``components.schemas``.
 _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     SearchEnvelope,
+    SessionListResponse,
     QueryUnitEnvelope,
     QueryUnitAggregateEnvelope,
     SessionReadViewEnvelope,
@@ -388,10 +390,9 @@ def _build_openapi_document() -> dict[str, Any]:
                         "When ``query`` is supplied, returns a ranked search "
                         "envelope (``SearchEnvelope``) with per-hit match "
                         "evidence and pagination handles. When ``query`` is "
-                        "omitted, returns the session list envelope. "
-                        "Both envelopes carry ``total``, ``limit``, "
-                        "``offset``, and ``next_cursor`` for cursor-based "
-                        "pagination."
+                        "omitted, returns ``SessionListResponse``. Ranked "
+                        "search exposes the opaque ``next_cursor`` handle; "
+                        "the current list mode remains offset-based."
                     ),
                     "operationId": "searchSessions",
                     "security": _protected_read_security(),
@@ -465,7 +466,14 @@ def _build_openapi_document() -> dict[str, Any]:
                                 "Ranked search envelope (when ``query`` is supplied) or session list envelope."
                             ),
                             "content": {
-                                "application/json": {"schema": {"$ref": "#/components/schemas/SearchEnvelope"}}
+                                "application/json": {
+                                    "schema": {
+                                        "oneOf": [
+                                            {"$ref": "#/components/schemas/SearchEnvelope"},
+                                            {"$ref": "#/components/schemas/SessionListResponse"},
+                                        ]
+                                    }
+                                }
                             },
                         },
                         "400": _query_error_response("Malformed query or credential-shaped query parameter."),
@@ -473,6 +481,23 @@ def _build_openapi_document() -> dict[str, Any]:
                         "403": _protected_auth_error_response(
                             "Host, origin, or web credential scope was not admitted."
                         ),
+                    },
+                    "x-polylogue-page": {
+                        "iterator": "search",
+                        "initial_required_parameters": ["query"],
+                        "response_schemas": ["SearchEnvelope"],
+                        "items_property": "hits",
+                        "cursor_property": "next_cursor",
+                        "cursor_parameter": "cursor",
+                        "continuation_request": "merge",
+                        "reset_parameters": ["offset"],
+                        "coverage": {
+                            "total_property": "total",
+                            "exactness_property": "exactness",
+                            "exact_values": ["exact"],
+                            "default_exact": True,
+                            "qualified_values": ["capped", "sampled", "estimate"],
+                        },
                     },
                 }
             },
@@ -493,11 +518,22 @@ def _build_openapi_document() -> dict[str, Any]:
                             "name": "expression",
                             "in": "query",
                             "description": (
-                                "Explicit unit-source expression. Examples: "
+                                "Explicit unit-source expression for the first page. "
+                                "Omit it when passing an opaque ``continuation``. Examples: "
                                 + "; ".join(f"``{example}``" for example in terminal_query_examples())
                                 + "."
                             ),
-                            "required": True,
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "continuation",
+                            "in": "query",
+                            "description": (
+                                "Opaque QueryTransaction continuation returned by the previous page. "
+                                "Pass it back unchanged and without any other query parameters."
+                            ),
+                            "required": False,
                             "schema": {"type": "string"},
                         },
                         {
@@ -714,6 +750,22 @@ def _build_openapi_document() -> dict[str, Any]:
                         "403": _protected_auth_error_response(
                             "Host, origin, or web credential scope was not admitted."
                         ),
+                    },
+                    "x-polylogue-page": {
+                        "iterator": "query",
+                        "initial_required_parameters": ["expression"],
+                        "response_schemas": ["QueryUnitEnvelope", "QueryUnitAggregateEnvelope"],
+                        "items_property": "items",
+                        "cursor_property": "continuation",
+                        "cursor_parameter": "continuation",
+                        "continuation_request": "cursor_only",
+                        "query_ref_property": "query_ref",
+                        "result_ref_property": "result_ref",
+                        "coverage": {
+                            "total_property": "total",
+                            "kind": "qualified",
+                            "qualification": "page",
+                        },
                     },
                 }
             },

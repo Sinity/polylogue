@@ -8,6 +8,7 @@ request, so clients never reconstruct filters from a prose overflow hint.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import sqlite3
@@ -241,7 +242,7 @@ class QueryContinuation:
                 archive_epoch=str(request_body.get("archive_epoch") or ""),
             )
             result_ref = str(body["result_ref"])
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError("invalid query continuation") from exc
         if not result_ref.startswith("result:"):
             raise ValueError("invalid query result reference")

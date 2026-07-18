@@ -474,6 +474,39 @@ def _parse_plan_sessions(
     )
 
 
+def _enrich_parsed_sessions(
+    context: _IngestContext,
+    plan: _ParsePlan,
+    parsed_sessions: list[ParsedSession],
+) -> list[ParsedSession]:
+    """Apply the same provider assembly enrichment direct ingest uses.
+
+    Canonical raw-record ingest historically bypassed provider assembly, so
+    daemon-ingested Codex sessions kept native-id titles (polylogue-ih67).
+    ``context.raw_source`` is always the blob path here, so discovery keys
+    off the recorded acquisition path (``raw_record.source_path``). When
+    that path's runtime root is absent (foreign machine, deleted source),
+    discovery yields nothing and only the parsed-content fallbacks apply.
+    """
+    from polylogue.sources.assembly import get_assembly_spec
+
+    spec = get_assembly_spec(plan.provider)
+    if spec is None:
+        return parsed_sessions
+    source_path = context.raw_record.source_path
+    if not source_path:
+        return parsed_sessions
+    try:
+        sidecar_data = spec.discover_sidecars([Path(source_path)])
+        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions]
+    except Exception:
+        logger.exception(
+            "assembly enrichment failed for %s; keeping unenriched sessions",
+            context.raw_record.raw_id,
+        )
+        return parsed_sessions
+
+
 def _materialize_parsed_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
@@ -569,7 +602,7 @@ def _run_parse_plan(
         context,
         plan,
         validation=validation,
-        parsed_sessions=parsed_sessions,
+        parsed_sessions=_enrich_parsed_sessions(context, plan, parsed_sessions),
     )
 
 

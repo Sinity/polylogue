@@ -186,3 +186,9 @@ def test_validate_continuation_epoch_skips_check_for_unframed_continuation(tmp_p
     # archive_root does not even exist here; an epoch-aware check would still
     # not raise because there is nothing declared to have drifted from.
     validate_continuation_epoch(request, archive_root=tmp_path / "does-not-exist")
+
+
+@pytest.mark.parametrize("token", ["q1._", "q1.////", "q1.8J+SqQ"])
+def test_query_continuation_rejects_malformed_payloads_as_value_errors(token: str) -> None:
+    with pytest.raises(ValueError, match="invalid query continuation"):
+        QueryContinuation.decode(token)

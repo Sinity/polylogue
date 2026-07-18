@@ -1,0 +1,220 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 20rem;
+  background: Canvas;
+  color: CanvasText;
+}
+
+a {
+  color: LinkText;
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  text-decoration-thickness: 0.15em;
+}
+
+.skip-link {
+  position: absolute;
+  inset: 0 auto auto 0;
+  z-index: 10;
+  padding: 0.75rem 1rem;
+  transform: translateY(-120%);
+  background: Canvas;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.site-header,
+.page-shell {
+  width: min(100% - 2rem, 72rem);
+  margin-inline: auto;
+}
+
+.site-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 1.25rem;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+}
+
+.site-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.site-header nav a[aria-current="page"] {
+  font-weight: 700;
+}
+
+.page-shell {
+  padding-block: clamp(2rem, 6vw, 5rem);
+}
+
+.eyebrow {
+  margin: 0 0 0.45rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  max-width: 18ch;
+  margin-bottom: 0.75rem;
+  font-size: clamp(2.2rem, 8vw, 5rem);
+  line-height: 0.98;
+  letter-spacing: -0.045em;
+}
+
+.lede {
+  max-width: 62ch;
+  margin-bottom: clamp(2.25rem, 6vw, 4.5rem);
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: clamp(1rem, 2vw, 1.2rem);
+  line-height: 1.6;
+}
+
+.activity-panel {
+  border-top: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  padding-top: 1.5rem;
+}
+
+.activity-panel__heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.activity-panel__heading p {
+  margin-bottom: 0;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+}
+
+.activity-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-list--continued:not(:empty) {
+  margin-top: 1rem;
+}
+
+.activity-row {
+  min-width: 0;
+  padding: 1.1rem;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+}
+
+.activity-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: 0.78rem;
+}
+
+.activity-row__origin {
+  font-weight: 700;
+}
+
+.activity-row h3 {
+  margin-bottom: 0.65rem;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.activity-row__preview {
+  overflow-wrap: anywhere;
+  margin-bottom: 0.9rem;
+  line-height: 1.55;
+}
+
+.activity-row__detail {
+  margin-bottom: 0;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: 0.82rem;
+}
+
+#archive-overview-island {
+  margin-top: 1.25rem;
+}
+
+.load-more {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid CanvasText;
+  border-radius: 0.3rem;
+  background: CanvasText;
+  color: Canvas;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.load-more:disabled {
+  border-color: color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  cursor: default;
+}
+
+.load-more:focus-visible,
+a:focus-visible {
+  outline: 0.2rem solid Highlight;
+  outline-offset: 0.2rem;
+}
+
+.island-status {
+  min-height: 1.5em;
+  margin: 0.65rem 0 0;
+  color: color-mix(in srgb, CanvasText 66%, Canvas 34%);
+  font-size: 0.88rem;
+}
+
+@media (max-width: 42rem) {
+  .site-header,
+  .activity-panel__heading {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .site-header {
+    flex-direction: column;
+  }
+}

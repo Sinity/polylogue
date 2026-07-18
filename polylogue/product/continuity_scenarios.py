@@ -213,6 +213,20 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         ("unpaged-capability-catalog",),
     ),
     _scenario(
+        "mcp-query-transaction",
+        "Replay a bounded MCP query transaction",
+        "Enumerate workflow actions without losing progress after interruption.",
+        ("query-discovery", "action", "continuation", "receipt"),
+        (
+            "session:codex-session:continuity-01",
+            "session:codex-session:continuity-02",
+            "session:codex-session:continuity-03",
+            "session:codex-session:continuity-04",
+        ),
+        ("capability-discovery", "action-query", "continuation-recovery"),
+        ("lost-continuation-state", "non-progressing-continuation"),
+    ),
+    _scenario(
         "parallel-claude-incident",
         "Reconstruct parallel Claude work",
         "Which agents handled the concerns and what changed?",
