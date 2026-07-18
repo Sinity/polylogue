@@ -126,6 +126,14 @@ def test_read_view_execution_route_is_published_as_stable_api() -> None:
     ("method", "path", "expected_pattern", "expected_kind", "expected_auth"),
     [
         ("GET", "/", "/", "browser_shell", "unauthenticated_loopback"),
+        ("GET", "/app", "/app", "browser_shell", "unauthenticated_loopback"),
+        (
+            "GET",
+            "/app/assets/archive-overview-deadbeef.js",
+            "/app/assets/:asset",
+            "browser_shell",
+            "unauthenticated_loopback",
+        ),
         ("GET", "/healthz/live", "/healthz/live", "operational", "unauthenticated_loopback"),
         ("GET", "/metrics", "/metrics", "operational", "unauthenticated_loopback"),
         (
@@ -228,13 +236,14 @@ def test_unknown_route_has_no_contract() -> None:
     assert route_contract_for("GET", "/api/not-a-real-route") is None
 
 
-@pytest.mark.parametrize("path", ["/", "/s/codex-session:abc", "/p", "/a"])
+@pytest.mark.parametrize("path", ["/", "/app", "/s/codex-session:abc", "/p", "/a"])
 def test_shell_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
     """Local shell bootstrap remains frictionless on loopback."""
 
     handler = _make_handler("GET", path)
     send_error, _ = _capture_responses(handler)
     handler._serve_web_shell = lambda: None  # type: ignore[method-assign]
+    handler._serve_webui_archive_overview = lambda: None  # type: ignore[method-assign]
     handler._serve_paste_browser_page = lambda: None  # type: ignore[method-assign]
     handler._serve_attachment_library_page = lambda: None  # type: ignore[method-assign]
 
@@ -244,7 +253,7 @@ def test_shell_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
         assert call.args[0] != HTTPStatus.UNAUTHORIZED
 
 
-@pytest.mark.parametrize("path", ["/", "/s/codex-session:abc", "/p", "/a"])
+@pytest.mark.parametrize("path", ["/", "/app", "/s/codex-session:abc", "/p", "/a"])
 def test_shell_bootstrap_requires_token_on_non_loopback(path: str) -> None:
     """Remote-bound shell bootstrap must not bypass the daemon token."""
 

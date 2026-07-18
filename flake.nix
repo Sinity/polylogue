@@ -96,6 +96,7 @@
         dontCheckRuntimeDeps = true;
 
         postFixup = ''
+          test -f "$out/${python.sitePackages}/polylogue/daemon/static/dist/manifest.json"
           for program in polylogue polylogued polylogue-mcp; do
             wrapProgram "$out/bin/$program" \
               --unset PYTHONPATH \

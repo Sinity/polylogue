@@ -125,3 +125,55 @@ def test_openapi_publishes_typed_first_party_credential_contract() -> None:
                 "web_credential_wrong_origin"
                 in response["headers"]["X-Polylogue-Web-Credential-State"]["schema"]["enum"]
             )
+
+
+def test_openapi_declares_generated_client_page_contracts() -> None:
+    document = _build_openapi_document()
+    schemas = document["components"]["schemas"]
+    sessions = document["paths"]["/api/sessions"]["get"]
+    query_units = document["paths"]["/api/query-units"]["get"]
+
+    assert "SessionListResponse" in schemas
+    assert sessions["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "oneOf": [
+            {"$ref": "#/components/schemas/SearchEnvelope"},
+            {"$ref": "#/components/schemas/SessionListResponse"},
+        ]
+    }
+    assert sessions["x-polylogue-page"] == {
+        "iterator": "search",
+        "initial_required_parameters": ["query"],
+        "response_schemas": ["SearchEnvelope"],
+        "items_property": "hits",
+        "cursor_property": "next_cursor",
+        "cursor_parameter": "cursor",
+        "continuation_request": "merge",
+        "reset_parameters": ["offset"],
+        "coverage": {
+            "total_property": "total",
+            "exactness_property": "exactness",
+            "exact_values": ["exact"],
+            "default_exact": True,
+            "qualified_values": ["capped", "sampled", "estimate"],
+        },
+    }
+
+    parameters = {parameter["name"]: parameter for parameter in query_units["parameters"]}
+    assert parameters["expression"]["required"] is False
+    assert parameters["continuation"]["schema"] == {"type": "string"}
+    assert query_units["x-polylogue-page"] == {
+        "iterator": "query",
+        "initial_required_parameters": ["expression"],
+        "response_schemas": ["QueryUnitEnvelope", "QueryUnitAggregateEnvelope"],
+        "items_property": "items",
+        "cursor_property": "continuation",
+        "cursor_parameter": "continuation",
+        "continuation_request": "cursor_only",
+        "query_ref_property": "query_ref",
+        "result_ref_property": "result_ref",
+        "coverage": {
+            "total_property": "total",
+            "kind": "qualified",
+            "qualification": "page",
+        },
+    }

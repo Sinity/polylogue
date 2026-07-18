@@ -139,6 +139,9 @@ only-include = [
   "uv.lock",
 ]
 
+[tool.hatch.build.targets.sdist.force-include]
+"polylogue/daemon/static/dist" = "polylogue/daemon/static/dist"
+
 [tool.hatch.build.hooks.custom]
 path = "packaging/hatch_build.py"
 

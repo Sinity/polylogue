@@ -26,12 +26,14 @@ import pytest
 pytestmark = pytest.mark.xdist_group("web-reader")
 
 import json
+import re
 import socket
 import sqlite3
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from http import HTTPStatus
 from http.server import HTTPServer
 from pathlib import Path
 from typing import Any, cast
@@ -2047,6 +2049,65 @@ class TestReaderActionAffordances:
         assert cast(dict[str, object], delete["availability"])["next_actions"] == ["find"]
 
 
+class TestWebUIV2:
+    def test_app_serves_semantic_ssr_and_manifest_hashed_assets(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Exercise the production manifest loader, SSR query, and immutable asset transport.
+
+        Removing ``WebUIAssetBundle.entrypoint``, bypassing
+        ``load_archive_overview_page``, or dropping the ``/app/assets`` cache
+        policy makes this route-level proof fail.
+        """
+
+        with _running_server(workspace_env) as (_, base_url):
+            request = Request(f"{base_url}/app")
+            with urlopen(request, timeout=10) as response:
+                assert response.status == 200
+                html_body = response.read().decode("utf-8")
+                assert response.headers["Cache-Control"] == "no-store"
+                assert "default-src 'none'" in response.headers["Content-Security-Policy"]
+
+            assert "<h1>Archive overview</h1>" in html_body
+            assert 'id="archive-activity-list"' in html_body
+            assert "Hello reader" in html_body
+            assert 'data-island="archive-overview"' in html_body
+            assert "https://" not in html_body
+            assert "http://" not in html_body
+
+            script_match = re.search(r'src="(/app/assets/archive-overview-[^"]+\.js)"', html_body)
+            style_match = re.search(r'href="(/app/assets/archive-overview-[^"]+\.css)"', html_body)
+            assert script_match is not None
+            assert style_match is not None
+
+            script_url = f"{base_url}{script_match.group(1)}"
+            with urlopen(script_url, timeout=10) as asset_response:
+                javascript = asset_response.read()
+                assert asset_response.status == 200
+                assert asset_response.headers["Content-Type"].startswith("text/javascript")
+                assert asset_response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+                etag = asset_response.headers["ETag"]
+                assert etag.startswith('"sha256-')
+                assert javascript
+
+            with pytest.raises(HTTPError) as not_modified:
+                urlopen(Request(script_url, headers={"If-None-Match": etag}), timeout=10)
+            assert not_modified.value.code == HTTPStatus.NOT_MODIFIED
+            assert not_modified.value.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+            assert not_modified.value.headers["ETag"] == etag
+
+            with urlopen(f"{base_url}{style_match.group(1)}", timeout=10) as asset_response:
+                assert asset_response.status == 200
+                assert asset_response.headers["Content-Type"].startswith("text/css")
+                assert asset_response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+                assert asset_response.read()
+
+            with pytest.raises(HTTPError) as manifest_not_public:
+                urlopen(f"{base_url}/app/assets/manifest.json", timeout=10)
+            assert manifest_not_public.value.code == HTTPStatus.NOT_FOUND
+
+
 class TestReaderQueryUnits:
     def test_query_units_endpoint_returns_terminal_message_rows(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("messages where text:Hello")
@@ -2067,6 +2128,84 @@ class TestReaderQueryUnits:
             "chatgpt-export:c2",
             "claude-ai-export:c3",
         }
+
+    def test_query_units_endpoint_replays_opaque_continuation(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("messages where text:Hello | sort by time desc")
+        with _running_server(workspace_env) as (_, base_url):
+            first = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/query-units?expression={expression}&limit=1"),
+            )
+            continuation = cast(str, first["continuation"])
+            second = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/query-units?continuation={quote(continuation)}"),
+            )
+
+        assert continuation.startswith("q1.")
+        assert first["query_ref"] == second["query_ref"]
+        assert first["result_ref"] == second["result_ref"]
+        assert second["offset"] == 1
+        assert second["limit"] == 1
+        first_items = cast(list[dict[str, object]], first["items"])
+        second_items = cast(list[dict[str, object]], second["items"])
+        assert first_items[0]["message_id"] != second_items[0]["message_id"]
+
+    def test_query_units_endpoint_consumes_opaque_continuations(self, workspace_env: dict[str, Path]) -> None:
+        expression = quote("messages where text:Hello")
+        pages: list[dict[str, object]] = []
+        path = f"/api/query-units?expression={expression}&limit=1"
+
+        with _running_server(workspace_env) as (_, base_url):
+            while True:
+                payload = cast(dict[str, object], _get_json(base_url, path))
+                pages.append(payload)
+                continuation = payload["continuation"]
+                if continuation is None:
+                    break
+                path = f"/api/query-units?continuation={quote(str(continuation), safe='')}"
+
+        assert [page["offset"] for page in pages] == [0, 1, 2]
+        assert len({str(page["query_ref"]) for page in pages}) == 1
+        assert len({str(page["result_ref"]) for page in pages}) == 1
+        item_ids = [cast(list[dict[str, object]], page["items"])[0]["message_id"] for page in pages]
+        assert len(set(item_ids)) == len(item_ids)
+
+    def test_query_units_endpoint_rejects_continuation_parameter_overrides(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        expression = quote("messages where text:Hello")
+        with _running_server(workspace_env) as (_, base_url):
+            first = cast(
+                dict[str, object],
+                _get_json(base_url, f"/api/query-units?expression={expression}&limit=1"),
+            )
+            continuation = quote(str(first["continuation"]), safe="")
+            status, payload = _request_json(
+                base_url,
+                "GET",
+                f"/api/query-units?continuation={continuation}&limit=10",
+            )
+
+        assert status == 400
+        assert payload == {
+            "ok": False,
+            "error": "invalid_continuation",
+            "detail": "continuation requests must not override the original query parameters",
+            "field": None,
+        }
+
+    def test_query_units_endpoint_rejects_malformed_continuation(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _request_json(
+                base_url,
+                "GET",
+                "/api/query-units?continuation=q1._",
+            )
+
+        assert status == 400
+        assert cast(dict[str, object], payload)["error"] == "invalid_continuation"
 
     def test_query_units_endpoint_applies_session_scope_filters(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("messages where text:Hello")
