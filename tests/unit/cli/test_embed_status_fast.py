@@ -524,19 +524,27 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
     assert payload["message_coverage_percent"] is None
 
 
-def test_status_json_default_does_not_exact_count_archive_session_state(
+def test_status_json_default_uses_bounded_exact_archive_session_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+    observed: dict[str, object] = {}
 
-    def fail_exact_session_state(*args: object, **kwargs: object) -> object:
-        raise AssertionError("default status must not scan exact archive embedding session state")
+    def fake_exact_session_state(*args: object, **kwargs: object) -> tuple[int, int, int]:
+        observed.update(kwargs)
+        return (1, 1, 0)
 
-    monkeypatch.setattr(status_payload_mod, "count_archive_embedding_session_state", fail_exact_session_state)
+    monkeypatch.setattr(
+        status_payload_mod,
+        "_archive_embedding_session_state_exact_with_timeout",
+        fake_exact_session_state,
+    )
 
     payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
+    assert observed["status_table"] == "embeddings.embedding_status"
+    assert observed["timeout_ms"] == status_payload_mod.METADATA_SUMMARY_TIMEOUT_MS
     assert payload["status"] == "partial"
     assert payload["embedded_sessions"] == 1
     assert payload["pending_sessions"] == 1

@@ -209,12 +209,17 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
     try:
         with closing(open_readonly_connection(index_db, timeout=5.0)) as conn:
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+            from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
             pending = select_pending_archive_session_window(
                 conn,
                 status_table="embeddings.embedding_status",
                 max_sessions=_DAEMON_EMBED_MAX_SESSIONS,
                 max_messages=_DAEMON_EMBED_MAX_MESSAGES,
-                include_stale_checks=False,
+                recipe=EmbeddingRecipe.current(
+                    model=str(cfg.embedding_model),
+                    dimensions=int(cfg.embedding_dimension),
+                ),
             )
     except Exception:
         logger.warning("embed: failed to inspect archive pending backlog", exc_info=True)

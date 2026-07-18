@@ -11,7 +11,7 @@ from contextlib import closing, contextmanager
 from hashlib import sha256
 from pathlib import Path
 
-from polylogue.config import Source
+from polylogue.config import Source, load_polylogue_config
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
@@ -25,6 +25,12 @@ from polylogue.scenarios import (
     seed_demo_user_overlays,
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.embeddings.identity import (
+    EmbeddingRecipe,
+    EmbeddingSourceDigest,
+    embedding_derivation_key,
+    message_embedding_derivation_key,
+)
 from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -879,7 +885,21 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
     This deliberately does not call an embedding provider. It proves the
     embedding tier and status surfaces against non-empty rows while keeping the
     demo archive private-data-free and cost-free.
+
+    The synthetic vectors are keyed against the *currently configured*
+    embedding recipe (not the ``_DEMO_EMBEDDING_MODEL`` display label): a real
+    ``embedding_derivation_state`` row and matching per-message
+    ``recipe_hash``/``derivation_key``/``generation`` provenance are required
+    so the shared exact-key freshness predicate
+    (``_archive_embedding_freshness_predicate``) classifies this session as
+    already fresh. Without this, an embedding-enabled daemon pointed at a demo
+    archive would see the session as permanently pending and attempt a paid
+    re-embed of content that was deliberately seeded to be cost-free
+    (polylogue PR #3067 review).
     """
+
+    cfg = load_polylogue_config()
+    recipe = EmbeddingRecipe.current(model=cfg.embedding_model, dimensions=cfg.embedding_dimension)
 
     embeddings_db = archive_root / "embeddings.db"
     initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
@@ -912,20 +932,45 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
             """,
             (DEMO_EMBEDDING_PROSE_SESSION_ID,),
         ).fetchall()
-        writes = [
-            ArchiveEmbeddingWrite(
-                message_id=str(row["message_id"]),
-                session_id=str(row["session_id"]),
-                origin=str(row["origin"]),
-                embedding=_demo_embedding_vector(str(row["message_id"])),
-                model=_DEMO_EMBEDDING_MODEL,
-                embedded_at_ms=_DEMO_EMBEDDING_AT_MS,
-                content_hash=_demo_embedding_content_hash(row["content_hash"]),
+        embeddable = [
+            (
+                str(row["message_id"]),
+                str(row["session_id"]),
+                str(row["origin"]),
+                _demo_embedding_content_hash(row["content_hash"]),
             )
             for row in rows
             if row["content_hash"] is not None
         ]
+        source_digest = EmbeddingSourceDigest()
+        for message_id, _session_id, _origin, content_hash in sorted(embeddable, key=lambda item: item[0]):
+            source_digest.update(message_id, content_hash)
+        source_hash = source_digest.digest()
+        writes = [
+            ArchiveEmbeddingWrite(
+                message_id=message_id,
+                session_id=session_id,
+                origin=origin,
+                embedding=_demo_embedding_vector(message_id),
+                model=_DEMO_EMBEDDING_MODEL,
+                embedded_at_ms=_DEMO_EMBEDDING_AT_MS,
+                content_hash=content_hash,
+                recipe_hash=recipe.recipe_hash,
+                derivation_key=message_embedding_derivation_key(
+                    message_id=message_id,
+                    content_hash=content_hash,
+                    recipe=recipe,
+                ).digest(),
+                generation=1,
+            )
+            for message_id, session_id, origin, content_hash in embeddable
+        ]
         upsert_message_embeddings(embeddings_conn, writes)
+        session_derivation_key = embedding_derivation_key(
+            session_id=DEMO_EMBEDDING_PROSE_SESSION_ID,
+            source_hash=source_hash,
+            recipe=recipe,
+        ).digest()
         embeddings_conn.execute(
             """
             INSERT INTO embedding_status (
@@ -941,6 +986,34 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
             (
                 DEMO_EMBEDDING_PROSE_SESSION_ID,
                 DEMO_EMBEDDING_PROSE_SESSION_ID.split(":", maxsplit=1)[0],
+                len(writes),
+                _DEMO_EMBEDDING_AT_MS,
+            ),
+        )
+        embeddings_conn.execute(
+            """
+            INSERT INTO embedding_derivation_state (
+                session_id, origin, generation, derivation_key, source_hash, recipe_hash,
+                output_contract_hash, attempt_state, message_count, updated_at_ms
+            ) VALUES (?, ?, 1, ?, ?, ?, ?, 'succeeded', ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                origin = excluded.origin,
+                generation = 1,
+                derivation_key = excluded.derivation_key,
+                source_hash = excluded.source_hash,
+                recipe_hash = excluded.recipe_hash,
+                output_contract_hash = excluded.output_contract_hash,
+                attempt_state = 'succeeded',
+                message_count = excluded.message_count,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                DEMO_EMBEDDING_PROSE_SESSION_ID,
+                DEMO_EMBEDDING_PROSE_SESSION_ID.split(":", maxsplit=1)[0],
+                session_derivation_key,
+                source_hash,
+                recipe.recipe_hash,
+                recipe.output_contract_hash,
                 len(writes),
                 _DEMO_EMBEDDING_AT_MS,
             ),

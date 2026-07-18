@@ -23,7 +23,7 @@ over the `CREATE TABLE` statement.
 |-----------|------|------------------|
 | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 10` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 35` |
-| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
+| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 3` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 6` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
@@ -72,8 +72,12 @@ read models (`session_profiles`, `session_work_events`, `session_phases`,
 ### `embeddings.db` — vectors (rebuildable, expensive)
 
 `message_embeddings` (a `vec0` virtual table, 1024-dimensional float
-embeddings), `message_embeddings_meta`, and `embedding_status`. Populated only
-when embedding is enabled with a valid Voyage key (see
+embeddings), `message_embeddings_meta`, `embedding_derivation_state`,
+`embedding_status`, and the inspectable `embedding_failures` lifecycle ledger.
+The derivation state owns the exact source/recipe/output key and active attempt
+generation; status flags are compatibility projections rather than independent
+freshness authority. Populated only when embedding is enabled with a valid
+Voyage key (see
 [Architecture § Embedding Pipeline](architecture.md#embedding-pipeline)).
 Rebuildable, but re-embedding costs Voyage API calls.
 

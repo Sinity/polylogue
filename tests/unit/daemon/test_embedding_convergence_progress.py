@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.daemon import convergence_stages, embedding_backlog
 from polylogue.daemon.status import format_daemon_status_lines
+from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import EmbedSessionOutcome, PendingSession
 
 
@@ -182,7 +183,11 @@ def test_daemon_embedding_backlog_uses_bounded_pending_window(
     monkeypatch.setattr("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed)
 
     assert embedding_backlog.drain_embedding_backlog_once(db_path) == 1
-    assert observed_kwargs["include_stale_checks"] is False
+    assert "include_stale_checks" not in observed_kwargs
+    recipe = observed_kwargs["recipe"]
+    assert isinstance(recipe, EmbeddingRecipe)
+    assert recipe.model == "voyage-4"
+    assert recipe.dimensions == 1024
 
 
 def test_daemon_embedding_backlog_records_skipped_sessions(
@@ -274,7 +279,7 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
     assert embedded_calls == [(index_db, "codex-session:v1-a")]
 
 
-def test_archive_convergence_pending_check_reads_embeddings_tier(tmp_path: Path) -> None:
+def test_archive_convergence_pending_check_rejects_status_only_freshness(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -318,7 +323,9 @@ def test_archive_convergence_pending_check_reads_embeddings_tier(tmp_path: Path)
         conn.commit()
 
     with sqlite3.connect(index_db) as conn:
-        assert convergence_stages._archive_pending_embedding_session_ids(conn, ["codex-session:v1-a"]) == []
+        assert convergence_stages._archive_pending_embedding_session_ids(conn, ["codex-session:v1-a"]) == [
+            "codex-session:v1-a"
+        ]
 
 
 def test_daemon_embedding_backlog_drain_is_noop_when_disabled(

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+from polylogue.config import load_polylogue_config
 from polylogue.demo import seed_demo_archive, verify_demo_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
@@ -16,8 +17,11 @@ from polylogue.scenarios import (
     DEMO_EMBEDDING_PROSE_SESSION_ID,
     DEMO_SESSION_IDS,
 )
+from polylogue.storage.embeddings.identity import EmbeddingRecipe
+from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql, run_relation_sql
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 
 @pytest.mark.asyncio
@@ -138,6 +142,44 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert terminal_state_counts.get("error_left", 0) >= 1
     assert embedding_rows >= 1
     assert embedding_status == [(DEMO_EMBEDDING_PROSE_SESSION_ID, embedding_rows, 0, None)]
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_embedding_session_is_classified_fresh_not_pending(tmp_path: Path) -> None:
+    """The demo-seeded synthetic embedding must never look selectable for a paid re-embed.
+
+    ``_seed_demo_embeddings`` writes vectors and a clean ``embedding_status``
+    row directly (no provider call, no ``embedding_derivation_state`` row was
+    ever created before this fix). Because the v3 archive uses the exact-key
+    freshness predicate (``_archive_embedding_freshness_predicate``) for every
+    production selector, a missing derivation-state row made
+    ``d.session_id IS NOT NULL`` always false, so the demo session was
+    classified pending forever regardless of the compatibility
+    ``embedding_status.needs_reindex`` flag. An embedding-enabled daemon
+    pointed at a demo archive would then attempt to re-embed content that was
+    deliberately seeded to be cost-free (polylogue PR #3067 review). Guards
+    that the demo session is excluded from the same real selector every
+    production call site shares.
+    """
+
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True)
+
+    cfg = load_polylogue_config()
+    recipe = EmbeddingRecipe.current(model=cfg.embedding_model, dimensions=cfg.embedding_dimension)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(archive_root / "embeddings.db"),))
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
+            pytest.skip(str(error) if error else "sqlite-vec extension is unavailable")
+        pending = select_pending_archive_session_window(
+            conn,
+            status_table="embeddings.embedding_status",
+            recipe=recipe,
+        )
+
+    assert DEMO_EMBEDDING_PROSE_SESSION_ID not in {item.session_id for item in pending}
 
 
 @pytest.mark.asyncio

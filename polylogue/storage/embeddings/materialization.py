@@ -21,6 +21,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from polylogue.config import load_polylogue_config
+from polylogue.storage.embeddings.identity import (
+    EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
+    EMBEDDING_MESSAGE_KEY_SQL_FUNCTION,
+    EMBEDDING_SOURCE_HASH_SQL_FUNCTION,
+    EmbeddingRecipe,
+    EmbeddingSourceDigest,
+    message_embedding_derivation_key,
+    register_embedding_identity_sql,
+)
 from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
@@ -68,6 +77,18 @@ class ArchiveEmbeddingSessionState:
     eligible_sessions: int
     embedded_sessions: int
     pending_sessions: int
+    blocked_sessions: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchiveEmbeddingFreshnessPredicate:
+    """One exact desired-key predicate shared by selection and status counts."""
+
+    cte_sql: str
+    join_sql: str
+    fresh_sql: str
+    blocked_sql: str
+    pending_sql: str
 
 
 def is_terminal_embedding_provider_error(error_message: object) -> bool:
@@ -322,6 +343,233 @@ def select_pending_session_window(
     return pending
 
 
+def _configured_embedding_recipe() -> EmbeddingRecipe:
+    cfg = load_polylogue_config()
+    return EmbeddingRecipe.current(
+        model=str(cfg.embedding_model),
+        dimensions=int(cfg.embedding_dimension),
+    )
+
+
+def _archive_embedding_sibling_table(
+    conn: sqlite3.Connection,
+    status_table: str | None,
+    table_name: str,
+) -> str:
+    if not status_table:
+        return ""
+    if "." in status_table:
+        schema, _, _ = status_table.rpartition(".")
+        candidate = f"{schema}.{table_name}"
+    else:
+        candidate = table_name
+    return candidate if _qualified_table_exists(conn, candidate) else ""
+
+
+def _archive_embedding_freshness_predicate(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    recipe: EmbeddingRecipe,
+) -> _ArchiveEmbeddingFreshnessPredicate | None:
+    """Build the single exact-key predicate used by every archive selector.
+
+    A legacy archive without the v3 derivation ledger returns ``None`` and is
+    evaluated by the pre-existing content-aware fallback below. Fresh v3
+    archives always take this route. A missing embeddings database is simpler:
+    every exact eligible source session is pending.
+    """
+
+    message_columns = _table_columns(conn, "messages")
+    if not _archive_session_embeddable_counts_available(conn) or "content_hash" not in message_columns:
+        return None
+
+    state_table = _archive_embedding_sibling_table(conn, status_table, "embedding_derivation_state")
+    meta_table = _archive_embedding_sibling_table(conn, status_table, "message_embeddings_meta")
+    if status_table:
+        required_status = {
+            "session_id",
+            "message_count_embedded",
+            "needs_reindex",
+            "error_message",
+        }
+        required_state = {
+            "session_id",
+            "generation",
+            "derivation_key",
+            "source_hash",
+            "recipe_hash",
+            "output_contract_hash",
+            "attempt_state",
+            "message_count",
+        }
+        required_meta = {
+            "message_id",
+            "content_hash",
+            "needs_reindex",
+            "recipe_hash",
+            "derivation_key",
+            "generation",
+        }
+        if (
+            not state_table
+            or not meta_table
+            or not required_status.issubset(_qualified_table_columns(conn, status_table))
+            or not required_state.issubset(_qualified_table_columns(conn, state_table))
+            or not required_meta.issubset(_qualified_table_columns(conn, meta_table))
+        ):
+            return None
+
+    register_embedding_identity_sql(conn)
+    relation = archive_embeddable_messages_relation(conn, alias="desired_source")
+    cte_sql = f"""
+        WITH desired_messages AS (
+            SELECT desired_source.message_id, desired_source.session_id, desired_source.content_hash
+            FROM {relation}
+        ),
+        desired_sessions AS (
+            SELECT
+                session_id,
+                COUNT(*) AS message_count,
+                {EMBEDDING_SOURCE_HASH_SQL_FUNCTION}(message_id, content_hash) AS source_hash
+            FROM desired_messages
+            GROUP BY session_id
+        )
+    """
+    if not status_table:
+        return _ArchiveEmbeddingFreshnessPredicate(
+            cte_sql=cte_sql,
+            join_sql="",
+            fresh_sql="0",
+            blocked_sql="0",
+            pending_sql="1",
+        )
+
+    recipe_hash_sql = f"X'{recipe.recipe_hash.hex()}'"
+    output_hash_sql = f"X'{recipe.output_contract_hash.hex()}'"
+    desired_key_sql = (
+        f"{EMBEDDING_DERIVATION_KEY_SQL_FUNCTION}(s.session_id, ds.source_hash, {recipe_hash_sql}, {output_hash_sql})"
+    )
+    key_is_current = f"""(
+        d.session_id IS NOT NULL
+        AND d.derivation_key = {desired_key_sql}
+        AND d.source_hash = ds.source_hash
+        AND d.recipe_hash = {recipe_hash_sql}
+        AND d.output_contract_hash = {output_hash_sql}
+    )"""
+    message_key_sql = (
+        f"{EMBEDDING_MESSAGE_KEY_SQL_FUNCTION}(dm.message_id, dm.content_hash, {recipe_hash_sql}, {output_hash_sql})"
+    )
+    materialization_is_current = f"""(
+        e.session_id IS NOT NULL
+        AND COALESCE(e.needs_reindex, 0) = 0
+        AND e.error_message IS NULL
+        AND e.message_count_embedded = ds.message_count
+        AND d.message_count = ds.message_count
+        AND NOT EXISTS (
+            SELECT 1
+            FROM desired_messages AS dm
+            LEFT JOIN {meta_table} AS em ON em.message_id = dm.message_id
+            WHERE dm.session_id = s.session_id
+              AND (
+                    em.message_id IS NULL
+                 OR COALESCE(em.needs_reindex, 0) = 1
+                 OR em.content_hash != dm.content_hash
+                 OR em.recipe_hash IS NULL
+                 OR em.recipe_hash != {recipe_hash_sql}
+                 OR em.derivation_key IS NULL
+                 OR em.derivation_key != {message_key_sql}
+                 OR em.generation != d.generation
+              )
+        )
+    )"""
+    fresh_sql = f"({key_is_current} AND d.attempt_state = 'succeeded' AND {materialization_is_current})"
+    blocked_sql = f"({key_is_current} AND d.attempt_state = 'failed_terminal')"
+    pending_sql = f"(NOT ({fresh_sql}) AND NOT ({blocked_sql}))"
+    return _ArchiveEmbeddingFreshnessPredicate(
+        cte_sql=cte_sql,
+        join_sql=f"""
+            LEFT JOIN {status_table} AS e ON e.session_id = s.session_id
+            LEFT JOIN {state_table} AS d ON d.session_id = s.session_id
+        """,
+        fresh_sql=fresh_sql,
+        blocked_sql=blocked_sql,
+        pending_sql=pending_sql,
+    )
+
+
+def _select_pending_archive_session_window_by_derivation(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    recipe: EmbeddingRecipe,
+    session_ids: tuple[str, ...],
+    rebuild: bool,
+    max_sessions: int | None,
+    max_messages: int | None,
+    min_messages: int | None,
+) -> list[PendingSession] | None:
+    predicate = _archive_embedding_freshness_predicate(
+        conn,
+        status_table=status_table,
+        recipe=recipe,
+    )
+    if predicate is None:
+        return None
+
+    params: list[object] = []
+    id_filter = ""
+    if session_ids:
+        placeholders = ", ".join("?" for _ in session_ids)
+        id_filter = f"AND s.session_id IN ({placeholders})"
+        params.extend(session_ids)
+    floor_filter = "AND ds.message_count >= ?"
+    params.append(max(1, min_messages or 1))
+    ceiling_filter = ""
+    if max_messages is not None:
+        ceiling_filter = "AND ds.message_count <= ?"
+        params.append(max_messages)
+    pending_filter = "" if rebuild else f"AND {predicate.pending_sql}"
+
+    rows = conn.execute(
+        f"""
+        {predicate.cte_sql}
+        SELECT s.session_id, s.title, ds.message_count
+        FROM desired_sessions AS ds
+        JOIN sessions AS s ON s.session_id = ds.session_id
+        {predicate.join_sql}
+        WHERE 1 = 1
+          {id_filter}
+          {floor_filter}
+          {ceiling_filter}
+          {pending_filter}
+        ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
+        """,
+        tuple(params),
+    )
+
+    pending: list[PendingSession] = []
+    message_total = 0
+    while True:
+        batch = rows.fetchmany(500)
+        if not batch:
+            break
+        for row in batch:
+            session_id = str(_row_value(row, 0, "session_id"))
+            title_value = _row_value(row, 1, "title")
+            title = None if title_value is None else str(title_value)
+            message_count = _row_int(row, 2, "message_count")
+            if max_sessions is not None and len(pending) >= max_sessions:
+                return pending
+            if max_messages is not None and pending and message_total + message_count > max_messages:
+                return pending
+            pending.append(PendingSession(session_id=session_id, title=title, message_count=message_count))
+            message_total += message_count
+            if max_messages is not None and message_total >= max_messages:
+                return pending
+    return pending
+
+
 def select_pending_archive_session_window(
     conn: sqlite3.Connection,
     *,
@@ -331,7 +579,7 @@ def select_pending_archive_session_window(
     max_sessions: int | None = None,
     max_messages: int | None = None,
     min_messages: int | None = None,
-    include_stale_checks: bool = True,
+    recipe: EmbeddingRecipe | None = None,
 ) -> list[PendingSession]:
     """Return one bounded pending-session window from a archive index.
 
@@ -341,19 +589,35 @@ def select_pending_archive_session_window(
     floor, making selective embedding affordable for real users.
     """
 
+    unique_ids = tuple(dict.fromkeys(session_ids or ()))
+    if status_table is None:
+        status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
+    derivation_window = _select_pending_archive_session_window_by_derivation(
+        conn,
+        status_table=status_table,
+        recipe=recipe or _configured_embedding_recipe(),
+        session_ids=unique_ids,
+        rebuild=rebuild,
+        max_sessions=max_sessions,
+        max_messages=max_messages,
+        min_messages=min_messages,
+    )
+    if derivation_window is not None:
+        return derivation_window
+
+    # Compatibility for pre-v3 or deliberately minimal fixtures: this fallback
+    # remains content-aware, but no caller can disable its stale checks.
+    include_stale_checks = True
     pending: list[PendingSession] = []
     message_total = 0
     params: list[object] = []
     id_filter = ""
-    unique_ids = tuple(dict.fromkeys(session_ids or ()))
     if unique_ids:
         placeholders = ", ".join("?" for _ in unique_ids)
         id_filter = f"AND s.session_id IN ({placeholders})"
         params.extend(unique_ids)
 
-    if status_table is None:
-        status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
-    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table) if include_stale_checks else ""
+    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table)
     stale_message_clause = (
         _archive_stale_message_clause(conn, stale_message_table, session_alias="s") if include_stale_checks else ""
     )
@@ -541,8 +805,21 @@ def _qualified_table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _qualified_table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if "." not in table:
+        return _table_columns(conn, table)
+    schema, _, name = table.rpartition(".")
+    if not schema.replace("_", "").isalnum() or not name.replace("_", "").isalnum():
+        return set()
+    try:
+        rows = conn.execute(f"PRAGMA {schema}.table_info({name})").fetchall()
+    except sqlite3.Error:
+        return set()
+    return {str(row[1]) for row in rows}
+
+
 def _archive_stale_message_clause(conn: sqlite3.Connection, meta_table: str, *, session_alias: str) -> str:
-    if not meta_table:
+    if not meta_table or not _table_exists(conn, "messages"):
         return ""
     relation = archive_embeddable_messages_relation(conn, alias="stale_m")
     return f"""
@@ -560,7 +837,7 @@ def _archive_stale_message_clause(conn: sqlite3.Connection, meta_table: str, *, 
 
 
 def archive_session_has_stale_embeddings(conn: sqlite3.Connection, session_id: str, meta_table: str) -> bool:
-    if not meta_table:
+    if not meta_table or not _table_exists(conn, "messages"):
         return False
     relation = archive_embeddable_messages_relation(conn, alias="stale_m")
     row = conn.execute(
@@ -634,11 +911,43 @@ def count_archive_embedding_session_state(
     *,
     status_table: str,
     rebuild: bool = False,
+    recipe: EmbeddingRecipe | None = None,
 ) -> ArchiveEmbeddingSessionState:
     """Count eligible sessions and their embedding completion state."""
 
     if not _table_exists(conn, "messages"):
         return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+
+    predicate = _archive_embedding_freshness_predicate(
+        conn,
+        status_table=status_table,
+        recipe=recipe or _configured_embedding_recipe(),
+    )
+    if predicate is not None:
+        pending_sql = "1" if rebuild else predicate.pending_sql
+        fresh_sql = "0" if rebuild else predicate.fresh_sql
+        blocked_sql = "0" if rebuild else predicate.blocked_sql
+        row = conn.execute(
+            f"""
+            {predicate.cte_sql}
+            SELECT
+                COUNT(*) AS eligible_sessions,
+                COALESCE(SUM(CASE WHEN {fresh_sql} THEN 1 ELSE 0 END), 0) AS embedded_sessions,
+                COALESCE(SUM(CASE WHEN {pending_sql} THEN 1 ELSE 0 END), 0) AS pending_sessions,
+                COALESCE(SUM(CASE WHEN {blocked_sql} THEN 1 ELSE 0 END), 0) AS blocked_sessions
+            FROM desired_sessions AS ds
+            JOIN sessions AS s ON s.session_id = ds.session_id
+            {predicate.join_sql}
+            """
+        ).fetchone()
+        if row is None:
+            return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+        return ArchiveEmbeddingSessionState(
+            eligible_sessions=int(row[0] or 0),
+            embedded_sessions=int(row[1] or 0),
+            pending_sessions=int(row[2] or 0),
+            blocked_sessions=int(row[3] or 0),
+        )
 
     stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table)
     stale_session_clause = _archive_stale_message_clause(conn, stale_message_table, session_alias="s")
@@ -689,7 +998,15 @@ def count_archive_embedding_session_state(
                           )
                         THEN 1 ELSE 0
                     END
-                ) AS pending_sessions
+                ) AS pending_sessions,
+                SUM(
+                    CASE
+                        WHEN e.session_id IS NOT NULL
+                         AND e.needs_reindex = 0
+                         AND e.error_message IS NOT NULL
+                        THEN 1 ELSE 0
+                    END
+                ) AS blocked_sessions
             FROM sessions s
             LEFT JOIN {status_table} e ON e.session_id = s.session_id
             WHERE {aggregate_expr} > 0
@@ -701,6 +1018,7 @@ def count_archive_embedding_session_state(
             eligible_sessions=int(row[0] or 0),
             embedded_sessions=int(row[1] or 0),
             pending_sessions=int(row[2] or 0),
+            blocked_sessions=int(row[3] or 0),
         )
 
     if rebuild or not status_table:
@@ -758,7 +1076,15 @@ def count_archive_embedding_session_state(
                           )
                         THEN 1 ELSE 0
                     END
-                ) AS pending_sessions
+                ) AS pending_sessions,
+                SUM(
+                    CASE
+                        WHEN e.session_id IS NOT NULL
+                         AND e.needs_reindex = 0
+                         AND e.error_message IS NOT NULL
+                        THEN 1 ELSE 0
+                    END
+                ) AS blocked_sessions
         FROM eligible_counts ec
         LEFT JOIN {status_table} e ON e.session_id = ec.session_id
         """
@@ -769,6 +1095,7 @@ def count_archive_embedding_session_state(
         eligible_sessions=int(row[0] or 0),
         embedded_sessions=int(row[1] or 0),
         pending_sessions=int(row[2] or 0),
+        blocked_sessions=int(row[3] or 0),
     )
 
 
@@ -884,6 +1211,17 @@ def mark_all_archive_sessions_needs_reindex(index_db_path: Path) -> None:
     try:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db_path),))
         with conn:
+            if _table_exists(conn, "embedding_derivation_state"):
+                conn.execute(
+                    """
+                    UPDATE embedding_derivation_state
+                    SET generation = generation + 1,
+                        attempt_state = 'pending',
+                        message_count = 0,
+                        updated_at_ms = ?
+                    """,
+                    (int(datetime.now(UTC).timestamp() * 1000),),
+                )
             conn.execute(
                 """
                 INSERT INTO embedding_status (session_id, origin, message_count_embedded, needs_reindex, error_message)
@@ -955,12 +1293,42 @@ class _ProviderRequestError(RuntimeError):
     """Marks an exception raised by the embedding provider call itself."""
 
 
+def _archive_embedding_source_hash(rows: list[sqlite3.Row]) -> bytes:
+    digest = EmbeddingSourceDigest()
+    normalized: list[tuple[str, bytes]] = []
+    for row in rows:
+        content_hash = row["content_hash"]
+        if content_hash is None:
+            raise ValueError("content_hash is required for embedding source identity")
+        normalized.append((str(row["message_id"]), bytes(content_hash)))
+    for message_id, content_hash in sorted(normalized):
+        digest.update(message_id, content_hash)
+    return digest.digest()
+
+
+def _read_archive_embedding_source_snapshot(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> tuple[bytes, int]:
+    relation = archive_embeddable_messages_relation(conn, alias="current_source")
+    rows = conn.execute(
+        f"""
+        SELECT current_source.message_id, current_source.content_hash
+        FROM {relation}
+        WHERE current_source.session_id = ?
+        ORDER BY current_source.message_id
+        """,
+        (session_id,),
+    ).fetchall()
+    return _archive_embedding_source_hash(rows), len(rows)
+
+
 def embed_archive_session_sync(
     index_db_path: Path,
     vec_provider: VectorProvider,
     session_id: str,
 ) -> EmbedSessionOutcome:
-    """Embed one archive session without routing through the archive repository."""
+    """Embed one archive session with exact-key, generation-guarded publication."""
 
     text_provider = cast(_EmbeddingTextProvider, vec_provider)
     if not hasattr(text_provider, "_get_embeddings"):
@@ -975,7 +1343,16 @@ def embed_archive_session_sync(
     index_conn.row_factory = sqlite3.Row
     embeddings_conn = sqlite3.connect(embeddings_db_path, timeout=30.0)
     attempted_message_refs: tuple[str, ...] = ()
+    attempt = None
+    session: sqlite3.Row | None = None
+    embeddable: list[sqlite3.Row] = []
     try:
+        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+            ArchiveEmbeddingWrite,
+            begin_embedding_attempt,
+            complete_embedding_attempt_success,
+            supersede_embedding_attempt,
+        )
         from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
         loaded, error = try_load_sqlite_vec(embeddings_conn)
@@ -987,6 +1364,7 @@ def embed_archive_session_sync(
         ).fetchone()
         if session is None:
             return EmbedSessionOutcome(status="not_found", session_id=session_id)
+
         messages_ref = archive_embedding_messages_table_ref(index_conn, alias="m")
         prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
         rows = index_conn.execute(
@@ -1001,115 +1379,150 @@ def embed_archive_session_sync(
              AND b.text IS NOT NULL
             WHERE m.session_id = ?
               AND {archive_embeddable_message_where("m")}
-            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type, m.position, m.variant_index
+            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
+                     m.position, m.variant_index
             ORDER BY m.position, m.variant_index
             """,
             (session_id,),
         ).fetchall()
-        if not rows:
-            _record_archive_embedding_success(
-                embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
-            )
-            return EmbedSessionOutcome(
-                status="no_messages" if int(session["message_count"] or 0) <= 0 else "no_embeddable_messages",
-                session_id=session_id,
-                title=None if session["title"] is None else str(session["title"]),
-            )
-
         embeddable = [
             row
             for row in rows
             if _should_embed_archive_message(row["material_origin"], row["message_type"], row["role"], row["text"])
         ]
-        if not embeddable:
-            _record_archive_embedding_success(
-                embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
-            )
-            return EmbedSessionOutcome(
-                status="no_embeddable_messages",
-                session_id=session_id,
-                title=None if session["title"] is None else str(session["title"]),
-            )
 
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
-            ArchiveEmbeddingWrite,
-            upsert_message_embeddings,
+        recipe = EmbeddingRecipe.current(
+            model=str(text_provider.model),
+            dimensions=int(text_provider.dimension),
+        )
+        source_hash = _archive_embedding_source_hash(embeddable)
+        attempt = begin_embedding_attempt(
+            embeddings_conn,
+            session_id=session_id,
+            origin=str(session["origin"]),
+            source_hash=source_hash,
+            recipe=recipe,
         )
 
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        writes: list[ArchiveEmbeddingWrite] = []
         batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
         for start in range(0, len(embeddable), batch_size):
             batch = embeddable[start : start + batch_size]
             attempted_message_refs = tuple(str(row["message_id"]) for row in batch)
             try:
-                embeddings = text_provider._get_embeddings([str(row["text"]) for row in batch], input_type="document")
+                vectors = text_provider._get_embeddings(
+                    [str(row["text"]) for row in batch],
+                    input_type="document",
+                )
             except Exception as exc:
                 raise _ProviderRequestError(str(exc)) from exc
-            if len(embeddings) != len(batch):
+            if len(vectors) != len(batch):
                 raise _ProviderRequestError("embedding provider returned a mismatched vector count")
-            writes: list[ArchiveEmbeddingWrite] = []
-            for row, embedding in zip(batch, embeddings, strict=True):
-                if row["content_hash"] is None:
+            for row, vector in zip(batch, vectors, strict=True):
+                content_hash = row["content_hash"]
+                if content_hash is None:
                     raise ValueError("content_hash is required for message embedding metadata")
+                content_hash_bytes = bytes(content_hash)
                 writes.append(
                     ArchiveEmbeddingWrite(
                         message_id=str(row["message_id"]),
                         session_id=session_id,
                         origin=str(session["origin"]),
-                        embedding=embedding,
+                        embedding=vector,
                         model=text_provider.model,
                         embedded_at_ms=now_ms,
-                        content_hash=bytes(row["content_hash"]),
+                        content_hash=content_hash_bytes,
+                        recipe_hash=attempt.recipe_hash,
+                        derivation_key=message_embedding_derivation_key(
+                            message_id=str(row["message_id"]),
+                            content_hash=content_hash_bytes,
+                            recipe=recipe,
+                        ).digest(),
+                        generation=attempt.generation,
                     )
                 )
-            upsert_message_embeddings(embeddings_conn, writes)
-        _record_archive_embedding_success(
-            embeddings_conn,
-            session_id=session_id,
-            origin=str(session["origin"]),
-            message_count=len(embeddable),
-            model=text_provider.model,
-        )
-    except Exception as exc:
-        try:
-            from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
 
+        current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(index_conn, session_id)
+        current_recipe = _configured_embedding_recipe()
+        if (
+            current_source_hash != attempt.source_hash
+            or current_message_count != len(embeddable)
+            or current_recipe.recipe_hash != attempt.recipe_hash
+            or current_recipe.output_contract_hash != attempt.output_contract_hash
+        ):
+            supersede_embedding_attempt(
+                embeddings_conn,
+                attempt=attempt,
+                source_hash=current_source_hash,
+                recipe=current_recipe,
+            )
+            return EmbedSessionOutcome(
+                status="error",
+                session_id=session_id,
+                title=None if session["title"] is None else str(session["title"]),
+                error="embedding source or recipe changed during materialization; retry queued",
+            )
+
+        committed = complete_embedding_attempt_success(
+            embeddings_conn,
+            attempt=attempt,
+            writes=writes,
+            completed_at_ms=now_ms,
+        )
+        if not committed:
+            return EmbedSessionOutcome(
+                status="error",
+                session_id=session_id,
+                title=None if session["title"] is None else str(session["title"]),
+                error="embedding attempt was superseded before publication; retry queued",
+            )
+    except Exception as exc:
+        from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
+
+        origin_row = None
+        with contextlib.suppress(sqlite3.Error):
             origin_row = index_conn.execute(
                 "SELECT origin FROM sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
-            if origin_row is not None:
-                if isinstance(exc, _ProviderRequestError):
-                    provider = "voyage"
-                    error_class = embedding_error_class(exc)
-                    retryable = not is_terminal_embedding_provider_error(str(exc))
-                else:
-                    # Local faults (sqlite-vec load, SQL, content-hash validation,
-                    # write) must not masquerade as provider failures in the ledger.
-                    provider = "local"
-                    error_class = "internal_error"
-                    retryable = True
-                record_embedding_failure(
-                    embeddings_conn,
-                    session_id=session_id,
-                    origin=str(origin_row["origin"]),
-                    message_refs=attempted_message_refs,
-                    provider=provider,
-                    model=text_provider.model,
-                    error_class=error_class,
-                    error_message=str(exc),
-                    retryable=retryable,
-                )
-        finally:
-            with contextlib.suppress(sqlite3.Error):
-                index_conn.close()
-            with contextlib.suppress(sqlite3.Error):
-                embeddings_conn.close()
+        if origin_row is not None:
+            if isinstance(exc, _ProviderRequestError):
+                provider = "voyage"
+                error_class = embedding_error_class(exc)
+                retryable = not is_terminal_embedding_provider_error(str(exc))
+            else:
+                provider = "local"
+                error_class = "internal_error"
+                retryable = True
+            record_embedding_failure(
+                embeddings_conn,
+                session_id=session_id,
+                origin=str(origin_row["origin"]),
+                message_refs=attempted_message_refs,
+                provider=provider,
+                model=text_provider.model,
+                error_class=error_class,
+                error_message=str(exc),
+                retryable=retryable,
+                attempt=attempt,
+            )
         return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
     finally:
         with contextlib.suppress(sqlite3.Error):
             index_conn.close()
         with contextlib.suppress(sqlite3.Error):
             embeddings_conn.close()
+
+    assert session is not None
+    if not embeddable:
+        no_op_status: EmbedSingleStatus = (
+            "no_messages" if int(session["message_count"] or 0) <= 0 else "no_embeddable_messages"
+        )
+        return EmbedSessionOutcome(
+            status=no_op_status,
+            session_id=session_id,
+            title=None if session["title"] is None else str(session["title"]),
+        )
     return EmbedSessionOutcome(
         status="embedded",
         session_id=session_id,

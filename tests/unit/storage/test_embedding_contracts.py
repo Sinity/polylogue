@@ -893,7 +893,7 @@ def test_pending_archive_window_reselects_stale_message_hash() -> None:
         conn.close()
 
 
-def test_pending_archive_window_can_skip_stale_hash_refinement_for_bounded_backfill() -> None:
+def test_bounded_backfill_mutation_restoring_stale_hash_bypass_misses_changed_content() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         conn.executescript(
@@ -947,18 +947,16 @@ def test_pending_archive_window_can_skip_stale_hash_refinement_for_bounded_backf
             status_table="embedding_status",
             max_sessions=10,
             max_messages=10,
-            include_stale_checks=False,
         )
 
-        assert pending == []
-        assert [
-            item.session_id for item in select_pending_archive_session_window(conn, status_table="embedding_status")
-        ] == ["changed"]
+        assert [item.session_id for item in pending] == ["changed"]
+        exact = select_pending_archive_session_window(conn, status_table="embedding_status")
+        assert [item.session_id for item in exact] == ["changed"]
     finally:
         conn.close()
 
 
-def test_pending_archive_window_bounded_mode_trusts_clean_status_over_rollup_estimate() -> None:
+def test_bounded_archive_window_uses_the_same_freshness_predicate_as_unbounded_mode() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         conn.executescript(
@@ -1003,7 +1001,6 @@ def test_pending_archive_window_bounded_mode_trusts_clean_status_over_rollup_est
             status_table="embedding_status",
             max_sessions=10,
             max_messages=20,
-            include_stale_checks=False,
         )
         exact = select_pending_archive_session_window(conn, status_table="embedding_status")
 
@@ -1579,7 +1576,7 @@ def test_archive_local_fault_is_not_ledgered_as_provider_failure(
     def _raise_write_fault(*args: object, **kwargs: object) -> None:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(embedding_write_module, "upsert_message_embeddings", _raise_write_fault)
+    monkeypatch.setattr(embedding_write_module, "complete_embedding_attempt_success", _raise_write_fault)
     outcome = embed_archive_session_sync(index_db, _FakeV1VectorProvider(), session_id)
     assert outcome.status == "error"
 

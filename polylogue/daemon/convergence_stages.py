@@ -777,58 +777,175 @@ def _embedding_config_enabled() -> bool:
 
 
 def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
-    """Detect model/dimension config changes and mark rows for reindex.
+    """Advance derivation generations when the configured recipe changes.
 
-    When the configured model differs from what is stored in message_embeddings_meta,
-    all embedding_status rows are marked ``needs_reindex = 1``. When the
-    configured dimension differs, the vec0 table is also dropped so it can
-    be recreated with the new dimension.
+    ``embedding_status`` remains a compatibility projection. The generation/key
+    transition is the monotonic authority: an older success or failure receipt
+    can no longer clear the pending mark created here.
     """
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe, register_embedding_identity_sql
     from polylogue.storage.search_providers.sqlite_vec_runtime import _reconcile_vec0_dimension
     from polylogue.storage.search_providers.sqlite_vec_support import logger as vec_logger
 
     cfg = load_polylogue_config()
-    configured_model = cfg.embedding_model
-    configured_dimension = cfg.embedding_dimension
+    configured_model = str(cfg.embedding_model)
+    configured_dimension = int(cfg.embedding_dimension)
+    recipe = EmbeddingRecipe.current(model=configured_model, dimensions=configured_dimension)
 
     if not _table_exists(conn, "message_embeddings_meta") or not _table_exists(conn, "embedding_status"):
         return
 
-    # Check stored model
+    meta_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(message_embeddings_meta)")}
     stored_models = conn.execute("SELECT DISTINCT model FROM message_embeddings_meta ORDER BY model").fetchall()
     stored_model = str(stored_models[0][0]) if stored_models else None
-
     model_changed = stored_model is not None and stored_model != configured_model
-    dimension_changed = False
 
+    dimension_changed = False
     if stored_model is not None:
         stored_dim_row = conn.execute("SELECT dimension FROM message_embeddings_meta LIMIT 1").fetchone()
         if stored_dim_row:
-            stored_dimension = int(stored_dim_row[0])
-            dimension_changed = stored_dimension != configured_dimension
+            dimension_changed = int(stored_dim_row[0]) != configured_dimension
 
+    meta_recipe_changed = False
+    if stored_model is not None and "recipe_hash" in meta_columns:
+        meta_recipe_changed = (
+            conn.execute(
+                """
+                SELECT 1
+                FROM message_embeddings_meta
+                WHERE recipe_hash IS NULL OR recipe_hash != ?
+                LIMIT 1
+                """,
+                (recipe.recipe_hash,),
+            ).fetchone()
+            is not None
+        )
+
+    advanced_generations = 0
+    advanced_session_ids: list[str] = []
+    if _table_exists(conn, "embedding_derivation_state"):
+        state_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_derivation_state)")}
+        required = {
+            "session_id",
+            "generation",
+            "derivation_key",
+            "source_hash",
+            "recipe_hash",
+            "output_contract_hash",
+            "attempt_state",
+            "message_count",
+            "updated_at_ms",
+        }
+        if required.issubset(state_columns):
+            register_embedding_identity_sql(conn)
+            now_ms = int(time.time() * 1000)
+            rows = conn.execute(
+                """
+                UPDATE embedding_derivation_state
+                SET generation = generation + 1,
+                    derivation_key = polylogue_embedding_derivation_key(
+                        session_id, source_hash, ?, ?
+                    ),
+                    recipe_hash = ?,
+                    output_contract_hash = ?,
+                    attempt_state = 'pending',
+                    message_count = 0,
+                    updated_at_ms = ?
+                WHERE recipe_hash != ? OR output_contract_hash != ?
+                RETURNING session_id
+                """,
+                (
+                    recipe.recipe_hash,
+                    recipe.output_contract_hash,
+                    recipe.recipe_hash,
+                    recipe.output_contract_hash,
+                    now_ms,
+                    recipe.recipe_hash,
+                    recipe.output_contract_hash,
+                ),
+            ).fetchall()
+            advanced_session_ids = [str(row[0]) for row in rows]
+            advanced_generations = len(advanced_session_ids)
+
+    # NOTE: model_changed deliberately does not participate in recipe_changed
+    # below. EmbeddingRecipe.identity() hashes the model name as one of its
+    # declared fields, so any genuine model change already flips recipe_hash
+    # and is caught by meta_recipe_changed/advanced_generations. Keeping
+    # model_changed out of the trigger avoids a permanent false-positive
+    # archive-wide reindex for archives (e.g. the demo world) that carry a
+    # deliberately labeled synthetic model alongside a matching recipe_hash.
+    recipe_changed = dimension_changed or meta_recipe_changed or advanced_generations > 0
     if model_changed:
         vec_logger.info(
-            "embedding model changed: stored=%s configured=%s — marking all for reindex",
+            "embedding model changed: stored=%s configured=%s",
             stored_model,
             configured_model,
         )
     if dimension_changed:
         vec_logger.info(
             "embedding dimension changed: stored=%d configured=%d — dropping vec0 + reindex",
-            stored_model and _stored_dim_from_meta(conn) or 0,
+            _stored_dim_from_meta(conn),
             configured_dimension,
         )
+    if recipe_changed and not dimension_changed:
+        vec_logger.info(
+            "embedding recipe identity changed — marking %d session(s) for reindex (meta_recipe_changed=%s)",
+            advanced_generations,
+            meta_recipe_changed,
+        )
 
-    if model_changed or dimension_changed:
-        conn.execute("UPDATE embedding_status SET needs_reindex = 1, error_message = NULL")
+    if recipe_changed:
         if dimension_changed:
+            # A dimension change invalidates every stored vector archive-wide
+            # (the vec0 table itself is dropped/recreated below), not just the
+            # sessions whose derivation_state row was just advanced.
+            conn.execute("UPDATE embedding_status SET needs_reindex = 1, error_message = NULL")
             _reconcile_vec0_dimension(conn, configured_dimension)
+        elif advanced_session_ids:
+            # Scope the bulk mark to the sessions whose derivation_state
+            # generation actually advanced this pass. An archive larger than
+            # one convergence window (_DAEMON_EMBED_MAX_SESSIONS) advances a
+            # bounded subset per call; re-marking the *whole* table here would
+            # re-flag sessions that already succeeded under the new
+            # generation/key in an earlier pass, starving convergence on the
+            # same first batch forever (polylogue PR #3067 review).
+            placeholders = ", ".join("?" for _ in advanced_session_ids)
+            conn.execute(
+                f"""
+                UPDATE embedding_status
+                SET needs_reindex = 1, error_message = NULL
+                WHERE session_id IN ({placeholders})
+                """,
+                advanced_session_ids,
+            )
 
 
 def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT dimension FROM message_embeddings_meta LIMIT 1").fetchone()
     return int(row[0]) if row else 0
+
+
+def _reconcile_archive_embedding_config_change(index_db_path: Path) -> None:
+    """Reconcile the recipe on the tier that owns embedding state.
+
+    Active archives split ``index.db`` source facts from the rebuildable
+    ``embeddings.db`` derivation ledger. Legacy monolithic fixtures keep the
+    old same-file behavior. Loading sqlite-vec here keeps dimension-change
+    reconciliation able to drop the virtual table on the real production
+    route.
+    """
+
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    sibling = index_db_path.with_name("embeddings.db")
+    target = sibling if sibling.exists() else index_db_path
+    conn = sqlite3.connect(target, timeout=5.0)
+    try:
+        try_load_sqlite_vec(conn)
+        _reconcile_embedding_config_change(conn)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _repair_changed_session_fts(
@@ -1371,10 +1488,9 @@ def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids
 
 def _archive_embed_check(db_path: Path, path: Path) -> bool:
     try:
+        _reconcile_archive_embedding_config_change(db_path)
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
-            _reconcile_embedding_config_change(conn)
-            conn.commit()
             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
             return bool(_archive_pending_embedding_session_ids(conn, session_ids))
         finally:
@@ -1406,10 +1522,9 @@ def _archive_embed_execute(db_path: Path, path: Path) -> bool:
 
 def _archive_embed_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
     try:
+        _reconcile_archive_embedding_config_change(db_path)
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
-            _reconcile_embedding_config_change(conn)
-            conn.commit()
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
             all_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
             pending = set(_archive_pending_embedding_session_ids(conn, all_ids))
@@ -1444,10 +1559,9 @@ def _archive_embed_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
 
 def _archive_embed_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
     try:
+        _reconcile_archive_embedding_config_change(db_path)
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
-            _reconcile_embedding_config_change(conn)
-            conn.commit()
             ids = _archive_existing_session_ids(conn, session_ids)
             return set(_archive_pending_embedding_session_ids(conn, ids))
         finally:

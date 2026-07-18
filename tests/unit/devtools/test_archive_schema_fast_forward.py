@@ -29,6 +29,7 @@ from devtools.archive_schema_fast_forward import (
 )
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -258,7 +259,7 @@ def test_embedding_clone_preserves_vectors_and_installs_failure_lifecycle(tmp_pa
     result = fast_forward_embeddings_clone(source, clone)
 
     assert result.source.user_version == 1
-    assert result.clone.user_version == 2
+    assert result.clone.user_version == EMBEDDINGS_SCHEMA_VERSION
     assert not any(Path(f"{clone}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
     with sqlite3.connect(clone) as conn:
         loaded, error = try_load_sqlite_vec(conn)
@@ -266,7 +267,7 @@ def test_embedding_clone_preserves_vectors_and_installs_failure_lifecycle(tmp_pa
         assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM embedding_status").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM embedding_failures").fetchone()[0] == 0
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == EMBEDDINGS_SCHEMA_VERSION
 
 
 def test_reuse_index_clone_reproves_v36_staging_before_atomic_move(tmp_path: Path) -> None:
