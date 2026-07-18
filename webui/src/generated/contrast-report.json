@@ -1,0 +1,387 @@
+{
+  "generated_by": "devtools render webui-design-system",
+  "method": "WCAG 2.x relative luminance and contrast ratio",
+  "minimum_focus_ratio": 7.09,
+  "minimum_text_ratio": 4.82,
+  "pairs": [
+    {
+      "background": "#f7f9fb",
+      "foreground": "#18212b",
+      "mode": "light",
+      "pair": "text-on-background",
+      "passes": true,
+      "ratio": 15.41,
+      "threshold": 4.5
+    },
+    {
+      "background": "#ffffff",
+      "foreground": "#18212b",
+      "mode": "light",
+      "pair": "text-on-surface",
+      "passes": true,
+      "ratio": 16.26,
+      "threshold": 4.5
+    },
+    {
+      "background": "#f7f9fb",
+      "foreground": "#465564",
+      "mode": "light",
+      "pair": "muted-text-on-background",
+      "passes": true,
+      "ratio": 7.25,
+      "threshold": 4.5
+    },
+    {
+      "background": "#f7f9fb",
+      "foreground": "#607080",
+      "mode": "light",
+      "pair": "subtle-text-on-background",
+      "passes": true,
+      "ratio": 4.82,
+      "threshold": 4.5
+    },
+    {
+      "background": "#f7f9fb",
+      "foreground": "#075985",
+      "mode": "light",
+      "pair": "accent-on-background",
+      "passes": true,
+      "ratio": 7.17,
+      "threshold": 4.5
+    },
+    {
+      "background": "#ffffff",
+      "foreground": "#92400e",
+      "mode": "light",
+      "pair": "focus-on-surface",
+      "passes": true,
+      "ratio": 7.09,
+      "threshold": 3.0
+    },
+    {
+      "background": "#dcfce7",
+      "foreground": "#166534",
+      "mode": "light",
+      "pair": "evidence-exact",
+      "passes": true,
+      "ratio": 6.49,
+      "threshold": 4.5
+    },
+    {
+      "background": "#dbeafe",
+      "foreground": "#1e40af",
+      "mode": "light",
+      "pair": "evidence-qualified",
+      "passes": true,
+      "ratio": 7.15,
+      "threshold": 4.5
+    },
+    {
+      "background": "#fef3c7",
+      "foreground": "#854d0e",
+      "mode": "light",
+      "pair": "evidence-stale",
+      "passes": true,
+      "ratio": 6.15,
+      "threshold": 4.5
+    },
+    {
+      "background": "#e5e7eb",
+      "foreground": "#374151",
+      "mode": "light",
+      "pair": "evidence-unknown",
+      "passes": true,
+      "ratio": 8.33,
+      "threshold": 4.5
+    },
+    {
+      "background": "#ffe4e6",
+      "foreground": "#9f1239",
+      "mode": "light",
+      "pair": "evidence-degraded",
+      "passes": true,
+      "ratio": 6.68,
+      "threshold": 4.5
+    },
+    {
+      "background": "#ffedd5",
+      "foreground": "#9a3412",
+      "mode": "light",
+      "pair": "origin-claude-code-session",
+      "passes": true,
+      "ratio": 6.38,
+      "threshold": 4.5
+    },
+    {
+      "background": "#cffafe",
+      "foreground": "#155e75",
+      "mode": "light",
+      "pair": "origin-codex-session",
+      "passes": true,
+      "ratio": 6.49,
+      "threshold": 4.5
+    },
+    {
+      "background": "#dbeafe",
+      "foreground": "#1e40af",
+      "mode": "light",
+      "pair": "origin-gemini-cli-session",
+      "passes": true,
+      "ratio": 7.15,
+      "threshold": 4.5
+    },
+    {
+      "background": "#ede9fe",
+      "foreground": "#5b21b6",
+      "mode": "light",
+      "pair": "origin-hermes-session",
+      "passes": true,
+      "ratio": 7.57,
+      "threshold": 4.5
+    },
+    {
+      "background": "#fce7f3",
+      "foreground": "#9d174d",
+      "mode": "light",
+      "pair": "origin-antigravity-session",
+      "passes": true,
+      "ratio": 6.71,
+      "threshold": 4.5
+    },
+    {
+      "background": "#fef3c7",
+      "foreground": "#854d0e",
+      "mode": "light",
+      "pair": "origin-beads-issue",
+      "passes": true,
+      "ratio": 6.15,
+      "threshold": 4.5
+    },
+    {
+      "background": "#e5e7eb",
+      "foreground": "#374151",
+      "mode": "light",
+      "pair": "origin-grok-export",
+      "passes": true,
+      "ratio": 8.33,
+      "threshold": 4.5
+    },
+    {
+      "background": "#dcfce7",
+      "foreground": "#166534",
+      "mode": "light",
+      "pair": "origin-chatgpt-export",
+      "passes": true,
+      "ratio": 6.49,
+      "threshold": 4.5
+    },
+    {
+      "background": "#ffedd5",
+      "foreground": "#9a3412",
+      "mode": "light",
+      "pair": "origin-claude-ai-export",
+      "passes": true,
+      "ratio": 6.38,
+      "threshold": 4.5
+    },
+    {
+      "background": "#e0e7ff",
+      "foreground": "#3730a3",
+      "mode": "light",
+      "pair": "origin-aistudio-drive",
+      "passes": true,
+      "ratio": 8.06,
+      "threshold": 4.5
+    },
+    {
+      "background": "#0b1015",
+      "foreground": "#eef4f8",
+      "mode": "dark",
+      "pair": "text-on-background",
+      "passes": true,
+      "ratio": 17.22,
+      "threshold": 4.5
+    },
+    {
+      "background": "#111820",
+      "foreground": "#eef4f8",
+      "mode": "dark",
+      "pair": "text-on-surface",
+      "passes": true,
+      "ratio": 16.11,
+      "threshold": 4.5
+    },
+    {
+      "background": "#0b1015",
+      "foreground": "#b3c0cb",
+      "mode": "dark",
+      "pair": "muted-text-on-background",
+      "passes": true,
+      "ratio": 10.3,
+      "threshold": 4.5
+    },
+    {
+      "background": "#0b1015",
+      "foreground": "#8998a6",
+      "mode": "dark",
+      "pair": "subtle-text-on-background",
+      "passes": true,
+      "ratio": 6.46,
+      "threshold": 4.5
+    },
+    {
+      "background": "#0b1015",
+      "foreground": "#7dd3fc",
+      "mode": "dark",
+      "pair": "accent-on-background",
+      "passes": true,
+      "ratio": 11.46,
+      "threshold": 4.5
+    },
+    {
+      "background": "#111820",
+      "foreground": "#fbbf24",
+      "mode": "dark",
+      "pair": "focus-on-surface",
+      "passes": true,
+      "ratio": 10.7,
+      "threshold": 3.0
+    },
+    {
+      "background": "#123522",
+      "foreground": "#9ae6b4",
+      "mode": "dark",
+      "pair": "evidence-exact",
+      "passes": true,
+      "ratio": 9.21,
+      "threshold": 4.5
+    },
+    {
+      "background": "#102a43",
+      "foreground": "#93c5fd",
+      "mode": "dark",
+      "pair": "evidence-qualified",
+      "passes": true,
+      "ratio": 8.12,
+      "threshold": 4.5
+    },
+    {
+      "background": "#3d2e0c",
+      "foreground": "#fde68a",
+      "mode": "dark",
+      "pair": "evidence-stale",
+      "passes": true,
+      "ratio": 10.58,
+      "threshold": 4.5
+    },
+    {
+      "background": "#29313a",
+      "foreground": "#d1d5db",
+      "mode": "dark",
+      "pair": "evidence-unknown",
+      "passes": true,
+      "ratio": 8.94,
+      "threshold": 4.5
+    },
+    {
+      "background": "#3b121a",
+      "foreground": "#fda4af",
+      "mode": "dark",
+      "pair": "evidence-degraded",
+      "passes": true,
+      "ratio": 8.63,
+      "threshold": 4.5
+    },
+    {
+      "background": "#3b2410",
+      "foreground": "#fdba74",
+      "mode": "dark",
+      "pair": "origin-claude-code-session",
+      "passes": true,
+      "ratio": 8.61,
+      "threshold": 4.5
+    },
+    {
+      "background": "#12313a",
+      "foreground": "#67e8f9",
+      "mode": "dark",
+      "pair": "origin-codex-session",
+      "passes": true,
+      "ratio": 9.49,
+      "threshold": 4.5
+    },
+    {
+      "background": "#142b4d",
+      "foreground": "#93c5fd",
+      "mode": "dark",
+      "pair": "origin-gemini-cli-session",
+      "passes": true,
+      "ratio": 7.86,
+      "threshold": 4.5
+    },
+    {
+      "background": "#2b1f4a",
+      "foreground": "#c4b5fd",
+      "mode": "dark",
+      "pair": "origin-hermes-session",
+      "passes": true,
+      "ratio": 8.14,
+      "threshold": 4.5
+    },
+    {
+      "background": "#421b34",
+      "foreground": "#f9a8d4",
+      "mode": "dark",
+      "pair": "origin-antigravity-session",
+      "passes": true,
+      "ratio": 8.05,
+      "threshold": 4.5
+    },
+    {
+      "background": "#3d2e0c",
+      "foreground": "#fde68a",
+      "mode": "dark",
+      "pair": "origin-beads-issue",
+      "passes": true,
+      "ratio": 10.58,
+      "threshold": 4.5
+    },
+    {
+      "background": "#29313a",
+      "foreground": "#d1d5db",
+      "mode": "dark",
+      "pair": "origin-grok-export",
+      "passes": true,
+      "ratio": 8.94,
+      "threshold": 4.5
+    },
+    {
+      "background": "#123522",
+      "foreground": "#86efac",
+      "mode": "dark",
+      "pair": "origin-chatgpt-export",
+      "passes": true,
+      "ratio": 9.6,
+      "threshold": 4.5
+    },
+    {
+      "background": "#3b2410",
+      "foreground": "#fed7aa",
+      "mode": "dark",
+      "pair": "origin-claude-ai-export",
+      "passes": true,
+      "ratio": 10.73,
+      "threshold": 4.5
+    },
+    {
+      "background": "#24264b",
+      "foreground": "#a5b4fc",
+      "mode": "dark",
+      "pair": "origin-aistudio-drive",
+      "passes": true,
+      "ratio": 7.25,
+      "threshold": 4.5
+    }
+  ],
+  "schema_version": 1
+}

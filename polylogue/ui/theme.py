@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Origin
 
 ThemeMode = Literal["dark", "light"]
 
@@ -184,6 +185,136 @@ LIGHT_THEME = {
     "glass": "rgba(0, 0, 0, 0.02)",
     "glass_border": "rgba(0, 0, 0, 0.08)",
 }
+
+
+# =============================================================================
+# WebUI v2 generated design-system tokens
+# =============================================================================
+
+# The browser design system is generated from these Python-owned values by
+# ``devtools render webui-design-system``.  Keeping the public Origin list and
+# palette here prevents the TypeScript client from growing a second provider
+# vocabulary while still leaving archive semantics on the server.
+PUBLIC_ORIGIN_TOKENS: tuple[Origin, ...] = tuple(origin for origin in Origin if origin is not Origin.UNKNOWN_EXPORT)
+
+WEBUI_SHARED_TOKENS: dict[str, str] = {
+    "--pl-font-sans": 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    "--pl-font-mono": 'ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    "--pl-font-size-xs": "0.75rem",
+    "--pl-font-size-sm": "0.8125rem",
+    "--pl-font-size-md": "0.9375rem",
+    "--pl-font-size-lg": "1.125rem",
+    "--pl-font-size-xl": "1.5rem",
+    "--pl-line-height-tight": "1.25",
+    "--pl-line-height-body": "1.55",
+    "--pl-space-0": "0",
+    "--pl-space-1": "0.25rem",
+    "--pl-space-2": "0.5rem",
+    "--pl-space-3": "0.75rem",
+    "--pl-space-4": "1rem",
+    "--pl-space-5": "1.5rem",
+    "--pl-space-6": "2rem",
+    "--pl-space-7": "3rem",
+    "--pl-space-8": "4rem",
+    "--pl-radius-sm": "0.25rem",
+    "--pl-radius-md": "0.5rem",
+    "--pl-radius-lg": "0.75rem",
+    "--pl-border-width": "1px",
+    "--pl-focus-width": "3px",
+    "--pl-density-row-comfortable": "2.75rem",
+    "--pl-density-row-compact": "2.125rem",
+    "--pl-content-measure": "76rem",
+    "--pl-transcript-measure": "72ch",
+    "--pl-motion-fast": "120ms",
+    "--pl-motion-normal": "180ms",
+}
+
+WEBUI_THEME_TOKENS: dict[ThemeMode, dict[str, str]] = {
+    "dark": {
+        "--pl-color-bg": "#0b1015",
+        "--pl-color-surface": "#111820",
+        "--pl-color-surface-raised": "#18222d",
+        "--pl-color-surface-inset": "#0d141b",
+        "--pl-color-text": "#eef4f8",
+        "--pl-color-text-muted": "#b3c0cb",
+        "--pl-color-text-subtle": "#8998a6",
+        "--pl-color-border": "#344453",
+        "--pl-color-border-strong": "#526578",
+        "--pl-color-accent": "#7dd3fc",
+        "--pl-color-accent-strong": "#38bdf8",
+        "--pl-color-focus": "#fbbf24",
+        "--pl-color-selection": "#14354a",
+        "--pl-color-code-bg": "#090e13",
+        "--pl-color-shadow": "rgba(0, 0, 0, 0.42)",
+    },
+    "light": {
+        "--pl-color-bg": "#f7f9fb",
+        "--pl-color-surface": "#ffffff",
+        "--pl-color-surface-raised": "#eef2f6",
+        "--pl-color-surface-inset": "#f3f6f8",
+        "--pl-color-text": "#18212b",
+        "--pl-color-text-muted": "#465564",
+        "--pl-color-text-subtle": "#607080",
+        "--pl-color-border": "#b8c3ce",
+        "--pl-color-border-strong": "#7b8a99",
+        "--pl-color-accent": "#075985",
+        "--pl-color-accent-strong": "#0369a1",
+        "--pl-color-focus": "#92400e",
+        "--pl-color-selection": "#d9edf7",
+        "--pl-color-code-bg": "#f1f5f9",
+        "--pl-color-shadow": "rgba(15, 23, 42, 0.16)",
+    },
+}
+
+WEBUI_EVIDENCE_BADGE_TOKENS: dict[ThemeMode, dict[str, tuple[str, str]]] = {
+    "dark": {
+        "exact": ("#9ae6b4", "#123522"),
+        "qualified": ("#93c5fd", "#102a43"),
+        "stale": ("#fde68a", "#3d2e0c"),
+        "unknown": ("#d1d5db", "#29313a"),
+        "degraded": ("#fda4af", "#3b121a"),
+    },
+    "light": {
+        "exact": ("#166534", "#dcfce7"),
+        "qualified": ("#1e40af", "#dbeafe"),
+        "stale": ("#854d0e", "#fef3c7"),
+        "unknown": ("#374151", "#e5e7eb"),
+        "degraded": ("#9f1239", "#ffe4e6"),
+    },
+}
+
+WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
+    "dark": {
+        Origin.CLAUDE_CODE_SESSION: ("#fdba74", "#3b2410"),
+        Origin.CODEX_SESSION: ("#67e8f9", "#12313a"),
+        Origin.GEMINI_CLI_SESSION: ("#93c5fd", "#142b4d"),
+        Origin.HERMES_SESSION: ("#c4b5fd", "#2b1f4a"),
+        Origin.ANTIGRAVITY_SESSION: ("#f9a8d4", "#421b34"),
+        Origin.BEADS_ISSUE: ("#fde68a", "#3d2e0c"),
+        Origin.GROK_EXPORT: ("#d1d5db", "#29313a"),
+        Origin.CHATGPT_EXPORT: ("#86efac", "#123522"),
+        Origin.CLAUDE_AI_EXPORT: ("#fed7aa", "#3b2410"),
+        Origin.AISTUDIO_DRIVE: ("#a5b4fc", "#24264b"),
+    },
+    "light": {
+        Origin.CLAUDE_CODE_SESSION: ("#9a3412", "#ffedd5"),
+        Origin.CODEX_SESSION: ("#155e75", "#cffafe"),
+        Origin.GEMINI_CLI_SESSION: ("#1e40af", "#dbeafe"),
+        Origin.HERMES_SESSION: ("#5b21b6", "#ede9fe"),
+        Origin.ANTIGRAVITY_SESSION: ("#9d174d", "#fce7f3"),
+        Origin.BEADS_ISSUE: ("#854d0e", "#fef3c7"),
+        Origin.GROK_EXPORT: ("#374151", "#e5e7eb"),
+        Origin.CHATGPT_EXPORT: ("#166534", "#dcfce7"),
+        Origin.CLAUDE_AI_EXPORT: ("#9a3412", "#ffedd5"),
+        Origin.AISTUDIO_DRIVE: ("#3730a3", "#e0e7ff"),
+    },
+}
+
+
+def webui_theme_tokens(mode: ThemeMode) -> dict[str, str]:
+    """Return one complete WebUI theme token mapping for generation."""
+
+    return {**WEBUI_SHARED_TOKENS, **WEBUI_THEME_TOKENS[mode]}
 
 
 # =============================================================================

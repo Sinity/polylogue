@@ -761,8 +761,10 @@ def _default_sidecar_dir() -> Path:
 
 def _detect_hook_provider(payload: dict[str, object]) -> HookHarness | None:
     forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER")
-    if forced in EVENTS_BY_HARNESS:
-        return cast(HookHarness, forced)
+    if forced == "claude-code":
+        return "claude-code"
+    if forced == "codex":
+        return "codex"
     if "turn_id" in payload:
         return "codex"
     if "permission_mode" in payload or "model" in payload:

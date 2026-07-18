@@ -447,7 +447,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/transaction.py
-    loc: 317
+    loc: 318
     target: polylogue/archive/query/transaction.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1527,7 +1527,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 4737
+    loc: 4924
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
@@ -1596,7 +1596,7 @@ files:
     target: polylogue/daemon/provenance.py
     owner: stable
   - path: polylogue/daemon/route_contracts.py
-    loc: 607
+    loc: 625
     target: polylogue/daemon/route_contracts.py
     owner: stable
   - path: polylogue/daemon/similarity.py
@@ -1678,6 +1678,10 @@ files:
   - path: polylogue/daemon/web_shell_workspace.py
     loc: 522
     target: polylogue/daemon/web_shell_workspace.py
+    owner: stable
+  - path: polylogue/daemon/webui.py
+    loc: 331
+    target: polylogue/daemon/webui.py
     owner: stable
   - path: polylogue/daemon/workspace_routes.py
     loc: 136
@@ -4311,7 +4315,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/ui/theme.py
-    loc: 401
+    loc: 532
     target: polylogue/ui/theme.py
     owner: stable
   - path: polylogue/ui/tui/__init__.py
