@@ -21,6 +21,7 @@ from polylogue.core.json import json_document
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 
+from ..parsers.drive_support_attachments import DRIVE_LIVE_FETCH_DATA_KEY
 from .gemini_models import GeminiBranchParent, GeminiGrounding, GeminiPart, GeminiThoughtSignature
 
 ThoughtSignatureValue: TypeAlias = GeminiThoughtSignature | dict[str, object] | str
@@ -132,6 +133,14 @@ def _drive_media_content_block(
     if record is None:
         return None
     mime_type = _get_str_or_none(record.get("mimeType"))
+    # polylogue-83u.2: live Drive attachment acquisition injects fetched bytes
+    # into this same record as base64 under DRIVE_LIVE_FETCH_DATA_KEY before
+    # attachment_from_doc decodes it into ParsedAttachment.inline_bytes. That
+    # sidecar must never reach block metadata (unlike attachment rows, blocks
+    # are not content-addressed) -- strip it here the same way
+    # _without_inline_bytes strips inlineData/inlineFile/inlineImage's `data`.
+    if DRIVE_LIVE_FETCH_DATA_KEY in record:
+        record = {key: value for key, value in record.items() if key != DRIVE_LIVE_FETCH_DATA_KEY}
     return ContentBlock(
         type=content_type,
         mime_type=mime_type,

@@ -1,60 +1,50 @@
-"""Focused contracts for Drive ingestion helpers and attachment handling."""
+"""Focused contracts for Drive ingestion helpers and live attachment acquisition.
+
+`_apply_drive_attachments`/`iter_drive_sessions` (the decoupled, dead
+local-path-writing attachment path) were removed as part of polylogue-83u.2:
+they had zero live callers and wrote to `attachment.path` instead of
+`inline_bytes`, so acquired Drive attachment bytes never reached the blob
+store. The live path is `iter_drive_raw_data`, which now resolves
+Drive-hosted attachment references (`driveDocument`/`driveImage`/etc.) via the
+same live client used to download the session document, injecting fetched
+bytes into the raw payload before it is cached/blob-stored. The tests below
+exercise that live path end to end through the ordinary parse+write pipeline,
+proving `acquisition_status='acquired'` with a blob at the attachment's true
+SHA-256 (AC#1, Drive sub-case), and that a fetch failure leaves the attachment
+honestly `unfetched` rather than fabricating a hash.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from polylogue.config import Source
-from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.sources import DriveFile, download_drive_files, iter_drive_sessions
-from polylogue.sources.drive import _apply_drive_attachments
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession
+from polylogue.core.json import JSONValue
+from polylogue.sources import DriveFile, download_drive_files
+from polylogue.sources.dispatch import parse_payload
+from polylogue.sources.drive import iter_drive_raw_data
+from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
-
-
-def _attachment(
-    provider_attachment_id: str,
-    *,
-    name: str | None = None,
-    mime_type: str | None = None,
-    size_bytes: int | None = None,
-    attachment_kind: str | None = None,
-) -> ParsedAttachment:
-    return ParsedAttachment(
-        provider_attachment_id=provider_attachment_id,
-        message_provider_id="msg-1",
-        name=name,
-        mime_type=mime_type,
-        size_bytes=size_bytes,
-        path=None,
-        attachment_kind=attachment_kind,
-    )
-
-
-def _session(*attachments: ParsedAttachment) -> ParsedSession:
-    return ParsedSession(
-        source_name=Provider.GEMINI,
-        provider_session_id="conv-1",
-        messages=[],
-        attachments=list(attachments),
-    )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
 @dataclass
 class _DriveSessionClient:
-    files: list[DriveFile]
-    payloads: dict[str, JSONValue]
-    payload_failures: dict[str, Exception] = field(default_factory=dict)
-    attachment_meta: dict[str, DriveFile] = field(default_factory=dict)
-    download_to_path_calls: list[tuple[str, Path]] = field(default_factory=list)
+    """Minimal `DriveSourceAPI` stub covering the live raw-acquisition path."""
 
-    def __post_init__(self) -> None:
-        self.payload_failures = dict(self.payload_failures)
-        self.attachment_meta = dict(self.attachment_meta)
+    files: list[DriveFile]
+    payload_bytes: dict[str, bytes]
+    attachment_bytes: dict[str, bytes] = field(default_factory=dict)
+    attachment_failures: dict[str, Exception] = field(default_factory=dict)
+    download_bytes_calls: list[str] = field(default_factory=list)
 
     def resolve_folder_id(self, folder_ref: str) -> str:
         return f"folder:{folder_ref}"
@@ -63,32 +53,45 @@ class _DriveSessionClient:
         yield from self.files
 
     def download_json_payload(self, file_id: str, *, name: str) -> JSONValue:
-        if file_id in self.payload_failures:
-            raise self.payload_failures[file_id]
-        return self.payloads[file_id]
+        raise NotImplementedError("iter_drive_raw_data uses download_bytes, not download_json_payload")
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
-        self.download_to_path_calls.append((file_id, dest))
-        return self.attachment_meta.get(
-            file_id,
-            DriveFile(
-                file_id=file_id,
-                name=dest.name,
-                mime_type="application/octet-stream",
-                modified_time=None,
-                size_bytes=None,
-            ),
-        )
+        raise NotImplementedError("not used by the live raw-acquisition path")
 
     def download_bytes(self, file_id: str) -> bytes:
-        return f"bytes:{file_id}".encode()
+        self.download_bytes_calls.append(file_id)
+        if file_id in self.attachment_failures:
+            raise self.attachment_failures[file_id]
+        if file_id in self.attachment_bytes:
+            return self.attachment_bytes[file_id]
+        return self.payload_bytes[file_id]
 
 
 def _empty_cursor_state() -> CursorStatePayload:
     return {}
 
 
+def _connect(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    return conn
+
+
+def _preacquired(store: BlobStore, session: ParsedSession) -> dict[int, tuple[bytes | None, int, str]]:
+    acquired: dict[int, tuple[bytes | None, int, str]] = {}
+    for attachment in session.attachments:
+        if attachment.inline_bytes is None:
+            continue
+        blob_hash, size = store.write_from_bytes(attachment.inline_bytes)
+        acquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
+    return acquired
+
+
 def test_download_drive_files_contract(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock
+
     client = MagicMock()
     client.iter_json_files.return_value = [
         DriveFile("good", "session", "application/json", None, None),
@@ -110,165 +113,216 @@ def test_download_drive_files_contract(tmp_path: Path) -> None:
     assert result.failed_files == [{"file_id": "bad", "name": "broken.jsonl", "error": "denied"}]
 
 
-def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
-    missing_attachment = _attachment("placeholder").model_copy(update={"provider_attachment_id": None})
-    session = _session(
-        _attachment("keep-meta", name="keep.txt", mime_type="text/plain", size_bytes=12),
-        _attachment("fill-meta"),
-        missing_attachment,
+def test_iter_drive_raw_data_injects_live_attachment_bytes_into_raw_payload(tmp_path: Path) -> None:
+    """Drive-hosted attachment bytes are fetched INSIDE the live client's
+    iterator scope and land in the stored raw payload as a base64 sidecar."""
+    payload = {
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "Hi"},
+                {
+                    "role": "model",
+                    "text": "Here is the file",
+                    "driveDocument": {"id": "att-1", "name": "doc.txt", "mimeType": "text/plain"},
+                },
+            ]
+        }
+    }
+    client = _DriveSessionClient(
+        files=[DriveFile("file-1", "chat.json", "application/json", "2025-01-01T00:00:00Z", 10)],
+        payload_bytes={"file-1": json.dumps(payload).encode("utf-8")},
+        attachment_bytes={"att-1": b"the actual drive attachment bytes"},
     )
-    client = MagicMock()
-    client.download_to_path.side_effect = [
-        DriveFile("keep-meta", "remote.bin", "application/octet-stream", None, 99),
-        DriveFile("fill-meta", "filled.pdf", "application/pdf", None, 2048),
-    ]
+    blob_store = BlobStore(tmp_path / "blob")
+    cursor_state = _empty_cursor_state()
 
-    _apply_drive_attachments(
-        convo=session,
-        client=client,
-        archive_root=tmp_path,
-        download_assets=True,
-    )
-
-    keep, filled, missing = session.attachments
-
-    assert keep.name == "keep.txt"
-    assert keep.mime_type == "text/plain"
-    assert keep.size_bytes == 12
-
-    assert filled.name == "filled.pdf"
-    assert filled.mime_type == "application/pdf"
-    assert filled.size_bytes == 2048
-    assert filled.path is not None
-
-    assert missing.path is None
-    assert [call.args[0] for call in client.download_to_path.call_args_list] == ["keep-meta", "fill-meta"]
-
-
-def test_apply_drive_attachments_skips_inline_and_external_media(tmp_path: Path) -> None:
-    session = _session(
-        _attachment(
-            "inline-file-1",
-            mime_type="text/plain",
-            attachment_kind="inline_file",
-        ),
-        _attachment(
-            "youtube-video-1",
-            mime_type="video/youtube",
-            attachment_kind="youtube_video",
-        ),
-    )
-    client = MagicMock()
-
-    _apply_drive_attachments(
-        convo=session,
-        client=client,
-        archive_root=tmp_path,
-        download_assets=True,
-    )
-
-    client.download_to_path.assert_not_called()
-    assert all(attachment.path is None for attachment in session.attachments)
-
-
-def test_iter_drive_sessions_returns_empty_without_folder(tmp_path: Path) -> None:
-    assert (
-        list(
-            iter_drive_sessions(
-                source=Source(name="gemini", path=tmp_path),
-                archive_root=tmp_path,
-                download_assets=False,
-            )
+    records = list(
+        iter_drive_raw_data(
+            source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+            client=client,
+            cursor_state=cursor_state,
+            blob_store=blob_store,
         )
-        == []
     )
 
+    assert len(records) == 1
+    assert client.download_bytes_calls == ["file-1", "att-1"]
+    assert records[0].blob_hash is not None
+    stored_bytes = blob_store.read_all(records[0].blob_hash)
+    stored_payload = json.loads(stored_bytes)
+    stored_doc = stored_payload["chunkedPrompt"]["chunks"][1]["driveDocument"]
+    assert stored_doc["id"] == "att-1"
+    assert stored_doc["name"] == "doc.txt"
 
-def test_iter_drive_sessions_tracks_cursor_and_attachment_downloads(tmp_path: Path) -> None:
-    payload: JSONDocument = {
+    # The cache file written for future runs carries the same injected bytes.
+    cache_path = Path(records[0].source_path)
+    assert json.loads(cache_path.read_bytes()) == stored_payload
+
+
+def test_iter_drive_raw_data_backfills_a_preexisting_cache_file(tmp_path: Path) -> None:
+    """CodeRabbit/Codex P2: a local cache file predating live attachment
+    acquisition (or written by an older polylogue version) must not be
+    permanently skipped just because the top-level document doesn't need
+    re-download. The injector must run on cache hits too."""
+    payload = {
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "role": "model",
+                    "driveDocument": {"id": "att-1", "name": "doc.txt", "mimeType": "text/plain"},
+                },
+            ]
+        }
+    }
+    client = _DriveSessionClient(
+        files=[DriveFile("file-1", "chat.json", "application/json", "2025-01-01T00:00:00Z", 10)],
+        payload_bytes={"file-1": json.dumps(payload).encode("utf-8")},
+        attachment_bytes={"att-1": b"backfilled attachment bytes"},
+    )
+    blob_store = BlobStore(tmp_path / "blob")
+
+    # Pre-populate the cache file exactly as an older run (with no live
+    # attachment acquisition) would have left it -- the raw payload, no
+    # sidecar, and the top-level document is never re-downloaded because it
+    # already exists on disk.
+    cache_path = Path(
+        list(
+            iter_drive_raw_data(
+                source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+                client=_DriveSessionClient(
+                    files=client.files,
+                    payload_bytes=client.payload_bytes,
+                    attachment_failures={"att-1": RuntimeError("attachment not fetchable yet")},
+                ),
+                blob_store=BlobStore(tmp_path / "throwaway-blob"),
+            )
+        )[0].source_path
+    )
+    stale_cache_bytes = cache_path.read_bytes()
+    assert b"att-1" in stale_cache_bytes
+    assert b"backfilled" not in stale_cache_bytes  # sidecar was never injected
+
+    records = list(
+        iter_drive_raw_data(
+            source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+            client=client,
+            blob_store=blob_store,
+        )
+    )
+
+    assert len(records) == 1
+    # The top-level document was NOT re-downloaded (cache hit) -- only the
+    # attachment was fetched.
+    assert client.download_bytes_calls == ["att-1"]
+    assert records[0].blob_hash is not None
+    resolved_payload = json.loads(blob_store.read_all(records[0].blob_hash))
+    resolved_doc = resolved_payload["chunkedPrompt"]["chunks"][0]["driveDocument"]
+    assert resolved_doc["id"] == "att-1"
+    # The cache file itself is refreshed with the backfilled sidecar so the
+    # NEXT run also sees it without re-fetching.
+    assert json.loads(cache_path.read_bytes()) == resolved_payload
+
+
+def test_drive_live_attachment_bytes_reach_acquired_blob_with_true_hash(tmp_path: Path) -> None:
+    """End-to-end: live client -> raw injection -> ordinary parse -> write.
+
+    Proves polylogue-83u.2 AC#1 for the Drive sub-case: a seeded fixture with
+    a live Drive-hosted attachment reference produces
+    acquisition_status='acquired' with a blob at the attachment's true
+    SHA-256, using the same generic dispatch (`parse_payload`) and write
+    (`write_parsed_session_to_archive`) path the daemon uses in production.
+    """
+    attachment_bytes = b"the actual drive attachment bytes"
+    payload = {
         "title": "Drive Chat",
         "chunkedPrompt": {
             "chunks": [
                 {"role": "user", "text": "Hi"},
                 {
                     "role": "model",
-                    "text": "Hello",
-                    "driveDocument": {"id": "att-1", "name": "doc.txt"},
+                    "text": "Here is the file",
+                    "driveDocument": {"id": "att-1", "name": "doc.txt", "mimeType": "text/plain"},
                 },
             ]
         },
     }
     client = _DriveSessionClient(
-        files=[
-            DriveFile("file-1", "chat.json", "application/json", "2025-01-01T00:00:00Z", 10),
-            DriveFile("file-2", "newer.json", "application/json", "2025-01-01T00:05:00Z", 10),
-        ],
-        payloads={"file-1": payload, "file-2": payload},
-        attachment_meta={
-            "att-1": DriveFile("att-1", "doc.txt", "text/plain", None, 7),
-        },
+        files=[DriveFile("file-1", "chat.json", "application/json", "2025-01-01T00:00:00Z", 10)],
+        payload_bytes={"file-1": json.dumps(payload).encode("utf-8")},
+        attachment_bytes={"att-1": attachment_bytes},
     )
-    cursor_state: CursorStatePayload = _empty_cursor_state()
+    blob_store = BlobStore(tmp_path / "blob")
 
-    sessions = list(
-        iter_drive_sessions(
-            source=Source(name="gemini", folder="Google AI Studio"),
-            archive_root=tmp_path,
+    records = list(
+        iter_drive_raw_data(
+            source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
             client=client,
-            cursor_state=cursor_state,
-            download_assets=True,
+            blob_store=blob_store,
         )
     )
+    assert len(records) == 1
+    assert records[0].blob_hash is not None
+    resolved_payload = json.loads(blob_store.read_all(records[0].blob_hash))
 
-    assert len(sessions) == 2
-    assert cursor_state["file_count"] == 2
-    assert cursor_state["latest_file_id"] == "file-2"
-    assert cursor_state["latest_file_name"] == "newer.json"
-    assert sessions[0].attachments[0].provider_attachment_id == "att-1"
-    assert sessions[0].attachments[0].path is not None
-    assert [file_id for file_id, _ in client.download_to_path_calls] == ["att-1", "att-1"]
-
-
-def test_iter_drive_sessions_tracks_payload_failures_and_continues(tmp_path: Path) -> None:
-    good_payload: JSONDocument = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "ok"}]}}
-    client = _DriveSessionClient(
-        files=[
-            DriveFile("good", "good.json", "application/json", None, None),
-            DriveFile("bad", "bad.json", "application/json", None, None),
-        ],
-        payloads={"good": good_payload},
-        payload_failures={"bad": RuntimeError("download failed")},
-    )
-    cursor_state: CursorStatePayload = _empty_cursor_state()
-
-    sessions = list(
-        iter_drive_sessions(
-            source=Source(name="gemini", folder="Google AI Studio"),
-            archive_root=tmp_path,
-            client=client,
-            cursor_state=cursor_state,
-            download_assets=False,
-        )
-    )
-
+    # The subprocess parse stage has no live client — it only ever sees the
+    # already-resolved raw payload, dispatched generically like production.
+    sessions = parse_payload("gemini", resolved_payload, "fallback-id")
     assert len(sessions) == 1
-    assert cursor_state["error_count"] == 1
-    assert cursor_state["latest_error_file"] == "bad.json"
-    assert "download failed" in str(cursor_state["latest_error"])
-    assert client.download_to_path_calls == []
+    session = sessions[0]
+    assert len(session.attachments) == 1
+    attachment = session.attachments[0]
+    assert attachment.upload_origin == "drive"
+    assert attachment.inline_bytes == attachment_bytes
+
+    conn = _connect(tmp_path / "index.db")
+    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=_preacquired(blob_store, session))
+
+    row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert row["acquisition_status"] == "acquired"
+    assert row["byte_count"] == len(attachment_bytes)
+    assert bytes(row["blob_hash"]) == hashlib.sha256(attachment_bytes).digest()
+    assert blob_store.read_all(hashlib.sha256(attachment_bytes).hexdigest()) == attachment_bytes
 
 
-def test_iter_drive_sessions_uses_injected_client_without_recreating(tmp_path: Path) -> None:
-    client = _DriveSessionClient(files=[], payloads={})
+def test_drive_attachment_fetch_failure_stays_honestly_unfetched(tmp_path: Path) -> None:
+    """A Drive attachment whose live fetch fails is NOT acquired and carries
+    no synthetic hash — it stays `unfetched`, same as a genuinely-unfetchable
+    handle (source_url-only). This is the negative-path complement to the
+    acquired-blob test above."""
+    payload = {
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "role": "model",
+                    "driveDocument": {"id": "att-dead", "name": "gone.bin", "mimeType": "application/octet-stream"},
+                },
+            ]
+        }
+    }
+    client = _DriveSessionClient(
+        files=[DriveFile("file-1", "chat.json", "application/json", None, 10)],
+        payload_bytes={"file-1": json.dumps(payload).encode("utf-8")},
+        attachment_failures={"att-dead": RuntimeError("file no longer accessible")},
+    )
+    blob_store = BlobStore(tmp_path / "blob")
 
-    with patch("polylogue.sources.drive.build_drive_source_client") as drive_client_factory:
-        list(
-            iter_drive_sessions(
-                source=Source(name="gemini", folder="Google AI Studio"),
-                archive_root=tmp_path,
-                client=client,
-                download_assets=False,
-            )
+    records = list(
+        iter_drive_raw_data(
+            source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+            client=client,
+            blob_store=blob_store,
         )
+    )
+    assert records[0].blob_hash is not None
+    resolved_payload = json.loads(blob_store.read_all(records[0].blob_hash))
+    sessions = parse_payload("gemini", resolved_payload, "fallback-id")
+    session = sessions[0]
+    attachment = session.attachments[0]
+    assert attachment.inline_bytes is None
 
-    drive_client_factory.assert_not_called()
+    conn = _connect(tmp_path / "index.db")
+    write_parsed_session_to_archive(conn, session)
+
+    row = conn.execute("SELECT blob_hash, acquisition_status FROM attachments").fetchone()
+    assert row["acquisition_status"] == "unfetched"
+    assert row["blob_hash"] is None

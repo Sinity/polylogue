@@ -13,6 +13,14 @@ from .base import ParsedAttachment
 
 _YOUTUBE_WATCH_URL = "https://www.youtube.com/watch?v={video_id}"
 
+# Sidecar key injected by `polylogue.sources.drive.attachment_fetch` when a
+# live DriveSourceAPI client fetched a Drive-hosted document/image/audio/video
+# reference's bytes inside the acquisition iterator scope (polylogue-83u.2).
+# Value is base64 of the fetched bytes; presence turns an otherwise-unfetched
+# `upload_origin="drive"` attachment into one carrying real `inline_bytes`,
+# reusing the same true-hash blob-publish path as paste/inline attachments.
+DRIVE_LIVE_FETCH_DATA_KEY = "_polylogue_drive_live_bytes_b64"
+
 
 DrivePayload: TypeAlias = JSONDocument
 DriveDocSource: TypeAlias = str | DrivePayload
@@ -25,6 +33,13 @@ _DRIVE_MEDIA_FIELDS = (
     ("driveVideo", "drive_video"),
 )
 
+# Public field-name constants (no attachment_kind) for callers outside this
+# module that only need to recognize the raw JSON shape — currently
+# `polylogue.sources.drive.attachment_fetch`, which fetches live Drive bytes
+# for these exact fields before the chunk parser below ever runs.
+DRIVE_DOC_FIELD_NAMES: tuple[str, ...] = ("driveDocument", "driveDocuments", "drive_document")
+DRIVE_MEDIA_FIELD_NAMES: tuple[str, ...] = tuple(name for name, _kind in _DRIVE_MEDIA_FIELDS)
+
 
 def _as_drive_payload(payload: object) -> DrivePayload | None:
     return payload if is_json_document(payload) else None
@@ -32,7 +47,7 @@ def _as_drive_payload(payload: object) -> DrivePayload | None:
 
 def _collect_doc_fields(payload: DrivePayload) -> DrivePayloadSequence:
     docs: DrivePayloadSequence = []
-    for key in ("driveDocument", "driveDocuments", "drive_document"):
+    for key in DRIVE_DOC_FIELD_NAMES:
         docs.extend(_docs_from_named_value(payload.get(key)))
     nested = payload.get("metadata")
     if isinstance(nested, dict):
@@ -109,16 +124,24 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
     # container.
     file_id_val = _first_text(doc, "fileId", "id")
     drive_id_val = _first_text(doc, "driveId")
+    inline_bytes: bytes | None = None
+    fetched_data = doc.get(DRIVE_LIVE_FETCH_DATA_KEY)
+    if isinstance(fetched_data, str) and fetched_data:
+        try:
+            inline_bytes = base64.b64decode(fetched_data, validate=True)
+        except (ValueError, binascii.Error):
+            inline_bytes = None
     return ParsedAttachment(
         provider_attachment_id=doc_id_val,
         message_provider_id=message_id,
         name=name_val,
         mime_type=mime_val,
-        size_bytes=size_bytes,
+        size_bytes=size_bytes if size_bytes is not None else (len(inline_bytes) if inline_bytes is not None else None),
         path=None,
         provider_file_id=file_id_val,
         provider_drive_id=drive_id_val,
         upload_origin="drive",
+        inline_bytes=inline_bytes,
     )
 
 
