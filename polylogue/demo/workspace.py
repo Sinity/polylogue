@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.config import Config, Source, get_config, resolve_runtime_config
+from polylogue.config import Config, Source, get_config
 from polylogue.scenarios import (
     CorpusRequest,
     CorpusScenario,
@@ -373,7 +373,7 @@ def run_pipeline_for_configured_sources(
     regenerate_schemas: bool = False,
 ) -> None:
     """Ingest configured user sources inside an isolated workspace."""
-    configured_sources = get_config(resolve_runtime_config()).sources
+    configured_sources = get_config().sources
     if source_names is None:
         sources = list(configured_sources)
     else:

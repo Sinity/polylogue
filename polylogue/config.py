@@ -139,58 +139,24 @@ class Config:
         )
 
 
-def get_sources() -> list[Source]:
-    """Return the configured session sources.
-
-    Delegates to ``default_sources()`` for local watch roots (Claude Code,
-    Codex, inbox), then adds Drive/Gemini if configured.  Daemon and CLI
-    share the same source discovery through this function.
-
-    Retained alongside :func:`resolve_runtime_config`/``ResolvedRuntimeConfig``:
-    ~20 call sites (devtools scripts, ``daemon/cli.py``, ``demo/workspace.py``,
-    tests) still import this and the other ``get_*`` free functions directly;
-    migrating them is out of scope for this slice.
-    """
-    from polylogue.sources.live.watcher import default_sources
-
-    watch_sources = default_sources()
-    sources: list[Source] = [Source(name=ws.name, path=ws.root) for ws in watch_sources if ws.exists()]
-
-    gemini_cache = drive_cache_path() / "gemini"
-    if gemini_cache.exists() or drive_credentials_path().exists() or drive_token_path().exists():
-        sources.append(
-            Source(
-                name="aistudio",
-                folder=GEMINI_DRIVE_FOLDER,
-                path=gemini_cache,
-            )
-        )
-    return sources
+def get_sources(runtime: ResolvedRuntimeConfig) -> list[Source]:
+    """Return a defensive source list from an already-resolved runtime."""
+    return list(runtime.sources)
 
 
-def get_drive_config() -> DriveConfig:
-    """Return Drive configuration with default paths."""
-    return DriveConfig()
+def get_drive_config(runtime: ResolvedRuntimeConfig) -> DriveConfig:
+    """Return the resolved Drive projection."""
+    return runtime.drive_config
 
 
-def get_index_config() -> IndexConfig:
-    """Return index configuration from environment."""
-    return IndexConfig.from_env()
+def get_index_config(runtime: ResolvedRuntimeConfig) -> IndexConfig:
+    """Return the resolved index projection."""
+    return runtime.index_config
 
 
 def get_config() -> Config:
-    """Return the effective runtime configuration."""
-    return Config(
-        archive_root=archive_root(),
-        render_root=render_root(),
-        sources=get_sources(),
-        # The configured root owns durable tiers; its active query tier may
-        # be selected by an atomic generation pointer elsewhere.
-        db_path=default_db_path(),
-        drive_config=get_drive_config(),
-        index_config=get_index_config(),
-    )
-
+    """Return the effective runtime configuration. Compat wrapper, see :func:`get_sources`."""
+    return resolve_runtime_config().as_config()
 
 
 # ---------------------------------------------------------------------------
@@ -1751,26 +1717,6 @@ def resolve_runtime_config(
         backup_verify_tmpdir=backup_tmp,
         antigravity_language_server=antigravity_server,
     )
-
-
-def get_config(runtime: ResolvedRuntimeConfig) -> Config:
-    """Project legacy ``Config`` from an already-resolved runtime authority."""
-    return runtime.as_config()
-
-
-def get_sources(runtime: ResolvedRuntimeConfig) -> list[Source]:
-    """Return a defensive source list from an already-resolved runtime."""
-    return list(runtime.sources)
-
-
-def get_drive_config(runtime: ResolvedRuntimeConfig) -> DriveConfig:
-    """Return the resolved Drive projection."""
-    return runtime.drive_config
-
-
-def get_index_config(runtime: ResolvedRuntimeConfig) -> IndexConfig:
-    """Return the resolved index projection."""
-    return runtime.index_config
 
 
 #: Flat config keys whose values are secrets and must never be rendered in
