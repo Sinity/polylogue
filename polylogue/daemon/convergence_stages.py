@@ -822,6 +822,7 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
         )
 
     advanced_generations = 0
+    advanced_session_ids: list[str] = []
     if _table_exists(conn, "embedding_derivation_state"):
         state_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_derivation_state)")}
         required = {
@@ -838,7 +839,7 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
         if required.issubset(state_columns):
             register_embedding_identity_sql(conn)
             now_ms = int(time.time() * 1000)
-            cursor = conn.execute(
+            rows = conn.execute(
                 """
                 UPDATE embedding_derivation_state
                 SET generation = generation + 1,
@@ -851,6 +852,7 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
                     message_count = 0,
                     updated_at_ms = ?
                 WHERE recipe_hash != ? OR output_contract_hash != ?
+                RETURNING session_id
                 """,
                 (
                     recipe.recipe_hash,
@@ -861,13 +863,21 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
                     recipe.recipe_hash,
                     recipe.output_contract_hash,
                 ),
-            )
-            advanced_generations = max(0, cursor.rowcount)
+            ).fetchall()
+            advanced_session_ids = [str(row[0]) for row in rows]
+            advanced_generations = len(advanced_session_ids)
 
-    recipe_changed = model_changed or dimension_changed or meta_recipe_changed or advanced_generations > 0
+    # NOTE: model_changed deliberately does not participate in recipe_changed
+    # below. EmbeddingRecipe.identity() hashes the model name as one of its
+    # declared fields, so any genuine model change already flips recipe_hash
+    # and is caught by meta_recipe_changed/advanced_generations. Keeping
+    # model_changed out of the trigger avoids a permanent false-positive
+    # archive-wide reindex for archives (e.g. the demo world) that carry a
+    # deliberately labeled synthetic model alongside a matching recipe_hash.
+    recipe_changed = dimension_changed or meta_recipe_changed or advanced_generations > 0
     if model_changed:
         vec_logger.info(
-            "embedding model changed: stored=%s configured=%s — marking all for reindex",
+            "embedding model changed: stored=%s configured=%s",
             stored_model,
             configured_model,
         )
@@ -877,13 +887,37 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
             _stored_dim_from_meta(conn),
             configured_dimension,
         )
-    if recipe_changed and not model_changed and not dimension_changed:
-        vec_logger.info("embedding recipe identity changed — marking all for reindex")
+    if recipe_changed and not dimension_changed:
+        vec_logger.info(
+            "embedding recipe identity changed — marking %d session(s) for reindex (meta_recipe_changed=%s)",
+            advanced_generations,
+            meta_recipe_changed,
+        )
 
     if recipe_changed:
-        conn.execute("UPDATE embedding_status SET needs_reindex = 1, error_message = NULL")
         if dimension_changed:
+            # A dimension change invalidates every stored vector archive-wide
+            # (the vec0 table itself is dropped/recreated below), not just the
+            # sessions whose derivation_state row was just advanced.
+            conn.execute("UPDATE embedding_status SET needs_reindex = 1, error_message = NULL")
             _reconcile_vec0_dimension(conn, configured_dimension)
+        elif advanced_session_ids:
+            # Scope the bulk mark to the sessions whose derivation_state
+            # generation actually advanced this pass. An archive larger than
+            # one convergence window (_DAEMON_EMBED_MAX_SESSIONS) advances a
+            # bounded subset per call; re-marking the *whole* table here would
+            # re-flag sessions that already succeeded under the new
+            # generation/key in an earlier pass, starving convergence on the
+            # same first batch forever (polylogue PR #3067 review).
+            placeholders = ", ".join("?" for _ in advanced_session_ids)
+            conn.execute(
+                f"""
+                UPDATE embedding_status
+                SET needs_reindex = 1, error_message = NULL
+                WHERE session_id IN ({placeholders})
+                """,
+                advanced_session_ids,
+            )
 
 
 def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:

@@ -375,6 +375,80 @@ def test_archive_check_reconciles_recipe_on_sibling_embeddings_tier(
     assert status == (1, None)
 
 
+def test_recipe_change_reconciliation_does_not_restarve_sessions_already_succeeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production dependency: convergence must not un-fresh already-succeeded sessions.
+
+    When an archive has more pending sessions than one bounded convergence
+    window (``_DAEMON_EMBED_MAX_SESSIONS``), ``message_embeddings_meta`` for
+    the not-yet-reembedded remainder still carries the old recipe hash on the
+    next convergence pass, so ``meta_recipe_changed`` stays true archive-wide.
+    The bulk ``embedding_status`` reindex mark must scope to the sessions
+    whose ``embedding_derivation_state`` generation actually advanced *this*
+    pass, not the whole table -- otherwise sessions that already succeeded
+    under the new generation/key get re-flagged ``needs_reindex=1`` on every
+    subsequent pass and the daemon loops on the same first batch forever
+    instead of covering the rest of the archive (polylogue PR #3067 review).
+    """
+    from polylogue.daemon import convergence_stages
+    from polylogue.storage.embeddings import materialization
+
+    root = tmp_path / "archive"
+    session_ids = [
+        _write_archive_session(root, native_id=f"progress-{index:02d}", text=f"{_INITIAL_TEXT} {index}")
+        for index in range(30)
+    ]
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    for session_id in session_ids:
+        assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
+
+    changed_config = _EmbeddingConfig(model="voyage-5")
+    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: changed_config)
+    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: changed_config)
+
+    # Pass 1: recipe change is reconciled. Every session becomes pending, but
+    # the production check function only ever returns one bounded window.
+    first_batch = convergence_stages._archive_embed_check_sessions(root / "index.db", session_ids)
+    assert len(first_batch) == convergence_stages._DAEMON_EMBED_MAX_SESSIONS
+    assert first_batch.issubset(set(session_ids))
+    remaining = set(session_ids) - first_batch
+    assert remaining
+
+    # The daemon actually re-embeds exactly the returned first batch under
+    # the new recipe -- the rest of the archive is still untouched.
+    new_recipe_provider = _FakeVectorProvider(0.02)
+    new_recipe_provider.model = "voyage-5"
+    for session_id in first_batch:
+        outcome = embed_archive_session_sync(root / "index.db", new_recipe_provider, session_id)
+        assert outcome.status == "embedded"
+
+    with sqlite3.connect(root / "embeddings.db") as conn:
+        needs_reindex_after_batch = dict(
+            conn.execute("SELECT session_id, needs_reindex FROM embedding_status").fetchall()
+        )
+    assert all(needs_reindex_after_batch[sid] == 0 for sid in first_batch)
+
+    # Pass 2: convergence runs again before the remaining sessions are
+    # embedded. meta_recipe_changed is still true (the remaining sessions'
+    # message_embeddings_meta rows still carry the old recipe hash), so the
+    # bug reproduces here if the bulk mark is not scoped: it would re-flag the
+    # already-succeeded first batch as needs_reindex=1 and the returned
+    # pending set would loop back over the same first batch instead of
+    # advancing to `remaining`.
+    second_batch = convergence_stages._archive_embed_check_sessions(root / "index.db", session_ids)
+
+    with sqlite3.connect(root / "embeddings.db") as conn:
+        needs_reindex_after_pass2 = dict(
+            conn.execute("SELECT session_id, needs_reindex FROM embedding_status").fetchall()
+        )
+
+    assert all(needs_reindex_after_pass2[sid] == 0 for sid in first_batch), (
+        "sessions that already succeeded under the new recipe/generation must not be re-marked needs_reindex=1"
+    )
+    assert second_batch == remaining, "convergence must advance to the untouched remainder, not loop on batch one"
+
+
 def test_unscoped_or_legacy_failure_receipt_cannot_project_over_keyed_generation(tmp_path: Path) -> None:
     """Mutation: allowing generation-zero status writes clears a newer pending mark."""
     embeddings_db = tmp_path / "embeddings.db"
