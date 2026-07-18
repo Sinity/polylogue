@@ -1681,6 +1681,47 @@ describe("background receiver diagnostics", () => {
       .some((event) => event.detail === "background_capture_throttled")).toBe(false);
   });
 
+  it("never fetches a terminal ChatGPT conversation across a receiver outage and a service-worker restart", async () => {
+    const pairing = {
+      state: "online",
+      receiver_id: "rx-restart-guard",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    await loadBackground({ polylogueReceiverPairing: pairing });
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-terminal-restart", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
+      }
+      return responseJson({
+        provider: "chatgpt",
+        provider_session_id: "conv-terminal-restart",
+        state: "archived",
+        captured: true,
+      });
+    });
+
+    installedListener();
+    await vi.waitFor(() => expect(stored.polylogueState?.archive_state?.state).toBe("archived"));
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+
+    // Receiver goes down, then the extension's own service worker restarts.
+    // chrome.storage.local (the pairing) survives; in-memory reconciliation
+    // state does not — this is the shape of the original incident.
+    await loadBackground({ polylogueReceiverPairing: pairing });
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-terminal-restart", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    installedListener();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
   it("recaptures an archived Claude conversation until that provider has freshness convergence", async () => {
     tabs = [{ id: 42, url: "https://claude.ai/chat/claude-freshness", title: "Claude" }];
     stored.polylogueReceiverPairing = {
