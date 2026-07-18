@@ -11,33 +11,23 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 import tomllib
 
 from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
-from .paths import (
-    GEMINI_DRIVE_FOLDER,
-    archive_root,
-    config_home,
-    data_home,
-    drive_cache_path,
-    drive_credentials_path,
-    drive_token_path,
-    render_root,
-)
-from .paths import (
-    active_index_db_path as default_db_path,
-)
+from .paths import GEMINI_DRIVE_FOLDER
 
 
 class ConfigError(PolylogueError):
     """Configuration error."""
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Source:
     """A session source (local path, Drive folder, or both)."""
 
@@ -46,66 +36,97 @@ class Source:
     folder: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.name or not self.name.strip():
+        normalized_name = self.name.strip()
+        if not normalized_name:
             raise ValueError("Source name cannot be empty")
-        self.name = self.name.strip()
-        has_path = self.path is not None
-        has_folder = self.folder is not None and self.folder.strip()
-        if not has_path and not has_folder:
-            raise ValueError(f"Source '{self.name}' must have either 'path' or 'folder'")
-        if self.folder:
-            self.folder = self.folder.strip()
+        normalized_folder = self.folder.strip() if self.folder is not None else None
+        if self.path is None and not normalized_folder:
+            raise ValueError(f"Source '{normalized_name}' must have either 'path' or 'folder'")
+        object.__setattr__(self, "name", normalized_name)
+        object.__setattr__(self, "folder", normalized_folder)
 
     @property
     def is_drive(self) -> bool:
         return self.folder is not None
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DriveConfig:
-    """Google Drive OAuth configuration."""
+    """Google Drive OAuth configuration projected from resolved authority."""
 
-    credentials_path: Path = field(default_factory=drive_credentials_path)
-    token_path: Path = field(default_factory=drive_token_path)
+    credentials_path: Path
+    token_path: Path
     retry_count: int = 3
     timeout: int = 30
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class IndexConfig:
-    """Search indexing configuration."""
+    """Search indexing configuration projected from resolved authority."""
 
     voyage_api_key: str | None = None
 
-    @classmethod
-    def from_env(cls) -> IndexConfig:
-        """Load IndexConfig from environment variables."""
-        return cls(
-            voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
-        )
 
-
-@dataclass
 class Config:
-    """Application configuration derived from paths and source discovery."""
+    """Compatibility projection of an already-resolved runtime snapshot.
+
+    ``Config`` never reads the environment, current directory, home directory,
+    or :mod:`polylogue.paths`.  When ``db_path`` is omitted it is derived only
+    from the explicit ``archive_root`` supplied by the caller.
+
+    Handwritten (not ``@dataclass``) so that the constructor can accept an
+    optional ``db_path`` while the resolved attribute is always a concrete
+    ``Path`` -- a dataclass field cannot carry two different static types for
+    "what the constructor accepts" versus "what got stored" under one name.
+    """
 
     archive_root: Path
     render_root: Path
     sources: list[Source]
-    db_path: Path = field(default_factory=default_db_path)
-    drive_config: DriveConfig | None = None
-    index_config: IndexConfig | None = None
+    db_path: Path
+    drive_config: DriveConfig | None
+    index_config: IndexConfig | None
 
-    def __post_init__(self) -> None:
-        # Paths must be absolute. Relative paths are interpreted against the
-        # caller's CWD and silently change meaning across processes (CLI vs
-        # service vs MCP server). Catch the misuse at construction.
+    def __init__(
+        self,
+        archive_root: Path,
+        render_root: Path,
+        sources: list[Source],
+        db_path: Path | None = None,
+        drive_config: DriveConfig | None = None,
+        index_config: IndexConfig | None = None,
+    ) -> None:
+        self.archive_root = archive_root
+        self.render_root = render_root
+        self.sources = sources
+        self.db_path = db_path if db_path is not None else archive_root / "index.db"
+        self.drive_config = drive_config
+        self.index_config = index_config
         for attr in ("archive_root", "render_root", "db_path"):
             value = getattr(self, attr)
             if not isinstance(value, Path):
                 raise ConfigError(f"Config.{attr} must be a Path, got {type(value).__name__}")
             if not value.is_absolute():
                 raise ConfigError(f"Config.{attr} must be an absolute path, got {value!r}")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Config):
+            return NotImplemented
+        return (
+            self.archive_root == other.archive_root
+            and self.render_root == other.render_root
+            and self.sources == other.sources
+            and self.db_path == other.db_path
+            and self.drive_config == other.drive_config
+            and self.index_config == other.index_config
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"Config(archive_root={self.archive_root!r}, render_root={self.render_root!r}, "
+            f"sources={self.sources!r}, db_path={self.db_path!r}, "
+            f"drive_config={self.drive_config!r}, index_config={self.index_config!r})"
+        )
 
     def with_sources(self, sources: list[Source]) -> Config:
         return Config(
@@ -124,6 +145,11 @@ def get_sources() -> list[Source]:
     Delegates to ``default_sources()`` for local watch roots (Claude Code,
     Codex, inbox), then adds Drive/Gemini if configured.  Daemon and CLI
     share the same source discovery through this function.
+
+    Retained alongside :func:`resolve_runtime_config`/``ResolvedRuntimeConfig``:
+    ~20 call sites (devtools scripts, ``daemon/cli.py``, ``demo/workspace.py``,
+    tests) still import this and the other ``get_*`` free functions directly;
+    migrating them is out of scope for this slice.
     """
     from polylogue.sources.live.watcher import default_sources
 
@@ -166,12 +192,31 @@ def get_config() -> Config:
     )
 
 
+
 # ---------------------------------------------------------------------------
 # TOML config file support (#829)
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+def _freeze_config_value(value: object) -> object:
+    """Recursively freeze loader output so one snapshot cannot drift in-place."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze_config_value(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_config_value(item) for item in value)
+    return value
+
+
+def _thaw_config_value(value: object) -> object:
+    """Return a defensive mutable copy of a frozen configuration value."""
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_config_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_thaw_config_value(item) for item in value)
+    return deepcopy(value)
+
+
+@dataclass(frozen=True, slots=True)
 class PolylogueConfig:
     """Typed configuration loaded from TOML with env/CLI overrides.
 
@@ -179,12 +224,19 @@ class PolylogueConfig:
     The underlying dict is available via ``raw`` for unknown keys.
     """
 
-    _data: dict[str, object] = field(default_factory=dict)
-    _layers: dict[str, str] = field(default_factory=dict)
+    _data: Mapping[str, object] = field(default_factory=dict)
+    _layers: Mapping[str, str] = field(default_factory=dict)
+    _layer_paths: Mapping[str, Path | None] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        frozen_data = {str(key): _freeze_config_value(value) for key, value in self._data.items()}
+        object.__setattr__(self, "_data", MappingProxyType(frozen_data))
+        object.__setattr__(self, "_layers", MappingProxyType(dict(self._layers)))
+        object.__setattr__(self, "_layer_paths", MappingProxyType(dict(self._layer_paths)))
 
     @property
     def raw(self) -> dict[str, object]:
-        return self._data
+        return {key: _thaw_config_value(value) for key, value in self._data.items()}
 
     @property
     def layers(self) -> dict[str, str]:
@@ -202,12 +254,25 @@ class PolylogueConfig:
         return self._layers.get(key, "default")
 
     @property
+    def layer_paths(self) -> dict[str, Path | None]:
+        """Physical site/user paths captured by this resolution."""
+        return dict(self._layer_paths)
+
+    @property
     def archive_root(self) -> str:
         return str(self._data.get("archive_root", ""))
 
     @property
     def daemon_url(self) -> str:
         return str(self._data.get("daemon_url", "http://127.0.0.1:8766"))
+
+    @property
+    def daemon_client_mode(self) -> str:
+        return str(self._data.get("daemon_client_mode", "auto")).strip().lower() or "auto"
+
+    @property
+    def no_daemon(self) -> bool:
+        return bool(self._data.get("no_daemon"))
 
     @property
     def daemon_host(self) -> str:
@@ -293,6 +358,10 @@ class PolylogueConfig:
         return str(self._data.get("theme", "")).strip().lower()
 
     @property
+    def debug_timing(self) -> bool:
+        return bool(self._data.get("debug_timing"))
+
+    @property
     def schema_validation(self) -> str:
         return str(self._data.get("schema_validation", "advisory"))
 
@@ -355,6 +424,16 @@ class PolylogueConfig:
         return int(str(self._data.get("notification_email_port", 587)))
 
     @property
+    def notification_email_username(self) -> str | None:
+        value = self._data.get("notification_email_username")
+        return value if isinstance(value, str) and value else None
+
+    @property
+    def notification_email_password(self) -> str | None:
+        value = self._data.get("notification_email_password")
+        return value if isinstance(value, str) and value else None
+
+    @property
     def notification_email_from(self) -> str | None:
         v = self._data.get("notification_email_from")
         return v if isinstance(v, str) and v else None
@@ -367,6 +446,22 @@ class PolylogueConfig:
         if isinstance(v, str) and v.strip():
             return tuple(s.strip() for s in v.split(",") if s.strip())
         return ()
+
+    @property
+    def notification_email_subject_prefix(self) -> str:
+        return str(self._data.get("notification_email_subject_prefix", "[polylogue]"))
+
+    @property
+    def notification_email_use_tls(self) -> bool:
+        return bool(self._data.get("notification_email_use_tls", True))
+
+    @property
+    def notification_email_use_starttls(self) -> bool:
+        return bool(self._data.get("notification_email_use_starttls", True))
+
+    @property
+    def notification_email_max_per_hour(self) -> int:
+        return int(str(self._data.get("notification_email_max_per_hour", 12)))
 
     @property
     def health_check_interval_s(self) -> int:
@@ -391,8 +486,9 @@ class PolylogueConfig:
         owning the alert vocabulary.
         """
         raw = self._data.get("health_convergence_debt")
-        if isinstance(raw, dict):
-            return dict(raw)
+        if isinstance(raw, Mapping):
+            thawed = _thaw_config_value(raw)
+            return thawed if isinstance(thawed, dict) else {}
         return {}
 
     @property
@@ -405,8 +501,9 @@ class PolylogueConfig:
         owning the alert vocabulary.
         """
         raw = self._data.get("health_cursor_lag")
-        if isinstance(raw, dict):
-            return dict(raw)
+        if isinstance(raw, Mapping):
+            thawed = _thaw_config_value(raw)
+            return thawed if isinstance(thawed, dict) else {}
         return {}
 
     @property
@@ -443,8 +540,43 @@ class PolylogueConfig:
             return tuple(s.strip() for s in v.split(",") if s.strip())
         return ()
 
+    @property
+    def drive_credentials_path(self) -> str:
+        return str(self._data.get("drive_credentials_path", ""))
+
+    @property
+    def drive_token_path(self) -> str:
+        return str(self._data.get("drive_token_path", ""))
+
+    @property
+    def hook_sidecar_dir(self) -> str:
+        return str(self._data.get("hook_sidecar_dir", ""))
+
+    @property
+    def backup_verify_tmpdir(self) -> str | None:
+        value = self._data.get("backup_verify_tmpdir")
+        return value if isinstance(value, str) and value else None
+
+    @property
+    def antigravity_language_server(self) -> str | None:
+        value = self._data.get("antigravity_language_server")
+        return value if isinstance(value, str) and value else None
+
+    @property
+    def ingest_commit_batch_messages(self) -> int:
+        return int(str(self._data.get("ingest_commit_batch_messages", 8000)))
+
+    @property
+    def ingest_parse_workers(self) -> int:
+        return max(1, int(str(self._data.get("ingest_parse_workers", 1))))
+
+    @property
+    def live_full_ingest_workers(self) -> int:
+        return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
+
     def get(self, key: str, default: object = None) -> object:
-        return self._data.get(key, default)
+        value = self._data.get(key, default)
+        return _thaw_config_value(value)
 
     @property
     def subscription_plans(self) -> tuple[dict[str, object], ...]:
@@ -461,8 +593,10 @@ class PolylogueConfig:
             return ()
         rows: list[dict[str, object]] = []
         for entry in raw:
-            if isinstance(entry, dict):
-                rows.append(dict(entry))
+            if isinstance(entry, Mapping):
+                thawed = _thaw_config_value(entry)
+                if isinstance(thawed, dict):
+                    rows.append(thawed)
         return tuple(rows)
 
 
@@ -508,11 +642,29 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
     ),
     ConfigInventoryEntry(
         "daemon_url",
+        toml_path="daemon.url",
         env_var="POLYLOGUE_DAEMON_URL",
         cli_override="polylogue status --daemon-url",
         owner_class="network-security",
         reload_behavior="per-invocation-client",
         description="Client-side base URL used by CLI surfaces that call the daemon API.",
+    ),
+    ConfigInventoryEntry(
+        "daemon_client_mode",
+        toml_path="client.daemon",
+        env_var="POLYLOGUE_DAEMON",
+        owner_class="deployment-policy",
+        reload_behavior="per-invocation-client",
+        description="Daemon client routing mode; 'off' forces direct archive access.",
+    ),
+    ConfigInventoryEntry(
+        "no_daemon",
+        toml_path="client.no_daemon",
+        env_var="POLYLOGUE_NO_DAEMON",
+        cli_override="polylogue --no-daemon",
+        owner_class="deployment-policy",
+        reload_behavior="per-invocation-client",
+        description="Disable daemon client routing for one resolved invocation.",
     ),
     ConfigInventoryEntry(
         "daemon_host",
@@ -739,6 +891,14 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Terminal/web semantic theme mode: dark, light, or auto.",
     ),
     ConfigInventoryEntry(
+        "debug_timing",
+        toml_path="ui.debug_timing",
+        env_var="POLYLOGUE_DEBUG_TIMING",
+        owner_class="presentation-preference",
+        reload_behavior="per-invocation-client",
+        description="Emit CLI phase timing diagnostics.",
+    ),
+    ConfigInventoryEntry(
         "schema_validation",
         toml_path="schema.validation",
         env_var="POLYLOGUE_SCHEMA_VALIDATION",
@@ -907,6 +1067,70 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         toml_kind="table",
     ),
     ConfigInventoryEntry(
+        "drive_credentials_path",
+        toml_path="drive.credentials_path",
+        env_var="POLYLOGUE_CREDENTIAL_PATH",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Google Drive OAuth client credentials path.",
+    ),
+    ConfigInventoryEntry(
+        "drive_token_path",
+        toml_path="drive.token_path",
+        env_var="POLYLOGUE_TOKEN_PATH",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Google Drive OAuth token path.",
+    ),
+    ConfigInventoryEntry(
+        "hook_sidecar_dir",
+        toml_path="sources.hook_sidecar_dir",
+        env_var="POLYLOGUE_HOOK_SIDECAR_DIR",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Durable hook-event sidecar/spool directory.",
+    ),
+    ConfigInventoryEntry(
+        "backup_verify_tmpdir",
+        toml_path="maintenance.backup_verify_tmpdir",
+        env_var="POLYLOGUE_BACKUP_VERIFY_TMPDIR",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Preferred parent directory for backup verification scratch data.",
+    ),
+    ConfigInventoryEntry(
+        "antigravity_language_server",
+        toml_path="sources.antigravity.language_server",
+        env_var="POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Antigravity language-server executable override.",
+    ),
+    ConfigInventoryEntry(
+        "ingest_commit_batch_messages",
+        toml_path="pipeline.ingest.commit_batch_messages",
+        env_var="POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description="Message threshold for grouped index commits; <=0 restores per-session commits.",
+    ),
+    ConfigInventoryEntry(
+        "ingest_parse_workers",
+        toml_path="pipeline.ingest.parse_workers",
+        env_var="POLYLOGUE_INGEST_PARSE_WORKERS",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description="Process-worker count for CPU-bound source parsing.",
+    ),
+    ConfigInventoryEntry(
+        "live_full_ingest_workers",
+        toml_path="pipeline.live.full_ingest_workers",
+        env_var="POLYLOGUE_LIVE_FULL_INGEST_WORKERS",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description="Maximum concurrent workers for live full-artifact ingestion.",
+    ),
+    ConfigInventoryEntry(
         "subscription_plans",
         toml_path="cost.subscription.plans",
         owner_class="provider-cost-control",
@@ -929,6 +1153,9 @@ _INT_CONFIG_KEYS = frozenset(
         "notification_email_port",
         "notification_email_max_per_hour",
         "otlp_max_body_bytes",
+        "ingest_commit_batch_messages",
+        "ingest_parse_workers",
+        "live_full_ingest_workers",
     }
 )
 _FLOAT_CONFIG_KEYS = frozenset({"embedding_max_cost_usd", "slow_query_notice_seconds", "watch_debounce_s"})
@@ -939,6 +1166,8 @@ _BOOL_CONFIG_KEYS = frozenset(
         "embedding_enabled",
         "force_plain",
         "no_color",
+        "no_daemon",
+        "debug_timing",
         "notification_email_use_tls",
         "notification_email_use_starttls",
         "observability_enabled",
@@ -958,61 +1187,122 @@ def _toml_section_layout() -> list[tuple[str, list[tuple[str, str]]]]:
     return list(sections.items())
 
 
-def _site_config_path() -> Path | None:
-    """Resolve the site-wide ``polylogue.toml`` (layer 2).
+@dataclass(frozen=True, slots=True)
+class _BootstrapPaths:
+    """Process boundary captured exactly once for one resolution."""
 
-    Resolution order:
-      1. ``POLYLOGUE_SITE_CONFIG`` env var (explicit override; ``""`` disables)
-      2. ``/etc/polylogue/polylogue.toml`` if it exists
+    environment: Mapping[str, str]
+    cwd: Path
+    home: Path
+    config_root: Path
+    data_root: Path
+    cache_root: Path
+    state_root: Path
+    runtime_root: Path
 
-    Returns ``None`` when no site config is available.
-    """
-    override = os.environ.get("POLYLOGUE_SITE_CONFIG")
+    @property
+    def config_home(self) -> Path:
+        return self.config_root / "polylogue"
+
+    @property
+    def data_home(self) -> Path:
+        return self.data_root / "polylogue"
+
+    @property
+    def cache_home(self) -> Path:
+        return self.cache_root / "polylogue"
+
+    @property
+    def state_home(self) -> Path:
+        return self.state_root / "polylogue"
+
+
+def _expand_bootstrap_path(value: str | Path, *, home: Path, cwd: Path) -> Path:
+    raw = str(value)
+    if raw == "~":
+        path = home
+    elif raw.startswith("~/"):
+        path = home / raw[2:]
+    else:
+        path = Path(raw)
+    if not path.is_absolute():
+        path = cwd / path
+    return Path(os.path.abspath(path))
+
+
+def _snapshot_bootstrap(
+    *,
+    environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+) -> _BootstrapPaths:
+    env = dict(os.environ if environment is None else environment)
+    captured_cwd = Path(os.path.abspath(cwd if cwd is not None else Path.cwd()))
+    if home is not None:
+        captured_home = _expand_bootstrap_path(home, home=home, cwd=captured_cwd)
+    elif env.get("HOME"):
+        raw_home = Path(env["HOME"])
+        captured_home = Path(os.path.abspath(raw_home if raw_home.is_absolute() else captured_cwd / raw_home))
+    else:
+        captured_home = Path(os.path.abspath(Path.home()))
+
+    def xdg(name: str, fallback: Path) -> Path:
+        raw = env.get(name, "").strip()
+        return _expand_bootstrap_path(raw, home=captured_home, cwd=captured_cwd) if raw else fallback
+
+    config_root = xdg("XDG_CONFIG_HOME", captured_home / ".config")
+    data_root = xdg("XDG_DATA_HOME", captured_home / ".local" / "share")
+    cache_root = xdg("XDG_CACHE_HOME", captured_home / ".cache")
+    state_root = xdg("XDG_STATE_HOME", captured_home / ".local" / "state")
+    runtime_root = xdg("XDG_RUNTIME_DIR", Path(f"/run/user/{os.getuid()}"))
+    return _BootstrapPaths(
+        environment=MappingProxyType(env),
+        cwd=captured_cwd,
+        home=captured_home,
+        config_root=config_root,
+        data_root=data_root,
+        cache_root=cache_root,
+        state_root=state_root,
+        runtime_root=runtime_root,
+    )
+
+
+def _site_config_path(bootstrap: _BootstrapPaths | None = None) -> Path | None:
+    """Resolve the site-wide ``polylogue.toml`` (layer 2)."""
+    captured = bootstrap or _snapshot_bootstrap()
+    override = captured.environment.get("POLYLOGUE_SITE_CONFIG")
     if override is not None:
         if not override:
             return None
-        p = Path(override)
-        return p if p.is_file() else None
-
+        path = _expand_bootstrap_path(override, home=captured.home, cwd=captured.cwd)
+        return path if path.is_file() else None
     return DEFAULT_SITE_CONFIG_PATH if DEFAULT_SITE_CONFIG_PATH.is_file() else None
 
 
-def _user_config_path() -> Path | None:
-    """Resolve the user-scoped ``polylogue.toml`` (layer 3).
-
-    Resolution order:
-      1. ``POLYLOGUE_CONFIG`` env var (explicit override)
-      2. ``{XDG_CONFIG_HOME}/polylogue/polylogue.toml``
-      3. ``{cwd}/polylogue.toml`` (project-local fallback)
-
-    Returns ``None`` when no user config is found.
-    """
-    override = os.environ.get("POLYLOGUE_CONFIG")
+def _user_config_path(bootstrap: _BootstrapPaths | None = None) -> Path | None:
+    """Resolve the user-scoped ``polylogue.toml`` (layer 3)."""
+    captured = bootstrap or _snapshot_bootstrap()
+    override = captured.environment.get("POLYLOGUE_CONFIG")
     if override:
-        p = Path(override)
-        return p if p.is_file() else None
+        path = _expand_bootstrap_path(override, home=captured.home, cwd=captured.cwd)
+        return path if path.is_file() else None
 
-    xdg_path = config_home() / "polylogue.toml"
+    xdg_path = captured.config_home / "polylogue.toml"
     if xdg_path.is_file():
         return xdg_path
-
-    project_path = Path("polylogue.toml")
-    if project_path.is_file():
-        return project_path
-
-    return None
+    project_path = captured.cwd / "polylogue.toml"
+    return project_path if project_path.is_file() else None
 
 
-def _default_config_values() -> dict[str, object]:
-    """Built-in defaults (layer 1).
-
-    The ``archive_root`` default follows the XDG data root, but the explicit
-    ``POLYLOGUE_ARCHIVE_ROOT`` override is applied only by the env layer below
-    so layer provenance remains accurate.
-    """
+def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str, object]:
+    """Built-in defaults (layer 1) captured from one bootstrap context."""
+    captured = bootstrap or _snapshot_bootstrap()
+    default_parse_workers = max(1, min(8, (os.cpu_count() or 2) - 1))
     return {
-        "archive_root": str(data_home()),
+        "archive_root": str(captured.data_home),
         "daemon_url": "http://127.0.0.1:8766",
+        "daemon_client_mode": "auto",
+        "no_daemon": False,
         "daemon_host": "127.0.0.1",
         "daemon_port": 8766,
         "api_host": "127.0.0.1",
@@ -1020,33 +1310,19 @@ def _default_config_values() -> dict[str, object]:
         "api_auth_token": None,
         "browser_capture_port": 8765,
         "browser_capture_allowed_origins": "chrome-extension://*",
-        # Stays opt-in: the daemon embed stage is gated separately on a
-        # config TOML flag or POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS so that
-        # supplying VOYAGE_API_KEY (e.g., for one-off CLI use) does not
-        # incur ongoing daemon-driven spend.
         "embedding_enabled": False,
-        # OTLP HTTP receiver and other observability routes (see
-        # ``polylogue/daemon/otlp_receiver.py``). Default off; the
-        # receiver was previously documented-but-not-actually gated,
-        # which made it an unauthenticated write surface under
-        # ``--insecure-allow-remote`` (closes #1604).
         "observability_enabled": False,
         "otlp_max_body_bytes": 8 * 1024 * 1024,
         "embedding_model": "voyage-4",
         "embedding_dimension": 1024,
-        # Soft monthly cap on embedding spend. 0 = unlimited; the default
-        # below is intentionally low enough to act as a safety net for a
-        # first-time user without an explicit configuration.
         "embedding_max_cost_usd": 5.0,
         "voyage_api_key": None,
-        # Standalone SQLite is the permanent, canonical default (operator
-        # directive, docs/sinex-interop.md) -- off performs zero Sinex
-        # transport work and creates no publication obligations.
         "sinex_mode": "off",
         "log_level": "INFO",
         "force_plain": False,
         "no_color": False,
         "theme": "",
+        "debug_timing": False,
         "schema_validation": "advisory",
         "slow_query_notice_seconds": None,
         "notification_backend": "log",
@@ -1075,6 +1351,14 @@ def _default_config_values() -> dict[str, object]:
         "browser_capture_allow_remote": False,
         "browser_capture_allow_no_auth": False,
         "source_roots": (),
+        "drive_credentials_path": str(captured.config_home / "polylogue-credentials.json"),
+        "drive_token_path": str(captured.state_home / "token.json"),
+        "hook_sidecar_dir": str(captured.data_home / "hooks"),
+        "backup_verify_tmpdir": None,
+        "antigravity_language_server": None,
+        "ingest_commit_batch_messages": 8000,
+        "ingest_parse_workers": default_parse_workers,
+        "live_full_ingest_workers": 1,
         "subscription_plans": (),
     }
 
@@ -1084,20 +1368,19 @@ def _apply_toml_layer(
     layers: dict[str, str],
     path: Path,
     layer_name: str,
+    *,
+    strict: bool,
 ) -> None:
-    """Load ``path`` as TOML and merge it into ``cfg``, recording layer source.
-
-    Errors (missing file race, malformed TOML) are swallowed silently so a
-    broken site config cannot brick a user's CLI. Surface diagnostics live
-    in ``polylogue config --show-layers`` via :func:`describe_config_layers`.
-    """
+    """Load one TOML layer, optionally failing for an explicitly selected file."""
     try:
         with open(path, "rb") as fh:
             toml_data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        if strict:
+            raise ConfigError(f"cannot load explicitly selected {layer_name} config {path}: {exc}") from exc
         return
 
-    before = dict(cfg)
+    before = deepcopy(cfg)
     _merge_toml(cfg, toml_data)
     for key, value in cfg.items():
         if before.get(key, _MISSING) != value:
@@ -1109,131 +1392,142 @@ def load_polylogue_config(
     config_path: Path | None = None,
     site_config_path: Path | None = None,
     cli_overrides: dict[str, object] | None = None,
+    environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    _bootstrap: _BootstrapPaths | None = None,
 ) -> PolylogueConfig:
     """Load resolved Polylogue config with five-layer precedence.
 
-    Precedence (low → high), per #829:
-
-      1. Built-in defaults (:func:`_default_config_values`).
-      2. Site config: ``/etc/polylogue/polylogue.toml`` (overridable via
-         ``POLYLOGUE_SITE_CONFIG`` env var or the ``site_config_path``
-         keyword).
-      3. User config: ``$XDG_CONFIG_HOME/polylogue/polylogue.toml`` or a
-         ``polylogue.toml`` in the current working directory; overridable
-         via ``POLYLOGUE_CONFIG`` env var or the ``config_path`` keyword.
-      4. ``POLYLOGUE_*`` environment variables.
-      5. CLI overrides (highest precedence).
-
-    Returns a typed :class:`PolylogueConfig` with attribute access for
-    known keys plus ``layer_of()`` / ``layers`` for provenance.
+    Precedence (low → high): built-in defaults, site TOML, user TOML,
+    environment, then CLI overrides.  The bootstrap boundary is captured once
+    so all defaults, discovery paths, and environment values belong to the same
+    immutable resolution.
     """
-    cfg = _default_config_values()
+    bootstrap = _bootstrap or _snapshot_bootstrap(environment=environment, cwd=cwd, home=home)
+    cfg = _default_config_values(bootstrap)
     layers: dict[str, str] = dict.fromkeys(cfg, "default")
 
-    # Layer 2: site TOML.
-    site_path = site_config_path if site_config_path is not None else _site_config_path()
+    explicit_site = site_config_path is not None or bool(bootstrap.environment.get("POLYLOGUE_SITE_CONFIG"))
+    site_path: Path | None
+    if site_config_path is not None:
+        site_path = _expand_bootstrap_path(site_config_path, home=bootstrap.home, cwd=bootstrap.cwd)
+    else:
+        site_path = _site_config_path(bootstrap)
     if site_path is not None and site_path.is_file():
-        _apply_toml_layer(cfg, layers, site_path, "site")
+        _apply_toml_layer(cfg, layers, site_path, "site", strict=explicit_site)
 
-    # Layer 3: user TOML.
-    user_path = config_path if config_path is not None else _user_config_path()
+    explicit_user = config_path is not None or bool(bootstrap.environment.get("POLYLOGUE_CONFIG"))
+    user_path: Path | None
+    if config_path is not None:
+        user_path = _expand_bootstrap_path(config_path, home=bootstrap.home, cwd=bootstrap.cwd)
+    else:
+        user_path = _user_config_path(bootstrap)
     if user_path is not None and user_path.is_file():
-        _apply_toml_layer(cfg, layers, user_path, "user")
+        _apply_toml_layer(cfg, layers, user_path, "user", strict=explicit_user)
 
-    # Layer 4: environment variables.
-    before_env = dict(cfg)
-    _apply_env_overrides(cfg)
+    before_env = deepcopy(cfg)
+    _apply_env_overrides(cfg, bootstrap.environment)
     for key, value in cfg.items():
         if before_env.get(key, _MISSING) != value:
             layers[key] = "env"
 
-    # Layer 5: CLI overrides (highest precedence).
     if cli_overrides:
         for key, value in cli_overrides.items():
             if value is not None:
                 cfg[key] = value
                 layers[key] = "cli"
 
-    return PolylogueConfig(_data=cfg, _layers=layers)
+    return PolylogueConfig(
+        _data=cfg,
+        _layers=layers,
+        _layer_paths={"site": site_path, "user": user_path},
+    )
 
 
 def describe_config_layers(
     *,
+    cfg: PolylogueConfig | None = None,
     config_path: Path | None = None,
     site_config_path: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
 ) -> dict[str, object]:
-    """Return a structured description of the active config layer paths.
-
-    Used by ``polylogue config --show-layers`` to report which physical
-    files (if any) supplied the site and user layers. The shape is a
-    plain dict so it can be JSON-serialized verbatim.
-    """
-    site = site_config_path if site_config_path is not None else _site_config_path()
-    user = config_path if config_path is not None else _user_config_path()
+    """Return the physical site/user paths associated with one resolution."""
+    if cfg is not None:
+        captured = cfg.layer_paths
+        site = captured.get("site")
+        user = captured.get("user")
+    else:
+        bootstrap = _snapshot_bootstrap(environment=environment, cwd=cwd, home=home)
+        site = (
+            _expand_bootstrap_path(site_config_path, home=bootstrap.home, cwd=bootstrap.cwd)
+            if site_config_path is not None
+            else _site_config_path(bootstrap)
+        )
+        user = (
+            _expand_bootstrap_path(config_path, home=bootstrap.home, cwd=bootstrap.cwd)
+            if config_path is not None
+            else _user_config_path(bootstrap)
+        )
     return {
-        "site": {
-            "path": str(site) if site is not None else None,
-            "exists": bool(site is not None and site.is_file()),
-        },
-        "user": {
-            "path": str(user) if user is not None else None,
-            "exists": bool(user is not None and user.is_file()),
-        },
+        "site": {"path": str(site) if site is not None else None, "exists": bool(site and site.is_file())},
+        "user": {"path": str(user) if user is not None else None, "exists": bool(user and user.is_file())},
     }
 
 
+def _toml_value_at_path(toml_data: Mapping[str, object], path: str) -> object:
+    value: object = toml_data
+    for part in path.split("."):
+        if not isinstance(value, Mapping) or part not in value:
+            return _MISSING
+        value = value[part]
+    return value
+
+
+def _deep_merge_table(existing: Mapping[str, object], incoming: Mapping[str, object]) -> dict[str, object]:
+    """Recursively merge TOML tables while replacing scalar/list leaves."""
+    merged = {str(key): deepcopy(value) for key, value in existing.items()}
+    for key, value in incoming.items():
+        current = merged.get(str(key), _MISSING)
+        if isinstance(current, Mapping) and isinstance(value, Mapping):
+            merged[str(key)] = _deep_merge_table(current, value)
+        else:
+            merged[str(key)] = deepcopy(value)
+    return merged
+
+
 def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
-    """Merge TOML sections into the flat config dict.
+    """Merge TOML into the flat inventory using kind-aware semantics.
 
-    The scalar mapping is generated from :data:`_CONFIG_INVENTORY`, keeping
-    loader and inspection metadata on the same rails. Specialized nested
-    tables remain explicit because their shape is owned by downstream typed
-    decoders rather than by this flat config layer.
+    Scalar leaves replace lower layers. Nested tables deep-merge recursively,
+    including their ``families`` sub-tables. Arrays of tables replace the lower
+    layer as one TOML value, preserving the subscription-plan contract.
     """
-    for section, key_pairs in _toml_section_layout():
-        # Walk dotted paths for nested TOML sections like [daemon.api]
-        section_data: object = toml_data
-        for part in section.split("."):
-            if isinstance(section_data, dict):
-                section_data = section_data.get(part)
-            else:
-                section_data = None
-                break
-        if isinstance(section_data, dict):
-            for short_key, flat_key in key_pairs:
-                if short_key in section_data:
-                    value = section_data[short_key]
-                    if isinstance(value, list):
-                        cfg[flat_key] = tuple(value)
-                    else:
-                        cfg[flat_key] = value
+    for entry in _CONFIG_INVENTORY:
+        if not entry.toml_path:
+            continue
+        value = _toml_value_at_path(toml_data, entry.toml_path)
+        if value is _MISSING:
+            continue
+        if entry.toml_kind == "table":
+            if isinstance(value, Mapping):
+                existing = cfg.get(entry.key)
+                base = existing if isinstance(existing, Mapping) else {}
+                cfg[entry.key] = _deep_merge_table(base, value)
+            continue
+        if entry.toml_kind == "array-table":
+            if isinstance(value, list):
+                cfg[entry.key] = tuple(dict(item) for item in value if isinstance(item, Mapping))
+            continue
+        cfg[entry.key] = tuple(value) if isinstance(value, list) else value
 
-    # Back-compat for early observability TOML examples that used
-    # top-level scalar keys before the inventory made the section explicit.
+    # Back-compat for early observability TOML examples that used top-level
+    # scalar keys before the inventory made the section explicit.
     for legacy_key in ("observability_enabled", "otlp_max_body_bytes"):
         if legacy_key in toml_data:
             cfg[legacy_key] = toml_data[legacy_key]
-
-    # [health.convergence_debt] — typed nested table with per-family overrides.
-    # See polylogue/daemon/convergence_debt_alert.py for shape and semantics.
-    health_section = toml_data.get("health")
-    debt_section = health_section.get("convergence_debt") if isinstance(health_section, dict) else None
-    if isinstance(debt_section, dict):
-        # Stored as a nested dict on the flat config under a reserved key.
-        cfg["health_convergence_debt"] = dict(debt_section)
-
-    # [health.cursor_lag] — per-source-family cursor-lag SLO thresholds (#1232).
-    # See polylogue/daemon/cursor_lag_alert.py for shape and semantics.
-    cursor_lag_section = health_section.get("cursor_lag") if isinstance(health_section, dict) else None
-    if isinstance(cursor_lag_section, dict):
-        cfg["health_cursor_lag"] = dict(cursor_lag_section)
-
-    # Array-of-tables: [[cost.subscription.plans]].
-    cost_section = toml_data.get("cost")
-    sub_section = cost_section.get("subscription") if isinstance(cost_section, dict) else None
-    plans = sub_section.get("plans") if isinstance(sub_section, dict) else None
-    if isinstance(plans, list):
-        cfg["subscription_plans"] = tuple(p for p in plans if isinstance(p, dict))
 
 
 def _coerce_env_value(cfg_key: str, value: str) -> object:
@@ -1258,16 +1552,225 @@ def _coerce_env_value(cfg_key: str, value: str) -> object:
     return value
 
 
-def _apply_env_overrides(cfg: dict[str, object]) -> None:
-    """Apply public environment variable overrides from the config inventory."""
+def _apply_env_overrides(cfg: dict[str, object], environment: Mapping[str, str]) -> None:
+    """Apply public environment overrides from the captured bootstrap."""
     for env_var, cfg_key in _ENV_CONFIG_KEY_MAP.items():
-        value = os.environ.get(env_var)
+        value = environment.get(env_var)
         if value is None:
             continue
         coerced = _coerce_env_value(cfg_key, value)
         if coerced is _MISSING:
             continue
         cfg[cfg_key] = coerced
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedArchivePaths:
+    """Immutable archive/tier path projection derived from resolved settings."""
+
+    archive_root: Path
+    source_db: Path
+    index_db: Path
+    embeddings_db: Path
+    user_db: Path
+    ops_db: Path
+    render_root: Path
+    blob_root: Path
+    inbox_root: Path
+    browser_capture_spool_root: Path
+    browser_capture_receiver_token_path: Path
+    hook_sidecar_root: Path
+    drive_cache_root: Path
+
+    @property
+    def active_index_db(self) -> Path:
+        return self.index_db
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSourcePaths:
+    """Immutable local source discovery roots for one runtime."""
+
+    claude_code: Path
+    codex: Path
+    gemini_cli: Path
+    hermes: Path
+    antigravity: Path
+    browser_capture: Path
+    inbox: Path
+    hooks_pending: Path
+    explicit: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRuntimeConfig:
+    """One immutable authority shared by every runtime composition root."""
+
+    settings: PolylogueConfig
+    paths: ResolvedArchivePaths
+    source_paths: ResolvedSourcePaths
+    sources: tuple[Source, ...]
+    drive_config: DriveConfig
+    index_config: IndexConfig
+    cwd: Path
+    home: Path
+    config_home: Path
+    data_home: Path
+    cache_home: Path
+    state_home: Path
+    runtime_root: Path
+    backup_verify_tmpdir: Path | None
+    antigravity_language_server: Path | None
+
+    def as_config(self) -> Config:
+        """Return a defensive legacy projection without ambient re-resolution."""
+        return Config(
+            archive_root=self.paths.archive_root,
+            render_root=self.paths.render_root,
+            sources=list(self.sources),
+            db_path=self.paths.index_db,
+            drive_config=self.drive_config,
+            index_config=self.index_config,
+        )
+
+
+def _resolved_runtime_path(value: str | Path | None, *, bootstrap: _BootstrapPaths, fallback: Path) -> Path:
+    if value is None or not str(value).strip():
+        return fallback
+    return _expand_bootstrap_path(value, home=bootstrap.home, cwd=bootstrap.cwd)
+
+
+def resolve_runtime_config(
+    *,
+    config_path: Path | None = None,
+    site_config_path: Path | None = None,
+    cli_overrides: dict[str, object] | None = None,
+    environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+) -> ResolvedRuntimeConfig:
+    """Resolve all five layers once and project every runtime filesystem value."""
+    bootstrap = _snapshot_bootstrap(environment=environment, cwd=cwd, home=home)
+    settings = load_polylogue_config(
+        config_path=config_path,
+        site_config_path=site_config_path,
+        cli_overrides=cli_overrides,
+        _bootstrap=bootstrap,
+    )
+    archive = _resolved_runtime_path(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
+    render = archive / "render"
+    browser_spool = _resolved_runtime_path(
+        settings.browser_capture_spool_path,
+        bootstrap=bootstrap,
+        fallback=bootstrap.data_home / "browser-capture",
+    )
+    hook_sidecar = _resolved_runtime_path(
+        settings.hook_sidecar_dir,
+        bootstrap=bootstrap,
+        fallback=bootstrap.data_home / "hooks",
+    )
+    drive_credentials = _resolved_runtime_path(
+        settings.drive_credentials_path,
+        bootstrap=bootstrap,
+        fallback=bootstrap.config_home / "polylogue-credentials.json",
+    )
+    drive_token = _resolved_runtime_path(
+        settings.drive_token_path,
+        bootstrap=bootstrap,
+        fallback=bootstrap.state_home / "token.json",
+    )
+    drive_cache = bootstrap.data_home / "drive-cache"
+    paths = ResolvedArchivePaths(
+        archive_root=archive,
+        source_db=archive / "source.db",
+        index_db=archive / "index.db",
+        embeddings_db=archive / "embeddings.db",
+        user_db=archive / "user.db",
+        ops_db=archive / "ops.db",
+        render_root=render,
+        blob_root=archive / "blob",
+        inbox_root=archive / "inbox",
+        browser_capture_spool_root=browser_spool,
+        browser_capture_receiver_token_path=bootstrap.state_home / "browser-capture-receiver-token",
+        hook_sidecar_root=hook_sidecar,
+        drive_cache_root=drive_cache,
+    )
+    explicit_roots = tuple(
+        _resolved_runtime_path(value, bootstrap=bootstrap, fallback=bootstrap.cwd) for value in settings.source_roots
+    )
+    source_paths = ResolvedSourcePaths(
+        claude_code=bootstrap.home / ".claude" / "projects",
+        codex=bootstrap.home / ".codex" / "sessions",
+        gemini_cli=bootstrap.home / ".gemini" / "tmp",
+        hermes=bootstrap.home / ".hermes",
+        antigravity=bootstrap.home / ".gemini" / "antigravity",
+        browser_capture=browser_spool,
+        inbox=paths.inbox_root,
+        hooks_pending=hook_sidecar / "pending",
+        explicit=explicit_roots,
+    )
+    local_candidates = (
+        ("claude-code", source_paths.claude_code),
+        ("codex", source_paths.codex),
+        ("gemini-cli", source_paths.gemini_cli),
+        ("hermes", source_paths.hermes),
+        ("antigravity", source_paths.antigravity),
+        ("browser-capture", source_paths.browser_capture),
+        ("inbox", source_paths.inbox),
+        ("hooks", source_paths.hooks_pending),
+    )
+    sources = [Source(name=name, path=path) for name, path in local_candidates if path.exists()]
+    gemini_cache = drive_cache / "gemini"
+    if gemini_cache.exists() or drive_credentials.exists() or drive_token.exists():
+        sources.append(Source(name="aistudio", folder=GEMINI_DRIVE_FOLDER, path=gemini_cache))
+
+    backup_tmp = (
+        _resolved_runtime_path(settings.backup_verify_tmpdir, bootstrap=bootstrap, fallback=archive)
+        if settings.backup_verify_tmpdir
+        else None
+    )
+    antigravity_server = (
+        _resolved_runtime_path(settings.antigravity_language_server, bootstrap=bootstrap, fallback=bootstrap.cwd)
+        if settings.antigravity_language_server
+        else None
+    )
+    return ResolvedRuntimeConfig(
+        settings=settings,
+        paths=paths,
+        source_paths=source_paths,
+        sources=tuple(sources),
+        drive_config=DriveConfig(credentials_path=drive_credentials, token_path=drive_token),
+        index_config=IndexConfig(voyage_api_key=settings.voyage_api_key),
+        cwd=bootstrap.cwd,
+        home=bootstrap.home,
+        config_home=bootstrap.config_home,
+        data_home=bootstrap.data_home,
+        cache_home=bootstrap.cache_home,
+        state_home=bootstrap.state_home,
+        runtime_root=bootstrap.runtime_root,
+        backup_verify_tmpdir=backup_tmp,
+        antigravity_language_server=antigravity_server,
+    )
+
+
+def get_config(runtime: ResolvedRuntimeConfig) -> Config:
+    """Project legacy ``Config`` from an already-resolved runtime authority."""
+    return runtime.as_config()
+
+
+def get_sources(runtime: ResolvedRuntimeConfig) -> list[Source]:
+    """Return a defensive source list from an already-resolved runtime."""
+    return list(runtime.sources)
+
+
+def get_drive_config(runtime: ResolvedRuntimeConfig) -> DriveConfig:
+    """Return the resolved Drive projection."""
+    return runtime.drive_config
+
+
+def get_index_config(runtime: ResolvedRuntimeConfig) -> IndexConfig:
+    """Return the resolved index projection."""
+    return runtime.index_config
 
 
 #: Flat config keys whose values are secrets and must never be rendered in
@@ -1624,9 +2127,11 @@ def _config_network_diagnostics(resolved: PolylogueConfig) -> list[dict[str, obj
     return diagnostics
 
 
-def config_diagnostics(cfg: PolylogueConfig | None = None) -> list[dict[str, object]]:
+def config_diagnostics(
+    cfg: PolylogueConfig | ResolvedRuntimeConfig | None = None,
+) -> list[dict[str, object]]:
     """Return typed diagnostics for the resolved effective configuration."""
-    resolved = cfg if cfg is not None else load_polylogue_config()
+    resolved = cfg.settings if isinstance(cfg, ResolvedRuntimeConfig) else (cfg or load_polylogue_config())
     diagnostics = _config_path_diagnostics(resolved)
     diagnostics.extend(_config_network_diagnostics(resolved))
     if resolved.embedding_enabled and not resolved.voyage_api_key:
@@ -1672,7 +2177,7 @@ def _sinex_mode_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object]
 
 
 def effective_config_payload(
-    cfg: PolylogueConfig | None = None,
+    cfg: PolylogueConfig | ResolvedRuntimeConfig | None = None,
     *,
     include_inventory: bool = True,
 ) -> dict[str, object]:
@@ -1682,8 +2187,26 @@ def effective_config_payload(
     Secret-bearing values expose presence only (``<set>``/``<unset>``) while
     still reporting which layer supplied the value.
     """
-    resolved = cfg if cfg is not None else load_polylogue_config()
-    defaults = _default_config_values()
+    if isinstance(cfg, ResolvedRuntimeConfig):
+        runtime: ResolvedRuntimeConfig | None = cfg
+        resolved: PolylogueConfig = cfg.settings
+    else:
+        runtime = None
+        resolved = cfg or load_polylogue_config()
+    if runtime is None:
+        defaults = _default_config_values()
+    else:
+        bootstrap = _BootstrapPaths(
+            environment=MappingProxyType({}),
+            cwd=runtime.cwd,
+            home=runtime.home,
+            config_root=runtime.config_home.parent,
+            data_root=runtime.data_home.parent,
+            cache_root=runtime.cache_home.parent,
+            state_root=runtime.state_home.parent,
+            runtime_root=runtime.runtime_root,
+        )
+        defaults = _default_config_values(bootstrap)
     values: dict[str, object] = {}
 
     ordered_keys = [entry.key for entry in _CONFIG_INVENTORY]
@@ -1713,7 +2236,7 @@ def effective_config_payload(
             "default": config_display_value(key, defaults.get(key)) if key in defaults else None,
         }
 
-    layer_paths = describe_config_layers()
+    layer_paths = describe_config_layers(cfg=resolved)
     payload: dict[str, object] = {
         "layers": {
             "default": "built-in defaults",
@@ -1725,6 +2248,18 @@ def effective_config_payload(
         "values": values,
         "diagnostics": config_diagnostics(resolved),
     }
+    if runtime is not None:
+        payload["resolved_paths"] = {
+            "archive_root": str(runtime.paths.archive_root),
+            "source_db": str(runtime.paths.source_db),
+            "index_db": str(runtime.paths.index_db),
+            "embeddings_db": str(runtime.paths.embeddings_db),
+            "user_db": str(runtime.paths.user_db),
+            "ops_db": str(runtime.paths.ops_db),
+            "render_root": str(runtime.paths.render_root),
+            "blob_root": str(runtime.paths.blob_root),
+            "inbox_root": str(runtime.paths.inbox_root),
+        }
     if include_inventory:
         payload["inventory"] = config_inventory_payload()
     return payload

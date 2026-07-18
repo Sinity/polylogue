@@ -481,9 +481,21 @@ def cli(
     if verbose:
         configure_logging(verbose=True)
 
-    use_plain = should_use_plain(plain=plain)
-    debug_timing = os.environ.get("POLYLOGUE_DEBUG_TIMING", "").lower() in {"1", "true", "yes", "on"}
-    env = AppEnv(plain=use_plain, debug_timing=debug_timing)
+    from polylogue.config import resolve_runtime_config
+
+    runtime = resolve_runtime_config(
+        cli_overrides={
+            "force_plain": True if plain else None,
+            "no_daemon": True if no_daemon else None,
+        }
+    )
+    use_plain = should_use_plain(
+        plain=plain,
+        force_plain=runtime.settings.force_plain,
+        no_color=runtime.settings.no_color,
+    )
+    debug_timing = runtime.settings.debug_timing
+    env = AppEnv(runtime=runtime, plain=use_plain, debug_timing=debug_timing)
     env.record_timing("cli-callback", _CLI_CALLBACK_STARTED_AT)
     ctx.obj = env
     if debug_timing:

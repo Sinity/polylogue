@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
-    from polylogue.config import Config
+    from polylogue.config import Config, ResolvedRuntimeConfig
     from polylogue.services import RuntimeServices
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -26,10 +26,10 @@ def _lazy_ui() -> UI:
     return _UI(plain=True)
 
 
-def _lazy_services() -> RuntimeServices:
+def _lazy_services(runtime: ResolvedRuntimeConfig | None) -> RuntimeServices:
     from polylogue.services import build_runtime_services
 
-    return build_runtime_services()
+    return build_runtime_services(runtime=runtime)
 
 
 class AppEnv:
@@ -46,11 +46,13 @@ class AppEnv:
         *,
         ui: UI | None = None,
         services: RuntimeServices | None = None,
+        runtime: ResolvedRuntimeConfig | None = None,
         plain: bool = True,
         debug_timing: bool = False,
     ) -> None:
         self._ui = ui
         self._services = services
+        self._runtime = runtime
         self._plain = plain
         self._debug_timing = debug_timing
         self._active_timings: dict[str, float] = {}
@@ -99,12 +101,16 @@ class AppEnv:
     @property
     def services(self) -> RuntimeServices:
         if self._services is None:
-            self._services = _lazy_services()
+            self._services = _lazy_services(self._runtime)
         return self._services
 
     @services.setter
     def services(self, value: RuntimeServices) -> None:
         self._services = value
+
+    @property
+    def runtime(self) -> ResolvedRuntimeConfig:
+        return self.services.get_runtime()
 
     @property
     def config(self) -> Config:
@@ -122,4 +128,7 @@ class AppEnv:
     def polylogue(self) -> Polylogue:
         from polylogue.api import Polylogue
 
-        return Polylogue(archive_root=self.config.archive_root, db_path=self.config.db_path)
+        try:
+            return Polylogue(runtime=self.runtime)
+        except Exception:
+            return Polylogue(archive_root=self.config.archive_root, db_path=self.config.db_path)

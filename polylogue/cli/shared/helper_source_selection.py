@@ -8,7 +8,7 @@ from click.shell_completion import CompletionItem
 from polylogue.cli.shared.helper_source_state import load_last_source, save_last_source
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.types import AppEnv
-from polylogue.config import Config, get_config
+from polylogue.config import Config, get_config, resolve_runtime_config
 
 
 def maybe_prompt_sources(
@@ -61,7 +61,7 @@ def _complete_source_values(
     *,
     include_last: bool,
 ) -> list[CompletionItem]:
-    config = getattr(getattr(ctx, "obj", None), "config", None) or get_config()
+    config = getattr(getattr(ctx, "obj", None), "config", None) or get_config(resolve_runtime_config())
     options = [source.name for source in config.sources]
     if include_last:
         options.insert(0, "last")

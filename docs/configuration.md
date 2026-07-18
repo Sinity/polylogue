@@ -333,6 +333,22 @@ environment variables lazily when its path functions are called. Path-safety
 helpers are separate from both surfaces. Code that sanitizes provider or session
 names imports from `polylogue.paths.sanitize`.
 
+### Additional keys
+
+A few keys not shown in the full example above, with their TOML path:
+
+| Key | TOML path | Meaning |
+| --- | --- | --- |
+| `daemon_client_mode` | `daemon.client_mode` | How the CLI/MCP client reaches the daemon: `auto` (default), or an explicit forced mode. |
+| `no_daemon` | `client.no_daemon` | Force direct in-process archive access, bypassing the daemon client even when one is reachable. |
+| `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
+| `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. |
+| `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
+| `antigravity_language_server` | `sources.antigravity_language_server` | Path to an Antigravity language-server binary, when parsing Antigravity sessions needs it. |
+| `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
+| `ingest_parse_workers` | `sources.ingest_parse_workers` | Parallel parse workers during ingest (default 1). |
+| `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
+
 ## Environment Policy
 
 Environment variable precedence is:
@@ -422,6 +438,9 @@ For Gemini sessions via Google Drive:
 3. Run `polylogue ops auth` to complete OAuth flow
 
 Polylogue syncs the fixed `Google AI Studio` folder name used by Gemini exports.
+The `drive_credentials_path` and `drive_token_path` config keys override the
+default OAuth credential/token file locations under `$XDG_CONFIG_HOME` /
+`$XDG_STATE_HOME`.
 
 ## Observability
 

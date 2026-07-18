@@ -10,7 +10,7 @@ from polylogue.api.archive import PolylogueArchiveMixin
 from polylogue.api.embeddings import PolylogueEmbeddingsMixin
 from polylogue.api.ingest import PolylogueIngestMixin
 from polylogue.api.insights import PolylogueInsightsMixin
-from polylogue.config import Config
+from polylogue.config import Config, ResolvedRuntimeConfig, resolve_runtime_config
 from polylogue.operations import ArchiveStats
 from polylogue.services import build_runtime_services
 from polylogue.storage.repository import SessionRepository
@@ -48,39 +48,51 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         self,
         archive_root: str | Path | None = None,
         db_path: str | Path | None = None,
-    ):
-        if archive_root is not None:
-            archive_root = Path(archive_root).expanduser().resolve()
-        if db_path is not None:
-            db_path = Path(db_path).expanduser().resolve()
+        *,
+        runtime: ResolvedRuntimeConfig | None = None,
+    ) -> None:
+        explicit_archive = Path(archive_root).expanduser().resolve() if archive_root is not None else None
+        explicit_db = Path(db_path).expanduser().resolve() if db_path is not None else None
 
-        from polylogue.paths import archive_root as _archive_root
+        if runtime is not None and (explicit_archive is not None or explicit_db is not None):
+            if explicit_archive is not None and explicit_archive != runtime.paths.archive_root:
+                raise ValueError("explicit archive_root conflicts with resolved runtime")
+            if explicit_db is not None and explicit_db != runtime.paths.index_db:
+                raise ValueError("explicit db_path conflicts with resolved runtime")
 
-        explicit_archive_root = archive_root is not None
-        if archive_root is None:
-            archive_root = _archive_root()
-        if db_path is None and explicit_archive_root:
-            db_path = archive_root / "index.db"
+        if runtime is None and explicit_archive is None and explicit_db is None:
+            runtime = resolve_runtime_config()
 
-        if db_path is not None:
-            self._config = Config(
-                archive_root=archive_root,
-                render_root=archive_root / "render",
-                sources=[],
-                db_path=db_path,
-            )
-        else:
-            self._config = Config(
-                archive_root=archive_root,
-                render_root=archive_root / "render",
-                sources=[],
-            )
-        self._services = build_runtime_services(config=self._config, db_path=db_path)
+        self._runtime = runtime
+        if runtime is not None:
+            self._config = runtime.as_config()
+            self._services = build_runtime_services(runtime=runtime)
+            return
+
+        resolved_archive = explicit_archive or (explicit_db.parent if explicit_db is not None else None)
+        if resolved_archive is None:
+            raise ValueError("explicit API construction requires archive_root or db_path")
+        resolved_db = explicit_db or resolved_archive / "index.db"
+        self._config = Config(
+            archive_root=resolved_archive,
+            render_root=resolved_archive / "render",
+            sources=[],
+            db_path=resolved_db,
+        )
+        self._services = build_runtime_services(config=self._config, db_path=resolved_db)
 
     @classmethod
-    def open(cls, *, config: Config | None = None, **kwargs: object) -> Polylogue:
+    def open(
+        cls,
+        *,
+        config: Config | None = None,
+        runtime: ResolvedRuntimeConfig | None = None,
+        **kwargs: object,
+    ) -> Polylogue:
+        if runtime is not None:
+            return cls(runtime=runtime)
         archive_root: str | Path | None = config.archive_root if config else kwargs.get("archive_root")  # type: ignore[assignment]
-        db_path: str | Path | None = kwargs.get("db_path")  # type: ignore[assignment]
+        db_path: str | Path | None = config.db_path if config else kwargs.get("db_path")  # type: ignore[assignment]
         return cls(archive_root=archive_root, db_path=db_path)
 
     async def __aenter__(self) -> Polylogue:
@@ -95,6 +107,10 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
     @property
     def config(self) -> Config:
         return self._config
+
+    @property
+    def runtime(self) -> ResolvedRuntimeConfig | None:
+        return self._runtime
 
     @property
     def archive_root(self) -> Path:

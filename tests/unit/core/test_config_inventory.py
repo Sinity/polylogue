@@ -20,10 +20,14 @@ def test_inventory_covers_loaded_defaults_and_public_polylogue_config_properties
     missing_defaults = sorted(set(cfg.raw) - set(inventory))
     assert not missing_defaults
 
+    # "raw"/"layers"/"layer_paths" are resolution metadata (the underlying
+    # merged dict, per-key provenance, and which TOML file backed each layer)
+    # rather than individual configurable settings, so they have no inventory
+    # entry of their own.
     public_properties = {
         name
         for name, value in vars(PolylogueConfig).items()
-        if isinstance(value, property) and name not in {"raw", "layers"}
+        if isinstance(value, property) and name not in {"raw", "layers", "layer_paths"}
     }
     assert public_properties <= set(inventory)
 

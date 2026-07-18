@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config, ConfigError, DriveConfig, IndexConfig, Source
+from polylogue.config import Config, ConfigError, DriveConfig, Source
 from polylogue.logging import _StderrProxy, configure_logging, get_logger
 
 
@@ -55,19 +55,25 @@ class TestConfig:
         assert "polylogue" in str(config.db_path)
 
     def test_config_db_path_is_captured_at_construction(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        """Config snapshots db_path instead of resolving it on every access."""
-        first_data = tmp_path / "data-a"
-        second_data = tmp_path / "data-b"
-        monkeypatch.setenv("XDG_DATA_HOME", str(first_data))
+        """Config's db_path is derived only from archive_root and never re-reads the environment.
+
+        ``Config`` is a compatibility projection of an already-resolved runtime
+        snapshot (polylogue-fd2s): it must not consult ``XDG_DATA_HOME`` or any
+        other ambient state, either at construction or afterwards. Flipping
+        ``XDG_DATA_HOME`` between construction and the assertion proves db_path
+        is fixed from the explicit ``archive_root`` argument, not re-derived.
+        """
+        archive_root = tmp_path / "archive"
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data-a"))
         config = Config(
-            archive_root=tmp_path / "archive",
+            archive_root=archive_root,
             render_root=tmp_path / "render",
             sources=[],
         )
 
-        monkeypatch.setenv("XDG_DATA_HOME", str(second_data))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data-b"))
 
-        assert config.db_path == first_data / "polylogue" / "index.db"
+        assert config.db_path == archive_root / "index.db"
 
     def test_active_index_resolver_uses_index_db(self, tmp_path: Path) -> None:
         """index.db is the active query store."""
@@ -230,37 +236,55 @@ class TestSource:
 
 
 class TestDriveConfig:
-    """Tests for DriveConfig defaults."""
+    """Tests for DriveConfig defaults.
 
-    def test_default_retry_count(self) -> None:
+    ``DriveConfig`` is a resolved-authority projection (polylogue-fd2s):
+    ``credentials_path``/``token_path`` are required constructor arguments
+    rather than being derived ambiently, so construction always supplies
+    them explicitly.
+    """
+
+    def test_default_retry_count(self, tmp_path: Path) -> None:
         """Default retry count is 3."""
-        config = DriveConfig()
+        config = DriveConfig(credentials_path=tmp_path / "credentials.json", token_path=tmp_path / "token.json")
         assert config.retry_count == 3
 
-    def test_default_timeout(self) -> None:
+    def test_default_timeout(self, tmp_path: Path) -> None:
         """Default timeout is 30 seconds."""
-        config = DriveConfig()
+        config = DriveConfig(credentials_path=tmp_path / "credentials.json", token_path=tmp_path / "token.json")
         assert config.timeout == 30
 
-    def test_credentials_path_is_in_config(self) -> None:
-        """Default credentials path is in polylogue config dir."""
-        config = DriveConfig()
+    def test_credentials_path_is_in_config(self, workspace_env: dict[str, Path]) -> None:
+        """Default credentials path is projected from the resolved runtime authority."""
+        from polylogue.config import get_drive_config, resolve_runtime_config
+
+        config = get_drive_config(resolve_runtime_config())
         assert "polylogue" in str(config.credentials_path)
 
 
 class TestIndexConfig:
-    """Tests for IndexConfig from environment."""
+    """Tests for IndexConfig projected from the resolved runtime authority.
 
-    def test_from_env_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Default IndexConfig has FTS enabled and no vector provider configured."""
+    ``IndexConfig.from_env()`` was removed (polylogue-fd2s): reading
+    ``VOYAGE_API_KEY`` directly bypassed the layered TOML/env/CLI resolver, so
+    a TOML-configured ``voyage_api_key`` never reached it. ``get_index_config``
+    over an explicitly resolved ``ResolvedRuntimeConfig`` is the replacement.
+    """
+
+    def test_from_env_defaults(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
+        """Default IndexConfig has no vector provider configured."""
+        from polylogue.config import get_index_config, resolve_runtime_config
+
         monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
-        config = IndexConfig.from_env()
+        config = get_index_config(resolve_runtime_config())
         assert config.voyage_api_key is None
 
-    def test_from_env_voyage_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_from_env_voyage_key(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
         """VOYAGE_API_KEY is used for embeddings."""
+        from polylogue.config import get_index_config, resolve_runtime_config
+
         monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
-        config = IndexConfig.from_env()
+        config = get_index_config(resolve_runtime_config())
         assert config.voyage_api_key == "voyage-key"
 
 
@@ -296,9 +320,9 @@ class TestConfiguredSources:
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
-        from polylogue.config import get_sources
+        from polylogue.config import get_sources, resolve_runtime_config
 
-        sources = get_sources()
+        sources = get_sources(resolve_runtime_config())
         assert [source.name for source in sources] == []
 
     def test_get_sources_includes_drive_source_when_credentials_exist(
@@ -318,9 +342,9 @@ class TestConfiguredSources:
         credentials.parent.mkdir(parents=True, exist_ok=True)
         credentials.write_text("{}", encoding="utf-8")
 
-        from polylogue.config import get_sources
+        from polylogue.config import get_sources, resolve_runtime_config
 
-        sources = get_sources()
+        sources = get_sources(resolve_runtime_config())
         assert [source.name for source in sources] == ["aistudio"]
 
 
@@ -731,19 +755,46 @@ class TestPolylogueConfigLayerPrecedence:
         cfg = load_polylogue_config(site_config_path=missing)
         assert cfg.layer_of("api_port") == "default"
 
-    def test_malformed_toml_does_not_crash(
+    def test_malformed_explicitly_selected_toml_raises_typed_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         workspace_env: dict[str, Path],
     ) -> None:
-        from polylogue.config import load_polylogue_config
+        """An explicitly selected (CLI/env) malformed config fails loudly (polylogue-fd2s AC #6).
+
+        An operator who explicitly pointed at a config file typed the wrong
+        path or broke the file; silently falling back to defaults would hide
+        that mistake. This differs from an *auto-discovered* file at the
+        default XDG location, which still degrades gracefully -- see
+        ``test_malformed_auto_discovered_toml_falls_back_to_defaults``.
+        """
+        from polylogue.config import ConfigError, load_polylogue_config
 
         self._disable_site(monkeypatch)
         bad = tmp_path / "bad.toml"
         bad.write_text("this is not valid toml = = = [\n", encoding="utf-8")
-        cfg = load_polylogue_config(config_path=bad)
-        # Falls back to defaults silently rather than blowing up the CLI.
+        with pytest.raises(ConfigError, match="cannot load explicitly selected user config"):
+            load_polylogue_config(config_path=bad)
+
+    def test_malformed_auto_discovered_toml_falls_back_to_defaults(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """A malformed file at the auto-discovered default location does not crash the CLI."""
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        monkeypatch.delenv("POLYLOGUE_CONFIG", raising=False)
+        config_home = tmp_path / "config-home"
+        (config_home / "polylogue").mkdir(parents=True)
+        bad = config_home / "polylogue" / "polylogue.toml"
+        bad.write_text("this is not valid toml = = = [\n", encoding="utf-8")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+        cfg = load_polylogue_config()
         assert cfg.api_port == 8766
         assert cfg.layer_of("api_port") == "default"
 
@@ -872,36 +923,56 @@ class TestConfigInventoryPayload:
 
 
 class TestRuntimeServices:
+    """``build_runtime_services`` never performs ambient resolution (polylogue-fd2s):
+
+    composition roots must resolve a ``ResolvedRuntimeConfig`` explicitly and
+    pass it in; a zero-argument call has no config/db_path to fall back to and
+    raises rather than silently reading the environment.
+    """
+
     def test_repository_is_cached_per_runtime_scope(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import resolve_runtime_config
         from polylogue.services import build_runtime_services
 
-        services = build_runtime_services()
+        services = build_runtime_services(runtime=resolve_runtime_config())
         repo1 = services.get_repository()
         repo2 = services.get_repository()
         assert repo1 is repo2
 
     def test_backend_is_cached_per_runtime_scope(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import resolve_runtime_config
         from polylogue.services import build_runtime_services
 
-        services = build_runtime_services()
+        services = build_runtime_services(runtime=resolve_runtime_config())
         backend1 = services.get_backend()
         backend2 = services.get_backend()
         assert backend1 is backend2
 
     def test_repository_uses_runtime_backend(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import resolve_runtime_config
         from polylogue.services import build_runtime_services
 
-        services = build_runtime_services()
+        services = build_runtime_services(runtime=resolve_runtime_config())
         repo = services.get_repository()
         assert repo.backend is services.get_backend()
 
     def test_distinct_runtime_scopes_do_not_share_instances(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import resolve_runtime_config
         from polylogue.services import build_runtime_services
 
-        services1 = build_runtime_services()
-        services2 = build_runtime_services()
+        services1 = build_runtime_services(runtime=resolve_runtime_config())
+        services2 = build_runtime_services(runtime=resolve_runtime_config())
         assert services1.get_repository() is not services2.get_repository()
         assert services1.get_backend() is not services2.get_backend()
+
+    def test_build_runtime_services_without_authority_raises(self) -> None:
+        """No composition root may silently fall back to ambient config."""
+        from polylogue.config import ConfigError
+        from polylogue.services import build_runtime_services
+
+        services = build_runtime_services()
+        with pytest.raises(ConfigError, match="no resolved database path"):
+            services.get_backend()
 
 
 # =============================================================================

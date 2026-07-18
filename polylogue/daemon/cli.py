@@ -326,12 +326,12 @@ async def _run_drive_source_catchup_once() -> int:
     remote acquisition roots, so the daemon has to run their catch-up through
     the staged acquisition pipeline explicitly.
     """
-    from polylogue.config import get_config
+    from polylogue.config import get_config, resolve_runtime_config
     from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.services import build_runtime_services
 
-    config = get_config()
+    config = get_config(resolve_runtime_config())
     sources = [source for source in config.sources if source.is_drive]
     if not sources:
         return 0

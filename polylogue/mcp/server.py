@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.config import resolve_runtime_config
 from polylogue.mcp.declarations.adapter import DeclaredToolRegistrar
 from polylogue.mcp.server_prompts import register_prompts
 from polylogue.mcp.server_resources import register_resources
@@ -22,7 +23,7 @@ from polylogue.mcp.server_support import (
     _set_runtime_services,
 )
 from polylogue.mcp.server_tools import register_tools
-from polylogue.services import RuntimeServices
+from polylogue.services import RuntimeServices, build_runtime_services
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -47,8 +48,11 @@ def _instructions_for_role(role: MCPRole) -> str:
     return f"{base}\n\n{read_agent_asset('standing-manual.md')}"
 
 
-def build_server(*, role: MCPRole = "read") -> FastMCP:
-    """Construct the FastMCP server with all tools, resources, and prompts."""
+def build_server(*, role: MCPRole = "read", services: RuntimeServices | None = None) -> FastMCP:
+    """Construct an MCP server bound to one resolved runtime authority."""
+    if services is None:
+        services = build_runtime_services(runtime=resolve_runtime_config())
+    _set_runtime_services(services)
     from mcp.server.fastmcp import FastMCP
 
     mcp = FastMCP(
@@ -94,7 +98,7 @@ def _get_server(services: RuntimeServices | None = None, *, role: MCPRole = "rea
     if services is not None:
         _set_runtime_services(services)
     if _server_instance is None or _server_instance_role != role:
-        _server_instance = build_server(role=role)
+        _server_instance = build_server(role=role, services=services)
         _server_instance_role = role
     return _server_instance
 
