@@ -1,0 +1,3385 @@
+diff --git a/devtools/build_topology_projection.py b/devtools/build_topology_projection.py
+index 13ce7c7c53f1df1730318d25eae0e5fc0cd57166..b32487ab6d0c5b2b0f3b1d99fa6e2f66dae32a4e 100644
+--- a/devtools/build_topology_projection.py
++++ b/devtools/build_topology_projection.py
+@@ -114,6 +114,7 @@ STORAGE_ROOT_KEEP = frozenset(
+         "index.py",
+         "hydrators.py",
+         "cursor_state.py",
++        "derivation_identity.py",
+         "run_state.py",
+         "session_replacement.py",
+         "archive_views.py",
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index 9360f9fa915b8821111de2dac9d5af5899d78d44..c5a257d692a718f75ce85603554c2cd3a550dc3c 100644
+--- a/docs/plans/topology-target.yaml
++++ b/docs/plans/topology-target.yaml
+@@ -447,7 +447,7 @@ files:
+     owner: archive-query
+     reason: archive-domain query semantics
+   - path: polylogue/archive/query/unit_results.py
+-    loc: 556
++    loc: 555
+     target: polylogue/archive/query/unit_results.py
+     owner: archive-query
+     reason: archive-domain query semantics
+@@ -830,7 +830,7 @@ files:
+     target: polylogue/cli/commands/diagnostics.py
+     owner: stable
+   - path: polylogue/cli/commands/embed.py
+-    loc: 871
++    loc: 873
+     target: polylogue/cli/commands/embed.py
+     owner: stable
+   - path: polylogue/cli/commands/excise.py
+@@ -1458,7 +1458,7 @@ files:
+     target: polylogue/daemon/convergence_debt_status.py
+     owner: stable
+   - path: polylogue/daemon/convergence_stages.py
+-    loc: 1799
++    loc: 1879
+     target: polylogue/daemon/convergence_stages.py
+     owner: stable
+   - path: polylogue/daemon/convergence_standing_queries.py
+@@ -1482,7 +1482,7 @@ files:
+     target: polylogue/daemon/cursor_lag_status.py
+     owner: stable
+   - path: polylogue/daemon/embedding_backlog.py
+-    loc: 406
++    loc: 411
+     target: polylogue/daemon/embedding_backlog.py
+     owner: stable
+   - path: polylogue/daemon/embedding_readiness.py
+@@ -3300,7 +3300,7 @@ files:
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/archive_readiness.py
+-    loc: 845
++    loc: 846
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/archive_views.py
+@@ -3366,6 +3366,11 @@ files:
+     target: polylogue/storage/cursor_state.py
+     owner: storage-root
+     reason: storage-root cross-cutting helper
++  - path: polylogue/storage/derivation_identity.py
++    loc: 176
++    target: polylogue/storage/derivation_identity.py
++    owner: storage-root
++    reason: storage-root cross-cutting helper
+   - path: polylogue/storage/derived/__init__.py
+     loc: 0
+     target: polylogue/storage/derived/__init__.py
+@@ -3386,8 +3391,12 @@ files:
+     loc: 365
+     target: polylogue/storage/embeddings/embedding_stats.py
+     owner: stable
++  - path: polylogue/storage/embeddings/identity.py
++    loc: 302
++    target: polylogue/storage/embeddings/identity.py
++    owner: stable
+   - path: polylogue/storage/embeddings/materialization.py
+-    loc: 1330
++    loc: 1745
+     target: polylogue/storage/embeddings/materialization.py
+     owner: stable
+   - path: polylogue/storage/embeddings/models.py
+@@ -3395,7 +3404,7 @@ files:
+     target: polylogue/storage/embeddings/models.py
+     owner: stable
+   - path: polylogue/storage/embeddings/preflight.py
+-    loc: 325
++    loc: 337
+     target: polylogue/storage/embeddings/preflight.py
+     owner: stable
+   - path: polylogue/storage/embeddings/progress.py
+@@ -3411,7 +3420,7 @@ files:
+     target: polylogue/storage/embeddings/sql.py
+     owner: stable
+   - path: polylogue/storage/embeddings/status_payload.py
+-    loc: 1158
++    loc: 1163
+     target: polylogue/storage/embeddings/status_payload.py
+     owner: stable
+   - path: polylogue/storage/embeddings/support.py
+@@ -3581,11 +3590,11 @@ files:
+     target: polylogue/storage/raw/models.py
+     owner: stable
+   - path: polylogue/storage/raw_authority.py
+-    loc: 1690
++    loc: 1709
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/raw_reconciler.py
+-    loc: 1426
++    loc: 1417
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/raw_retention.py
+@@ -3594,7 +3603,7 @@ files:
+     owner: storage-root
+     reason: storage-root cross-cutting helper
+   - path: polylogue/storage/repair.py
+-    loc: 6441
++    loc: 6465
+     target: polylogue/storage/repair.py
+     owner: storage-root
+     reason: storage-root cross-cutting helper
+@@ -3842,11 +3851,11 @@ files:
+     target: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
+     owner: stable
+   - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
+-    loc: 435
++    loc: 916
+     target: polylogue/storage/sqlite/archive_tiers/embedding_write.py
+     owner: stable
+   - path: polylogue/storage/sqlite/archive_tiers/embeddings.py
+-    loc: 60
++    loc: 85
+     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
+     owner: stable
+   - path: polylogue/storage/sqlite/archive_tiers/index.py
+diff --git a/docs/schema.md b/docs/schema.md
+index 8136c2661d9f1a9ea16ee6dc7f90e9174566602f..40642cfe874a7cd363f1c9e1ca5382329c8a1144 100644
+--- a/docs/schema.md
++++ b/docs/schema.md
+@@ -23,7 +23,7 @@ over the `CREATE TABLE` statement.
+ |-----------|------|------------------|
+ | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 10` |
+ | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 35` |
+-| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
++| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 3` |
+ | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 6` |
+ | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
+ 
+@@ -72,8 +72,12 @@ read models (`session_profiles`, `session_work_events`, `session_phases`,
+ ### `embeddings.db` — vectors (rebuildable, expensive)
+ 
+ `message_embeddings` (a `vec0` virtual table, 1024-dimensional float
+-embeddings), `message_embeddings_meta`, and `embedding_status`. Populated only
+-when embedding is enabled with a valid Voyage key (see
++embeddings), `message_embeddings_meta`, `embedding_derivation_state`,
++`embedding_status`, and the inspectable `embedding_failures` lifecycle ledger.
++The derivation state owns the exact source/recipe/output key and active attempt
++generation; status flags are compatibility projections rather than independent
++freshness authority. Populated only when embedding is enabled with a valid
++Voyage key (see
+ [Architecture § Embedding Pipeline](architecture.md#embedding-pipeline)).
+ Rebuildable, but re-embedding costs Voyage API calls.
+ 
+diff --git a/docs/topology-status.md b/docs/topology-status.md
+index 24a2948fb84ea75f651ecdb84179ae0eb30540ac..40147caea6bb506b5b5081a4992a11be40120df2 100644
+--- a/docs/topology-status.md
++++ b/docs/topology-status.md
+@@ -28,12 +28,12 @@ Generated by `devtools render topology-status`. Reads `docs/plans/topology-targe
+ 
+ ### Summary
+ 
+-- **Stable** (no move scoped): 855
++- **Stable** (no move scoped): 856
+ - **Kernel** (polylogue/ root): 7
+-- **Primitives** (storage-root): 18
++- **Primitives** (storage-root): 19
+ - **TBD** (cell needs explicit assignment): 9
+-- **Total declared**: 1023
+-- **Realized polylogue/**/*.py**: 1023 files declared
++- **Total declared**: 1025
++- **Realized polylogue/**/*.py**: 1025 files declared
+ 
+ ### TBD cells (require explicit routing)
+ 
+diff --git a/polylogue/cli/commands/embed.py b/polylogue/cli/commands/embed.py
+index d8e1d5aede5d10c3389ba1efa015aada17222b5b..f082a4595cd3dd65bd2478fda138dbb33e2de7fd 100644
+--- a/polylogue/cli/commands/embed.py
++++ b/polylogue/cli/commands/embed.py
+@@ -669,6 +669,8 @@ def _run_archive_backfill(
+             status_table = "embeddings.embedding_status"
+         else:
+             status_table = ""
++        from polylogue.storage.embeddings.identity import EmbeddingRecipe
++
+         pending = select_pending_archive_session_window(
+             conn,
+             status_table=status_table,
+@@ -676,7 +678,7 @@ def _run_archive_backfill(
+             max_sessions=max_sessions,
+             max_messages=report.max_messages,
+             min_messages=min_messages,
+-            include_stale_checks=False,
++            recipe=EmbeddingRecipe.current(model=report.model, dimensions=report.dimension),
+         )
+     finally:
+         conn.close()
+diff --git a/polylogue/daemon/convergence_stages.py b/polylogue/daemon/convergence_stages.py
+index d87d40f2022e7939abc97a0c7f8d1f81e0cf1b20..c699228a386559241e7776fca85c067741e0200b 100644
+--- a/polylogue/daemon/convergence_stages.py
++++ b/polylogue/daemon/convergence_stages.py
+@@ -775,36 +775,94 @@ def _embedding_config_enabled() -> bool:
+ 
+ 
+ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
+-    """Detect model/dimension config changes and mark rows for reindex.
++    """Advance derivation generations when the configured recipe changes.
+ 
+-    When the configured model differs from what is stored in message_embeddings_meta,
+-    all embedding_status rows are marked ``needs_reindex = 1``. When the
+-    configured dimension differs, the vec0 table is also dropped so it can
+-    be recreated with the new dimension.
++    ``embedding_status`` remains a compatibility projection. The generation/key
++    transition is the monotonic authority: an older success or failure receipt
++    can no longer clear the pending mark created here.
+     """
++    from polylogue.storage.embeddings.identity import EmbeddingRecipe, register_embedding_identity_sql
+     from polylogue.storage.search_providers.sqlite_vec_runtime import _reconcile_vec0_dimension
+     from polylogue.storage.search_providers.sqlite_vec_support import logger as vec_logger
+ 
+     cfg = load_polylogue_config()
+-    configured_model = cfg.embedding_model
+-    configured_dimension = cfg.embedding_dimension
++    configured_model = str(cfg.embedding_model)
++    configured_dimension = int(cfg.embedding_dimension)
++    recipe = EmbeddingRecipe.current(model=configured_model, dimensions=configured_dimension)
+ 
+     if not _table_exists(conn, "message_embeddings_meta") or not _table_exists(conn, "embedding_status"):
+         return
+ 
+-    # Check stored model
++    meta_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(message_embeddings_meta)")}
+     stored_models = conn.execute("SELECT DISTINCT model FROM message_embeddings_meta ORDER BY model").fetchall()
+     stored_model = str(stored_models[0][0]) if stored_models else None
+-
+     model_changed = stored_model is not None and stored_model != configured_model
+-    dimension_changed = False
+ 
++    dimension_changed = False
+     if stored_model is not None:
+         stored_dim_row = conn.execute("SELECT dimension FROM message_embeddings_meta LIMIT 1").fetchone()
+         if stored_dim_row:
+-            stored_dimension = int(stored_dim_row[0])
+-            dimension_changed = stored_dimension != configured_dimension
++            dimension_changed = int(stored_dim_row[0]) != configured_dimension
++
++    meta_recipe_changed = False
++    if stored_model is not None and "recipe_hash" in meta_columns:
++        meta_recipe_changed = (
++            conn.execute(
++                """
++                SELECT 1
++                FROM message_embeddings_meta
++                WHERE recipe_hash IS NULL OR recipe_hash != ?
++                LIMIT 1
++                """,
++                (recipe.recipe_hash,),
++            ).fetchone()
++            is not None
++        )
++
++    advanced_generations = 0
++    if _table_exists(conn, "embedding_derivation_state"):
++        state_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_derivation_state)")}
++        required = {
++            "session_id",
++            "generation",
++            "derivation_key",
++            "source_hash",
++            "recipe_hash",
++            "output_contract_hash",
++            "attempt_state",
++            "message_count",
++            "updated_at_ms",
++        }
++        if required.issubset(state_columns):
++            register_embedding_identity_sql(conn)
++            now_ms = int(time.time() * 1000)
++            cursor = conn.execute(
++                """
++                UPDATE embedding_derivation_state
++                SET generation = generation + 1,
++                    derivation_key = polylogue_embedding_derivation_key(
++                        session_id, source_hash, ?, ?
++                    ),
++                    recipe_hash = ?,
++                    output_contract_hash = ?,
++                    attempt_state = 'pending',
++                    message_count = 0,
++                    updated_at_ms = ?
++                WHERE recipe_hash != ? OR output_contract_hash != ?
++                """,
++                (
++                    recipe.recipe_hash,
++                    recipe.output_contract_hash,
++                    recipe.recipe_hash,
++                    recipe.output_contract_hash,
++                    now_ms,
++                    recipe.recipe_hash,
++                    recipe.output_contract_hash,
++                ),
++            )
++            advanced_generations = max(0, cursor.rowcount)
+ 
++    recipe_changed = model_changed or dimension_changed or meta_recipe_changed or advanced_generations > 0
+     if model_changed:
+         vec_logger.info(
+             "embedding model changed: stored=%s configured=%s — marking all for reindex",
+@@ -814,11 +872,13 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
+     if dimension_changed:
+         vec_logger.info(
+             "embedding dimension changed: stored=%d configured=%d — dropping vec0 + reindex",
+-            stored_model and _stored_dim_from_meta(conn) or 0,
++            _stored_dim_from_meta(conn),
+             configured_dimension,
+         )
++    if recipe_changed and not model_changed and not dimension_changed:
++        vec_logger.info("embedding recipe identity changed — marking all for reindex")
+ 
+-    if model_changed or dimension_changed:
++    if recipe_changed:
+         conn.execute("UPDATE embedding_status SET needs_reindex = 1, error_message = NULL")
+         if dimension_changed:
+             _reconcile_vec0_dimension(conn, configured_dimension)
+@@ -829,6 +889,29 @@ def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:
+     return int(row[0]) if row else 0
+ 
+ 
++def _reconcile_archive_embedding_config_change(index_db_path: Path) -> None:
++    """Reconcile the recipe on the tier that owns embedding state.
++
++    Active archives split ``index.db`` source facts from the rebuildable
++    ``embeddings.db`` derivation ledger. Legacy monolithic fixtures keep the
++    old same-file behavior. Loading sqlite-vec here keeps dimension-change
++    reconciliation able to drop the virtual table on the real production
++    route.
++    """
++
++    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
++
++    sibling = index_db_path.with_name("embeddings.db")
++    target = sibling if sibling.exists() else index_db_path
++    conn = sqlite3.connect(target, timeout=5.0)
++    try:
++        try_load_sqlite_vec(conn)
++        _reconcile_embedding_config_change(conn)
++        conn.commit()
++    finally:
++        conn.close()
++
++
+ def _repair_changed_session_fts(
+     conn: sqlite3.Connection,
+     session_ids: Sequence[str],
+@@ -1369,10 +1452,9 @@ def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids
+ 
+ def _archive_embed_check(db_path: Path, path: Path) -> bool:
+     try:
++        _reconcile_archive_embedding_config_change(db_path)
+         conn = sqlite3.connect(db_path, timeout=5.0)
+         try:
+-            _reconcile_embedding_config_change(conn)
+-            conn.commit()
+             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
+             return bool(_archive_pending_embedding_session_ids(conn, session_ids))
+         finally:
+@@ -1404,10 +1486,9 @@ def _archive_embed_execute(db_path: Path, path: Path) -> bool:
+ 
+ def _archive_embed_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
+     try:
++        _reconcile_archive_embedding_config_change(db_path)
+         conn = sqlite3.connect(db_path, timeout=5.0)
+         try:
+-            _reconcile_embedding_config_change(conn)
+-            conn.commit()
+             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
+             all_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
+             pending = set(_archive_pending_embedding_session_ids(conn, all_ids))
+@@ -1442,10 +1523,9 @@ def _archive_embed_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
+ 
+ def _archive_embed_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
+     try:
++        _reconcile_archive_embedding_config_change(db_path)
+         conn = sqlite3.connect(db_path, timeout=5.0)
+         try:
+-            _reconcile_embedding_config_change(conn)
+-            conn.commit()
+             ids = _archive_existing_session_ids(conn, session_ids)
+             return set(_archive_pending_embedding_session_ids(conn, ids))
+         finally:
+diff --git a/polylogue/daemon/embedding_backlog.py b/polylogue/daemon/embedding_backlog.py
+index 318c2429005ba083eb58cbd53c088d7947389bf1..3700d9cc63d3eb8228db889765ec7412d492cfce 100644
+--- a/polylogue/daemon/embedding_backlog.py
++++ b/polylogue/daemon/embedding_backlog.py
+@@ -209,12 +209,17 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
+     try:
+         with closing(open_readonly_connection(index_db, timeout=5.0)) as conn:
+             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
++            from polylogue.storage.embeddings.identity import EmbeddingRecipe
++
+             pending = select_pending_archive_session_window(
+                 conn,
+                 status_table="embeddings.embedding_status",
+                 max_sessions=_DAEMON_EMBED_MAX_SESSIONS,
+                 max_messages=_DAEMON_EMBED_MAX_MESSAGES,
+-                include_stale_checks=False,
++                recipe=EmbeddingRecipe.current(
++                    model=str(cfg.embedding_model),
++                    dimensions=int(cfg.embedding_dimension),
++                ),
+             )
+     except Exception:
+         logger.warning("embed: failed to inspect archive pending backlog", exc_info=True)
+diff --git a/polylogue/storage/derivation_identity.py b/polylogue/storage/derivation_identity.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..df5c635effb4ece00a89823b917c8337563a0761
+--- /dev/null
++++ b/polylogue/storage/derivation_identity.py
+@@ -0,0 +1,179 @@
++"""Storage-neutral identity values for rebuildable derivations.
++
++A :class:`DerivationKey` says *what result would be current*.  It deliberately
++excludes attempt generation, scheduler/producer identity, eligibility and
++privacy policy, lifecycle state, cost, and result-integrity hashes.  Domains
++such as embeddings and FTS own their own ledgers and transitions while sharing
++this value shape.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import math
++from abc import abstractmethod
++from collections.abc import Mapping
++from dataclasses import dataclass
++from typing import Protocol, TypeAlias, runtime_checkable
++
++DerivationAtom: TypeAlias = str | int | float | bool | bytes | None
++
++_KEY_DOMAIN = b"polylogue.derivation-key.v1\x00"
++_SUBJECT_DOMAIN = b"polylogue.derivation-subject.v1\x00"
++_IDENTITY_DOMAIN = b"polylogue.derivation-identity.v1\x00"
++
++
++def _digest(domain: bytes, payload: bytes) -> bytes:
++    hasher = hashlib.sha256()
++    hasher.update(domain)
++    hasher.update(payload)
++    return hasher.digest()
++
++
++def _canonical_atom(value: DerivationAtom) -> object:
++    if isinstance(value, bytes):
++        return {"bytes_hex": value.hex()}
++    if isinstance(value, float) and not math.isfinite(value):
++        raise ValueError("derivation identity floats must be finite")
++    return value
++
++
++@dataclass(frozen=True, slots=True)
++class DerivationSubject:
++    """Logical subject reference plus the grain of the derived output."""
++
++    reference: str
++    grain: str
++
++    def __post_init__(self) -> None:
++        if not self.reference:
++            raise ValueError("derivation subject reference must not be empty")
++        if not self.grain:
++            raise ValueError("derivation subject grain must not be empty")
++
++    def canonical_bytes(self) -> bytes:
++        return json.dumps(
++            {"reference": self.reference, "grain": self.grain},
++            sort_keys=True,
++            separators=(",", ":"),
++            ensure_ascii=False,
++        ).encode("utf-8")
++
++    def digest(self) -> bytes:
++        return _digest(_SUBJECT_DOMAIN, self.canonical_bytes())
++
++
++@dataclass(frozen=True, slots=True)
++class DerivationIdentity:
++    """One namespaced, canonically ordered set of computational identity fields."""
++
++    namespace: str
++    fields: tuple[tuple[str, DerivationAtom], ...]
++
++    def __post_init__(self) -> None:
++        if not self.namespace:
++            raise ValueError("derivation identity namespace must not be empty")
++        names = tuple(name for name, _ in self.fields)
++        if any(not name for name in names):
++            raise ValueError("derivation identity field names must not be empty")
++        if len(names) != len(set(names)):
++            raise ValueError("derivation identity field names must be unique")
++        if names != tuple(sorted(names)):
++            raise ValueError("derivation identity fields must be sorted by name")
++        for _, value in self.fields:
++            if isinstance(value, float) and not math.isfinite(value):
++                raise ValueError("derivation identity floats must be finite")
++
++    @classmethod
++    def from_mapping(cls, namespace: str, fields: Mapping[str, DerivationAtom]) -> DerivationIdentity:
++        """Freeze a mapping into canonical key order."""
++
++        return cls(namespace=namespace, fields=tuple(sorted(fields.items())))
++
++    def canonical_bytes(self) -> bytes:
++        payload = {
++            "namespace": self.namespace,
++            "fields": [[name, _canonical_atom(value)] for name, value in self.fields],
++        }
++        return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
++
++    def digest(self) -> bytes:
++        return _digest(_IDENTITY_DOMAIN, self.canonical_bytes())
++
++    def field(self, name: str) -> DerivationAtom:
++        for field_name, value in self.fields:
++            if field_name == name:
++                return value
++        raise KeyError(name)
++
++
++@runtime_checkable
++class DerivationKeyLike(Protocol):
++    """Structural protocol reusable without adopting another domain's ledger."""
++
++    subject: DerivationSubject
++    source_identity: DerivationIdentity
++    recipe_identity: DerivationIdentity
++    output_contract: DerivationIdentity
++
++    @abstractmethod
++    def digest(self) -> bytes:
++        """Return the canonical SHA-256 derivation-key digest."""
++
++
++def compose_derivation_key_digest(
++    *,
++    subject_digest: bytes,
++    source_identity_digest: bytes,
++    recipe_identity_digest: bytes,
++    output_contract_digest: bytes,
++) -> bytes:
++    """Compose a key digest from the four independently typed components."""
++
++    components = (
++        subject_digest,
++        source_identity_digest,
++        recipe_identity_digest,
++        output_contract_digest,
++    )
++    if any(len(component) != hashlib.sha256().digest_size for component in components):
++        raise ValueError("derivation key component digests must be SHA-256 values")
++    return _digest(_KEY_DOMAIN, b"".join(components))
++
++
++@dataclass(frozen=True, slots=True)
++class DerivationKey:
++    """Exact source + recipe + output identity for one logical subject/grain."""
++
++    subject: DerivationSubject
++    source_identity: DerivationIdentity
++    recipe_identity: DerivationIdentity
++    output_contract: DerivationIdentity
++
++    def digest(self) -> bytes:
++        return compose_derivation_key_digest(
++            subject_digest=self.subject.digest(),
++            source_identity_digest=self.source_identity.digest(),
++            recipe_identity_digest=self.recipe_identity.digest(),
++            output_contract_digest=self.output_contract.digest(),
++        )
++
++    def canonical_bytes(self) -> bytes:
++        payload = {
++            "subject": json.loads(self.subject.canonical_bytes()),
++            "source_identity": json.loads(self.source_identity.canonical_bytes()),
++            "recipe_identity": json.loads(self.recipe_identity.canonical_bytes()),
++            "output_contract": json.loads(self.output_contract.canonical_bytes()),
++        }
++        return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
++
++
++__all__ = [
++    "DerivationAtom",
++    "DerivationIdentity",
++    "DerivationKey",
++    "DerivationKeyLike",
++    "DerivationSubject",
++    "compose_derivation_key_digest",
++]
+diff --git a/polylogue/storage/embeddings/identity.py b/polylogue/storage/embeddings/identity.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad90a2d1c5029a0ea6f6d6924454d0562903aec6
+--- /dev/null
++++ b/polylogue/storage/embeddings/identity.py
+@@ -0,0 +1,302 @@
++"""Canonical source, recipe, and output identities for archive embeddings."""
++
++from __future__ import annotations
++
++import hashlib
++import sqlite3
++from dataclasses import dataclass
++
++from polylogue.storage.derivation_identity import (
++    DerivationIdentity,
++    DerivationKey,
++    DerivationSubject,
++    compose_derivation_key_digest,
++)
++from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
++
++EMBEDDING_SUBJECT_GRAIN = "archive-message-vectors"
++EMBEDDING_MESSAGE_GRAIN = "archive-message-vector"
++EMBEDDING_SOURCE_CANONICALIZATION = "ordered-message-id-content-hash-v1"
++EMBEDDING_TEXT_CANONICALIZATION = "ordered-text-block-prose-v1"
++EMBEDDING_RECORD_SELECTOR = "authored-user-assistant-prose-v1"
++EMBEDDING_CHUNKING_VERSION = "one-vector-per-message-v1"
++EMBEDDING_PROVIDER = "voyage"
++EMBEDDING_MODEL_REVISION = "provider-model-name"
++EMBEDDING_TASK = "retrieval"
++EMBEDDING_INPUT_TYPE = "document"
++EMBEDDING_NORMALIZATION = "provider-default"
++EMBEDDING_TOOL_IMPLEMENTATION = "polylogue.sqlite-vec-v1"
++EMBEDDING_OUTPUT_SCHEMA_VERSION = 1
++EMBEDDING_SOURCE_HASH_SQL_FUNCTION = "polylogue_embedding_source_hash"
++EMBEDDING_DERIVATION_KEY_SQL_FUNCTION = "polylogue_embedding_derivation_key"
++EMBEDDING_MESSAGE_KEY_SQL_FUNCTION = "polylogue_embedding_message_key"
++
++_SOURCE_HASH_DOMAIN = b"polylogue.embedding-source.v1\x00"
++
++
++@dataclass(frozen=True, slots=True)
++class EmbeddingRecipe:
++    """Every declared computational field that can change an embedding result."""
++
++    canonicalization: str
++    record_selector: str
++    chunking_version: str
++    provider: str
++    model: str
++    model_revision: str
++    dimensions: int
++    task: str
++    input_type: str
++    normalization: str
++    tool_implementation: str
++    input_schema_version: str
++
++    @classmethod
++    def current(cls, *, model: str, dimensions: int) -> EmbeddingRecipe:
++        return cls(
++            canonicalization=EMBEDDING_TEXT_CANONICALIZATION,
++            record_selector=EMBEDDING_RECORD_SELECTOR,
++            chunking_version=EMBEDDING_CHUNKING_VERSION,
++            provider=EMBEDDING_PROVIDER,
++            model=model,
++            model_revision=EMBEDDING_MODEL_REVISION,
++            dimensions=dimensions,
++            task=EMBEDDING_TASK,
++            input_type=EMBEDDING_INPUT_TYPE,
++            normalization=EMBEDDING_NORMALIZATION,
++            tool_implementation=EMBEDDING_TOOL_IMPLEMENTATION,
++            input_schema_version=f"archive-index-v{INDEX_SCHEMA_VERSION}",
++        )
++
++    def identity(self) -> DerivationIdentity:
++        return DerivationIdentity.from_mapping(
++            "polylogue.embedding.recipe.v1",
++            {
++                "canonicalization": self.canonicalization,
++                "chunking_version": self.chunking_version,
++                "dimensions": self.dimensions,
++                "input_schema_version": self.input_schema_version,
++                "input_type": self.input_type,
++                "model": self.model,
++                "model_revision": self.model_revision,
++                "normalization": self.normalization,
++                "provider": self.provider,
++                "record_selector": self.record_selector,
++                "task": self.task,
++                "tool_implementation": self.tool_implementation,
++            },
++        )
++
++    def output_contract(self) -> DerivationIdentity:
++        return DerivationIdentity.from_mapping(
++            "polylogue.embedding.output.v1",
++            {
++                "dimensions": self.dimensions,
++                "element_type": "float32",
++                "kind": "dense-vector",
++                "schema_version": EMBEDDING_OUTPUT_SCHEMA_VERSION,
++            },
++        )
++
++    @property
++    def recipe_hash(self) -> bytes:
++        return self.identity().digest()
++
++    @property
++    def output_contract_hash(self) -> bytes:
++        return self.output_contract().digest()
++
++
++class EmbeddingSourceDigest:
++    """Incremental canonical digest of an ordered embeddable-message set."""
++
++    __slots__ = ("_count", "_hasher")
++
++    def __init__(self) -> None:
++        self._hasher = hashlib.sha256()
++        self._hasher.update(_SOURCE_HASH_DOMAIN)
++        self._count = 0
++
++    def update(self, message_id: str, content_hash: bytes) -> None:
++        encoded_id = message_id.encode("utf-8", errors="surrogatepass")
++        self._hasher.update(len(encoded_id).to_bytes(8, "big"))
++        self._hasher.update(encoded_id)
++        self._hasher.update(len(content_hash).to_bytes(8, "big"))
++        self._hasher.update(content_hash)
++        self._count += 1
++
++    def digest(self) -> bytes:
++        clone = self._hasher.copy()
++        clone.update(self._count.to_bytes(8, "big"))
++        return clone.digest()
++
++
++class _EmbeddingSourceHashAggregate:
++    """Order-independent SQLite adapter for the canonical ordered source set."""
++
++    def __init__(self) -> None:
++        self._messages: list[tuple[str, bytes]] = []
++
++    def step(self, message_id: object, content_hash: object) -> None:
++        if message_id is None or content_hash is None:
++            return
++        self._messages.append((str(message_id), _identity_bytes(content_hash)))
++
++    def finalize(self) -> bytes:
++        digest = EmbeddingSourceDigest()
++        for message_id, content_hash in sorted(self._messages):
++            digest.update(message_id, content_hash)
++        return digest.digest()
++
++
++def register_embedding_identity_sql(conn: sqlite3.Connection) -> None:
++    """Install deterministic identity helpers used by the shared stale predicate."""
++
++    conn.create_aggregate(EMBEDDING_SOURCE_HASH_SQL_FUNCTION, 2, _EmbeddingSourceHashAggregate)
++    conn.create_function(
++        EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
++        4,
++        _embedding_derivation_digest_sql,
++        deterministic=True,
++    )
++    conn.create_function(
++        EMBEDDING_MESSAGE_KEY_SQL_FUNCTION,
++        4,
++        _message_embedding_derivation_digest_sql,
++        deterministic=True,
++    )
++
++
++def _embedding_derivation_digest_sql(
++    session_id: object, source_hash: object, recipe_hash: object, output_contract_hash: object
++) -> bytes | None:
++    if session_id is None or source_hash is None or recipe_hash is None or output_contract_hash is None:
++        return None
++    return embedding_derivation_digest_from_hashes(
++        session_id=str(session_id),
++        source_hash=_identity_bytes(source_hash),
++        recipe_hash=_identity_bytes(recipe_hash),
++        output_contract_hash=_identity_bytes(output_contract_hash),
++    )
++
++
++def _message_embedding_derivation_digest_sql(
++    message_id: object, content_hash: object, recipe_hash: object, output_contract_hash: object
++) -> bytes | None:
++    if message_id is None or content_hash is None or recipe_hash is None or output_contract_hash is None:
++        return None
++    return message_embedding_derivation_digest_from_hashes(
++        message_id=str(message_id),
++        content_hash=_identity_bytes(content_hash),
++        recipe_hash=_identity_bytes(recipe_hash),
++        output_contract_hash=_identity_bytes(output_contract_hash),
++    )
++
++
++def _identity_bytes(value: object) -> bytes:
++    """Normalize SQLite BLOB/TEXT identity values without interpreting them."""
++
++    if isinstance(value, bytes):
++        return value
++    if isinstance(value, str):
++        return value.encode("utf-8", errors="surrogatepass")
++    return bytes(value)
++
++
++def embedding_source_identity(source_hash: bytes) -> DerivationIdentity:
++    return DerivationIdentity.from_mapping(
++        "polylogue.embedding.source.v1",
++        {
++            "canonicalization": EMBEDDING_SOURCE_CANONICALIZATION,
++            "message_set_sha256": source_hash,
++        },
++    )
++
++
++def embedding_derivation_key(*, session_id: str, source_hash: bytes, recipe: EmbeddingRecipe) -> DerivationKey:
++    return DerivationKey(
++        subject=DerivationSubject(reference=session_id, grain=EMBEDDING_SUBJECT_GRAIN),
++        source_identity=embedding_source_identity(source_hash),
++        recipe_identity=recipe.identity(),
++        output_contract=recipe.output_contract(),
++    )
++
++
++def embedding_derivation_digest_from_hashes(
++    *,
++    session_id: str,
++    source_hash: bytes,
++    recipe_hash: bytes,
++    output_contract_hash: bytes,
++) -> bytes:
++    """Fast equivalent of :func:`embedding_derivation_key` for SQL comparisons."""
++
++    return compose_derivation_key_digest(
++        subject_digest=DerivationSubject(reference=session_id, grain=EMBEDDING_SUBJECT_GRAIN).digest(),
++        source_identity_digest=embedding_source_identity(source_hash).digest(),
++        recipe_identity_digest=recipe_hash,
++        output_contract_digest=output_contract_hash,
++    )
++
++
++def message_embedding_derivation_digest_from_hashes(
++    *,
++    message_id: str,
++    content_hash: bytes,
++    recipe_hash: bytes,
++    output_contract_hash: bytes,
++) -> bytes:
++    return compose_derivation_key_digest(
++        subject_digest=DerivationSubject(reference=message_id, grain=EMBEDDING_MESSAGE_GRAIN).digest(),
++        source_identity_digest=DerivationIdentity.from_mapping(
++            "polylogue.embedding.message-source.v1",
++            {
++                "canonicalization": EMBEDDING_SOURCE_CANONICALIZATION,
++                "content_sha256": content_hash,
++            },
++        ).digest(),
++        recipe_identity_digest=recipe_hash,
++        output_contract_digest=output_contract_hash,
++    )
++
++
++def message_embedding_derivation_key(
++    *, message_id: str, content_hash: bytes, recipe: EmbeddingRecipe
++) -> DerivationKey:
++    return DerivationKey(
++        subject=DerivationSubject(reference=message_id, grain=EMBEDDING_MESSAGE_GRAIN),
++        source_identity=DerivationIdentity.from_mapping(
++            "polylogue.embedding.message-source.v1",
++            {
++                "canonicalization": EMBEDDING_SOURCE_CANONICALIZATION,
++                "content_sha256": content_hash,
++            },
++        ),
++        recipe_identity=recipe.identity(),
++        output_contract=recipe.output_contract(),
++    )
++
++
++__all__ = [
++    "EMBEDDING_CHUNKING_VERSION",
++    "EMBEDDING_DERIVATION_KEY_SQL_FUNCTION",
++    "EMBEDDING_INPUT_TYPE",
++    "EMBEDDING_MESSAGE_KEY_SQL_FUNCTION",
++    "EMBEDDING_MODEL_REVISION",
++    "EMBEDDING_NORMALIZATION",
++    "EMBEDDING_PROVIDER",
++    "EMBEDDING_RECORD_SELECTOR",
++    "EMBEDDING_SOURCE_CANONICALIZATION",
++    "EMBEDDING_SOURCE_HASH_SQL_FUNCTION",
++    "EMBEDDING_TASK",
++    "EMBEDDING_TEXT_CANONICALIZATION",
++    "EMBEDDING_TOOL_IMPLEMENTATION",
++    "EmbeddingRecipe",
++    "EmbeddingSourceDigest",
++    "embedding_derivation_digest_from_hashes",
++    "embedding_derivation_key",
++    "embedding_source_identity",
++    "message_embedding_derivation_digest_from_hashes",
++    "message_embedding_derivation_key",
++    "register_embedding_identity_sql",
++]
+diff --git a/polylogue/storage/embeddings/materialization.py b/polylogue/storage/embeddings/materialization.py
+index dc9ee9076e2b7c11457e29341802293f59c58958..5533b34e05a087494ca2262591feae7048a2a0cd 100644
+--- a/polylogue/storage/embeddings/materialization.py
++++ b/polylogue/storage/embeddings/materialization.py
+@@ -21,6 +21,15 @@ from pathlib import Path
+ from typing import TYPE_CHECKING, Literal, Protocol, cast
+ 
+ from polylogue.config import load_polylogue_config
++from polylogue.storage.embeddings.identity import (
++    EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
++    EMBEDDING_MESSAGE_KEY_SQL_FUNCTION,
++    EMBEDDING_SOURCE_HASH_SQL_FUNCTION,
++    EmbeddingRecipe,
++    EmbeddingSourceDigest,
++    message_embedding_derivation_key,
++    register_embedding_identity_sql,
++)
+ from polylogue.storage.table_existence import table_exists as _table_exists
+ 
+ if TYPE_CHECKING:
+@@ -68,6 +77,18 @@ class ArchiveEmbeddingSessionState:
+     eligible_sessions: int
+     embedded_sessions: int
+     pending_sessions: int
++    blocked_sessions: int = 0
++
++
++@dataclass(frozen=True, slots=True)
++class _ArchiveEmbeddingFreshnessPredicate:
++    """One exact desired-key predicate shared by selection and status counts."""
++
++    cte_sql: str
++    join_sql: str
++    fresh_sql: str
++    blocked_sql: str
++    pending_sql: str
+ 
+ 
+ def is_terminal_embedding_provider_error(error_message: object) -> bool:
+@@ -322,6 +343,235 @@ def select_pending_session_window(
+     return pending
+ 
+ 
++
++def _configured_embedding_recipe() -> EmbeddingRecipe:
++    cfg = load_polylogue_config()
++    return EmbeddingRecipe.current(
++        model=str(cfg.embedding_model),
++        dimensions=int(cfg.embedding_dimension),
++    )
++
++
++def _archive_embedding_sibling_table(
++    conn: sqlite3.Connection,
++    status_table: str | None,
++    table_name: str,
++) -> str:
++    if not status_table:
++        return ""
++    if "." in status_table:
++        schema, _, _ = status_table.rpartition(".")
++        candidate = f"{schema}.{table_name}"
++    else:
++        candidate = table_name
++    return candidate if _qualified_table_exists(conn, candidate) else ""
++
++
++def _archive_embedding_freshness_predicate(
++    conn: sqlite3.Connection,
++    *,
++    status_table: str,
++    recipe: EmbeddingRecipe,
++) -> _ArchiveEmbeddingFreshnessPredicate | None:
++    """Build the single exact-key predicate used by every archive selector.
++
++    A legacy archive without the v3 derivation ledger returns ``None`` and is
++    evaluated by the pre-existing content-aware fallback below. Fresh v3
++    archives always take this route. A missing embeddings database is simpler:
++    every exact eligible source session is pending.
++    """
++
++    message_columns = _table_columns(conn, "messages")
++    if not _archive_session_embeddable_counts_available(conn) or "content_hash" not in message_columns:
++        return None
++
++    state_table = _archive_embedding_sibling_table(conn, status_table, "embedding_derivation_state")
++    meta_table = _archive_embedding_sibling_table(conn, status_table, "message_embeddings_meta")
++    if status_table:
++        required_status = {
++            "session_id",
++            "message_count_embedded",
++            "needs_reindex",
++            "error_message",
++        }
++        required_state = {
++            "session_id",
++            "generation",
++            "derivation_key",
++            "source_hash",
++            "recipe_hash",
++            "output_contract_hash",
++            "attempt_state",
++            "message_count",
++        }
++        required_meta = {
++            "message_id",
++            "content_hash",
++            "needs_reindex",
++            "recipe_hash",
++            "derivation_key",
++            "generation",
++        }
++        if (
++            not state_table
++            or not meta_table
++            or not required_status.issubset(_qualified_table_columns(conn, status_table))
++            or not required_state.issubset(_qualified_table_columns(conn, state_table))
++            or not required_meta.issubset(_qualified_table_columns(conn, meta_table))
++        ):
++            return None
++
++    register_embedding_identity_sql(conn)
++    relation = archive_embeddable_messages_relation(conn, alias="desired_source")
++    cte_sql = f"""
++        WITH desired_messages AS (
++            SELECT desired_source.message_id, desired_source.session_id, desired_source.content_hash
++            FROM {relation}
++        ),
++        desired_sessions AS (
++            SELECT
++                session_id,
++                COUNT(*) AS message_count,
++                {EMBEDDING_SOURCE_HASH_SQL_FUNCTION}(message_id, content_hash) AS source_hash
++            FROM desired_messages
++            GROUP BY session_id
++        )
++    """
++    if not status_table:
++        return _ArchiveEmbeddingFreshnessPredicate(
++            cte_sql=cte_sql,
++            join_sql="",
++            fresh_sql="0",
++            blocked_sql="0",
++            pending_sql="1",
++        )
++
++    recipe_hash_sql = f"X'{recipe.recipe_hash.hex()}'"
++    output_hash_sql = f"X'{recipe.output_contract_hash.hex()}'"
++    desired_key_sql = (
++        f"{EMBEDDING_DERIVATION_KEY_SQL_FUNCTION}("
++        f"s.session_id, ds.source_hash, {recipe_hash_sql}, {output_hash_sql})"
++    )
++    key_is_current = f"""(
++        d.session_id IS NOT NULL
++        AND d.derivation_key = {desired_key_sql}
++        AND d.source_hash = ds.source_hash
++        AND d.recipe_hash = {recipe_hash_sql}
++        AND d.output_contract_hash = {output_hash_sql}
++    )"""
++    message_key_sql = (
++        f"{EMBEDDING_MESSAGE_KEY_SQL_FUNCTION}("
++        f"dm.message_id, dm.content_hash, {recipe_hash_sql}, {output_hash_sql})"
++    )
++    materialization_is_current = f"""(
++        e.session_id IS NOT NULL
++        AND COALESCE(e.needs_reindex, 0) = 0
++        AND e.error_message IS NULL
++        AND e.message_count_embedded = ds.message_count
++        AND d.message_count = ds.message_count
++        AND NOT EXISTS (
++            SELECT 1
++            FROM desired_messages AS dm
++            LEFT JOIN {meta_table} AS em ON em.message_id = dm.message_id
++            WHERE dm.session_id = s.session_id
++              AND (
++                    em.message_id IS NULL
++                 OR COALESCE(em.needs_reindex, 0) = 1
++                 OR em.content_hash != dm.content_hash
++                 OR em.recipe_hash IS NULL
++                 OR em.recipe_hash != {recipe_hash_sql}
++                 OR em.derivation_key IS NULL
++                 OR em.derivation_key != {message_key_sql}
++                 OR em.generation != d.generation
++              )
++        )
++    )"""
++    fresh_sql = f"({key_is_current} AND d.attempt_state = 'succeeded' AND {materialization_is_current})"
++    blocked_sql = f"({key_is_current} AND d.attempt_state = 'failed_terminal')"
++    pending_sql = f"(NOT ({fresh_sql}) AND NOT ({blocked_sql}))"
++    return _ArchiveEmbeddingFreshnessPredicate(
++        cte_sql=cte_sql,
++        join_sql=f"""
++            LEFT JOIN {status_table} AS e ON e.session_id = s.session_id
++            LEFT JOIN {state_table} AS d ON d.session_id = s.session_id
++        """,
++        fresh_sql=fresh_sql,
++        blocked_sql=blocked_sql,
++        pending_sql=pending_sql,
++    )
++
++
++def _select_pending_archive_session_window_by_derivation(
++    conn: sqlite3.Connection,
++    *,
++    status_table: str,
++    recipe: EmbeddingRecipe,
++    session_ids: tuple[str, ...],
++    rebuild: bool,
++    max_sessions: int | None,
++    max_messages: int | None,
++    min_messages: int | None,
++) -> list[PendingSession] | None:
++    predicate = _archive_embedding_freshness_predicate(
++        conn,
++        status_table=status_table,
++        recipe=recipe,
++    )
++    if predicate is None:
++        return None
++
++    params: list[object] = []
++    id_filter = ""
++    if session_ids:
++        placeholders = ", ".join("?" for _ in session_ids)
++        id_filter = f"AND s.session_id IN ({placeholders})"
++        params.extend(session_ids)
++    floor_filter = "AND ds.message_count >= ?"
++    params.append(max(1, min_messages or 1))
++    ceiling_filter = ""
++    if max_messages is not None:
++        ceiling_filter = "AND ds.message_count <= ?"
++        params.append(max_messages)
++    pending_filter = "" if rebuild else f"AND {predicate.pending_sql}"
++
++    rows = conn.execute(
++        f"""
++        {predicate.cte_sql}
++        SELECT s.session_id, s.title, ds.message_count
++        FROM desired_sessions AS ds
++        JOIN sessions AS s ON s.session_id = ds.session_id
++        {predicate.join_sql}
++        WHERE 1 = 1
++          {id_filter}
++          {floor_filter}
++          {ceiling_filter}
++          {pending_filter}
++        ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
++        """,
++        tuple(params),
++    )
++
++    pending: list[PendingSession] = []
++    message_total = 0
++    while True:
++        batch = rows.fetchmany(500)
++        if not batch:
++            break
++        for row in batch:
++            session_id = str(_row_value(row, 0, "session_id"))
++            title_value = _row_value(row, 1, "title")
++            title = None if title_value is None else str(title_value)
++            message_count = _row_int(row, 2, "message_count")
++            if max_sessions is not None and len(pending) >= max_sessions:
++                return pending
++            if max_messages is not None and pending and message_total + message_count > max_messages:
++                return pending
++            pending.append(PendingSession(session_id=session_id, title=title, message_count=message_count))
++            message_total += message_count
++            if max_messages is not None and message_total >= max_messages:
++                return pending
++    return pending
++
+ def select_pending_archive_session_window(
+     conn: sqlite3.Connection,
+     *,
+@@ -331,7 +581,7 @@ def select_pending_archive_session_window(
+     max_sessions: int | None = None,
+     max_messages: int | None = None,
+     min_messages: int | None = None,
+-    include_stale_checks: bool = True,
++    recipe: EmbeddingRecipe | None = None,
+ ) -> list[PendingSession]:
+     """Return one bounded pending-session window from a archive index.
+ 
+@@ -341,19 +591,35 @@ def select_pending_archive_session_window(
+     floor, making selective embedding affordable for real users.
+     """
+ 
++    unique_ids = tuple(dict.fromkeys(session_ids or ()))
++    if status_table is None:
++        status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
++    derivation_window = _select_pending_archive_session_window_by_derivation(
++        conn,
++        status_table=status_table,
++        recipe=recipe or _configured_embedding_recipe(),
++        session_ids=unique_ids,
++        rebuild=rebuild,
++        max_sessions=max_sessions,
++        max_messages=max_messages,
++        min_messages=min_messages,
++    )
++    if derivation_window is not None:
++        return derivation_window
++
++    # Compatibility for pre-v3 or deliberately minimal fixtures: this fallback
++    # remains content-aware, but no caller can disable its stale checks.
++    include_stale_checks = True
+     pending: list[PendingSession] = []
+     message_total = 0
+     params: list[object] = []
+     id_filter = ""
+-    unique_ids = tuple(dict.fromkeys(session_ids or ()))
+     if unique_ids:
+         placeholders = ", ".join("?" for _ in unique_ids)
+         id_filter = f"AND s.session_id IN ({placeholders})"
+         params.extend(unique_ids)
+ 
+-    if status_table is None:
+-        status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
+-    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table) if include_stale_checks else ""
++    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table)
+     stale_message_clause = (
+         _archive_stale_message_clause(conn, stale_message_table, session_alias="s") if include_stale_checks else ""
+     )
+@@ -541,8 +807,21 @@ def _qualified_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+     return row is not None
+ 
+ 
++def _qualified_table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
++    if "." not in table:
++        return _table_columns(conn, table)
++    schema, _, name = table.rpartition(".")
++    if not schema.replace("_", "").isalnum() or not name.replace("_", "").isalnum():
++        return set()
++    try:
++        rows = conn.execute(f"PRAGMA {schema}.table_info({name})").fetchall()
++    except sqlite3.Error:
++        return set()
++    return {str(row[1]) for row in rows}
++
++
+ def _archive_stale_message_clause(conn: sqlite3.Connection, meta_table: str, *, session_alias: str) -> str:
+-    if not meta_table:
++    if not meta_table or not _table_exists(conn, "messages"):
+         return ""
+     relation = archive_embeddable_messages_relation(conn, alias="stale_m")
+     return f"""
+@@ -560,7 +839,7 @@ def _archive_stale_message_clause(conn: sqlite3.Connection, meta_table: str, *,
+ 
+ 
+ def archive_session_has_stale_embeddings(conn: sqlite3.Connection, session_id: str, meta_table: str) -> bool:
+-    if not meta_table:
++    if not meta_table or not _table_exists(conn, "messages"):
+         return False
+     relation = archive_embeddable_messages_relation(conn, alias="stale_m")
+     row = conn.execute(
+@@ -634,12 +913,44 @@ def count_archive_embedding_session_state(
+     *,
+     status_table: str,
+     rebuild: bool = False,
++    recipe: EmbeddingRecipe | None = None,
+ ) -> ArchiveEmbeddingSessionState:
+     """Count eligible sessions and their embedding completion state."""
+ 
+     if not _table_exists(conn, "messages"):
+         return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+ 
++    predicate = _archive_embedding_freshness_predicate(
++        conn,
++        status_table=status_table,
++        recipe=recipe or _configured_embedding_recipe(),
++    )
++    if predicate is not None:
++        pending_sql = "1" if rebuild else predicate.pending_sql
++        fresh_sql = "0" if rebuild else predicate.fresh_sql
++        blocked_sql = "0" if rebuild else predicate.blocked_sql
++        row = conn.execute(
++            f"""
++            {predicate.cte_sql}
++            SELECT
++                COUNT(*) AS eligible_sessions,
++                COALESCE(SUM(CASE WHEN {fresh_sql} THEN 1 ELSE 0 END), 0) AS embedded_sessions,
++                COALESCE(SUM(CASE WHEN {pending_sql} THEN 1 ELSE 0 END), 0) AS pending_sessions,
++                COALESCE(SUM(CASE WHEN {blocked_sql} THEN 1 ELSE 0 END), 0) AS blocked_sessions
++            FROM desired_sessions AS ds
++            JOIN sessions AS s ON s.session_id = ds.session_id
++            {predicate.join_sql}
++            """
++        ).fetchone()
++        if row is None:
++            return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
++        return ArchiveEmbeddingSessionState(
++            eligible_sessions=int(row[0] or 0),
++            embedded_sessions=int(row[1] or 0),
++            pending_sessions=int(row[2] or 0),
++            blocked_sessions=int(row[3] or 0),
++        )
++
+     stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table)
+     stale_session_clause = _archive_stale_message_clause(conn, stale_message_table, session_alias="s")
+     stale_eligible_clause = _archive_stale_message_clause(conn, stale_message_table, session_alias="ec")
+@@ -689,7 +1000,15 @@ def count_archive_embedding_session_state(
+                           )
+                         THEN 1 ELSE 0
+                     END
+-                ) AS pending_sessions
++                ) AS pending_sessions,
++                SUM(
++                    CASE
++                        WHEN e.session_id IS NOT NULL
++                         AND e.needs_reindex = 0
++                         AND e.error_message IS NOT NULL
++                        THEN 1 ELSE 0
++                    END
++                ) AS blocked_sessions
+             FROM sessions s
+             LEFT JOIN {status_table} e ON e.session_id = s.session_id
+             WHERE {aggregate_expr} > 0
+@@ -701,6 +1020,7 @@ def count_archive_embedding_session_state(
+             eligible_sessions=int(row[0] or 0),
+             embedded_sessions=int(row[1] or 0),
+             pending_sessions=int(row[2] or 0),
++            blocked_sessions=int(row[3] or 0),
+         )
+ 
+     if rebuild or not status_table:
+@@ -758,7 +1078,15 @@ def count_archive_embedding_session_state(
+                           )
+                         THEN 1 ELSE 0
+                     END
+-                ) AS pending_sessions
++                ) AS pending_sessions,
++                SUM(
++                    CASE
++                        WHEN e.session_id IS NOT NULL
++                         AND e.needs_reindex = 0
++                         AND e.error_message IS NOT NULL
++                        THEN 1 ELSE 0
++                    END
++                ) AS blocked_sessions
+         FROM eligible_counts ec
+         LEFT JOIN {status_table} e ON e.session_id = ec.session_id
+         """
+@@ -769,6 +1097,7 @@ def count_archive_embedding_session_state(
+         eligible_sessions=int(row[0] or 0),
+         embedded_sessions=int(row[1] or 0),
+         pending_sessions=int(row[2] or 0),
++        blocked_sessions=int(row[3] or 0),
+     )
+ 
+ 
+@@ -884,6 +1213,17 @@ def mark_all_archive_sessions_needs_reindex(index_db_path: Path) -> None:
+     try:
+         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db_path),))
+         with conn:
++            if _table_exists(conn, "embedding_derivation_state"):
++                conn.execute(
++                    """
++                    UPDATE embedding_derivation_state
++                    SET generation = generation + 1,
++                        attempt_state = 'pending',
++                        message_count = 0,
++                        updated_at_ms = ?
++                    """,
++                    (int(datetime.now(UTC).timestamp() * 1000),),
++                )
+             conn.execute(
+                 """
+                 INSERT INTO embedding_status (session_id, origin, message_count_embedded, needs_reindex, error_message)
+@@ -955,12 +1295,42 @@ class _ProviderRequestError(RuntimeError):
+     """Marks an exception raised by the embedding provider call itself."""
+ 
+ 
++def _archive_embedding_source_hash(rows: list[sqlite3.Row]) -> bytes:
++    digest = EmbeddingSourceDigest()
++    normalized: list[tuple[str, bytes]] = []
++    for row in rows:
++        content_hash = row["content_hash"]
++        if content_hash is None:
++            raise ValueError("content_hash is required for embedding source identity")
++        normalized.append((str(row["message_id"]), bytes(content_hash)))
++    for message_id, content_hash in sorted(normalized):
++        digest.update(message_id, content_hash)
++    return digest.digest()
++
++
++def _read_archive_embedding_source_snapshot(
++    conn: sqlite3.Connection,
++    session_id: str,
++) -> tuple[bytes, int]:
++    relation = archive_embeddable_messages_relation(conn, alias="current_source")
++    rows = conn.execute(
++        f"""
++        SELECT current_source.message_id, current_source.content_hash
++        FROM {relation}
++        WHERE current_source.session_id = ?
++        ORDER BY current_source.message_id
++        """,
++        (session_id,),
++    ).fetchall()
++    return _archive_embedding_source_hash(rows), len(rows)
++
++
+ def embed_archive_session_sync(
+     index_db_path: Path,
+     vec_provider: VectorProvider,
+     session_id: str,
+ ) -> EmbedSessionOutcome:
+-    """Embed one archive session without routing through the archive repository."""
++    """Embed one archive session with exact-key, generation-guarded publication."""
+ 
+     text_provider = cast(_EmbeddingTextProvider, vec_provider)
+     if not hasattr(text_provider, "_get_embeddings"):
+@@ -975,7 +1345,16 @@ def embed_archive_session_sync(
+     index_conn.row_factory = sqlite3.Row
+     embeddings_conn = sqlite3.connect(embeddings_db_path, timeout=30.0)
+     attempted_message_refs: tuple[str, ...] = ()
++    attempt = None
++    session: sqlite3.Row | None = None
++    embeddable: list[sqlite3.Row] = []
+     try:
++        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
++            ArchiveEmbeddingWrite,
++            begin_embedding_attempt,
++            complete_embedding_attempt_success,
++            supersede_embedding_attempt,
++        )
+         from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+ 
+         loaded, error = try_load_sqlite_vec(embeddings_conn)
+@@ -987,6 +1366,7 @@ def embed_archive_session_sync(
+         ).fetchone()
+         if session is None:
+             return EmbedSessionOutcome(status="not_found", session_id=session_id)
++
+         messages_ref = archive_embedding_messages_table_ref(index_conn, alias="m")
+         prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
+         rows = index_conn.execute(
+@@ -1001,115 +1381,150 @@ def embed_archive_session_sync(
+              AND b.text IS NOT NULL
+             WHERE m.session_id = ?
+               AND {archive_embeddable_message_where("m")}
+-            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type, m.position, m.variant_index
++            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
++                     m.position, m.variant_index
+             ORDER BY m.position, m.variant_index
+             """,
+             (session_id,),
+         ).fetchall()
+-        if not rows:
+-            _record_archive_embedding_success(
+-                embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
+-            )
+-            return EmbedSessionOutcome(
+-                status="no_messages" if int(session["message_count"] or 0) <= 0 else "no_embeddable_messages",
+-                session_id=session_id,
+-                title=None if session["title"] is None else str(session["title"]),
+-            )
+-
+         embeddable = [
+             row
+             for row in rows
+             if _should_embed_archive_message(row["material_origin"], row["message_type"], row["role"], row["text"])
+         ]
+-        if not embeddable:
+-            _record_archive_embedding_success(
+-                embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
+-            )
+-            return EmbedSessionOutcome(
+-                status="no_embeddable_messages",
+-                session_id=session_id,
+-                title=None if session["title"] is None else str(session["title"]),
+-            )
+ 
+-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+-        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+-            ArchiveEmbeddingWrite,
+-            upsert_message_embeddings,
++        recipe = EmbeddingRecipe.current(
++            model=str(text_provider.model),
++            dimensions=int(text_provider.dimension),
++        )
++        source_hash = _archive_embedding_source_hash(embeddable)
++        attempt = begin_embedding_attempt(
++            embeddings_conn,
++            session_id=session_id,
++            origin=str(session["origin"]),
++            source_hash=source_hash,
++            recipe=recipe,
+         )
+ 
++        now_ms = int(datetime.now(UTC).timestamp() * 1000)
++        writes: list[ArchiveEmbeddingWrite] = []
+         batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
+         for start in range(0, len(embeddable), batch_size):
+             batch = embeddable[start : start + batch_size]
+             attempted_message_refs = tuple(str(row["message_id"]) for row in batch)
+             try:
+-                embeddings = text_provider._get_embeddings([str(row["text"]) for row in batch], input_type="document")
++                vectors = text_provider._get_embeddings(
++                    [str(row["text"]) for row in batch],
++                    input_type="document",
++                )
+             except Exception as exc:
+                 raise _ProviderRequestError(str(exc)) from exc
+-            if len(embeddings) != len(batch):
++            if len(vectors) != len(batch):
+                 raise _ProviderRequestError("embedding provider returned a mismatched vector count")
+-            writes: list[ArchiveEmbeddingWrite] = []
+-            for row, embedding in zip(batch, embeddings, strict=True):
+-                if row["content_hash"] is None:
++            for row, vector in zip(batch, vectors, strict=True):
++                content_hash = row["content_hash"]
++                if content_hash is None:
+                     raise ValueError("content_hash is required for message embedding metadata")
++                content_hash_bytes = bytes(content_hash)
+                 writes.append(
+                     ArchiveEmbeddingWrite(
+                         message_id=str(row["message_id"]),
+                         session_id=session_id,
+                         origin=str(session["origin"]),
+-                        embedding=embedding,
++                        embedding=vector,
+                         model=text_provider.model,
+                         embedded_at_ms=now_ms,
+-                        content_hash=bytes(row["content_hash"]),
++                        content_hash=content_hash_bytes,
++                        recipe_hash=attempt.recipe_hash,
++                        derivation_key=message_embedding_derivation_key(
++                            message_id=str(row["message_id"]),
++                            content_hash=content_hash_bytes,
++                            recipe=recipe,
++                        ).digest(),
++                        generation=attempt.generation,
+                     )
+                 )
+-            upsert_message_embeddings(embeddings_conn, writes)
+-        _record_archive_embedding_success(
++
++        current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(index_conn, session_id)
++        current_recipe = _configured_embedding_recipe()
++        if (
++            current_source_hash != attempt.source_hash
++            or current_message_count != len(embeddable)
++            or current_recipe.recipe_hash != attempt.recipe_hash
++            or current_recipe.output_contract_hash != attempt.output_contract_hash
++        ):
++            supersede_embedding_attempt(
++                embeddings_conn,
++                attempt=attempt,
++                source_hash=current_source_hash,
++                recipe=current_recipe,
++            )
++            return EmbedSessionOutcome(
++                status="error",
++                session_id=session_id,
++                title=None if session["title"] is None else str(session["title"]),
++                error="embedding source or recipe changed during materialization; retry queued",
++            )
++
++        committed = complete_embedding_attempt_success(
+             embeddings_conn,
+-            session_id=session_id,
+-            origin=str(session["origin"]),
+-            message_count=len(embeddable),
+-            model=text_provider.model,
++            attempt=attempt,
++            writes=writes,
++            completed_at_ms=now_ms,
+         )
++        if not committed:
++            return EmbedSessionOutcome(
++                status="error",
++                session_id=session_id,
++                title=None if session["title"] is None else str(session["title"]),
++                error="embedding attempt was superseded before publication; retry queued",
++            )
+     except Exception as exc:
+-        try:
+-            from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
++        from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
+ 
++        origin_row = None
++        with contextlib.suppress(sqlite3.Error):
+             origin_row = index_conn.execute(
+                 "SELECT origin FROM sessions WHERE session_id = ?", (session_id,)
+             ).fetchone()
+-            if origin_row is not None:
+-                if isinstance(exc, _ProviderRequestError):
+-                    provider = "voyage"
+-                    error_class = embedding_error_class(exc)
+-                    retryable = not is_terminal_embedding_provider_error(str(exc))
+-                else:
+-                    # Local faults (sqlite-vec load, SQL, content-hash validation,
+-                    # write) must not masquerade as provider failures in the ledger.
+-                    provider = "local"
+-                    error_class = "internal_error"
+-                    retryable = True
+-                record_embedding_failure(
+-                    embeddings_conn,
+-                    session_id=session_id,
+-                    origin=str(origin_row["origin"]),
+-                    message_refs=attempted_message_refs,
+-                    provider=provider,
+-                    model=text_provider.model,
+-                    error_class=error_class,
+-                    error_message=str(exc),
+-                    retryable=retryable,
+-                )
+-        finally:
+-            with contextlib.suppress(sqlite3.Error):
+-                index_conn.close()
+-            with contextlib.suppress(sqlite3.Error):
+-                embeddings_conn.close()
++        if origin_row is not None:
++            if isinstance(exc, _ProviderRequestError):
++                provider = "voyage"
++                error_class = embedding_error_class(exc)
++                retryable = not is_terminal_embedding_provider_error(str(exc))
++            else:
++                provider = "local"
++                error_class = "internal_error"
++                retryable = True
++            record_embedding_failure(
++                embeddings_conn,
++                session_id=session_id,
++                origin=str(origin_row["origin"]),
++                message_refs=attempted_message_refs,
++                provider=provider,
++                model=text_provider.model,
++                error_class=error_class,
++                error_message=str(exc),
++                retryable=retryable,
++                attempt=attempt,
++            )
+         return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
+     finally:
+         with contextlib.suppress(sqlite3.Error):
+             index_conn.close()
+         with contextlib.suppress(sqlite3.Error):
+             embeddings_conn.close()
++
++    assert session is not None
++    if not embeddable:
++        no_op_status: EmbedSingleStatus = (
++            "no_messages" if int(session["message_count"] or 0) <= 0 else "no_embeddable_messages"
++        )
++        return EmbedSessionOutcome(
++            status=no_op_status,
++            session_id=session_id,
++            title=None if session["title"] is None else str(session["title"]),
++        )
+     return EmbedSessionOutcome(
+         status="embedded",
+         session_id=session_id,
+diff --git a/polylogue/storage/embeddings/preflight.py b/polylogue/storage/embeddings/preflight.py
+index cefb5dacc555f6f53d9b1d489f3dac8965a39993..3ea9f119526563fcd0f7af71e6e329478130058a 100644
+--- a/polylogue/storage/embeddings/preflight.py
++++ b/polylogue/storage/embeddings/preflight.py
+@@ -11,6 +11,8 @@ import sqlite3
+ from dataclasses import dataclass
+ from pathlib import Path
+ 
++from polylogue.storage.embeddings.identity import EmbeddingRecipe
++
+ 
+ @dataclass(frozen=True, slots=True)
+ class PreflightReport:
+@@ -67,6 +69,7 @@ def read_pending_message_count(
+     max_sessions: int | None = None,
+     max_messages: int | None = None,
+     min_messages: int | None = None,
++    recipe: EmbeddingRecipe | None = None,
+ ) -> tuple[int, int, int]:
+     """Return ``(total_convs, pending_convs, pending_messages)``.
+ 
+@@ -84,6 +87,7 @@ def read_pending_message_count(
+             max_sessions=max_sessions,
+             max_messages=max_messages,
+             min_messages=min_messages,
++            recipe=recipe,
+         )
+ 
+     if not db_path.exists():
+@@ -154,6 +158,7 @@ def _read_archive_pending_message_count(
+     max_sessions: int | None = None,
+     max_messages: int | None = None,
+     min_messages: int | None = None,
++    recipe: EmbeddingRecipe | None = None,
+ ) -> tuple[int, int, int]:
+     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+ 
+@@ -175,6 +180,7 @@ def _read_archive_pending_message_count(
+             max_sessions=max_sessions,
+             max_messages=max_messages,
+             min_messages=min_messages or 1,
++            recipe=recipe,
+         )
+         pending_convs = len(pending)
+         pending_messages = sum(item[1] for item in pending)
+@@ -204,6 +210,7 @@ def _select_archive_pending_window(
+     max_sessions: int | None,
+     max_messages: int | None,
+     min_messages: int | None = None,
++    recipe: EmbeddingRecipe | None = None,
+ ) -> list[tuple[str, int]]:
+     # Delegate to the canonical selector so the preflight window matches the
+     # window the backfill actually embeds — same newest-first ordering, same
+@@ -219,7 +226,7 @@ def _select_archive_pending_window(
+         max_sessions=max_sessions,
+         max_messages=max_messages,
+         min_messages=min_messages,
+-        include_stale_checks=False,
++        recipe=recipe,
+     )
+     return [(item.session_id, item.message_count) for item in pending]
+ 
+@@ -249,6 +256,10 @@ def build_preflight_report(
+     )
+ 
+     cfg = load_polylogue_config()
++    recipe = EmbeddingRecipe.current(
++        model=str(cfg.embedding_model),
++        dimensions=int(cfg.embedding_dimension),
++    )
+     effective_max_messages = effective_message_window(max_messages, max_cost_usd)
+     total, pending, pending_messages = read_pending_message_count(
+         db_path,
+@@ -256,6 +267,7 @@ def build_preflight_report(
+         max_sessions=max_sessions,
+         max_messages=effective_max_messages,
+         min_messages=min_messages,
++        recipe=recipe,
+     )
+     estimated_tokens = pending_messages * ESTIMATED_TOKENS_PER_MESSAGE
+     estimated_cost = estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+diff --git a/polylogue/storage/embeddings/status_payload.py b/polylogue/storage/embeddings/status_payload.py
+index 409cfc958ec431c3e6f96076ed8deda898cebcf3..b79d588f308032bae5c39b2350ee74b977753079 100644
+--- a/polylogue/storage/embeddings/status_payload.py
++++ b/polylogue/storage/embeddings/status_payload.py
+@@ -489,8 +489,8 @@ def _archive_embedding_session_state_exact_with_timeout(
+     *,
+     status_table: str,
+     timeout_ms: int,
+-) -> tuple[int, int] | None:
+-    """Return exact embedded/pending session counts, or ``None`` when too costly."""
++) -> tuple[int, int, int] | None:
++    """Return exact embedded/pending/blocked counts, or ``None`` when too costly."""
+ 
+     from polylogue.storage.embeddings.support import is_missing_table_error
+ 
+@@ -511,7 +511,11 @@ def _archive_embedding_session_state_exact_with_timeout(
+         raise
+     finally:
+         conn.set_progress_handler(None, 0)
+-    return session_state.embedded_sessions, session_state.pending_sessions
++    return (
++        session_state.embedded_sessions,
++        session_state.pending_sessions,
++        session_state.blocked_sessions,
++    )
+ 
+ 
+ def _embedding_status(
+@@ -751,7 +755,7 @@ def _archive_embedding_status_payload(
+         has_status = bool(status_table)
+         has_meta = bool(meta_table)
+         total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
+-        blocked_sessions = (
++        legacy_blocked_sessions = (
+             _scalar_int(
+                 conn,
+                 f"""
+@@ -770,18 +774,19 @@ def _archive_embedding_status_payload(
+             status_table=status_table,
+             total_sessions=total_sessions,
+         )
++        blocked_sessions = legacy_blocked_sessions
++        exact_session_state = _archive_embedding_session_state_exact_with_timeout(
++            conn,
++            status_table=status_table,
++            timeout_ms=DETAIL_QUERY_TIMEOUT_MS if include_detail else METADATA_SUMMARY_TIMEOUT_MS,
++        )
+         pending_messages_exact = include_detail
+-        if include_detail:
+-            exact_session_state = _archive_embedding_session_state_exact_with_timeout(
+-                conn,
+-                status_table=status_table,
+-                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+-            )
+-            if exact_session_state is None:
++        if exact_session_state is None:
++            pending_sessions = max(pending_sessions - legacy_blocked_sessions, 0)
++            if include_detail:
+                 pending_messages_exact = False
+-            else:
+-                embedded_sessions, pending_sessions = exact_session_state
+-        pending_sessions = max(pending_sessions - blocked_sessions, 0)
++        else:
++            embedded_sessions, pending_sessions, blocked_sessions = exact_session_state
+         if has_status:
+             embedded_messages = _scalar_int(
+                 conn,
+diff --git a/polylogue/storage/sqlite/archive_tiers/embedding_write.py b/polylogue/storage/sqlite/archive_tiers/embedding_write.py
+index 2e4299da7690648027243abea18124665ebc01df..b55ffd63a557d6bde936dd840d8cf5031753f022 100644
+--- a/polylogue/storage/sqlite/archive_tiers/embedding_write.py
++++ b/polylogue/storage/sqlite/archive_tiers/embedding_write.py
+@@ -14,6 +14,13 @@ from dataclasses import dataclass
+ from typing import Literal, cast
+ 
+ from polylogue.core.enums import Origin
++from polylogue.storage.embeddings.identity import (
++    EmbeddingRecipe,
++    EmbeddingSourceDigest,
++    embedding_derivation_key,
++    message_embedding_derivation_digest_from_hashes,
++    message_embedding_derivation_key,
++)
+ from polylogue.storage.search_providers.sqlite_vec_support import _serialize_f32
+ from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+ 
+@@ -38,6 +45,19 @@ class ArchiveEmbeddingMeta:
+     needs_reindex: bool
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class ArchiveEmbeddingAttempt:
++    """Captured key/generation that conditionally owns one terminal write."""
++
++    session_id: str
++    origin: str
++    generation: int
++    derivation_key: bytes
++    source_hash: bytes
++    recipe_hash: bytes
++    output_contract_hash: bytes
++
++
+ @dataclass(frozen=True, slots=True)
+ class ArchiveEmbeddingWrite:
+     message_id: str
+@@ -47,6 +67,9 @@ class ArchiveEmbeddingWrite:
+     model: str
+     embedded_at_ms: int
+     content_hash: bytes
++    recipe_hash: bytes | None = None
++    derivation_key: bytes | None = None
++    generation: int = 0
+ 
+ 
+ EmbeddingFailureState = Literal["retryable", "terminal", "acknowledged", "superseded", "resolved"]
+@@ -71,6 +94,159 @@ class ArchiveEmbeddingFailure:
+     resolution_action: str | None
+     resolution_note: str | None
+     superseded_by: str | None
++    generation: int = 0
++    derivation_key: bytes | None = None
++    source_hash: bytes | None = None
++    recipe_hash: bytes | None = None
++
++
++def begin_embedding_attempt(
++    conn: sqlite3.Connection,
++    *,
++    session_id: str,
++    origin: Origin | str,
++    source_hash: bytes,
++    recipe: EmbeddingRecipe,
++    started_at_ms: int | None = None,
++) -> ArchiveEmbeddingAttempt:
++    """Capture the exact desired key and advance this session's generation."""
++
++    if len(source_hash) != 32:
++        raise ValueError("source_hash must be a SHA-256 value")
++    now_ms = int(time.time() * 1000) if started_at_ms is None else started_at_ms
++    origin_value = _enum_value(origin)
++    key = embedding_derivation_key(session_id=session_id, source_hash=source_hash, recipe=recipe)
++    derivation_key = key.digest()
++    recipe_hash = recipe.recipe_hash
++    output_contract_hash = recipe.output_contract_hash
++    with conn:
++        row = conn.execute(
++            """
++            INSERT INTO embedding_derivation_state (
++                session_id, origin, generation, derivation_key, source_hash, recipe_hash,
++                output_contract_hash, attempt_state, message_count, updated_at_ms
++            ) VALUES (?, ?, 1, ?, ?, ?, ?, 'pending', 0, ?)
++            ON CONFLICT(session_id) DO UPDATE SET
++                origin = excluded.origin,
++                generation = embedding_derivation_state.generation + 1,
++                derivation_key = excluded.derivation_key,
++                source_hash = excluded.source_hash,
++                recipe_hash = excluded.recipe_hash,
++                output_contract_hash = excluded.output_contract_hash,
++                attempt_state = 'pending',
++                message_count = 0,
++                updated_at_ms = excluded.updated_at_ms
++            RETURNING generation
++            """,
++            (
++                session_id,
++                origin_value,
++                derivation_key,
++                source_hash,
++                recipe_hash,
++                output_contract_hash,
++                now_ms,
++            ),
++        ).fetchone()
++        if row is None:
++            raise RuntimeError("embedding attempt generation was not returned")
++        generation = int(row[0])
++        conn.execute(
++            """
++            INSERT INTO embedding_status (
++                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
++            ) VALUES (?, ?, 0, NULL, 1, NULL)
++            ON CONFLICT(session_id) DO UPDATE SET
++                origin = excluded.origin,
++                needs_reindex = 1,
++                error_message = NULL
++            """,
++            (session_id, origin_value),
++        )
++    return ArchiveEmbeddingAttempt(
++        session_id=session_id,
++        origin=origin_value,
++        generation=generation,
++        derivation_key=derivation_key,
++        source_hash=source_hash,
++        recipe_hash=recipe_hash,
++        output_contract_hash=output_contract_hash,
++    )
++
++def supersede_embedding_attempt(
++    conn: sqlite3.Connection,
++    *,
++    attempt: ArchiveEmbeddingAttempt,
++    source_hash: bytes,
++    recipe: EmbeddingRecipe,
++    updated_at_ms: int | None = None,
++) -> ArchiveEmbeddingAttempt | None:
++    """Advance an exact in-flight attempt to a newer desired key without publishing.
++
++    The conditional generation transition is useful when source/config identity
++    moves while a provider request is in flight. It cannot overwrite a generation
++    that another reconciler or worker has already advanced.
++    """
++
++    if len(source_hash) != 32:
++        raise ValueError("source_hash must be a SHA-256 value")
++    now_ms = int(time.time() * 1000) if updated_at_ms is None else updated_at_ms
++    derivation_key = embedding_derivation_key(
++        session_id=attempt.session_id,
++        source_hash=source_hash,
++        recipe=recipe,
++    ).digest()
++    recipe_hash = recipe.recipe_hash
++    output_contract_hash = recipe.output_contract_hash
++    with conn:
++        row = conn.execute(
++            """
++            UPDATE embedding_derivation_state
++            SET generation = generation + 1,
++                derivation_key = ?,
++                source_hash = ?,
++                recipe_hash = ?,
++                output_contract_hash = ?,
++                attempt_state = 'pending',
++                message_count = 0,
++                updated_at_ms = ?
++            WHERE session_id = ?
++              AND generation = ?
++              AND derivation_key = ?
++              AND attempt_state = 'pending'
++            RETURNING generation
++            """,
++            (
++                derivation_key,
++                source_hash,
++                recipe_hash,
++                output_contract_hash,
++                now_ms,
++                attempt.session_id,
++                attempt.generation,
++                attempt.derivation_key,
++            ),
++        ).fetchone()
++        if row is None:
++            return None
++        generation = int(row[0])
++        conn.execute(
++            """
++            UPDATE embedding_status
++            SET needs_reindex = 1, error_message = NULL
++            WHERE session_id = ?
++            """,
++            (attempt.session_id,),
++        )
++    return ArchiveEmbeddingAttempt(
++        session_id=attempt.session_id,
++        origin=attempt.origin,
++        generation=generation,
++        derivation_key=derivation_key,
++        source_hash=source_hash,
++        recipe_hash=recipe_hash,
++        output_contract_hash=output_contract_hash,
++    )
+ 
+ 
+ def upsert_message_embedding(
+@@ -104,46 +280,195 @@ def upsert_message_embedding(
+     return read_embedding_meta(conn, message_id)
+ 
+ 
++def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
++    if len(write.embedding) != EMBEDDING_DIMENSION:
++        raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
++    if len(write.content_hash) != 32:
++        raise ValueError("content_hash must be a SHA-256 value")
++    recipe = EmbeddingRecipe.current(model=write.model, dimensions=EMBEDDING_DIMENSION)
++    recipe_hash = write.recipe_hash or recipe.recipe_hash
++    derivation_key = write.derivation_key or message_embedding_derivation_key(
++        message_id=write.message_id,
++        content_hash=write.content_hash,
++        recipe=recipe,
++    ).digest()
++    return ArchiveEmbeddingWrite(
++        message_id=write.message_id,
++        session_id=write.session_id,
++        origin=write.origin,
++        embedding=write.embedding,
++        model=write.model,
++        embedded_at_ms=write.embedded_at_ms,
++        content_hash=write.content_hash,
++        recipe_hash=recipe_hash,
++        derivation_key=derivation_key,
++        generation=write.generation,
++    )
++
++
++def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[ArchiveEmbeddingWrite]) -> None:
++    for raw_write in writes:
++        write = _prepared_write(raw_write)
++        origin_value = _enum_value(write.origin)
++        conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (write.message_id,))
++        conn.execute(
++            """
++            INSERT INTO message_embeddings (message_id, embedding, session_id, origin)
++            VALUES (?, ?, ?, ?)
++            """,
++            (write.message_id, _serialize_f32(write.embedding), write.session_id, origin_value),
++        )
++        conn.execute(
++            """
++            INSERT INTO message_embeddings_meta (
++                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex,
++                recipe_hash, derivation_key, generation
++            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
++            ON CONFLICT(message_id) DO UPDATE SET
++                model = excluded.model,
++                dimension = excluded.dimension,
++                content_hash = excluded.content_hash,
++                embedded_at_ms = excluded.embedded_at_ms,
++                needs_reindex = 0,
++                recipe_hash = excluded.recipe_hash,
++                derivation_key = excluded.derivation_key,
++                generation = excluded.generation
++            """,
++            (
++                write.message_id,
++                write.model,
++                EMBEDDING_DIMENSION,
++                write.content_hash,
++                write.embedded_at_ms,
++                write.recipe_hash,
++                write.derivation_key,
++                write.generation,
++            ),
++        )
++
++
+ def upsert_message_embeddings(
+     conn: sqlite3.Connection,
+     writes: Sequence[ArchiveEmbeddingWrite],
+ ) -> None:
+-    """Upsert message vectors and metadata in one transaction."""
+-    for write in writes:
+-        if len(write.embedding) != EMBEDDING_DIMENSION:
+-            raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
++    """Upsert message vectors and metadata in one transaction.
++
++    Session materialization should use :func:`complete_embedding_attempt_success`
++    so vector/meta replacement and the generation-guarded terminal state commit
++    atomically.  This lower-level helper remains for direct one-off writers.
++    """
+ 
+     with conn:
+-        for write in writes:
+-            origin_value = _enum_value(write.origin)
+-            conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (write.message_id,))
+-            conn.execute(
+-                """
+-                INSERT INTO message_embeddings (message_id, embedding, session_id, origin)
+-                VALUES (?, ?, ?, ?)
+-                """,
+-                (write.message_id, _serialize_f32(write.embedding), write.session_id, origin_value),
+-            )
++        _write_message_embeddings(conn, writes)
++
++
++def complete_embedding_attempt_success(
++    conn: sqlite3.Connection,
++    *,
++    attempt: ArchiveEmbeddingAttempt,
++    writes: Sequence[ArchiveEmbeddingWrite],
++    completed_at_ms: int | None = None,
++) -> bool:
++    """Atomically replace one session's vectors and clear debt for this exact attempt.
++
++    Returns ``False`` when a newer generation/key has superseded the caller;
++    no vector, metadata, status, or failure lifecycle rows are then changed.
++    """
++
++    now_ms = int(time.time() * 1000) if completed_at_ms is None else completed_at_ms
++    prepared = tuple(_prepared_write(write) for write in writes)
++    message_ids: set[str] = set()
++    source_digest = EmbeddingSourceDigest()
++    for write in sorted(prepared, key=lambda item: item.message_id):
++        if write.session_id != attempt.session_id:
++            raise ValueError("all embedding writes must belong to the attempt session")
++        if write.message_id in message_ids:
++            raise ValueError("embedding attempt writes must have unique message ids")
++        message_ids.add(write.message_id)
++        if write.generation != attempt.generation:
++            raise ValueError("embedding write generation must match the owning attempt")
++        if write.recipe_hash != attempt.recipe_hash:
++            raise ValueError("embedding write recipe must match the owning attempt")
++        expected_message_key = message_embedding_derivation_digest_from_hashes(
++            message_id=write.message_id,
++            content_hash=write.content_hash,
++            recipe_hash=attempt.recipe_hash,
++            output_contract_hash=attempt.output_contract_hash,
++        )
++        if write.derivation_key != expected_message_key:
++            raise ValueError("embedding write key must match its message content and attempt recipe")
++        source_digest.update(write.message_id, write.content_hash)
++    if source_digest.digest() != attempt.source_hash:
++        raise ValueError("embedding writes must cover the attempt's exact source identity")
++    message_count = len(prepared)
++
++    with conn:
++        current = conn.execute(
++            """
++            SELECT 1
++            FROM embedding_derivation_state
++            WHERE session_id = ?
++              AND generation = ?
++              AND derivation_key = ?
++              AND attempt_state = 'pending'
++            """,
++            (attempt.session_id, attempt.generation, attempt.derivation_key),
++        ).fetchone()
++        if current is None:
++            return False
++
++        prior_message_ids = tuple(
++            str(row[0])
++            for row in conn.execute(
++                "SELECT message_id FROM message_embeddings WHERE session_id = ?",
++                (attempt.session_id,),
++            ).fetchall()
++        )
++        conn.execute("DELETE FROM message_embeddings WHERE session_id = ?", (attempt.session_id,))
++        if prior_message_ids:
++            placeholders = ", ".join("?" for _ in prior_message_ids)
+             conn.execute(
+-                """
+-                INSERT INTO message_embeddings_meta (
+-                    message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+-                ) VALUES (?, ?, ?, ?, ?, 0)
+-                ON CONFLICT(message_id) DO UPDATE SET
+-                    model = excluded.model,
+-                    dimension = excluded.dimension,
+-                    content_hash = excluded.content_hash,
+-                    embedded_at_ms = excluded.embedded_at_ms,
+-                    needs_reindex = 0
+-                """,
+-                (
+-                    write.message_id,
+-                    write.model,
+-                    EMBEDDING_DIMENSION,
+-                    write.content_hash,
+-                    write.embedded_at_ms,
+-                ),
++                f"DELETE FROM message_embeddings_meta WHERE message_id IN ({placeholders})",
++                prior_message_ids,
+             )
++        _write_message_embeddings(conn, prepared)
++        updated = conn.execute(
++            """
++            UPDATE embedding_derivation_state
++            SET attempt_state = 'succeeded', message_count = ?, updated_at_ms = ?
++            WHERE session_id = ?
++              AND generation = ?
++              AND derivation_key = ?
++              AND attempt_state = 'pending'
++            """,
++            (message_count, now_ms, attempt.session_id, attempt.generation, attempt.derivation_key),
++        )
++        if updated.rowcount != 1:
++            raise RuntimeError("embedding generation changed inside a guarded success transaction")
++        conn.execute(
++            """
++            INSERT INTO embedding_status (
++                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
++            ) VALUES (?, ?, ?, ?, 0, NULL)
++            ON CONFLICT(session_id) DO UPDATE SET
++                origin = excluded.origin,
++                message_count_embedded = excluded.message_count_embedded,
++                last_embedded_at_ms = excluded.last_embedded_at_ms,
++                needs_reindex = 0,
++                error_message = NULL
++            """,
++            (attempt.session_id, attempt.origin, message_count, now_ms),
++        )
++        conn.execute(
++            """
++            UPDATE embedding_failures
++            SET lifecycle_state = 'resolved', updated_at_ms = ?, resolved_at_ms = ?,
++                resolution_action = 'embedded'
++            WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
++            """,
++            (now_ms, now_ms, attempt.session_id),
++        )
++    return True
+ 
+ 
+ def mark_session_embedding_error(
+@@ -153,8 +478,15 @@ def mark_session_embedding_error(
+     origin: Origin | str,
+     error_message: str,
+     retryable: bool = True,
++    attempt: ArchiveEmbeddingAttempt | None = None,
+ ) -> ArchiveEmbeddingStatus:
+-    """Record a failure with a status projection for compatibility callers."""
++    """Record a failure with a status projection for compatibility callers.
++
++    A legacy database with no derivation row retains the old projection
++    behavior. Once a derivation row exists, callers need its captured attempt
++    token to mutate freshness state.
++    """
++
+     record_embedding_failure(
+         conn,
+         session_id=session_id,
+@@ -165,6 +497,7 @@ def mark_session_embedding_error(
+         error_class="embedding_error",
+         error_message=error_message,
+         retryable=retryable,
++        attempt=attempt,
+     )
+     return read_embedding_status(conn, session_id)
+ 
+@@ -181,42 +514,101 @@ def record_embedding_failure(
+     error_message: str,
+     retryable: bool,
+     occurred_at_ms: int | None = None,
++    attempt: ArchiveEmbeddingAttempt | None = None,
+ ) -> ArchiveEmbeddingFailure:
+-    """Persist one inspectable failure event and its current retry lifecycle."""
++    """Persist one inspectable failure and conditionally project its current state."""
+ 
++    if attempt is not None and attempt.session_id != session_id:
++        raise ValueError("embedding failure session must match the captured attempt")
+     now_ms = int(time.time() * 1000) if occurred_at_ms is None else occurred_at_ms
+     failure_id = f"embedding-failure:{uuid.uuid4()}"
+-    state: EmbeddingFailureState = "retryable" if retryable else "terminal"
+     origin_value = _enum_value(origin)
+     refs = tuple(dict.fromkeys(str(ref) for ref in message_refs))
++    desired_state = "failed_retryable" if retryable else "failed_terminal"
++    lifecycle: EmbeddingFailureState = "retryable" if retryable else "terminal"
++    applied = False
++    stale_attempt = False
++    legacy_projection = False
+     with conn:
+-        conn.execute(
+-            """
+-            INSERT INTO embedding_status (
+-                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+-            ) VALUES (?, ?, 0, NULL, ?, ?)
+-            ON CONFLICT(session_id) DO UPDATE SET
+-                origin = excluded.origin,
+-                needs_reindex = excluded.needs_reindex,
+-                error_message = excluded.error_message
+-            """,
+-            (session_id, origin_value, 1 if retryable else 0, error_message),
+-        )
+-        conn.execute(
+-            """
+-            UPDATE embedding_failures
+-            SET lifecycle_state = 'superseded', updated_at_ms = ?, resolved_at_ms = ?,
+-                resolution_action = 'superseded', superseded_by = ?
+-            WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
+-            """,
+-            (now_ms, now_ms, failure_id, session_id),
+-        )
++        if attempt is not None:
++            updated = conn.execute(
++                """
++                UPDATE embedding_derivation_state
++                SET attempt_state = ?, updated_at_ms = ?
++                WHERE session_id = ?
++                  AND generation = ?
++                  AND derivation_key = ?
++                  AND attempt_state = 'pending'
++                """,
++                (desired_state, now_ms, session_id, attempt.generation, attempt.derivation_key),
++            )
++            applied = updated.rowcount == 1
++            stale_attempt = not applied
++        else:
++            legacy_projection = not _session_has_embedding_derivation_state(conn, session_id)
++            if not legacy_projection:
++                # An unscoped receipt cannot be authoritative once this
++                # session has an exact key/generation. Preserve it only as
++                # superseded evidence; never project it onto current state.
++                stale_attempt = True
++                lifecycle = "superseded"
++        if applied:
++            conn.execute(
++                """
++                INSERT INTO embedding_status (
++                    session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
++                ) VALUES (?, ?, 0, NULL, ?, ?)
++                ON CONFLICT(session_id) DO UPDATE SET
++                    origin = excluded.origin,
++                    needs_reindex = excluded.needs_reindex,
++                    error_message = excluded.error_message
++                """,
++                (session_id, origin_value, 1 if retryable else 0, error_message),
++            )
++            conn.execute(
++                """
++                UPDATE embedding_failures
++                SET lifecycle_state = 'superseded', updated_at_ms = ?, resolved_at_ms = ?,
++                    resolution_action = 'superseded', superseded_by = ?
++                WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
++                """,
++                (now_ms, now_ms, failure_id, session_id),
++            )
++        elif stale_attempt:
++            lifecycle = "superseded"
++        elif legacy_projection:
++            # Databases/callers predating the derivation ledger keep their
++            # established failure lifecycle. This branch cannot clobber a
++            # newer generation because no generation exists for the session.
++            conn.execute(
++                """
++                INSERT INTO embedding_status (
++                    session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
++                ) VALUES (?, ?, 0, NULL, ?, ?)
++                ON CONFLICT(session_id) DO UPDATE SET
++                    origin = excluded.origin,
++                    needs_reindex = excluded.needs_reindex,
++                    error_message = excluded.error_message
++                """,
++                (session_id, origin_value, 1 if retryable else 0, error_message),
++            )
++            conn.execute(
++                """
++                UPDATE embedding_failures
++                SET lifecycle_state = 'superseded', updated_at_ms = ?, resolved_at_ms = ?,
++                    resolution_action = 'superseded', superseded_by = ?
++                WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
++                """,
++                (now_ms, now_ms, failure_id, session_id),
++            )
+         conn.execute(
+             """
+             INSERT INTO embedding_failures (
+                 failure_id, session_id, origin, message_refs_json, provider, model,
+-                error_class, error_message, retryable, lifecycle_state, created_at_ms, updated_at_ms
+-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                error_class, error_message, retryable, lifecycle_state, created_at_ms, updated_at_ms,
++                resolved_at_ms, resolution_action,
++                generation, derivation_key, source_hash, recipe_hash
++            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             """,
+             (
+                 failure_id,
+@@ -228,9 +620,15 @@ def record_embedding_failure(
+                 error_class,
+                 error_message,
+                 int(retryable),
+-                state,
++                lifecycle,
+                 now_ms,
+                 now_ms,
++                now_ms if stale_attempt else None,
++                "superseded" if stale_attempt else None,
++                0 if attempt is None else attempt.generation,
++                None if attempt is None else attempt.derivation_key,
++                None if attempt is None else attempt.source_hash,
++                None if attempt is None else attempt.recipe_hash,
+             ),
+         )
+     return read_embedding_failure(conn, failure_id)
+@@ -256,13 +654,21 @@ def resolve_embedding_failure(
+             "requeue": "resolved",
+         }[action],
+     )
++    identity_select = _embedding_failure_identity_select(conn)
+     with conn:
+         row = conn.execute(
+-            "SELECT session_id FROM embedding_failures WHERE failure_id = ? AND lifecycle_state IN ('retryable', 'terminal')",
++            f"""
++            SELECT session_id, {identity_select}
++            FROM embedding_failures
++            WHERE failure_id = ? AND lifecycle_state IN ('retryable', 'terminal')
++            """,
+             (failure_id,),
+         ).fetchone()
+         if row is None:
+             raise KeyError(failure_id)
++        session_id = str(row[0])
++        generation = int(row[1])
++        derivation_key = row[2]
+         conn.execute(
+             """
+             UPDATE embedding_failures
+@@ -272,20 +678,54 @@ def resolve_embedding_failure(
+             """,
+             (state, now_ms, now_ms, action, note, superseded_by, failure_id),
+         )
+-        if action == "requeue":
+-            conn.execute(
+-                "UPDATE embedding_status SET needs_reindex = 1, error_message = NULL WHERE session_id = ?",
+-                (str(row[0]),),
++        if action == "requeue" and generation > 0 and derivation_key is not None:
++            updated = conn.execute(
++                """
++                UPDATE embedding_derivation_state
++                SET attempt_state = 'pending', updated_at_ms = ?
++                WHERE session_id = ? AND generation = ? AND derivation_key = ?
++                  AND attempt_state IN ('failed_retryable', 'failed_terminal')
++                """,
++                (now_ms, session_id, generation, derivation_key),
+             )
+-        else:
+-            # acknowledge/supersede end the retry loop: clear the failure-driven
+-            # requeue flag but keep error_message, which moves the session from
+-            # the pending backlog into the visible blocked count. The guard keeps
+-            # config-change reindex marks (which never set error_message) intact.
+-            conn.execute(
+-                "UPDATE embedding_status SET needs_reindex = 0 WHERE session_id = ? AND error_message IS NOT NULL",
+-                (str(row[0]),),
++            if updated.rowcount == 1:
++                conn.execute(
++                    "UPDATE embedding_status SET needs_reindex = 1, error_message = NULL WHERE session_id = ?",
++                    (session_id,),
++                )
++        elif action != "requeue" and generation > 0 and derivation_key is not None:
++            # Only the still-current failed generation may project a terminal
++            # blocked state. A resolution receipt for an older generation must
++            # not clear a newer pending mark.
++            updated = conn.execute(
++                """
++                UPDATE embedding_derivation_state
++                SET attempt_state = 'failed_terminal', updated_at_ms = ?
++                WHERE session_id = ? AND generation = ? AND derivation_key = ?
++                  AND attempt_state IN ('failed_retryable', 'failed_terminal')
++                """,
++                (now_ms, session_id, generation, derivation_key),
+             )
++            if updated.rowcount == 1:
++                conn.execute(
++                    "UPDATE embedding_status SET needs_reindex = 0 WHERE session_id = ? AND error_message IS NOT NULL",
++                    (session_id,),
++                )
++        elif generation == 0:
++            # A v2 receipt may outlive a rebuild/first keyed attempt. It may
++            # update the audit ledger, but it can project status only while no
++            # exact derivation generation exists for the session.
++            has_derivation_state = _session_has_embedding_derivation_state(conn, session_id)
++            if not has_derivation_state and action == "requeue":
++                conn.execute(
++                    "UPDATE embedding_status SET needs_reindex = 1, error_message = NULL WHERE session_id = ?",
++                    (session_id,),
++                )
++            elif not has_derivation_state:
++                conn.execute(
++                    "UPDATE embedding_status SET needs_reindex = 0 WHERE session_id = ? AND error_message IS NOT NULL",
++                    (session_id,),
++                )
+     return read_embedding_failure(conn, failure_id)
+ 
+ 
+@@ -310,11 +750,12 @@ def resolve_open_embedding_failures_for_session(
+ def list_active_embedding_failures(conn: sqlite3.Connection, *, limit: int = 25) -> tuple[ArchiveEmbeddingFailure, ...]:
+     """Return bounded current failure identities for status and agent surfaces."""
+ 
++    identity_select = _embedding_failure_identity_select(conn)
+     rows = conn.execute(
+-        """
++        f"""
+         SELECT failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message,
+                retryable, lifecycle_state, created_at_ms, updated_at_ms, resolved_at_ms, resolution_action,
+-               resolution_note, superseded_by
++               resolution_note, superseded_by, {identity_select}
+         FROM embedding_failures
+         WHERE lifecycle_state IN ('retryable', 'terminal')
+         ORDER BY updated_at_ms DESC, failure_id ASC
+@@ -326,11 +767,12 @@ def list_active_embedding_failures(conn: sqlite3.Connection, *, limit: int = 25)
+ 
+ 
+ def read_embedding_failure(conn: sqlite3.Connection, failure_id: str) -> ArchiveEmbeddingFailure:
++    identity_select = _embedding_failure_identity_select(conn)
+     row = conn.execute(
+-        """
++        f"""
+         SELECT failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message,
+                retryable, lifecycle_state, created_at_ms, updated_at_ms, resolved_at_ms, resolution_action,
+-               resolution_note, superseded_by
++               resolution_note, superseded_by, {identity_select}
+         FROM embedding_failures WHERE failure_id = ?
+         """,
+         (failure_id,),
+@@ -340,6 +782,37 @@ def read_embedding_failure(conn: sqlite3.Connection, failure_id: str) -> Archive
+     return _failure_from_row(row)
+ 
+ 
++def _session_has_embedding_derivation_state(conn: sqlite3.Connection, session_id: str) -> bool:
++    """Return whether a keyed generation exists, tolerating pre-v3 fixtures."""
++
++    table = conn.execute(
++        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embedding_derivation_state'"
++    ).fetchone()
++    if table is None:
++        return False
++    return (
++        conn.execute(
++            "SELECT 1 FROM embedding_derivation_state WHERE session_id = ?",
++            (session_id,),
++        ).fetchone()
++        is not None
++    )
++
++
++def _embedding_failure_identity_select(conn: sqlite3.Connection) -> str:
++    """Read v3 failure identity columns while tolerating rebuildable v2 fixtures."""
++
++    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_failures)").fetchall()}
++    return ", ".join(
++        (
++            "generation" if "generation" in columns else "0 AS generation",
++            "derivation_key" if "derivation_key" in columns else "NULL AS derivation_key",
++            "source_hash" if "source_hash" in columns else "NULL AS source_hash",
++            "recipe_hash" if "recipe_hash" in columns else "NULL AS recipe_hash",
++        )
++    )
++
++
+ def _failure_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveEmbeddingFailure:
+     message_refs_raw = row[3]
+     try:
+@@ -363,6 +836,10 @@ def _failure_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveEmbedding
+         resolution_action=None if row[13] is None else str(row[13]),
+         resolution_note=None if row[14] is None else str(row[14]),
+         superseded_by=None if row[15] is None else str(row[15]),
++        generation=int(str(row[16])),
++        derivation_key=None if row[17] is None else bytes(row[17]),
++        source_hash=None if row[18] is None else bytes(row[18]),
++        recipe_hash=None if row[19] is None else bytes(row[19]),
+     )
+ 
+ 
+@@ -416,20 +893,24 @@ def _enum_value(value: object) -> str:
+ 
+ 
+ __all__ = [
+-    "ArchiveEmbeddingMeta",
++    "ArchiveEmbeddingAttempt",
+     "ArchiveEmbeddingFailure",
+-    "EmbeddingFailureResolution",
+-    "EmbeddingFailureState",
++    "ArchiveEmbeddingMeta",
+     "ArchiveEmbeddingStatus",
+     "ArchiveEmbeddingWrite",
++    "EmbeddingFailureResolution",
++    "EmbeddingFailureState",
++    "begin_embedding_attempt",
++    "complete_embedding_attempt_success",
+     "list_active_embedding_failures",
+     "mark_session_embedding_error",
+     "read_embedding_failure",
+     "read_embedding_meta",
+     "read_embedding_status",
+-    "upsert_message_embedding",
+-    "upsert_message_embeddings",
+     "record_embedding_failure",
+     "resolve_embedding_failure",
+     "resolve_open_embedding_failures_for_session",
++    "supersede_embedding_attempt",
++    "upsert_message_embedding",
++    "upsert_message_embeddings",
+ ]
+diff --git a/polylogue/storage/sqlite/archive_tiers/embeddings.py b/polylogue/storage/sqlite/archive_tiers/embeddings.py
+index 842807e01f99009b1bc24f9568b7ff3544baa267..39e408a37845e6666e17ca5b09ef19a944cbed4f 100644
+--- a/polylogue/storage/sqlite/archive_tiers/embeddings.py
++++ b/polylogue/storage/sqlite/archive_tiers/embeddings.py
+@@ -2,7 +2,7 @@
+ 
+ from __future__ import annotations
+ 
+-EMBEDDINGS_SCHEMA_VERSION = 2
++EMBEDDINGS_SCHEMA_VERSION = 3
+ EMBEDDING_DIMENSION = 1024
+ 
+ EMBEDDINGS_DDL = f"""
+@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS message_embeddings_meta (
+     dimension       INTEGER NOT NULL CHECK(dimension = {EMBEDDING_DIMENSION}),
+     content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32),
+     embedded_at_ms  INTEGER,
+-    needs_reindex   INTEGER NOT NULL DEFAULT 0 CHECK(needs_reindex IN (0, 1))
++    needs_reindex   INTEGER NOT NULL DEFAULT 0 CHECK(needs_reindex IN (0, 1)),
++    recipe_hash     BLOB CHECK(recipe_hash IS NULL OR length(recipe_hash) = 32),
++    derivation_key  BLOB CHECK(derivation_key IS NULL OR length(derivation_key) = 32),
++    generation      INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0)
+ ) STRICT;
+ 
+ CREATE TABLE IF NOT EXISTS embedding_status (
+@@ -31,6 +34,24 @@ CREATE TABLE IF NOT EXISTS embedding_status (
+     error_message              TEXT
+ ) STRICT;
+ 
++CREATE TABLE IF NOT EXISTS embedding_derivation_state (
++    session_id             TEXT PRIMARY KEY,
++    origin                 TEXT NOT NULL DEFAULT '',
++    generation             INTEGER NOT NULL CHECK(generation >= 1),
++    derivation_key         BLOB NOT NULL CHECK(length(derivation_key) = 32),
++    source_hash            BLOB NOT NULL CHECK(length(source_hash) = 32),
++    recipe_hash            BLOB NOT NULL CHECK(length(recipe_hash) = 32),
++    output_contract_hash   BLOB NOT NULL CHECK(length(output_contract_hash) = 32),
++    attempt_state          TEXT NOT NULL CHECK(attempt_state IN (
++        'pending', 'succeeded', 'failed_retryable', 'failed_terminal'
++    )),
++    message_count          INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
++    updated_at_ms          INTEGER NOT NULL CHECK(updated_at_ms >= 0)
++) STRICT;
++
++CREATE INDEX IF NOT EXISTS idx_embedding_derivation_pending
++ON embedding_derivation_state(attempt_state, recipe_hash, session_id);
++
+ CREATE TABLE IF NOT EXISTS embedding_failures (
+     failure_id          TEXT PRIMARY KEY,
+     session_id          TEXT NOT NULL,
+@@ -49,7 +70,11 @@ CREATE TABLE IF NOT EXISTS embedding_failures (
+     resolved_at_ms      INTEGER,
+     resolution_action   TEXT,
+     resolution_note     TEXT,
+-    superseded_by       TEXT
++    superseded_by       TEXT,
++    generation          INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
++    derivation_key      BLOB CHECK(derivation_key IS NULL OR length(derivation_key) = 32),
++    source_hash         BLOB CHECK(source_hash IS NULL OR length(source_hash) = 32),
++    recipe_hash         BLOB CHECK(recipe_hash IS NULL OR length(recipe_hash) = 32)
+ ) STRICT;
+ 
+ CREATE INDEX IF NOT EXISTS idx_embedding_failures_active
+diff --git a/tests/unit/cli/test_embed_status_fast.py b/tests/unit/cli/test_embed_status_fast.py
+index 13412b96351ef51c8d04eb6f67f59c1676779949..ca60c11d130d83ef2b7110f460b8aff5fc0523b5 100644
+--- a/tests/unit/cli/test_embed_status_fast.py
++++ b/tests/unit/cli/test_embed_status_fast.py
+@@ -524,19 +524,27 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
+     assert payload["message_coverage_percent"] is None
+ 
+ 
+-def test_status_json_default_does_not_exact_count_archive_session_state(
++def test_status_json_default_uses_bounded_exact_archive_session_state(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+ ) -> None:
+     db_anchor = tmp_path / "custom.sqlite"
+     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
++    observed: dict[str, object] = {}
+ 
+-    def fail_exact_session_state(*args: object, **kwargs: object) -> object:
+-        raise AssertionError("default status must not scan exact archive embedding session state")
++    def fake_exact_session_state(*args: object, **kwargs: object) -> tuple[int, int, int]:
++        observed.update(kwargs)
++        return (1, 1, 0)
+ 
+-    monkeypatch.setattr(status_payload_mod, "count_archive_embedding_session_state", fail_exact_session_state)
++    monkeypatch.setattr(
++        status_payload_mod,
++        "_archive_embedding_session_state_exact_with_timeout",
++        fake_exact_session_state,
++    )
+ 
+     payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+ 
++    assert observed["status_table"] == "embeddings.embedding_status"
++    assert observed["timeout_ms"] == status_payload_mod.METADATA_SUMMARY_TIMEOUT_MS
+     assert payload["status"] == "partial"
+     assert payload["embedded_sessions"] == 1
+     assert payload["pending_sessions"] == 1
+diff --git a/tests/unit/daemon/test_embedding_convergence_progress.py b/tests/unit/daemon/test_embedding_convergence_progress.py
+index 7712537857d156dcb4a9e34f263cb876520b12e8..80f587b8eed402fa4669d1240062539e103f445a 100644
+--- a/tests/unit/daemon/test_embedding_convergence_progress.py
++++ b/tests/unit/daemon/test_embedding_convergence_progress.py
+@@ -182,7 +182,10 @@ def test_daemon_embedding_backlog_uses_bounded_pending_window(
+     monkeypatch.setattr("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed)
+ 
+     assert embedding_backlog.drain_embedding_backlog_once(db_path) == 1
+-    assert observed_kwargs["include_stale_checks"] is False
++    assert "include_stale_checks" not in observed_kwargs
++    recipe = observed_kwargs["recipe"]
++    assert recipe.model == "voyage-4"
++    assert recipe.dimensions == 1024
+ 
+ 
+ def test_daemon_embedding_backlog_records_skipped_sessions(
+@@ -274,7 +277,7 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
+     assert embedded_calls == [(index_db, "codex-session:v1-a")]
+ 
+ 
+-def test_archive_convergence_pending_check_reads_embeddings_tier(tmp_path: Path) -> None:
++def test_archive_convergence_pending_check_rejects_status_only_freshness(tmp_path: Path) -> None:
+     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+ 
+@@ -318,7 +321,9 @@ def test_archive_convergence_pending_check_reads_embeddings_tier(tmp_path: Path)
+         conn.commit()
+ 
+     with sqlite3.connect(index_db) as conn:
+-        assert convergence_stages._archive_pending_embedding_session_ids(conn, ["codex-session:v1-a"]) == []
++        assert convergence_stages._archive_pending_embedding_session_ids(conn, ["codex-session:v1-a"]) == [
++            "codex-session:v1-a"
++        ]
+ 
+ 
+ def test_daemon_embedding_backlog_drain_is_noop_when_disabled(
+diff --git a/tests/unit/storage/test_embedding_contracts.py b/tests/unit/storage/test_embedding_contracts.py
+index 63380232eac44ff8f8124aa470fd0dbc30b2bd4c..7b879e5f74373bd2f667022abb35db4aeeeab8c1 100644
+--- a/tests/unit/storage/test_embedding_contracts.py
++++ b/tests/unit/storage/test_embedding_contracts.py
+@@ -893,7 +893,7 @@ def test_pending_archive_window_reselects_stale_message_hash() -> None:
+         conn.close()
+ 
+ 
+-def test_pending_archive_window_can_skip_stale_hash_refinement_for_bounded_backfill() -> None:
++def test_bounded_backfill_mutation_restoring_stale_hash_bypass_misses_changed_content() -> None:
+     conn = sqlite3.connect(":memory:")
+     try:
+         conn.executescript(
+@@ -947,18 +947,16 @@ def test_pending_archive_window_can_skip_stale_hash_refinement_for_bounded_backf
+             status_table="embedding_status",
+             max_sessions=10,
+             max_messages=10,
+-            include_stale_checks=False,
+         )
+ 
+-        assert pending == []
+-        assert [
+-            item.session_id for item in select_pending_archive_session_window(conn, status_table="embedding_status")
+-        ] == ["changed"]
++        assert [item.session_id for item in pending] == ["changed"]
++        exact = select_pending_archive_session_window(conn, status_table="embedding_status")
++        assert [item.session_id for item in exact] == ["changed"]
+     finally:
+         conn.close()
+ 
+ 
+-def test_pending_archive_window_bounded_mode_trusts_clean_status_over_rollup_estimate() -> None:
++def test_bounded_archive_window_uses_the_same_freshness_predicate_as_unbounded_mode() -> None:
+     conn = sqlite3.connect(":memory:")
+     try:
+         conn.executescript(
+@@ -1003,7 +1001,6 @@ def test_pending_archive_window_bounded_mode_trusts_clean_status_over_rollup_est
+             status_table="embedding_status",
+             max_sessions=10,
+             max_messages=20,
+-            include_stale_checks=False,
+         )
+         exact = select_pending_archive_session_window(conn, status_table="embedding_status")
+ 
+@@ -1579,7 +1576,7 @@ def test_archive_local_fault_is_not_ledgered_as_provider_failure(
+     def _raise_write_fault(*args: object, **kwargs: object) -> None:
+         raise sqlite3.OperationalError("database is locked")
+ 
+-    monkeypatch.setattr(embedding_write_module, "upsert_message_embeddings", _raise_write_fault)
++    monkeypatch.setattr(embedding_write_module, "complete_embedding_attempt_success", _raise_write_fault)
+     outcome = embed_archive_session_sync(index_db, _FakeV1VectorProvider(), session_id)
+     assert outcome.status == "error"
+ 
+diff --git a/tests/unit/storage/test_embedding_freshness_invariant.py b/tests/unit/storage/test_embedding_freshness_invariant.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8da571936856b109742bc3915898e6b2069630c5
+--- /dev/null
++++ b/tests/unit/storage/test_embedding_freshness_invariant.py
+@@ -0,0 +1,550 @@
++"""Production-route proof for the monotonic embedding freshness invariant.
++
++Each selector test starts with a genuinely materialized archive session, then
++performs a same-id/same-count full replacement whose message content hash
++changes while the compatibility ``embedding_status`` row remains clean.  The
++only reason the session is selected is the shared exact DerivationKey
++predicate.  The mutation named in each test is the historical bypass that made
++that route silently trust the clean status row.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from dataclasses import fields, replace
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++from polylogue.archive.message.roles import Role
++from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider
++from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
++from polylogue.storage.derivation_identity import (
++    DerivationIdentity,
++    DerivationKey,
++    DerivationKeyLike,
++    DerivationSubject,
++)
++from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest
++from polylogue.storage.embeddings.materialization import (
++    EmbedSessionOutcome,
++    embed_archive_session_sync,
++    select_pending_archive_session_window,
++)
++from polylogue.storage.embeddings.preflight import PreflightReport, build_preflight_report
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
++from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
++from polylogue.storage.sqlite.archive_tiers.embedding_write import (
++    begin_embedding_attempt,
++    mark_session_embedding_error,
++    resolve_embedding_failure,
++)
++from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
++from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
++
++_INITIAL_TEXT = "Initial authored archive prose that is long enough for an embedding vector."
++_CHANGED_TEXT = "Changed authored archive prose that keeps the same identity and message count."
++
++
++class _FakeVectorProvider:
++    model = "voyage-4"
++    dimension = 1024
++
++    def __init__(self, value: float = 0.01) -> None:
++        self.value = value
++
++    def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
++        assert input_type == "document"
++        return [[self.value] * self.dimension for _ in texts]
++
++    def upsert(self, *args: object, **kwargs: object) -> None:
++        raise AssertionError("archive materialization must use the archive embedding route")
++
++    def query(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
++        return []
++
++    def query_by_session(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
++        return []
++
++
++class _EmbeddingConfig(dict[str, object]):
++    embedding_model = "voyage-4"
++    embedding_dimension = 1024
++    embedding_max_cost_usd = 0.0
++
++    def __init__(self, *, model: str = "voyage-4", api_key: str | None = "test-key") -> None:
++        super().__init__(
++            voyage_api_key=api_key,
++            embedding_max_cost_usd=0.0,
++            embedding_model=model,
++            embedding_dimension=1024,
++        )
++        self.embedding_model = model
++        self.embedding_dimension = 1024
++        self.embedding_max_cost_usd = 0.0
++
++
++def _write_archive_session(root: Path, *, native_id: str, text: str) -> str:
++    with ArchiveStore(root) as archive:
++        return archive.write_parsed(
++            ParsedSession(
++                source_name=Provider.CODEX,
++                provider_session_id=native_id,
++                messages=[
++                    ParsedMessage(
++                        provider_message_id="m1",
++                        role=Role.USER,
++                        text=text,
++                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
++                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
++                    )
++                ],
++            )
++        )
++
++
++def _fresh_then_change(root: Path, *, native_id: str = "freshness-route") -> tuple[Path, Path, str]:
++    session_id = _write_archive_session(root, native_id=native_id, text=_INITIAL_TEXT)
++    index_db = root / "index.db"
++    embeddings_db = root / "embeddings.db"
++    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
++    outcome = embed_archive_session_sync(index_db, _FakeVectorProvider(), session_id)
++    assert outcome.status == "embedded"
++
++    replaced_session_id = _write_archive_session(root, native_id=native_id, text=_CHANGED_TEXT)
++    assert replaced_session_id == session_id
++    return index_db, embeddings_db, session_id
++
++
++def _recipe(model: str = "voyage-4") -> EmbeddingRecipe:
++    return EmbeddingRecipe.current(model=model, dimensions=1024)
++
++
++def _open_embeddings(path: Path) -> sqlite3.Connection:
++    conn = sqlite3.connect(path)
++    loaded, error = try_load_sqlite_vec(conn)
++    if not loaded:
++        conn.close()
++        pytest.skip(error or "sqlite-vec extension is unavailable")
++    return conn
++
++
++def test_per_source_convergence_mutation_removing_shared_predicate_misses_changed_content(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Production dependency: convergence's per-source pending-id selector."""
++    from polylogue.daemon import convergence_stages
++    from polylogue.storage.embeddings import materialization
++
++    index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
++    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: _EmbeddingConfig())
++
++    with sqlite3.connect(index_db) as conn:
++        selected = convergence_stages._archive_pending_embedding_session_ids(conn, [session_id])
++
++    assert selected == [session_id]
++
++
++def test_daemon_backlog_mutation_restoring_stale_check_bypass_misses_changed_content(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Production dependency: the daemon catch-up loop's real selection route."""
++    from polylogue.daemon import embedding_backlog
++    from polylogue.storage import search_providers
++    from polylogue.storage.embeddings import materialization
++
++    index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
++    selected: list[str] = []
++
++    def _observe_embed(_index_db: Path, _provider: object, selected_session_id: str) -> EmbedSessionOutcome:
++        selected.append(selected_session_id)
++        return EmbedSessionOutcome(status="embedded", session_id=selected_session_id, embedded_message_count=1)
++
++    monkeypatch.setattr(embedding_backlog, "load_polylogue_config", lambda: _EmbeddingConfig())
++    monkeypatch.setattr(search_providers, "create_vector_provider", lambda **_kwargs: object())
++    monkeypatch.setattr(materialization, "embed_archive_session_sync", _observe_embed)
++    monkeypatch.setattr(embedding_backlog, "_upsert_archive_embedding_catchup_run", lambda *_args, **_kwargs: "run")
++
++    assert embedding_backlog._drain_archive_embedding_backlog_once(index_db) == 1
++    assert selected == [session_id]
++
++
++def test_manual_backfill_mutation_restoring_stale_check_bypass_misses_changed_content(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Production dependency: ``polylogue embed`` archive backfill selection."""
++    from polylogue.cli.commands import embed as embed_command
++    from polylogue.storage.embeddings import materialization
++
++    index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
++    selected: list[str] = []
++
++    def _observe_embed(_index_db: Path, _provider: object, selected_session_id: str) -> EmbedSessionOutcome:
++        selected.append(selected_session_id)
++        return EmbedSessionOutcome(status="embedded", session_id=selected_session_id, embedded_message_count=1)
++
++    monkeypatch.setattr(materialization, "embed_archive_session_sync", _observe_embed)
++    monkeypatch.setattr(embed_command, "_record_archive_backfill_run", lambda *_args, **_kwargs: None)
++    report = PreflightReport(
++        total_sessions=1,
++        pending_sessions=1,
++        pending_messages=1,
++        estimated_tokens=1,
++        estimated_cost_usd=0.0,
++        model="voyage-4",
++        dimension=1024,
++        cost_cap_usd=0.0,
++    )
++    env = SimpleNamespace(ui=SimpleNamespace(console=SimpleNamespace(print=lambda *_args, **_kwargs: None)))
++
++    payload = embed_command._run_archive_backfill(
++        env,
++        index_db,
++        object(),
++        report,
++        rebuild=False,
++        max_sessions=None,
++        stop_after_seconds=None,
++        max_errors=None,
++        output_format="json",
++    )
++
++    assert payload["candidate_sessions"] == 1
++    assert selected == [session_id]
++
++
++def test_preflight_mutation_restoring_stale_check_bypass_misses_changed_content(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Production dependency: the public preflight report, not a private SQL copy."""
++    from polylogue import config as config_module
++
++    index_db, _embeddings_db, _session_id = _fresh_then_change(tmp_path / "archive")
++    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _EmbeddingConfig())
++
++    report = build_preflight_report(index_db)
++
++    assert report.total_sessions == 1
++    assert report.pending_sessions == 1
++    assert report.pending_messages == 1
++
++
++def test_recipe_model_swap_makes_every_materialized_session_stale(tmp_path: Path) -> None:
++    root = tmp_path / "archive"
++    session_ids = [
++        _write_archive_session(root, native_id=native_id, text=f"{_INITIAL_TEXT} {native_id}")
++        for native_id in ("recipe-a", "recipe-b")
++    ]
++    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
++    for session_id in session_ids:
++        assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
++
++    with sqlite3.connect(root / "index.db") as conn:
++        conn.execute("ATTACH DATABASE ? AS embeddings", (str(root / "embeddings.db"),))
++        assert select_pending_archive_session_window(
++            conn,
++            status_table="embeddings.embedding_status",
++            recipe=_recipe("voyage-4"),
++        ) == []
++        swapped = select_pending_archive_session_window(
++            conn,
++            status_table="embeddings.embedding_status",
++            recipe=_recipe("voyage-5"),
++        )
++
++    assert {item.session_id for item in swapped} == set(session_ids)
++
++
++def test_config_change_then_old_terminal_error_cannot_clear_new_generation(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Deterministic actor ordering; deleting the generation/key WHERE guard fails."""
++    from polylogue.daemon import convergence_stages
++
++    embeddings_db = tmp_path / "embeddings.db"
++    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
++    conn = sqlite3.connect(embeddings_db)
++    conn.row_factory = sqlite3.Row
++    try:
++        source = EmbeddingSourceDigest()
++        source.update("codex-session:race:m1", b"x" * 32)
++        old_attempt = begin_embedding_attempt(
++            conn,
++            session_id="codex-session:race",
++            origin=Origin.CODEX_SESSION,
++            source_hash=source.digest(),
++            recipe=_recipe("voyage-4"),
++            started_at_ms=1_800_000_000_000,
++        )
++
++        monkeypatch.setattr(
++            convergence_stages,
++            "load_polylogue_config",
++            lambda: _EmbeddingConfig(model="voyage-5"),
++        )
++        convergence_stages._reconcile_embedding_config_change(conn)
++        conn.commit()
++
++        status = mark_session_embedding_error(
++            conn,
++            session_id=old_attempt.session_id,
++            origin=Origin.CODEX_SESSION,
++            error_message="Embedding generation failed: HTTP 400",
++            retryable=False,
++            attempt=old_attempt,
++        )
++        state = conn.execute(
++            """
++            SELECT generation, recipe_hash, attempt_state
++            FROM embedding_derivation_state WHERE session_id = ?
++            """,
++            (old_attempt.session_id,),
++        ).fetchone()
++        failure = conn.execute(
++            """
++            SELECT lifecycle_state, generation, derivation_key
++            FROM embedding_failures WHERE session_id = ? ORDER BY created_at_ms DESC LIMIT 1
++            """,
++            (old_attempt.session_id,),
++        ).fetchone()
++    finally:
++        conn.close()
++
++    assert state is not None
++    assert state["generation"] == old_attempt.generation + 1
++    assert bytes(state["recipe_hash"]) == _recipe("voyage-5").recipe_hash
++    assert state["attempt_state"] == "pending"
++    assert status.needs_reindex is True
++    assert status.error_message is None
++    assert failure is not None
++    assert failure["lifecycle_state"] == "superseded"
++    assert failure["generation"] == old_attempt.generation
++    assert bytes(failure["derivation_key"]) == old_attempt.derivation_key
++
++
++def test_archive_check_reconciles_recipe_on_sibling_embeddings_tier(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Production dependency: convergence must advance ``embeddings.db``, not ``index.db``."""
++    from polylogue.daemon import convergence_stages
++    from polylogue.storage.embeddings import materialization
++
++    root = tmp_path / "archive"
++    session_id = _write_archive_session(root, native_id="sibling-recipe", text=_INITIAL_TEXT)
++    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
++    assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
++
++    with sqlite3.connect(root / "embeddings.db") as conn:
++        before = conn.execute(
++            "SELECT generation FROM embedding_derivation_state WHERE session_id = ?",
++            (session_id,),
++        ).fetchone()
++    assert before is not None
++
++    changed_config = _EmbeddingConfig(model="voyage-5")
++    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: changed_config)
++    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: changed_config)
++
++    assert convergence_stages._archive_embed_check_sessions(root / "index.db", [session_id]) == {session_id}
++
++    with sqlite3.connect(root / "embeddings.db") as conn:
++        state = conn.execute(
++            """
++            SELECT generation, recipe_hash, attempt_state
++            FROM embedding_derivation_state WHERE session_id = ?
++            """,
++            (session_id,),
++        ).fetchone()
++        status = conn.execute(
++            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
++            (session_id,),
++        ).fetchone()
++
++    assert state is not None
++    assert state[0] == int(before[0]) + 1
++    assert bytes(state[1]) == _recipe("voyage-5").recipe_hash
++    assert state[2] == "pending"
++    assert status == (1, None)
++
++
++def test_unscoped_or_legacy_failure_receipt_cannot_project_over_keyed_generation(tmp_path: Path) -> None:
++    """Mutation: allowing generation-zero status writes clears a newer pending mark."""
++    embeddings_db = tmp_path / "embeddings.db"
++    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
++    conn = sqlite3.connect(embeddings_db)
++    conn.row_factory = sqlite3.Row
++    try:
++        legacy_failure = mark_session_embedding_error(
++            conn,
++            session_id="codex-session:legacy-race",
++            origin=Origin.CODEX_SESSION,
++            error_message="old terminal failure",
++            retryable=False,
++        )
++        failure_id = str(
++            conn.execute(
++                "SELECT failure_id FROM embedding_failures WHERE session_id = ?",
++                (legacy_failure.session_id,),
++            ).fetchone()[0]
++        )
++
++        source = EmbeddingSourceDigest()
++        source.update("codex-session:legacy-race:m1", b"y" * 32)
++        attempt = begin_embedding_attempt(
++            conn,
++            session_id=legacy_failure.session_id,
++            origin=Origin.CODEX_SESSION,
++            source_hash=source.digest(),
++            recipe=_recipe(),
++            started_at_ms=1_800_000_000_001,
++        )
++
++        resolve_embedding_failure(conn, failure_id=failure_id, action="acknowledge")
++        status_after_legacy_resolution = conn.execute(
++            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
++            (attempt.session_id,),
++        ).fetchone()
++        state_after_legacy_resolution = conn.execute(
++            "SELECT generation, derivation_key, attempt_state FROM embedding_derivation_state WHERE session_id = ?",
++            (attempt.session_id,),
++        ).fetchone()
++
++        unscoped = mark_session_embedding_error(
++            conn,
++            session_id=attempt.session_id,
++            origin=Origin.CODEX_SESSION,
++            error_message="unscoped late failure",
++            retryable=False,
++        )
++        latest_receipt = conn.execute(
++            """
++            SELECT lifecycle_state, generation, derivation_key
++            FROM embedding_failures
++            WHERE session_id = ?
++            ORDER BY created_at_ms DESC, failure_id DESC
++            LIMIT 1
++            """,
++            (attempt.session_id,),
++        ).fetchone()
++    finally:
++        conn.close()
++
++    assert tuple(status_after_legacy_resolution) == (1, None)
++    assert state_after_legacy_resolution is not None
++    assert state_after_legacy_resolution[0] == attempt.generation
++    assert bytes(state_after_legacy_resolution[1]) == attempt.derivation_key
++    assert state_after_legacy_resolution[2] == "pending"
++    assert unscoped.needs_reindex is True
++    assert unscoped.error_message is None
++    assert latest_receipt is not None
++    assert latest_receipt["lifecycle_state"] == "superseded"
++    assert latest_receipt["generation"] == 0
++    assert latest_receipt["derivation_key"] is None
++
++
++def test_same_id_full_replace_reselects_and_atomically_replaces_vector_and_meta(tmp_path: Path) -> None:
++    root = tmp_path / "archive"
++    session_id = _write_archive_session(root, native_id="full-replace", text=_INITIAL_TEXT)
++    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
++    assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(0.01), session_id).status == "embedded"
++
++    conn = _open_embeddings(root / "embeddings.db")
++    try:
++        old_message_id, old_hash, old_vector = conn.execute(
++            """
++            SELECT m.message_id, mm.content_hash, m.embedding
++            FROM message_embeddings AS m
++            JOIN message_embeddings_meta AS mm USING (message_id)
++            WHERE m.session_id = ?
++            """,
++            (session_id,),
++        ).fetchone()
++    finally:
++        conn.close()
++
++    assert _write_archive_session(root, native_id="full-replace", text=_CHANGED_TEXT) == session_id
++    with sqlite3.connect(root / "index.db") as conn:
++        conn.execute("ATTACH DATABASE ? AS embeddings", (str(root / "embeddings.db"),))
++        pending = select_pending_archive_session_window(
++            conn,
++            status_table="embeddings.embedding_status",
++            recipe=_recipe(),
++        )
++    assert [item.session_id for item in pending] == [session_id]
++
++    assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(0.02), session_id).status == "embedded"
++    index_conn = sqlite3.connect(root / "index.db")
++    embed_conn = _open_embeddings(root / "embeddings.db")
++    try:
++        current_message_id, current_hash = index_conn.execute(
++            "SELECT message_id, content_hash FROM messages WHERE session_id = ?",
++            (session_id,),
++        ).fetchone()
++        rows = embed_conn.execute(
++            """
++            SELECT m.message_id, mm.content_hash, m.embedding
++            FROM message_embeddings AS m
++            JOIN message_embeddings_meta AS mm USING (message_id)
++            WHERE m.session_id = ?
++            """,
++            (session_id,),
++        ).fetchall()
++    finally:
++        index_conn.close()
++        embed_conn.close()
++
++    assert len(rows) == 1
++    assert rows[0][0] == old_message_id == current_message_id
++    assert bytes(rows[0][1]) == bytes(current_hash)
++    assert bytes(rows[0][1]) != bytes(old_hash)
++    assert bytes(rows[0][2]) != bytes(old_vector)
++
++
++def test_derivation_key_value_shape_is_storage_neutral_and_generation_free() -> None:
++    key = DerivationKey(
++        subject=DerivationSubject(reference="session:1", grain="message-vectors"),
++        source_identity=DerivationIdentity.from_mapping("source.v1", {"sha256": b"s" * 32}),
++        recipe_identity=DerivationIdentity.from_mapping("recipe.v1", {"model": "voyage-4"}),
++        output_contract=DerivationIdentity.from_mapping("output.v1", {"dimensions": 1024}),
++    )
++
++    assert isinstance(key, DerivationKeyLike)
++    assert tuple(field.name for field in fields(DerivationKey)) == (
++        "subject",
++        "source_identity",
++        "recipe_identity",
++        "output_contract",
++    )
++    assert key.digest() == key.digest()
++    assert all(
++        excluded not in key.canonical_bytes().decode("utf-8")
++        for excluded in ("generation", "producer", "eligibility", "privacy", "result_hash")
++    )
++
++
++@pytest.mark.parametrize(
++    ("field_name", "changed_value"),
++    [
++        ("canonicalization", "changed-canonicalization"),
++        ("record_selector", "changed-selector"),
++        ("chunking_version", "changed-chunking"),
++        ("provider", "changed-provider"),
++        ("model", "changed-model"),
++        ("model_revision", "changed-revision"),
++        ("dimensions", 768),
++        ("task", "changed-task"),
++        ("input_type", "changed-input-type"),
++        ("normalization", "changed-normalization"),
++        ("tool_implementation", "changed-tool"),
++        ("input_schema_version", "changed-input-schema"),
++    ],
++)
++def test_recipe_mutation_removing_any_declared_computational_field_preserves_wrong_reuse(
++    field_name: str,
++    changed_value: str | int,
++) -> None:
++    baseline = _recipe()
++    changed = replace(baseline, **{field_name: changed_value})
++
++    assert changed.recipe_hash != baseline.recipe_hash
+diff --git a/tests/unit/storage/test_embedding_orphan_reconcile.py b/tests/unit/storage/test_embedding_orphan_reconcile.py
+index 2be7949e77d64d559288c947f16a9c7f79001125..c27ad18c0c617c647de889e44dbc4d24a7f3fac8 100644
+--- a/tests/unit/storage/test_embedding_orphan_reconcile.py
++++ b/tests/unit/storage/test_embedding_orphan_reconcile.py
+@@ -212,7 +212,6 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) ->
+         pending = select_pending_archive_session_window(
+             selector_conn,
+             status_table="embeddings.embedding_status",
+-            include_stale_checks=False,
+         )
+     assert [item.session_id for item in pending] == [session_id]
+ 

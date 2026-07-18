@@ -1,0 +1,1 @@
+{"schema_version":1,"campaign_id":"gpt-pro-wave-2026-07-17","workload_id":"warroom-wave2","job_id":"ann-03","package_revision":"r01","state":"analysis_only","artifact":{"filename":"ann-03-batch-runbook-r01.zip","sha256":"3836572d9136b11c49932cee4e9e8d333d518d78112c4278d8f692a7f552cc12","size_bytes":40691},"verification":"ZIP integrity passed; retained as an annotation runbook."}

@@ -1,0 +1,4530 @@
+diff --git a/devtools/continuity_replay.py b/devtools/continuity_replay.py
+index 82dec4a8d..53766e419 100644
+--- a/devtools/continuity_replay.py
++++ b/devtools/continuity_replay.py
+@@ -1,90 +1,1648 @@
+-"""Run a privacy-safe continuity oracle against recorded route observations."""
++"""Execute continuity scenarios through MCP and independent known answers.
++
++The same parameterized declarations can run against the repository's synthetic
++fixture or an authorized live archive.  The default route is a real MCP stdio
++client/server exchange; a registered-handler route remains available for fast,
++focused mutation tests.
++"""
+ 
+ from __future__ import annotations
+ 
+ import argparse
++import asyncio
++import hashlib
++import inspect
+ import json
++import os
++import re
+ import sys
++import time
++from collections.abc import Callable, Mapping, Sequence
++from contextlib import AsyncExitStack
++from dataclasses import dataclass, field
++from datetime import timedelta
+ from pathlib import Path
++from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
+ 
+ if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entry point
+     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ 
+-from polylogue.product.continuity_scenarios import continuity_scenario
++from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
++from polylogue.product.continuity_scenarios import (
++    CONTINUITY_SCENARIOS,
++    ContinuityAttemptCurriculumProjection,
++    ContinuityAttemptGrade,
++    ContinuityBudget,
++    ContinuityDiscoveryRequirement,
++    ContinuityEvidenceProjection,
++    ContinuityFactProjection,
++    ContinuityFailureClass,
++    ContinuityRouteStep,
++    ContinuityScenarioSpec,
++    continuity_scenario,
++)
++
++if TYPE_CHECKING:
++    from mcp import ClientSession
++
++RouteArguments: TypeAlias = dict[str, object]
++RouteTransport: TypeAlias = Literal["stdio", "registered"]
++ArgumentMutator: TypeAlias = Callable[[str, RouteArguments, int], RouteArguments]
++ResponseMutator: TypeAlias = Callable[[str, RouteArguments, int, str], str]
++DiscoveryMutator: TypeAlias = Callable[[JSONDocument], JSONDocument]
++_TEMPLATE_RE = re.compile(r"\{fixture:([A-Za-z0-9_.-]+)\}")
++_ATTEMPT_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+):(?P<value>[A-Za-z0-9_-]+)")
++_ATTEMPT_GRADES: frozenset[str] = frozenset(
++    {
++        "reasonable_oversized",
++        "wrong_corpus_assumption",
++        "weak_lexical_proxy",
++        "product_induced_hidden_grammar",
++        "execution_failure",
++        "unreasonable_query",
++    }
++)
++
++
++class ContinuityRoute(Protocol):
++    """MCP-shaped route with an inspectable discovery receipt."""
++
++    @property
++    def transport_name(self) -> str:
++        raise NotImplementedError
++
++    @property
++    def discovery(self) -> JSONDocument:
++        raise NotImplementedError
++
++    async def invoke(self, tool: str, arguments: Mapping[str, object]) -> str:
++        raise NotImplementedError
++
++
++class ContinuityReplayError(RuntimeError):
++    """Structured replay failure that can be reported without a traceback."""
++
++    def __init__(self, message: str, *, kind: str, failure_class: ContinuityFailureClass) -> None:
++        super().__init__(message)
++        self.kind = kind
++        self.failure_class = failure_class
++
++
++class MCPContinuityRoute:
++    """Invoke handlers registered on Polylogue's real FastMCP read server."""
++
++    def __init__(
++        self,
++        archive_root: Path,
++        *,
++        argument_mutator: ArgumentMutator | None = None,
++        response_mutator: ResponseMutator | None = None,
++        discovery_mutator: DiscoveryMutator | None = None,
++    ) -> None:
++        self.archive_root = archive_root.resolve()
++        self.argument_mutator = argument_mutator
++        self.response_mutator = response_mutator
++        self.discovery_mutator = discovery_mutator
++        self._services: object | None = None
++        self._server: object | None = None
++        self._discovery: JSONDocument = {}
++        self._invocation_count = 0
++
++    @property
++    def transport_name(self) -> str:
++        return "registered-fastmcp-tool"
++
++    @property
++    def discovery(self) -> JSONDocument:
++        return dict(self._discovery)
++
++    async def __aenter__(self) -> MCPContinuityRoute:
++        from polylogue.config import Config
++        from polylogue.mcp.server import build_server
++        from polylogue.mcp.server_support import _set_runtime_services
++        from polylogue.services import RuntimeServices
++
++        config = Config(
++            archive_root=self.archive_root,
++            render_root=(self.archive_root / "render").resolve(),
++            sources=[],
++            db_path=(self.archive_root / "index.db").resolve(),
++        )
++        services = RuntimeServices(config=config, db_path=config.db_path)
++        _set_runtime_services(services)
++        self._services = services
++        self._server = build_server(role="read")
++        self._discovery = _registered_discovery(self._server, self.transport_name)
++        if self.discovery_mutator is not None:
++            self._discovery = require_json_document(
++                self.discovery_mutator(dict(self._discovery)),
++                context="mutated registered MCP discovery",
++            )
++        return self
++
++    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
++        from polylogue.mcp.server_support import _set_runtime_services
++
++        services = self._services
++        self._server = None
++        self._services = None
++        try:
++            if services is not None:
++                close = getattr(services, "close", None)
++                if close is not None:
++                    result = close()
++                    if inspect.isawaitable(result):
++                        await result
++        finally:
++            _set_runtime_services(None)
++
++    async def invoke(self, tool: str, arguments: Mapping[str, object]) -> str:
++        server = self._server
++        if server is None:
++            raise ContinuityReplayError(
++                "MCP route is not open",
++                kind="route_not_open",
++                failure_class="execution",
++            )
++        manager = getattr(server, "_tool_manager", None)
++        tools = getattr(manager, "_tools", None)
++        if not isinstance(tools, Mapping) or tool not in tools:
++            raise ContinuityReplayError(
++                f"registered MCP tool is unavailable: {tool}",
++                kind="missing_public_tool",
++                failure_class="execution",
++            )
++        invocation, call_arguments = self._prepare_call(tool, arguments)
++        registered = tools[tool]
++        fn = getattr(registered, "fn", None)
++        if fn is None:
++            raise ContinuityReplayError(
++                f"registered MCP tool has no callable: {tool}",
++                kind="missing_public_handler",
++                failure_class="execution",
++            )
++        result = fn(**call_arguments)
++        if inspect.isawaitable(result):
++            result = await result
++        if not isinstance(result, str):
++            raise ContinuityReplayError(
++                f"MCP tool {tool} returned {type(result).__name__}, expected JSON text",
++                kind="invalid_route_response",
++                failure_class="execution",
++            )
++        return self._mutate_response(tool, call_arguments, invocation, result)
++
++    def _prepare_call(self, tool: str, arguments: Mapping[str, object]) -> tuple[int, RouteArguments]:
++        self._invocation_count += 1
++        invocation = self._invocation_count
++        call_arguments = dict(arguments)
++        if self.argument_mutator is not None:
++            call_arguments = self.argument_mutator(tool, call_arguments, invocation)
++        return invocation, call_arguments
++
++    def _mutate_response(
++        self,
++        tool: str,
++        arguments: RouteArguments,
++        invocation: int,
++        response_text: str,
++    ) -> str:
++        if self.response_mutator is None:
++            return response_text
++        return self.response_mutator(tool, arguments, invocation, response_text)
++
++
++class StdioMCPContinuityRoute:
++    """Invoke the installed Polylogue server through official MCP stdio JSON-RPC."""
++
++    def __init__(
++        self,
++        archive_root: Path,
++        *,
++        argument_mutator: ArgumentMutator | None = None,
++        response_mutator: ResponseMutator | None = None,
++        discovery_mutator: DiscoveryMutator | None = None,
++        read_timeout_seconds: float = 60.0,
++    ) -> None:
++        self.archive_root = archive_root.resolve()
++        self.argument_mutator = argument_mutator
++        self.response_mutator = response_mutator
++        self.discovery_mutator = discovery_mutator
++        self.read_timeout_seconds = read_timeout_seconds
++        self._stack: AsyncExitStack | None = None
++        self._session: ClientSession | None = None
++        self._discovery: JSONDocument = {}
++        self._invocation_count = 0
++
++    @property
++    def transport_name(self) -> str:
++        return "mcp-stdio-json-rpc"
++
++    @property
++    def discovery(self) -> JSONDocument:
++        return dict(self._discovery)
++
++    async def __aenter__(self) -> StdioMCPContinuityRoute:
++        from mcp import ClientSession, StdioServerParameters
++        from mcp.client.stdio import stdio_client
++
++        runtime_root = self.archive_root / ".continuity-runtime"
++        environment = dict(os.environ)
++        environment.update(
++            {
++                "POLYLOGUE_ARCHIVE_ROOT": str(self.archive_root),
++                "XDG_CONFIG_HOME": str(runtime_root / "config"),
++                "XDG_STATE_HOME": str(runtime_root / "state"),
++                "XDG_CACHE_HOME": str(runtime_root / "cache"),
++            }
++        )
++        parameters = StdioServerParameters(
++            command=sys.executable,
++            args=["-c", "from polylogue.mcp.cli import main; main()", "--role", "read"],
++            env=environment,
++            cwd=str(Path.cwd()),
++        )
++        stack = AsyncExitStack()
++        try:
++            read_stream, write_stream = await stack.enter_async_context(stdio_client(parameters))
++            session = await stack.enter_async_context(
++                ClientSession(
++                    read_stream,
++                    write_stream,
++                    read_timeout_seconds=timedelta(seconds=self.read_timeout_seconds),
++                )
++            )
++            initialize = await session.initialize()
++            tools: list[object] = []
++            cursor: str | None = None
++            while True:
++                page = await session.list_tools(cursor=cursor)
++                tools.extend(page.tools)
++                cursor = page.nextCursor
++                if cursor is None:
++                    break
++        except Exception as exc:
++            await stack.aclose()
++            raise ContinuityReplayError(
++                f"failed to initialize MCP stdio route: {exc}",
++                kind="stdio_initialization_failed",
++                failure_class="execution",
++            ) from exc
++
++        self._stack = stack
++        self._session = session
++        self._discovery = _stdio_discovery(initialize, tools, self.transport_name)
++        if self.discovery_mutator is not None:
++            self._discovery = require_json_document(
++                self.discovery_mutator(dict(self._discovery)),
++                context="mutated stdio MCP discovery",
++            )
++        return self
++
++    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
++        stack = self._stack
++        self._stack = None
++        self._session = None
++        if stack is not None:
++            await stack.aclose()
++
++    async def invoke(self, tool: str, arguments: Mapping[str, object]) -> str:
++        session = self._session
++        if session is None:
++            raise ContinuityReplayError(
++                "MCP stdio route is not open",
++                kind="route_not_open",
++                failure_class="execution",
++            )
++        self._invocation_count += 1
++        invocation = self._invocation_count
++        call_arguments = dict(arguments)
++        if self.argument_mutator is not None:
++            call_arguments = self.argument_mutator(tool, call_arguments, invocation)
++        try:
++            result = await session.call_tool(tool, arguments=call_arguments)
++        except Exception as exc:
++            raise ContinuityReplayError(
++                f"MCP stdio call {tool!r} failed: {exc}",
++                kind="stdio_call_failed",
++                failure_class="execution",
++            ) from exc
++        response_text = _call_tool_response_text(tool, result)
++        if self.response_mutator is not None:
++            response_text = self.response_mutator(tool, call_arguments, invocation, response_text)
++        return response_text
++
++
++@dataclass(slots=True)
++class _BudgetState:
++    budget: ContinuityBudget
++    calls: int = 0
++    response_bytes: int = 0
++    call_elapsed_ms: float = 0.0
++    started_ns: int = field(default_factory=time.perf_counter_ns)
++
++    @property
++    def elapsed_ms(self) -> float:
++        return (time.perf_counter_ns() - self.started_ns) / 1_000_000
++
++    def before_call(self) -> None:
++        if self.calls >= self.budget.max_calls:
++            raise ContinuityReplayError(
++                f"call budget exhausted at {self.calls}/{self.budget.max_calls}",
++                kind="max_calls_exceeded",
++                failure_class="execution",
++            )
++        self._check_elapsed()
++
++    def observe(self, response_text: str, *, call_elapsed_ms: float) -> int:
++        response_bytes = len(response_text.encode("utf-8"))
++        self.calls += 1
++        self.response_bytes += response_bytes
++        self.call_elapsed_ms += call_elapsed_ms
++        if response_bytes > self.budget.max_page_bytes:
++            raise ContinuityReplayError(
++                f"response page is {response_bytes} bytes; budget is {self.budget.max_page_bytes}",
++                kind="max_page_bytes_exceeded",
++                failure_class="execution",
++            )
++        if self.response_bytes > self.budget.max_total_bytes:
++            raise ContinuityReplayError(
++                f"responses total {self.response_bytes} bytes; budget is {self.budget.max_total_bytes}",
++                kind="max_total_bytes_exceeded",
++                failure_class="execution",
++            )
++        self._check_elapsed()
++        return response_bytes
+ 
++    def _check_elapsed(self) -> None:
++        if self.elapsed_ms > self.budget.max_elapsed_ms:
++            raise ContinuityReplayError(
++                f"scenario elapsed time is {self.elapsed_ms:.1f} ms; budget is {self.budget.max_elapsed_ms} ms",
++                kind="max_elapsed_ms_exceeded",
++                failure_class="execution",
++            )
+ 
+-def evaluate_replay(
++
++@dataclass(slots=True)
++class _StepReceipt:
++    step_id: str
++    tool: str
++    arguments: JSONDocument
++    pages: list[JSONDocument] = field(default_factory=list)
++    enumerated_item_count: int | None = None
++    unique_identity_count: int | None = None
++    page_total_sum: int = 0
++    page_totals_match_items: bool = True
++    count_probe: JSONDocument | None = None
++    population_count_verified: bool | None = None
++    exact_enumeration_verified: bool = False
++    query_ref: str | None = None
++    result_ref: str | None = None
++
++    def to_payload(self) -> JSONDocument:
++        return require_json_document(
++            {
++                "step_id": self.step_id,
++                "tool": self.tool,
++                "arguments": dict(self.arguments),
++                "page_count": len(self.pages),
++                "pages": list(self.pages),
++                "enumerated_item_count": self.enumerated_item_count,
++                "unique_identity_count": self.unique_identity_count,
++                "page_total_sum": self.page_total_sum,
++                "page_totals_match_items": self.page_totals_match_items,
++                "count_probe": self.count_probe,
++                "population_count_verified": self.population_count_verified,
++                "exact_enumeration_verified": self.exact_enumeration_verified,
++                "query_ref": self.query_ref,
++                "result_ref": self.result_ref,
++            },
++            context=f"continuity step receipt {self.step_id}",
++        )
++
++
++def load_oracle_catalog(path: Path) -> JSONDocument:
++    """Load a parameterized corpus/oracle manifest."""
++
++    payload = json.loads(path.read_text(encoding="utf-8"))
++    catalog = require_json_document(payload, context=f"continuity oracle catalog {path}")
++    if catalog.get("schema_version") != 2:
++        raise ValueError("continuity oracle catalog schema_version must be 2")
++    if not isinstance(catalog.get("corpus"), Mapping):
++        raise ValueError("continuity oracle catalog requires corpus object")
++    if not isinstance(catalog.get("oracles"), Mapping):
++        raise ValueError("continuity oracle catalog requires oracles object")
++    return dict(catalog)
++
++
++def materialize_route_arguments(
++    step: ContinuityRouteStep,
++    fixture: Mapping[str, JSONValue],
++) -> RouteArguments:
++    """Resolve declaration references against the caller-supplied corpus."""
++
++    return {key: _materialize(value, fixture) for key, value in step.argument_dict().items()}
++
++
++def project_fact(
++    projection: ContinuityFactProjection,
++    observations: Mapping[str, JSONValue],
++) -> JSONValue:
++    """Project one comparable fact from merged real-route payloads."""
++
++    if projection.step_id not in observations:
++        raise ContinuityReplayError(
++            f"projection {projection.name!r} references missing step {projection.step_id!r}",
++            kind="missing_step_observation",
++            failure_class=projection.failure_class,
++        )
++    values = _values_at(observations[projection.step_id], projection.path)
++    reducer = projection.reducer
++    if reducer == "count":
++        return len(values)
++    if reducer == "single":
++        if len(values) != 1:
++            raise ContinuityReplayError(
++                f"fact {projection.name!r} expected one value at {projection.path!r}, observed {len(values)}",
++                kind="non_single_projection",
++                failure_class=projection.failure_class,
++            )
++        return require_json_value(values[0], context=f"continuity fact {projection.name}")
++    if reducer in {"unique_values", "unique_count"}:
++        unique = _unique_json_scalars(values, fact_name=projection.name, failure_class=projection.failure_class)
++        return len(unique) if reducer == "unique_count" else unique
++    if reducer in {"regex_count", "regex_unique_count"}:
++        if projection.pattern is None:
++            raise ContinuityReplayError(
++                f"regex projection {projection.name!r} has no pattern",
++                kind="missing_regex_pattern",
++                failure_class=projection.failure_class,
++            )
++        regex = re.compile(projection.pattern)
++        matches: list[str] = []
++        for value in values:
++            if not isinstance(value, str):
++                raise ContinuityReplayError(
++                    f"regex projection {projection.name!r} received {type(value).__name__}",
++                    kind="non_text_regex_input",
++                    failure_class=projection.failure_class,
++                )
++            for match in regex.finditer(value):
++                matches.append(match.group(1) if match.lastindex else match.group(0))
++        return len(matches) if reducer == "regex_count" else len(set(matches))
++    if reducer == "sum":
++        total: int | float = 0
++        for value in values:
++            if isinstance(value, bool) or not isinstance(value, (int, float)):
++                raise ContinuityReplayError(
++                    f"sum projection {projection.name!r} received {type(value).__name__}",
++                    kind="non_numeric_sum_input",
++                    failure_class=projection.failure_class,
++                )
++            total += value
++        return total
++    raise ContinuityReplayError(
++        f"unsupported continuity reducer: {reducer}",
++        kind="unsupported_reducer",
++        failure_class=projection.failure_class,
++    )
++
++
++def compare_observed_facts(
++    *,
++    expected: Mapping[str, JSONValue],
++    observed: Mapping[str, JSONValue],
++    source_refs: Sequence[str] = (),
++    failure_classes: Mapping[str, ContinuityFailureClass] | None = None,
++) -> list[JSONDocument]:
++    """Return exact, fact-addressed diagnostics for independent oracle mismatches."""
++
++    classes = failure_classes or {}
++    diagnostics: list[JSONDocument] = []
++    names = sorted(set(expected) | set(observed))
++    for name in names:
++        failure_class = classes.get(name, "projection")
++        if name not in expected:
++            diagnostics.append(
++                {
++                    "kind": "unexpected_fact",
++                    "failure_class": failure_class,
++                    "fact": name,
++                    "observed": observed[name],
++                    "source_refs": list(source_refs),
++                }
++            )
++            continue
++        if name not in observed:
++            diagnostics.append(
++                {
++                    "kind": "missing_fact",
++                    "failure_class": failure_class,
++                    "fact": name,
++                    "expected": expected[name],
++                    "source_refs": list(source_refs),
++                }
++            )
++            continue
++        if observed[name] != expected[name]:
++            diagnostics.append(
++                {
++                    "kind": "fact_mismatch",
++                    "failure_class": failure_class,
++                    "fact": name,
++                    "expected": expected[name],
++                    "observed": observed[name],
++                    "source_refs": list(source_refs),
++                }
++            )
++    return diagnostics
++
++
++def grade_incident_attempt(features: Mapping[str, str]) -> ContinuityAttemptGrade:
++    """Classify one sanitized historical incident call from independently planted features."""
++
++    shape = features.get("query_shape")
++    if shape == "candidate-list" and features.get("physical_size") == "oversized":
++        return "reasonable_oversized"
++    if shape == "exact-operator-phrase" and features.get("corpus_match") == "false":
++        return "wrong_corpus_assumption"
++    if shape == "sonnet-lexical-proxy" and features.get("structure_discovery") == "absent":
++        return "weak_lexical_proxy"
++    if shape == "sessions-only-query" and features.get("shipped_instruction") == "advertised":
++        return "product_induced_hidden_grammar"
++    if shape in {"correct-topology", "correct-delegation"} and features.get("outcome") != "success":
++        return "execution_failure"
++    return "unreasonable_query"
++
++
++def compare_attempt_grades(
++    *,
++    expected: Mapping[str, str],
++    observed: Mapping[str, str],
++    source_refs: Sequence[str] = (),
++) -> list[JSONDocument]:
++    """Return case-addressed reasoning diagnostics for incident curriculum drift."""
++
++    diagnostics: list[JSONDocument] = []
++    for case_id in sorted(set(expected) | set(observed)):
++        if case_id not in expected:
++            diagnostics.append(
++                {
++                    "kind": "unexpected_attempt_case",
++                    "failure_class": "reasoning",
++                    "case": case_id,
++                    "observed": observed[case_id],
++                    "source_refs": list(source_refs),
++                }
++            )
++        elif case_id not in observed:
++            diagnostics.append(
++                {
++                    "kind": "missing_attempt_case",
++                    "failure_class": "source_coverage",
++                    "case": case_id,
++                    "expected": expected[case_id],
++                    "source_refs": list(source_refs),
++                }
++            )
++        elif observed[case_id] != expected[case_id]:
++            diagnostics.append(
++                {
++                    "kind": "attempt_grade_mismatch",
++                    "failure_class": "reasoning",
++                    "case": case_id,
++                    "expected": expected[case_id],
++                    "observed": observed[case_id],
++                    "source_refs": list(source_refs),
++                }
++            )
++    return diagnostics
++
++
++async def execute_continuity_scenario(
+     scenario_name: str,
+-    fixture: dict[str, object],
+-    observation: dict[str, object],
+-) -> dict[str, object]:
+-    """Classify an observed black-box walk against a fixture-derived oracle."""
++    fixture: Mapping[str, JSONValue],
++    route: ContinuityRoute,
++) -> JSONDocument:
++    """Run one declaration through a public route and compare planted facts."""
++
+     scenario = continuity_scenario(scenario_name)
+-    refs = observation.get("refs", ())
+-    if not isinstance(refs, list):
+-        raise ValueError("observation.refs must be a JSON list")
+-    observed_answer = observation.get("answer", {})
+-    if not isinstance(observed_answer, dict):
+-        raise ValueError("observation.answer must be a JSON object")
+-    observed_mutations = observation.get("mutations", {})
+-    if not isinstance(observed_mutations, dict):
+-        raise ValueError("observation.mutations must be a JSON object")
+-    calls = observation.get("calls", 0)
+-    if not isinstance(calls, int):
+-        raise ValueError("observation.calls must be an integer")
+-    failure = observation.get("failure")
+-    failure_value = str(failure) if failure is not None else None
+-    page_bytes = observation.get("page_bytes")
+-    if page_bytes is not None and not isinstance(page_bytes, int):
+-        raise ValueError("observation.page_bytes must be an integer")
+-    cancel_seconds = observation.get("cancel_seconds")
+-    if cancel_seconds is not None and not isinstance(cancel_seconds, (int, float)):
+-        raise ValueError("observation.cancel_seconds must be numeric")
+-    result = scenario.classify(
+-        fixture,
+-        observed_refs=[str(ref) for ref in refs],
+-        observed_answer=observed_answer,
+-        observed_mutations=observed_mutations,
+-        calls=calls,
+-        observed_failure=failure_value if failure_value in scenario.failure_taxonomy else None,  # type: ignore[arg-type]
+-        page_bytes=page_bytes,
+-        cancel_seconds=float(cancel_seconds) if cancel_seconds is not None else None,
+-        continuation_state_lost=bool(observation.get("continuation_state_lost", False)),
+-        non_progressing_continuation=bool(observation.get("non_progressing_continuation", False)),
+-    )
+-    return {
++    oracle = _oracle_for(scenario, fixture)
++    expected_facts = _json_mapping(oracle, "facts")
++    required_evidence = _string_sequence(oracle.get("required_evidence_refs", []), "required_evidence_refs")
++    source_refs = _string_sequence(oracle.get("source_refs", []), "source_refs")
++    expected_attempt_grades = _expected_attempt_grades(scenario, oracle)
++    observations: dict[str, JSONValue] = {}
++    receipts: list[_StepReceipt] = []
++    budget_state = _BudgetState(scenario.budget)
++    diagnostics: list[JSONDocument] = []
++    observed_facts: dict[str, JSONValue] = {}
++    observed_evidence: list[str] = []
++    observed_attempt_grades: dict[str, str] = {}
++
++    try:
++        _validate_scenario_declaration(scenario)
++        _validate_discovery(scenario.discovery_requirements, route.discovery)
++        for step in scenario.route_steps:
++            observations[step.step_id] = await _execute_step(
++                scenario,
++                step,
++                fixture,
++                route,
++                budget_state,
++                receipts,
++            )
++        for projection in scenario.fact_projections:
++            observed_facts[projection.name] = project_fact(projection, observations)
++        diagnostics.extend(
++            compare_observed_facts(
++                expected=expected_facts,
++                observed=observed_facts,
++                source_refs=source_refs,
++                failure_classes={projection.name: projection.failure_class for projection in scenario.fact_projections},
++            )
++        )
++        observed_evidence = _project_evidence(scenario.evidence_projections, observations)
++        missing_evidence = sorted(set(required_evidence) - set(observed_evidence))
++        if missing_evidence:
++            diagnostics.append(
++                require_json_document(
++                    {
++                        "kind": "missing_evidence",
++                        "failure_class": "projection",
++                        "expected": missing_evidence,
++                        "observed": observed_evidence,
++                        "source_refs": source_refs,
++                    },
++                    context=f"continuity diagnostic {scenario.scenario_id}",
++                )
++            )
++        if scenario.attempt_curriculum is not None:
++            observed_attempt_grades = _project_attempt_grades(scenario.attempt_curriculum, observations)
++            diagnostics.extend(
++                compare_attempt_grades(
++                    expected=expected_attempt_grades,
++                    observed=observed_attempt_grades,
++                    source_refs=source_refs,
++                )
++            )
++    except ContinuityReplayError as exc:
++        diagnostics.append(
++            require_json_document(
++                {
++                    "kind": exc.kind,
++                    "failure_class": exc.failure_class,
++                    "message": str(exc),
++                    "source_refs": source_refs,
++                },
++                context=f"continuity execution diagnostic {scenario.scenario_id}",
++            )
++        )
++
++    passed = not diagnostics
++    classification = "pass" if passed else str(diagnostics[0].get("failure_class", "execution"))
++    report: dict[str, object] = {
++        "schema_version": 2,
+         "scenario": scenario.scenario_id,
+-        "classification": result,
+-        "expected_refs": list(scenario.oracle(fixture)),
+-        "expected_answer": scenario.oracle_answer(fixture),
+-        "expected_mutations": dict(scenario.oracle_mutations(fixture)),
+-        "observed_answer": observed_answer,
+-        "observed_mutations": observed_mutations,
+-        "observed_refs": refs,
+-        "calls": calls,
++        "question": scenario.operator_question,
++        "fixture_key": scenario.fixture_key,
++        "route": route.transport_name,
++        "discovery_receipt": _discovery_receipt(scenario, route.discovery),
++        "allowed_query_surfaces": list(scenario.allowed_query_surfaces),
++        "plan_signature": list(scenario.route_plan_signature),
++        "accepted_plan_signatures": [list(signature) for signature in scenario.equivalent_plan_signatures],
++        "coverage_inventory": list(scenario.coverage_inventory),
++        "result_semantics": scenario.result_semantics.to_payload(),
++        "status": "pass" if passed else "fail",
++        "classification": classification,
++        "expected_facts": expected_facts,
++        "observed_facts": observed_facts,
++        "expected_attempt_grades": expected_attempt_grades,
++        "observed_attempt_grades": observed_attempt_grades,
++        "required_evidence_refs": required_evidence,
++        "observed_evidence_refs": observed_evidence,
++        "oracle_source_refs": source_refs,
++        "diagnostics": diagnostics,
++        "route_receipts": [receipt.to_payload() for receipt in receipts],
+         "budget": {
+             "max_calls": scenario.budget.max_calls,
+             "max_page_bytes": scenario.budget.max_page_bytes,
+-            "max_cancel_seconds": scenario.budget.max_cancel_seconds,
++            "max_total_bytes": scenario.budget.max_total_bytes,
++            "max_elapsed_ms": scenario.budget.max_elapsed_ms,
++            "max_cancel_grace_ms": scenario.budget.max_cancel_grace_ms,
++            "observed_calls": budget_state.calls,
++            "observed_response_bytes": budget_state.response_bytes,
++            "observed_call_elapsed_ms": round(budget_state.call_elapsed_ms, 3),
++            "observed_scenario_elapsed_ms": round(budget_state.elapsed_ms, 3),
++            "cancellation_exercised": False,
++        },
++    }
++    return require_json_document(report, context=f"continuity report {scenario.scenario_id}")
++
++
++async def replay_archive(
++    archive_root: Path,
++    fixture: Mapping[str, JSONValue],
++    *,
++    scenario_names: Sequence[str] | None = None,
++    transport: RouteTransport = "stdio",
++    argument_mutator: ArgumentMutator | None = None,
++    response_mutator: ResponseMutator | None = None,
++    discovery_mutator: DiscoveryMutator | None = None,
++) -> JSONDocument:
++    """Run selected declarations against an arbitrary archive/corpus pair."""
++
++    selected = tuple(scenario_names or (scenario.scenario_id for scenario in CONTINUITY_SCENARIOS))
++    route: MCPContinuityRoute | StdioMCPContinuityRoute
++    if transport == "stdio":
++        route = StdioMCPContinuityRoute(
++            archive_root,
++            argument_mutator=argument_mutator,
++            response_mutator=response_mutator,
++            discovery_mutator=discovery_mutator,
++        )
++    elif transport == "registered":
++        route = MCPContinuityRoute(
++            archive_root,
++            argument_mutator=argument_mutator,
++            response_mutator=response_mutator,
++            discovery_mutator=discovery_mutator,
++        )
++    else:
++        raise ValueError(f"unsupported continuity transport: {transport}")
++
++    started_ns = time.perf_counter_ns()
++    async with route:
++        results = [await execute_continuity_scenario(name, fixture, route) for name in selected]
++        route_receipt = _route_discovery_summary(route.discovery)
++    passed = sum(1 for result in results if result["status"] == "pass")
++    report: dict[str, object] = {
++        "schema_version": 2,
++        "fixture_id": fixture.get("fixture_id"),
++        "archive_root": str(archive_root.resolve()),
++        "transport": route.transport_name,
++        "discovery_receipt": route_receipt,
++        "scenario_count": len(results),
++        "passed": passed,
++        "failed": len(results) - passed,
++        "elapsed_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
++        "status": "pass" if passed == len(results) else "fail",
++        "results": results,
++    }
++    return require_json_document(report, context="continuity archive report")
++
++
++async def _execute_step(
++    scenario: ContinuityScenarioSpec,
++    step: ContinuityRouteStep,
++    fixture: Mapping[str, JSONValue],
++    route: ContinuityRoute,
++    budget: _BudgetState,
++    receipts: list[_StepReceipt],
++) -> JSONValue:
++    if step.tool not in scenario.allowed_query_surfaces:
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} uses undeclared surface {step.tool!r}",
++            kind="disallowed_query_surface",
++            failure_class="plan",
++        )
++    arguments = materialize_route_arguments(step, fixture)
++    receipt = _StepReceipt(
++        step_id=step.step_id,
++        tool=step.tool,
++        arguments=require_json_document(arguments, context=f"route arguments {step.step_id}"),
++    )
++    receipts.append(receipt)
++    expected_population: int | None = None
++    if step.exact_count_probe:
++        expected_population, receipt.count_probe = await _execute_exact_count_probe(
++            step,
++            arguments,
++            route,
++            budget,
++        )
++    first_payload: JSONDocument | None = None
++    last_payload: JSONDocument | None = None
++    merged_items: list[JSONValue] = []
++    continuation: str | None = None
++    seen_continuations: set[str] = set()
++    seen_identities: set[str] = set()
++    expected_offset = 0
++    page_index = 0
++
++    while True:
++        call_arguments = dict(arguments) if page_index == 0 else _continuation_arguments(arguments, continuation)
++        budget.before_call()
++        call_started_ns = time.perf_counter_ns()
++        response_text = await route.invoke(step.tool, call_arguments)
++        call_elapsed_ms = (time.perf_counter_ns() - call_started_ns) / 1_000_000
++        response_bytes = budget.observe(response_text, call_elapsed_ms=call_elapsed_ms)
++        payload = _decode_route_payload(step, response_text)
++        page_items = payload.get("items")
++        identity_hash = None
++        if step.paginate:
++            if not isinstance(page_items, list):
++                raise ContinuityReplayError(
++                    f"paginated step {step.step_id!r} returned no items list",
++                    kind="invalid_paginated_payload",
++                    failure_class="execution",
++                )
++            page_total = _validate_page_envelope(
++                step,
++                payload,
++                expected_offset=expected_offset,
++                page_item_count=len(page_items),
++                query_ref=receipt.query_ref,
++                result_ref=receipt.result_ref,
++            )
++            receipt.page_total_sum += page_total
++            receipt.page_totals_match_items = receipt.page_totals_match_items and page_total == len(page_items)
++            current_query_ref = cast(str, payload["query_ref"])
++            current_result_ref = cast(str, payload["result_ref"])
++            if receipt.query_ref is None:
++                receipt.query_ref = current_query_ref
++                receipt.result_ref = current_result_ref
++            page_identity_keys = _page_identity_keys(step, page_items)
++            duplicates = sorted(seen_identities.intersection(page_identity_keys))
++            if duplicates:
++                raise ContinuityReplayError(
++                    f"step {step.step_id!r} replayed {len(duplicates)} item identities",
++                    kind="duplicate_pagination_identity",
++                    failure_class="execution",
++                )
++            seen_identities.update(page_identity_keys)
++            identity_hash = _hash_strings(sorted(page_identity_keys))
++            merged_items.extend(require_json_value(item, context=f"route item {step.step_id}") for item in page_items)
++        receipt.pages.append(
++            require_json_document(
++                {
++                    "page": page_index + 1,
++                    "response_bytes": response_bytes,
++                    "response_sha256": hashlib.sha256(response_text.encode("utf-8")).hexdigest(),
++                    "call_arguments_sha256": _hash_json(call_arguments),
++                    "elapsed_ms": round(call_elapsed_ms, 3),
++                    "status": payload.get("status") if isinstance(payload.get("status"), str) else None,
++                    "ok": payload.get("ok") if isinstance(payload.get("ok"), bool) else None,
++                    "budget_exceeded": payload.get("budget_exceeded") is True,
++                    "item_count": len(page_items) if isinstance(page_items, list) else None,
++                    "page_total": payload.get("total") if _is_int(payload.get("total")) else None,
++                    "identity_sha256": identity_hash,
++                    "offset": payload.get("offset") if _is_int(payload.get("offset")) else None,
++                    "next_offset": payload.get("next_offset") if _is_int(payload.get("next_offset")) else None,
++                    "query_ref": payload.get("query_ref") if isinstance(payload.get("query_ref"), str) else None,
++                    "result_ref": payload.get("result_ref") if isinstance(payload.get("result_ref"), str) else None,
++                    "has_continuation": payload.get("continuation") is not None,
++                },
++                context=f"route page receipt {step.step_id}",
++            )
++        )
++        if first_payload is None:
++            first_payload = payload
++        last_payload = payload
++        if not step.paginate:
++            return payload
++
++        expected_offset += len(cast(list[JSONValue], page_items))
++        raw_continuation = payload.get("continuation")
++        if raw_continuation is None:
++            break
++        if not isinstance(raw_continuation, str) or not raw_continuation:
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} returned an invalid continuation",
++                kind="invalid_continuation",
++                failure_class="execution",
++            )
++        if raw_continuation in seen_continuations:
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} returned a non-progressing continuation",
++                kind="non_progressing_continuation",
++                failure_class="execution",
++            )
++        if not cast(list[JSONValue], page_items):
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} returned an empty page with a continuation",
++                kind="empty_progress_page",
++                failure_class="execution",
++            )
++        seen_continuations.add(raw_continuation)
++        continuation = raw_continuation
++        page_index += 1
++
++    receipt.enumerated_item_count = len(merged_items)
++    receipt.unique_identity_count = len(seen_identities)
++    receipt.population_count_verified = (
++        None if expected_population is None else expected_population == len(merged_items)
++    )
++    if receipt.population_count_verified is False:
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} enumerated {len(merged_items)} rows but the independent count probe "
++            f"selected {expected_population}",
++            kind="pagination_count_mismatch",
++            failure_class="execution",
++        )
++    receipt.exact_enumeration_verified = (
++        len(merged_items) == len(seen_identities)
++        and receipt.page_totals_match_items
++        and (expected_population is None or receipt.population_count_verified is True)
++    )
++    merged = dict(first_payload)
++    merged["items"] = merged_items
++    merged["enumerated_total"] = len(merged_items)
++    merged["terminal_page_total"] = last_payload.get("total")
++    merged["continuation"] = None
++    merged["next_offset"] = None
++    merged["page_count"] = len(receipt.pages)
++    merged["exact_enumeration_verified"] = receipt.exact_enumeration_verified
++    return require_json_document(merged, context=f"merged route payload {step.step_id}")
++
++
++async def _execute_exact_count_probe(
++    step: ContinuityRouteStep,
++    arguments: Mapping[str, object],
++    route: ContinuityRoute,
++    budget: _BudgetState,
++) -> tuple[int, JSONDocument]:
++    expression = arguments.get("expression")
++    if not isinstance(expression, str):
++        raise ContinuityReplayError(
++            f"exact-count step {step.step_id!r} has no expression",
++            kind="missing_count_probe_expression",
++            failure_class="plan",
++        )
++    count_arguments: RouteArguments = {
++        key: value for key, value in arguments.items() if key not in {"continuation", "limit", "offset"}
++    }
++    count_arguments["expression"] = f"{expression} | count"
++    count_arguments["limit"] = 1
++    budget.before_call()
++    call_started_ns = time.perf_counter_ns()
++    response_text = await route.invoke(step.tool, count_arguments)
++    call_elapsed_ms = (time.perf_counter_ns() - call_started_ns) / 1_000_000
++    response_bytes = budget.observe(response_text, call_elapsed_ms=call_elapsed_ms)
++    payload = _decode_route_payload(step, response_text)
++    items = payload.get("items")
++    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], Mapping):
++        raise ContinuityReplayError(
++            f"exact-count probe for step {step.step_id!r} returned no single aggregate row",
++            kind="invalid_exact_count_probe",
++            failure_class="execution",
++        )
++    count = items[0].get("count")
++    if not _is_int(count):
++        raise ContinuityReplayError(
++            f"exact-count probe for step {step.step_id!r} returned invalid count {count!r}",
++            kind="invalid_exact_count_probe",
++            failure_class="execution",
++        )
++    if payload.get("continuation") is not None or payload.get("next_offset") is not None:
++        raise ContinuityReplayError(
++            f"exact-count probe for step {step.step_id!r} unexpectedly paginated",
++            kind="paginated_exact_count_probe",
++            failure_class="execution",
++        )
++    receipt = require_json_document(
++        {
++            "expression": count_arguments["expression"],
++            "selected_rows_exact": count,
++            "response_bytes": response_bytes,
++            "response_sha256": hashlib.sha256(response_text.encode("utf-8")).hexdigest(),
++            "call_arguments_sha256": _hash_json(count_arguments),
++            "elapsed_ms": round(call_elapsed_ms, 3),
++            "query_ref": payload.get("query_ref") if isinstance(payload.get("query_ref"), str) else None,
++            "result_ref": payload.get("result_ref") if isinstance(payload.get("result_ref"), str) else None,
+         },
++        context=f"exact-count receipt {step.step_id}",
++    )
++    return count, receipt
++
++
++def _validate_page_envelope(
++    step: ContinuityRouteStep,
++    payload: Mapping[str, JSONValue],
++    *,
++    expected_offset: int,
++    page_item_count: int,
++    query_ref: str | None,
++    result_ref: str | None,
++) -> int:
++    offset = payload.get("offset")
++    if not _is_int(offset) or offset != expected_offset:
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} expected offset {expected_offset}, observed {offset!r}",
++            kind="pagination_offset_mismatch",
++            failure_class="execution",
++        )
++    page_total = payload.get("total")
++    if not _is_int(page_total) or page_total != page_item_count:
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} returned page total {page_total!r} for {page_item_count} rows",
++            kind="invalid_page_total",
++            failure_class="execution",
++        )
++    current_query_ref = payload.get("query_ref")
++    current_result_ref = payload.get("result_ref")
++    if not isinstance(current_query_ref, str) or not isinstance(current_result_ref, str):
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} returned no stable query/result refs",
++            kind="missing_pagination_refs",
++            failure_class="execution",
++        )
++    if query_ref is not None and current_query_ref != query_ref:
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} changed query_ref across continuation pages",
++            kind="pagination_query_ref_changed",
++            failure_class="execution",
++        )
++    if result_ref is not None and current_result_ref != result_ref:
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} changed result_ref across continuation pages",
++            kind="pagination_result_ref_changed",
++            failure_class="execution",
++        )
++    continuation = payload.get("continuation")
++    next_offset = payload.get("next_offset")
++    expected_next = expected_offset + page_item_count
++    if continuation is None:
++        if next_offset is not None:
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} returned terminal next_offset {next_offset!r}",
++                kind="terminal_next_offset_present",
++                failure_class="execution",
++            )
++    elif not _is_int(next_offset) or next_offset != expected_next:
++        raise ContinuityReplayError(
++            f"step {step.step_id!r} expected next_offset {expected_next}, observed {next_offset!r}",
++            kind="pagination_next_offset_mismatch",
++            failure_class="execution",
++        )
++    return page_total
++
++
++def _page_identity_keys(step: ContinuityRouteStep, page_items: Sequence[object]) -> set[str]:
++    if not step.item_identity_path:
++        raise ContinuityReplayError(
++            f"paginated step {step.step_id!r} declares no item identity path",
++            kind="missing_item_identity_contract",
++            failure_class="plan",
++        )
++    identities: set[str] = set()
++    for index, item in enumerate(page_items):
++        values = _values_at(item, step.item_identity_path)
++        if len(values) != 1:
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} item {index} has {len(values)} identities at {step.item_identity_path!r}",
++                kind="invalid_item_identity",
++                failure_class="execution",
++            )
++        value = require_json_value(values[0], context=f"continuity identity {step.step_id}")
++        if isinstance(value, (dict, list)):
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} item identity must be scalar",
++                kind="non_scalar_item_identity",
++                failure_class="execution",
++            )
++        key = json.dumps(value, sort_keys=True, separators=(",", ":"))
++        if key in identities:
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} repeated an identity inside one page",
++                kind="duplicate_page_identity",
++                failure_class="execution",
++            )
++        identities.add(key)
++    return identities
++
++
++def _decode_route_payload(step: ContinuityRouteStep, response_text: str) -> JSONDocument:
++    try:
++        decoded = json.loads(response_text)
++    except json.JSONDecodeError as exc:
++        raise ContinuityReplayError(
++            f"MCP tool {step.tool} returned invalid JSON: {exc}",
++            kind="invalid_route_json",
++            failure_class="execution",
++        ) from exc
++    payload = require_json_document(decoded, context=f"MCP response {step.tool}")
++    if "error" in payload:
++        message = payload.get("message")
++        raise ContinuityReplayError(
++            str(message) if message is not None else f"MCP tool {step.tool} returned an error",
++            kind=str(payload.get("error") or "route_error"),
++            failure_class="execution",
++        )
++    return dict(payload)
++
++
++def _continuation_arguments(arguments: Mapping[str, object], continuation: str | None) -> RouteArguments:
++    if continuation is None:
++        raise ContinuityReplayError(
++            "continuation arguments requested without a token",
++            kind="missing_continuation",
++            failure_class="execution",
++        )
++    expression = arguments.get("expression")
++    if not isinstance(expression, str):
++        raise ContinuityReplayError(
++            "paginated MCP route requires an expression argument",
++            kind="missing_pagination_expression",
++            failure_class="plan",
++        )
++    return {"expression": expression, "continuation": continuation}
++
++
++def _validate_scenario_declaration(scenario: ContinuityScenarioSpec) -> None:
++    step_ids = [step.step_id for step in scenario.route_steps]
++    if len(step_ids) != len(set(step_ids)):
++        raise ContinuityReplayError(
++            f"scenario {scenario.scenario_id!r} repeats a route step id",
++            kind="duplicate_route_step",
++            failure_class="plan",
++        )
++    if scenario.route_plan_signature not in scenario.equivalent_plan_signatures:
++        raise ContinuityReplayError(
++            f"scenario {scenario.scenario_id!r} route signature is outside its accepted plan family",
++            kind="unaccepted_plan_signature",
++            failure_class="plan",
++        )
++    route_tools = tuple(dict.fromkeys(step.tool for step in scenario.route_steps))
++    if route_tools != scenario.allowed_query_surfaces:
++        raise ContinuityReplayError(
++            f"scenario {scenario.scenario_id!r} route tools differ from allowed surfaces",
++            kind="query_surface_inventory_mismatch",
++            failure_class="plan",
++        )
++    for step in scenario.route_steps:
++        if step.paginate and not step.item_identity_path:
++            raise ContinuityReplayError(
++                f"paginated step {step.step_id!r} has no exact-once identity",
++                kind="missing_item_identity_contract",
++                failure_class="plan",
++            )
++        if step.exact_count_probe and (not step.paginate or step.tool != "query_units"):
++            raise ContinuityReplayError(
++                f"step {step.step_id!r} declares an unsupported exact-count probe",
++                kind="invalid_exact_count_probe_contract",
++                failure_class="plan",
++            )
++    if scenario.attempt_curriculum is not None and scenario.attempt_curriculum.step_id not in step_ids:
++        raise ContinuityReplayError(
++            f"scenario {scenario.scenario_id!r} curriculum references a missing step",
++            kind="missing_curriculum_step",
++            failure_class="plan",
++        )
++
++
++def _validate_discovery(
++    requirements: Sequence[ContinuityDiscoveryRequirement],
++    discovery: Mapping[str, JSONValue],
++) -> None:
++    tools = discovery.get("tools")
++    if not isinstance(tools, Mapping):
++        raise ContinuityReplayError(
++            "MCP discovery returned no tool catalog",
++            kind="missing_tool_catalog",
++            failure_class="discovery",
++        )
++    for requirement in requirements:
++        tool = tools.get(requirement.tool)
++        if not isinstance(tool, Mapping):
++            raise ContinuityReplayError(
++                f"MCP discovery omitted required tool {requirement.tool!r}",
++                kind="missing_discovered_tool",
++                failure_class="discovery",
++            )
++        schema = tool.get("input_schema")
++        if not isinstance(schema, Mapping):
++            raise ContinuityReplayError(
++                f"MCP discovery omitted input schema for {requirement.tool!r}",
++                kind="missing_tool_schema",
++                failure_class="discovery",
++            )
++        properties = schema.get("properties")
++        if not isinstance(properties, Mapping):
++            raise ContinuityReplayError(
++                f"MCP discovery schema for {requirement.tool!r} has no properties",
++                kind="missing_tool_schema_properties",
++                failure_class="discovery",
++            )
++        missing = sorted(set(requirement.required_arguments) - set(properties))
++        if missing:
++            raise ContinuityReplayError(
++                f"MCP discovery hid arguments for {requirement.tool!r}: {missing}",
++                kind="missing_discovered_arguments",
++                failure_class="discovery",
++            )
++
++
++def _project_evidence(
++    projections: Sequence[ContinuityEvidenceProjection],
++    observations: Mapping[str, JSONValue],
++) -> list[str]:
++    refs: set[str] = set()
++    for projection in projections:
++        if projection.step_id not in observations:
++            raise ContinuityReplayError(
++                f"evidence projection references missing step {projection.step_id!r}",
++                kind="missing_evidence_step",
++                failure_class="projection",
++            )
++        for value in _values_at(observations[projection.step_id], projection.path):
++            if not isinstance(value, str):
++                raise ContinuityReplayError(
++                    f"evidence projection at {projection.path!r} received {type(value).__name__}",
++                    kind="non_text_evidence_ref",
++                    failure_class="projection",
++                )
++            refs.add(f"{projection.prefix}{value}")
++    return sorted(refs)
++
++
++def _project_attempt_grades(
++    projection: ContinuityAttemptCurriculumProjection,
++    observations: Mapping[str, JSONValue],
++) -> dict[str, str]:
++    if projection.step_id not in observations:
++        raise ContinuityReplayError(
++            f"attempt curriculum references missing step {projection.step_id!r}",
++            kind="missing_curriculum_step_observation",
++            failure_class="source_coverage",
++        )
++    grades: dict[str, str] = {}
++    for text in _values_at(observations[projection.step_id], projection.path):
++        if not isinstance(text, str):
++            raise ContinuityReplayError(
++                "incident curriculum row is not text",
++                kind="invalid_curriculum_row",
++                failure_class="reasoning",
++            )
++        features = {match.group("key"): match.group("value") for match in _ATTEMPT_TOKEN_RE.finditer(text)}
++        case_id = features.get("case")
++        if case_id is None:
++            raise ContinuityReplayError(
++                "incident curriculum row has no case id",
++                kind="missing_curriculum_case_id",
++                failure_class="reasoning",
++            )
++        if case_id in grades:
++            raise ContinuityReplayError(
++                f"incident curriculum repeats case {case_id!r}",
++                kind="duplicate_curriculum_case",
++                failure_class="source_coverage",
++            )
++        grades[case_id] = grade_incident_attempt(features)
++    declared = set(projection.case_ids)
++    observed = set(grades)
++    if observed != declared:
++        raise ContinuityReplayError(
++            f"incident curriculum inventory mismatch: missing={sorted(declared - observed)}, extra={sorted(observed - declared)}",
++            kind="curriculum_inventory_mismatch",
++            failure_class="source_coverage",
++        )
++    return grades
++
++
++def _values_at(root: object, path: Sequence[str | int]) -> list[object]:
++    values: list[object] = [root]
++    for segment in path:
++        next_values: list[object] = []
++        for value in values:
++            if segment == "*":
++                if isinstance(value, Mapping):
++                    next_values.extend(value.values())
++                elif isinstance(value, (list, tuple)):
++                    next_values.extend(value)
++                continue
++            if isinstance(segment, str) and isinstance(value, Mapping) and segment in value:
++                next_values.append(value[segment])
++                continue
++            if isinstance(segment, int) and isinstance(value, (list, tuple)) and 0 <= segment < len(value):
++                next_values.append(value[segment])
++        values = next_values
++    return values
++
++
++def _unique_json_scalars(
++    values: Sequence[object],
++    *,
++    fact_name: str,
++    failure_class: ContinuityFailureClass,
++) -> list[JSONValue]:
++    by_key: dict[str, JSONValue] = {}
++    for value in values:
++        json_value = require_json_value(value, context=f"continuity fact {fact_name}")
++        if isinstance(json_value, (dict, list)):
++            raise ContinuityReplayError(
++                f"unique projection {fact_name!r} requires scalar values",
++                kind="non_scalar_unique_projection",
++                failure_class=failure_class,
++            )
++        key = json.dumps(json_value, sort_keys=True, separators=(",", ":"))
++        by_key[key] = json_value
++    return [by_key[key] for key in sorted(by_key)]
++
++
++def _oracle_for(scenario: ContinuityScenarioSpec, fixture: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
++    oracles = fixture.get("oracles")
++    if not isinstance(oracles, Mapping):
++        raise ValueError("continuity fixture requires oracles object")
++    oracle = oracles.get(scenario.fixture_key)
++    if not isinstance(oracle, Mapping):
++        raise ValueError(f"continuity fixture has no oracle for {scenario.fixture_key!r}")
++    typed_oracle = cast(Mapping[str, JSONValue], oracle)
++    expected = _json_mapping(typed_oracle, "facts")
++    declared = set(scenario.required_facts)
++    planted = set(expected)
++    if planted != declared:
++        raise ValueError(
++            f"oracle fact inventory for {scenario.scenario_id!r} differs from declaration: "
++            f"missing={sorted(declared - planted)}, extra={sorted(planted - declared)}"
++        )
++    _expected_attempt_grades(scenario, typed_oracle)
++    return typed_oracle
++
++
++def _expected_attempt_grades(
++    scenario: ContinuityScenarioSpec,
++    oracle: Mapping[str, JSONValue],
++) -> dict[str, str]:
++    curriculum = scenario.attempt_curriculum
++    value = oracle.get("attempt_grades")
++    if curriculum is None:
++        if value is not None:
++            raise ValueError(f"scenario {scenario.scenario_id!r} has undeclared attempt_grades")
++        return {}
++    if not isinstance(value, Mapping):
++        raise ValueError(f"scenario {scenario.scenario_id!r} requires attempt_grades object")
++    expected: dict[str, str] = {}
++    for case_id, grade in value.items():
++        if not isinstance(grade, str) or grade not in _ATTEMPT_GRADES:
++            raise ValueError(f"invalid incident attempt grade {case_id!r}: {grade!r}")
++        expected[case_id] = grade
++    declared = set(curriculum.case_ids)
++    planted = set(expected)
++    if declared != planted:
++        raise ValueError(
++            f"attempt curriculum inventory differs from declaration: "
++            f"missing={sorted(declared - planted)}, extra={sorted(planted - declared)}"
++        )
++    return expected
++
++
++def _json_mapping(source: Mapping[str, JSONValue], key: str) -> dict[str, JSONValue]:
++    value = source.get(key)
++    if not isinstance(value, Mapping):
++        raise ValueError(f"continuity fixture field {key!r} must be an object")
++    result: dict[str, JSONValue] = {}
++    for item_key, item_value in value.items():
++        if not isinstance(item_key, str):
++            raise ValueError(f"continuity fixture field {key!r} has a non-string key")
++        result[item_key] = require_json_value(item_value, context=f"continuity fixture {key}.{item_key}")
++    return result
++
++
++def _string_sequence(value: object, field_name: str) -> list[str]:
++    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
++        raise ValueError(f"continuity fixture field {field_name!r} must be a string list")
++    return list(cast(Sequence[str], value))
++
++
++def _materialize(value: object, fixture: Mapping[str, JSONValue]) -> object:
++    if not isinstance(value, str):
++        return value
++    full_match = _TEMPLATE_RE.fullmatch(value)
++    if full_match is not None:
++        return _fixture_value(fixture, full_match.group(1))
++
++    def replace(match: re.Match[str]) -> str:
++        resolved = _fixture_value(fixture, match.group(1))
++        if isinstance(resolved, (dict, list)):
++            raise ValueError(f"embedded fixture reference {match.group(1)!r} must resolve to a scalar")
++        if resolved is None:
++            raise ValueError(f"embedded fixture reference {match.group(1)!r} resolved to null")
++        return str(resolved)
++
++    return _TEMPLATE_RE.sub(replace, value)
++
++
++def _fixture_value(fixture: Mapping[str, JSONValue], path: str) -> JSONValue:
++    value: object = fixture
++    for segment in path.split("."):
++        if not isinstance(value, Mapping) or segment not in value:
++            raise ValueError(f"fixture reference path is missing: {path}")
++        value = value[segment]
++    return require_json_value(value, context=f"fixture reference {path}")
++
++
++def _registered_discovery(server: object, transport_name: str) -> JSONDocument:
++    manager = getattr(server, "_tool_manager", None)
++    registered_tools = getattr(manager, "_tools", None)
++    if not isinstance(registered_tools, Mapping):
++        raise ContinuityReplayError(
++            "FastMCP server exposes no registered tool catalog",
++            kind="missing_tool_catalog",
++            failure_class="discovery",
++        )
++    tools: JSONDocument = {}
++    for name, registered in registered_tools.items():
++        if not isinstance(name, str):
++            continue
++        schema = require_json_document(getattr(registered, "parameters", {}), context=f"registered schema {name}")
++        description = getattr(registered, "description", None)
++        tools[name] = _tool_discovery_payload(schema, description if isinstance(description, str) else "")
++    return {
++        "transport": transport_name,
++        "protocol_version": "in-process-registration",
++        "server_name": str(getattr(server, "name", "polylogue")),
++        "server_version": None,
++        "tool_count": len(tools),
++        "tools": tools,
+     }
+ 
+ 
++def _stdio_discovery(initialize: object, raw_tools: Sequence[object], transport_name: str) -> JSONDocument:
++    server_info = getattr(initialize, "serverInfo", None)
++    tools: JSONDocument = {}
++    for raw_tool in raw_tools:
++        name = getattr(raw_tool, "name", None)
++        if not isinstance(name, str):
++            continue
++        schema = require_json_document(getattr(raw_tool, "inputSchema", {}), context=f"stdio schema {name}")
++        description = getattr(raw_tool, "description", None)
++        tools[name] = _tool_discovery_payload(schema, description if isinstance(description, str) else "")
++    server_name = getattr(server_info, "name", "polylogue")
++    server_version = getattr(server_info, "version", None)
++    return {
++        "transport": transport_name,
++        "protocol_version": str(getattr(initialize, "protocolVersion", "unknown")),
++        "server_name": str(server_name),
++        "server_version": str(server_version) if server_version is not None else None,
++        "tool_count": len(tools),
++        "tools": tools,
++    }
++
++
++def _tool_discovery_payload(schema: JSONDocument, description: str) -> JSONDocument:
++    return {
++        "input_schema": schema,
++        "input_schema_sha256": _hash_json(schema),
++        "description_sha256": hashlib.sha256(description.encode("utf-8")).hexdigest(),
++    }
++
++
++def _call_tool_response_text(tool: str, result: object) -> str:
++    if getattr(result, "isError", False) is True:
++        message = _content_text(getattr(result, "content", []))
++        raise ContinuityReplayError(
++            message or f"MCP tool {tool!r} returned an error",
++            kind="mcp_tool_error",
++            failure_class="execution",
++        )
++    structured = getattr(result, "structuredContent", None)
++    if isinstance(structured, Mapping):
++        response = structured.get("result")
++        if isinstance(response, str):
++            return response
++    text = _content_text(getattr(result, "content", []))
++    if text:
++        return text
++    raise ContinuityReplayError(
++        f"MCP tool {tool!r} returned no JSON text content",
++        kind="empty_mcp_tool_result",
++        failure_class="execution",
++    )
++
++
++def _content_text(content: object) -> str:
++    if not isinstance(content, Sequence) or isinstance(content, (str, bytes, bytearray)):
++        return ""
++    chunks: list[str] = []
++    for item in content:
++        text = getattr(item, "text", None)
++        if isinstance(text, str):
++            chunks.append(text)
++    return "\n".join(chunks)
++
++
++def _discovery_receipt(scenario: ContinuityScenarioSpec, discovery: Mapping[str, JSONValue]) -> JSONDocument:
++    tools = discovery.get("tools")
++    selected: JSONDocument = {}
++    if isinstance(tools, Mapping):
++        for requirement in scenario.discovery_requirements:
++            tool = tools.get(requirement.tool)
++            if not isinstance(tool, Mapping):
++                continue
++            schema = tool.get("input_schema")
++            properties = schema.get("properties") if isinstance(schema, Mapping) else None
++            visible_arguments = sorted(str(key) for key in properties) if isinstance(properties, Mapping) else []
++            required_arguments_value: list[JSONValue] = list(requirement.required_arguments)
++            visible_arguments_value: list[JSONValue] = list(visible_arguments)
++            tool_receipt: JSONDocument = {
++                "required_arguments": required_arguments_value,
++                "visible_arguments": visible_arguments_value,
++                "input_schema_sha256": tool.get("input_schema_sha256")
++                if isinstance(tool.get("input_schema_sha256"), str)
++                else None,
++                "description_sha256": tool.get("description_sha256")
++                if isinstance(tool.get("description_sha256"), str)
++                else None,
++            }
++            selected[requirement.tool] = tool_receipt
++    return require_json_document(
++        {
++            "transport": discovery.get("transport"),
++            "protocol_version": discovery.get("protocol_version"),
++            "server_name": discovery.get("server_name"),
++            "server_version": discovery.get("server_version"),
++            "tool_count": discovery.get("tool_count"),
++            "required_tools": selected,
++        },
++        context=f"discovery receipt {scenario.scenario_id}",
++    )
++
++
++def _route_discovery_summary(discovery: Mapping[str, JSONValue]) -> JSONDocument:
++    tools = discovery.get("tools")
++    tool_names = sorted(str(name) for name in tools) if isinstance(tools, Mapping) else []
++    return require_json_document(
++        {
++            "transport": discovery.get("transport"),
++            "protocol_version": discovery.get("protocol_version"),
++            "server_name": discovery.get("server_name"),
++            "server_version": discovery.get("server_version"),
++            "tool_count": discovery.get("tool_count"),
++            "tool_names_sha256": _hash_strings(tool_names),
++        },
++        context="route discovery summary",
++    )
++
++
++def _hash_json(value: object) -> str:
++    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _hash_strings(values: Sequence[str]) -> str:
++    return hashlib.sha256("\n".join(values).encode("utf-8")).hexdigest()
++
++
++def _is_int(value: object) -> TypeGuard[int]:
++    return isinstance(value, int) and not isinstance(value, bool)
++
++
++def _scenario_names(value: str) -> tuple[str, ...]:
++    if value == "all":
++        return tuple(scenario.scenario_id for scenario in CONTINUITY_SCENARIOS)
++    names = tuple(part.strip() for part in value.split(",") if part.strip())
++    for name in names:
++        continuity_scenario(name)
++    return names
++
++
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument("scenario")
+-    parser.add_argument("fixture", type=Path)
+-    parser.add_argument("observation", type=Path)
++    parser.add_argument("--archive-root", type=Path, required=True)
++    parser.add_argument("--oracle", type=Path, required=True)
++    parser.add_argument("--scenario", default="all", help="all or a comma-separated scenario id list")
++    parser.add_argument("--transport", choices=("stdio", "registered"), default="stdio")
++    parser.add_argument("--output", type=Path)
+     args = parser.parse_args(argv)
+-    fixture = json.loads(args.fixture.read_text(encoding="utf-8"))
+-    observation = json.loads(args.observation.read_text(encoding="utf-8"))
+-    result = evaluate_replay(args.scenario, fixture, observation)
+-    print(json.dumps(result, indent=2, sort_keys=True))
+-    return 0 if result["classification"] == "pass" else 1
++
++    fixture = load_oracle_catalog(args.oracle)
++    result = asyncio.run(
++        replay_archive(
++            args.archive_root,
++            fixture,
++            scenario_names=_scenario_names(args.scenario),
++            transport=cast(RouteTransport, args.transport),
++        )
++    )
++    rendered = json.dumps(result, indent=2, sort_keys=True)
++    if args.output is not None:
++        args.output.write_text(rendered + "\n", encoding="utf-8")
++    else:
++        print(rendered)
++    return 0 if result["status"] == "pass" else 1
+ 
+ 
+ if __name__ == "__main__":
+     raise SystemExit(main())
+ 
+ 
+-__all__ = ["evaluate_replay", "main"]
++__all__ = [
++    "ArgumentMutator",
++    "ContinuityReplayError",
++    "ContinuityRoute",
++    "DiscoveryMutator",
++    "MCPContinuityRoute",
++    "ResponseMutator",
++    "RouteTransport",
++    "StdioMCPContinuityRoute",
++    "compare_attempt_grades",
++    "compare_observed_facts",
++    "execute_continuity_scenario",
++    "grade_incident_attempt",
++    "load_oracle_catalog",
++    "main",
++    "materialize_route_arguments",
++    "project_fact",
++    "replay_archive",
++]
+diff --git a/polylogue/mcp/server_prompts.py b/polylogue/mcp/server_prompts.py
+index fc2846db3..798572417 100644
+--- a/polylogue/mcp/server_prompts.py
++++ b/polylogue/mcp/server_prompts.py
+@@ -506,7 +506,7 @@ Rules:
+         return f"""Surface failures in '{repo_name}' since {since} that were never acknowledged.
+ 
+ Call sequence:
+-1. query_units(expression='actions where session.repo:{repo_name} since:{since} AND output:failed', limit=20) — action rows for sessions containing failed tool outcomes.
++1. query_units(expression='actions where session.repo:{repo_name} AND output:failed', since='{since}', limit=20) — action rows for sessions containing failed tool outcomes.
+ 2. find_stuck_sessions(since="{since}") — sessions whose provider tool calls are bounded as stuck.
+ 3. For each hit: list_marks(session_id=<session_id>) and list_annotations for that session — an existing mark/annotation means acknowledged.
+ 
+@@ -517,7 +517,7 @@ Report only sessions with failures and no acknowledgment; cite the failing actio
+     async def sessions_touching_file(path: str, repo: str = "") -> str:
+         """Find sessions that edited or referenced a file path."""
+         repo_name, _cwd = _repo_context(repo)
+-        repo_clause = f"repo:{repo_name} AND " if repo_name else ""
++        repo_clause = f"session.repo:{repo_name} AND " if repo_name else ""
+         return f"""Find sessions that touched file path '{path}'.
+ 
+ Call sequence:
+diff --git a/polylogue/product/continuity_scenarios.py b/polylogue/product/continuity_scenarios.py
+index 11a057cd8..47566decd 100644
+--- a/polylogue/product/continuity_scenarios.py
++++ b/polylogue/product/continuity_scenarios.py
+@@ -1,14 +1,19 @@
+-"""Independent black-box continuity scenarios and known-answer oracles.
++"""Black-box continuity replay declarations and independent oracle projections.
+ 
+-The oracle consumes fixture evidence directly. It deliberately does not call a
+-query route, so a replay cannot pass by reproducing the production bug.
++The declarations extend Polylogue's existing :mod:`polylogue.scenarios` seam.
++They describe operator wording, the public route to exercise, and how route
++payloads are projected into facts.  Expected values stay in a separately
++planted fixture manifest; production query output is never used to construct
++an oracle.
+ """
+ 
+ from __future__ import annotations
+ 
+-from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+-from typing import Literal
++from typing import Literal, TypeAlias
++
++from polylogue.insights.authored_payloads import PayloadDict
++from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
+ 
+ ContinuityFailureClass = Literal[
+     "source_coverage",
+@@ -19,132 +24,328 @@ ContinuityFailureClass = Literal[
+     "projection",
+     "reasoning",
+ ]
++ContinuityAttemptGrade = Literal[
++    "reasonable_oversized",
++    "wrong_corpus_assumption",
++    "weak_lexical_proxy",
++    "product_induced_hidden_grammar",
++    "execution_failure",
++    "unreasonable_query",
++]
++ContinuityTool = Literal[
++    "query_units",
++    "provider_usage",
++    "explain_query_expression",
++    "list_read_view_profiles",
++]
++ContinuityFactReducer = Literal[
++    "count",
++    "single",
++    "unique_values",
++    "unique_count",
++    "regex_count",
++    "regex_unique_count",
++    "sum",
++]
++JsonPathSegment: TypeAlias = str | int
++JsonPath: TypeAlias = tuple[JsonPathSegment, ...]
++RouteArgumentValue: TypeAlias = str | int | float | bool | None
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+ class ContinuityBudget:
+-    max_calls: int = 10
++    """Bounded black-box execution budget for one replay."""
++
++    max_calls: int = 12
+     max_page_bytes: int = 25_000
+-    max_cancel_seconds: float = 5.0
++    max_total_bytes: int = 250_000
++    max_elapsed_ms: int = 30_000
++    max_cancel_grace_ms: int = 1_000
++
++
++@dataclass(frozen=True, slots=True)
++class ContinuityDiscoveryRequirement:
++    """Tool and input fields that must be visible before a plan is executed."""
++
++    tool: ContinuityTool
++    required_arguments: tuple[str, ...] = ()
++
++    def to_payload(self) -> PayloadDict:
++        return {"tool": self.tool, "required_arguments": list(self.required_arguments)}
++
++
++@dataclass(frozen=True, slots=True)
++class ContinuityResultSemantics:
++    """Operator-level meaning that makes a route result complete."""
++
++    target_population: str
++    exactness: Literal["single", "exact_population", "aggregate", "capability_inventory"]
++    evidence_contract: str
++
++    def to_payload(self) -> PayloadDict:
++        return {
++            "target_population": self.target_population,
++            "exactness": self.exactness,
++            "evidence_contract": self.evidence_contract,
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class ContinuityRouteStep:
++    """One real MCP-shaped invocation in a continuity plan."""
++
++    step_id: str
++    tool: ContinuityTool
++    arguments: tuple[tuple[str, RouteArgumentValue], ...] = ()
++    paginate: bool = False
++    exact_count_probe: bool = False
++    item_identity_path: JsonPath = ()
++
++    def argument_dict(self) -> dict[str, RouteArgumentValue]:
++        return dict(self.arguments)
++
++    def to_payload(self) -> PayloadDict:
++        return {
++            "step_id": self.step_id,
++            "tool": self.tool,
++            "arguments": dict(self.arguments),
++            "paginate": self.paginate,
++            "exact_count_probe": self.exact_count_probe,
++            "item_identity_path": list(self.item_identity_path),
++        }
++
++    @property
++    def plan_atom(self) -> str:
++        expression = self.argument_dict().get("expression")
++        if self.tool == "query_units" and isinstance(expression, str):
++            unit = expression.split(maxsplit=1)[0]
++            return f"query_units:{unit}"
++        return self.tool
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+-class ContinuityScenarioSpec:
+-    """One sparse operator job with an independently computed answer."""
+-
+-    scenario_id: str
+-    title: str
+-    sparse_prompt: str
+-    required_facts: tuple[str, ...]
+-    expected_evidence_refs: tuple[str, ...]
++class ContinuityFactProjection:
++    """Declarative projection from route payloads to one comparable fact."""
++
++    name: str
++    step_id: str
++    path: JsonPath
++    reducer: ContinuityFactReducer
++    pattern: str | None = None
++    failure_class: ContinuityFailureClass = "projection"
++
++    def to_payload(self) -> PayloadDict:
++        payload: PayloadDict = {
++            "name": self.name,
++            "step_id": self.step_id,
++            "path": list(self.path),
++            "reducer": self.reducer,
++            "failure_class": self.failure_class,
++        }
++        if self.pattern is not None:
++            payload["pattern"] = self.pattern
++        return payload
++
++
++@dataclass(frozen=True, slots=True)
++class ContinuityEvidenceProjection:
++    """Declarative extraction of citable evidence refs from route rows."""
++
++    step_id: str
++    path: JsonPath
++    prefix: str = ""
++
++    def to_payload(self) -> PayloadDict:
++        return {"step_id": self.step_id, "path": list(self.path), "prefix": self.prefix}
++
++
++@dataclass(frozen=True, slots=True)
++class ContinuityAttemptCurriculumProjection:
++    """Route projection used to grade the sanitized incident call curriculum."""
++
++    step_id: str
++    path: JsonPath
++    case_ids: tuple[str, ...]
++
++    def to_payload(self) -> PayloadDict:
++        return {"step_id": self.step_id, "path": list(self.path), "case_ids": list(self.case_ids)}
++
++
++@dataclass(frozen=True, kw_only=True)
++class ContinuityScenarioSpec(NamedScenarioSource):
++    """One sparse operator job declared on the repository's scenario seam."""
++
++    operator_question: str
++    fixture_key: str
++    route_steps: tuple[ContinuityRouteStep, ...]
++    fact_projections: tuple[ContinuityFactProjection, ...]
++    evidence_projections: tuple[ContinuityEvidenceProjection, ...]
++    allowed_query_surfaces: tuple[ContinuityTool, ...]
++    workflow_ids: tuple[str, ...]
+     canonical_plan_families: tuple[str, ...]
+-    result_semantics: str
+-    allowed_discovery: tuple[str, ...]
++    equivalent_plan_signatures: tuple[tuple[str, ...], ...]
++    discovery_requirements: tuple[ContinuityDiscoveryRequirement, ...]
++    coverage_inventory: tuple[str, ...]
++    result_semantics: ContinuityResultSemantics
+     stop_conditions: tuple[str, ...]
+     failure_taxonomy: tuple[ContinuityFailureClass, ...]
+-    mutation_cases: tuple[str, ...] = ()
++    mutation_cases: tuple[str, ...]
++    attempt_curriculum: ContinuityAttemptCurriculumProjection | None = None
+     budget: ContinuityBudget = ContinuityBudget()
+ 
+-    def oracle_record(self, fixture: Mapping[str, object]) -> Mapping[str, object]:
+-        """Return the fixture-owned answer record without invoking production code."""
+-        raw = fixture.get(self.scenario_id)
+-        if isinstance(raw, Mapping):
+-            refs = raw.get("refs", ())
+-            if not isinstance(refs, Sequence) or isinstance(refs, (str, bytes)):
+-                raise ValueError(f"fixture answer for {self.scenario_id} has no refs list")
+-            return {**raw, "refs": tuple(str(ref) for ref in refs)}
+-        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+-            return {"refs": tuple(str(ref) for ref in raw)}
+-        raise ValueError(f"fixture has no independent answer population for {self.scenario_id}")
+-
+-    def oracle(self, fixture: Mapping[str, object]) -> tuple[str, ...]:
+-        """Build target refs from fixture evidence, not production query output."""
+-        refs = self.oracle_record(fixture)["refs"]
+-        if not isinstance(refs, Sequence) or isinstance(refs, (str, bytes)):
+-            raise ValueError(f"fixture answer for {self.scenario_id} has no refs sequence")
+-        return tuple(str(ref) for ref in refs)
+-
+-    def oracle_answer(self, fixture: Mapping[str, object]) -> dict[str, object]:
+-        """Return fixture-owned non-reference answer fields."""
+-        return {
+-            str(key): value
+-            for key, value in self.oracle_record(fixture).items()
+-            if key not in {"refs", "mutation_expectations"}
+-        }
++    @property
++    def scenario_id(self) -> str:
++        return self.name
++
++    @property
++    def title(self) -> str:
++        return self.description
++
++    @property
++    def sparse_prompt(self) -> str:
++        return self.operator_question
++
++    @property
++    def required_facts(self) -> tuple[str, ...]:
++        return tuple(projection.name for projection in self.fact_projections)
++
++    @property
++    def route_plan_signature(self) -> tuple[str, ...]:
++        return tuple(step.plan_atom for step in self.route_steps)
++
++    @property
++    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
++        return ScenarioProjectionSourceKind.VALIDATION_LANE
++
++    def scenario_payload(self) -> PayloadDict:
++        payload = super().scenario_payload()
++        payload.update(
++            {
++                "name": self.name,
++                "description": self.description,
++                "operator_question": self.operator_question,
++                "fixture_key": self.fixture_key,
++                "route_steps": [step.to_payload() for step in self.route_steps],
++                "fact_projections": [projection.to_payload() for projection in self.fact_projections],
++                "evidence_projections": [projection.to_payload() for projection in self.evidence_projections],
++                "allowed_query_surfaces": list(self.allowed_query_surfaces),
++                "workflow_ids": list(self.workflow_ids),
++                "canonical_plan_families": list(self.canonical_plan_families),
++                "equivalent_plan_signatures": [list(signature) for signature in self.equivalent_plan_signatures],
++                "discovery_requirements": [requirement.to_payload() for requirement in self.discovery_requirements],
++                "coverage_inventory": list(self.coverage_inventory),
++                "result_semantics": self.result_semantics.to_payload(),
++                "stop_conditions": list(self.stop_conditions),
++                "failure_taxonomy": list(self.failure_taxonomy),
++                "mutation_cases": list(self.mutation_cases),
++                "budget": {
++                    "max_calls": self.budget.max_calls,
++                    "max_page_bytes": self.budget.max_page_bytes,
++                    "max_total_bytes": self.budget.max_total_bytes,
++                    "max_elapsed_ms": self.budget.max_elapsed_ms,
++                    "max_cancel_grace_ms": self.budget.max_cancel_grace_ms,
++                },
++            }
++        )
++        if self.attempt_curriculum is not None:
++            payload["attempt_curriculum"] = self.attempt_curriculum.to_payload()
++        return payload
++
+ 
+-    def oracle_mutations(self, fixture: Mapping[str, object]) -> Mapping[str, object]:
+-        """Return fixture-owned mutation expectations, when supplied."""
+-        raw = self.oracle_record(fixture).get("mutation_expectations", {})
+-        if not isinstance(raw, Mapping):
+-            raise ValueError(f"fixture mutation expectations for {self.scenario_id} must be an object")
+-        return raw
+-
+-    def classify(
+-        self,
+-        fixture: Mapping[str, object],
+-        *,
+-        observed_refs: Sequence[str],
+-        observed_answer: Mapping[str, object] | None = None,
+-        observed_mutations: Mapping[str, object] | None = None,
+-        calls: int,
+-        observed_failure: ContinuityFailureClass | None = None,
+-        page_bytes: int | None = None,
+-        cancel_seconds: float | None = None,
+-        continuation_state_lost: bool = False,
+-        non_progressing_continuation: bool = False,
+-    ) -> str:
+-        expected = self.oracle(fixture)
+-        if calls > self.budget.max_calls:
+-            return "discovery"
+-        if page_bytes is not None and page_bytes > self.budget.max_page_bytes:
+-            return "projection"
+-        if cancel_seconds is not None and cancel_seconds > self.budget.max_cancel_seconds:
+-            return "execution"
+-        if continuation_state_lost or non_progressing_continuation:
+-            return "execution"
+-        if observed_failure is not None:
+-            return observed_failure
+-        expected_answer = self.oracle_answer(fixture)
+-        if expected_answer and dict(observed_answer or {}) != expected_answer:
+-            return "projection"
+-        expected_mutations = self.oracle_mutations(fixture)
+-        if expected_mutations and dict(observed_mutations or {}) != dict(expected_mutations):
+-            return "projection"
+-        observed = tuple(observed_refs)
+-        if len(observed) != len(set(observed)):
+-            return "projection"
+-        return "pass" if observed == expected else "projection"
++def _args(**kwargs: RouteArgumentValue) -> tuple[tuple[str, RouteArgumentValue], ...]:
++    return tuple(kwargs.items())
++
++
++def _fact(
++    name: str,
++    step_id: str,
++    *path: JsonPathSegment,
++    reducer: ContinuityFactReducer = "single",
++    pattern: str | None = None,
++    failure_class: ContinuityFailureClass = "projection",
++) -> ContinuityFactProjection:
++    return ContinuityFactProjection(
++        name=name,
++        step_id=step_id,
++        path=path,
++        reducer=reducer,
++        pattern=pattern,
++        failure_class=failure_class,
++    )
++
++
++def _evidence(step_id: str, *path: JsonPathSegment, prefix: str = "") -> ContinuityEvidenceProjection:
++    return ContinuityEvidenceProjection(step_id=step_id, path=path, prefix=prefix)
++
++
++_FAILURES: tuple[ContinuityFailureClass, ...] = (
++    "source_coverage",
++    "discovery",
++    "formulation",
++    "plan",
++    "execution",
++    "projection",
++    "reasoning",
++)
++_STOP = ("all declared facts match", "all continuations are exhausted", "all evidence refs are citable")
+ 
+ 
+ def _scenario(
+     scenario_id: str,
+     title: str,
+-    prompt: str,
+-    facts: tuple[str, ...],
+-    refs: tuple[str, ...],
+-    plan: tuple[str, ...],
+-    mutation_cases: tuple[str, ...],
++    question: str,
++    *,
++    steps: tuple[ContinuityRouteStep, ...],
++    facts: tuple[ContinuityFactProjection, ...],
++    evidence: tuple[ContinuityEvidenceProjection, ...],
++    workflows: tuple[str, ...],
++    plans: tuple[str, ...],
++    coverage: tuple[str, ...],
++    result_semantics: ContinuityResultSemantics,
++    mutations: tuple[str, ...],
++    equivalent_plan_signatures: tuple[tuple[str, ...], ...] = (),
++    attempt_curriculum: ContinuityAttemptCurriculumProjection | None = None,
++    budget: ContinuityBudget = ContinuityBudget(),
+ ) -> ContinuityScenarioSpec:
++    tools = tuple(dict.fromkeys(step.tool for step in steps))
++    required_arguments: dict[ContinuityTool, set[str]] = {tool: set() for tool in tools}
++    for step in steps:
++        required_arguments[step.tool].update(step.argument_dict())
++        if step.paginate:
++            required_arguments[step.tool].add("continuation")
++    discovery = tuple(
++        ContinuityDiscoveryRequirement(tool=tool, required_arguments=tuple(sorted(required_arguments[tool])))
++        for tool in tools
++    )
++    route_signature = tuple(step.plan_atom for step in steps)
++    accepted_signatures = tuple(dict.fromkeys((route_signature, *equivalent_plan_signatures)))
+     return ContinuityScenarioSpec(
+-        scenario_id=scenario_id,
+-        title=title,
+-        sparse_prompt=prompt,
+-        required_facts=facts,
+-        expected_evidence_refs=refs,
+-        canonical_plan_families=plan,
+-        result_semantics="exhaustive_page",
+-        allowed_discovery=("polylogue://capabilities/query", "query_units", "search"),
+-        stop_conditions=("all expected refs enumerated exactly once", "no advancing continuation remains"),
+-        failure_taxonomy=(
+-            "source_coverage",
+-            "discovery",
+-            "formulation",
+-            "plan",
+-            "execution",
+-            "projection",
+-            "reasoning",
+-        ),
+-        mutation_cases=mutation_cases,
++        name=scenario_id,
++        description=title,
++        operator_question=question,
++        fixture_key=scenario_id,
++        route_steps=steps,
++        fact_projections=facts,
++        evidence_projections=evidence,
++        allowed_query_surfaces=tools,
++        workflow_ids=workflows,
++        canonical_plan_families=plans,
++        equivalent_plan_signatures=accepted_signatures,
++        discovery_requirements=discovery,
++        coverage_inventory=coverage,
++        result_semantics=result_semantics,
++        stop_conditions=_STOP,
++        failure_taxonomy=_FAILURES,
++        mutation_cases=mutations,
++        attempt_curriculum=attempt_curriculum,
++        budget=budget,
++        origin="authored",
++        tags=("continuity", "black-box", "known-answer", scenario_id),
++        docs_role="verification-scenario",
++        caption=title,
++        audience=("operators", "maintainers", "agents"),
++        demonstrates=("public-route replay", "independent oracle"),
++        privacy_level="synthetic",
+     )
+ 
+ 
+@@ -153,73 +354,567 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
+         "resume",
+         "Resume current work",
+         "What was I doing in this repo?",
+-        ("session", "repo", "continuation"),
+-        ("session:resume-1",),
+-        ("session-query", "read-context"),
+-        ("lost-continuation-state",),
++        steps=(
++            ContinuityRouteStep(
++                "resume-messages",
++                "query_units",
++                _args(expression="messages where text:{fixture:corpus.resume.marker}", limit=2),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("message_id",),
++            ),
++        ),
++        facts=(
++            _fact(
++                "matching_messages",
++                "resume-messages",
++                "items",
++                "*",
++                "message_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++            _fact("session_ids", "resume-messages", "items", "*", "session_id", reducer="unique_values"),
++            _fact("continuation_text", "resume-messages", "items", "*", "text"),
++        ),
++        evidence=(_evidence("resume-messages", "items", "*", "message_id", prefix="message:"),),
++        workflows=("find-then-successor-context", "find-then-continue"),
++        plans=("message-query", "read-context"),
++        coverage=("message text", "session identity", "successor work context"),
++        result_semantics=ContinuityResultSemantics(
++            target_population="messages matching the caller-supplied current-work marker",
++            exactness="exact_population",
++            evidence_contract="cite every matching message id",
++        ),
++        mutations=("drop-text-filter", "lost-continuation-state"),
+     ),
+     _scenario(
+         "forensic-debug",
+-        "Find a forensic file/session",
++        "Find a forensic file and failing action",
+         "Where did this failure happen?",
+-        ("file", "action", "failure"),
+-        ("session:debug-1", "file:src/app.py"),
+-        ("file-query", "action-query"),
+-        ("global-action-materialization",),
++        steps=(
++            ContinuityRouteStep(
++                "forensic-actions",
++                "query_units",
++                _args(expression="actions where path:{fixture:corpus.forensic_debug.path} AND is_error:true", limit=2),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("tool_use_block_id",),
++            ),
++            ContinuityRouteStep(
++                "forensic-files",
++                "query_units",
++                _args(expression="files where path:{fixture:corpus.forensic_debug.path}", limit=2),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("first_tool_use_block_id",),
++            ),
++        ),
++        facts=(
++            _fact(
++                "failed_actions",
++                "forensic-actions",
++                "items",
++                "*",
++                "tool_use_block_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++            _fact("failure_path", "forensic-actions", "items", "*", "tool_path"),
++            _fact("exit_code", "forensic-actions", "items", "*", "exit_code"),
++            _fact("file_rows", "forensic-files", "items", "*", "path", reducer="count"),
++            _fact("file_path", "forensic-files", "items", "*", "path"),
++        ),
++        evidence=(
++            _evidence("forensic-actions", "items", "*", "message_id", prefix="message:"),
++            _evidence("forensic-actions", "items", "*", "tool_use_block_id", prefix="block:"),
++            _evidence("forensic-files", "items", "*", "first_tool_use_block_id", prefix="block:"),
++        ),
++        workflows=("find-then-read-messages", "resolve-ref-drilldown"),
++        plans=("action-query", "file-query"),
++        equivalent_plan_signatures=(("query_units:files", "query_units:actions"),),
++        coverage=("error actions", "referenced files", "message and block evidence"),
++        result_semantics=ContinuityResultSemantics(
++            target_population="error actions and file references for the supplied path",
++            exactness="exact_population",
++            evidence_contract="cite the action message, tool-use block, and file block",
++        ),
++        mutations=("drop-error-filter", "global-action-materialization"),
+     ),
+     _scenario(
+         "prior-art",
+         "Retrieve prior art",
+         "Have we solved this before?",
+-        ("similar-session", "decision"),
+-        ("session:prior-1",),
+-        ("near-query", "text-query"),
+-        ("wrong-ranking-scope",),
++        steps=(
++            ContinuityRouteStep(
++                "prior-messages",
++                "query_units",
++                _args(expression="messages where text:{fixture:corpus.prior_art.marker}", limit=2),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("message_id",),
++            ),
++        ),
++        facts=(
++            _fact(
++                "prior_hits",
++                "prior-messages",
++                "items",
++                "*",
++                "message_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++            _fact(
++                "session_ids",
++                "prior-messages",
++                "items",
++                "*",
++                "session_id",
++                reducer="unique_values",
++                failure_class="source_coverage",
++            ),
++            _fact(
++                "prior_art_text",
++                "prior-messages",
++                "items",
++                "*",
++                "text",
++                failure_class="source_coverage",
++            ),
++        ),
++        evidence=(_evidence("prior-messages", "items", "*", "message_id", prefix="message:"),),
++        workflows=("find-then-read-messages", "resolve-ref-drilldown"),
++        plans=("text-query", "evidence-read"),
++        coverage=("message text", "session identity", "prior-art evidence"),
++        result_semantics=ContinuityResultSemantics(
++            target_population="messages matching the supplied prior-art marker",
++            exactness="exact_population",
++            evidence_contract="cite every matching message id",
++        ),
++        mutations=("drop-marker-filter", "wrong-ranking-scope"),
+     ),
+     _scenario(
+         "decision",
+-        "Recover a decision",
++        "Recover an operator decision",
+         "What did we decide about this?",
+-        ("assertion", "decision", "evidence"),
+-        ("assertion:decision-1",),
+-        ("assertion-query", "read-ref"),
+-        ("unresolved-ref-broadening",),
++        steps=(
++            ContinuityRouteStep(
++                "decision-assertions",
++                "query_units",
++                _args(expression="assertions where kind:decision AND text:{fixture:corpus.decision.marker}", limit=2),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("assertion_id",),
++            ),
++        ),
++        facts=(
++            _fact(
++                "decision_count",
++                "decision-assertions",
++                "items",
++                "*",
++                "assertion_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++            _fact("decision_ids", "decision-assertions", "items", "*", "assertion_id", reducer="unique_values"),
++            _fact("decision_body", "decision-assertions", "items", "*", "body_text"),
++            _fact("decision_status", "decision-assertions", "items", "*", "status"),
++        ),
++        evidence=(
++            _evidence("decision-assertions", "items", "*", "assertion_id", prefix="assertion:"),
++            _evidence("decision-assertions", "items", "*", "evidence_refs", "*"),
++        ),
++        workflows=("candidate-assertion-review", "resolve-ref-drilldown"),
++        plans=("assertion-query", "evidence-read"),
++        coverage=("decision assertions", "assertion status", "assertion evidence refs"),
++        result_semantics=ContinuityResultSemantics(
++            target_population="decision assertions matching the supplied decision marker",
++            exactness="single",
++            evidence_contract="cite the assertion and all planted evidence refs",
++        ),
++        mutations=("drop-kind-filter", "unresolved-ref-broadening"),
+     ),
+     _scenario(
+         "postmortem",
+-        "Explain a failure",
++        "Explain a failed run",
+         "Why did the last run fail?",
+-        ("run", "action", "outcome"),
+-        ("run:failed-1", "action:failed-1"),
+-        ("run-query", "action-query"),
+-        ("capped-pseudo-total",),
++        steps=(
++            ContinuityRouteStep(
++                "failed-actions",
++                "query_units",
++                _args(expression="actions where output:{fixture:corpus.postmortem.marker} AND is_error:true", limit=2),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("tool_use_block_id",),
++            ),
++        ),
++        facts=(
++            _fact(
++                "failed_action_count",
++                "failed-actions",
++                "items",
++                "*",
++                "tool_use_block_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++            _fact("failed_tool", "failed-actions", "items", "*", "tool_name"),
++            _fact("exit_code", "failed-actions", "items", "*", "exit_code"),
++            _fact("failure_output", "failed-actions", "items", "*", "output_text"),
++        ),
++        evidence=(
++            _evidence("failed-actions", "items", "*", "message_id", prefix="message:"),
++            _evidence("failed-actions", "items", "*", "tool_use_block_id", prefix="block:"),
++        ),
++        workflows=("find-then-read-messages", "resolve-ref-drilldown"),
++        plans=("action-query", "failure-evidence"),
++        coverage=("failed actions", "tool exit status", "failure output evidence"),
++        result_semantics=ContinuityResultSemantics(
++            target_population="failed actions matching the supplied postmortem marker",
++            exactness="single",
++            evidence_contract="cite the action message and tool-use block",
++        ),
++        mutations=("drop-error-filter", "capped-pseudo-total"),
+     ),
+     _scenario(
+         "cost",
+-        "Audit cost and usage",
++        "Audit reported usage",
+         "How much did this work cost?",
+-        ("usage", "reported-tokens", "price"),
+-        ("usage:run-1",),
+-        ("usage-query", "read-ref"),
+-        ("reported-vs-estimated-collapse",),
++        steps=(
++            ContinuityRouteStep(
++                "usage-report",
++                "provider_usage",
++                _args(origin="{fixture:corpus.origin}", limit=10, detail="headline"),
++            ),
++        ),
++        facts=(
++            _fact(
++                "input_tokens",
++                "usage-report",
++                "metadata",
++                "provider_usage",
++                "model_rollup_usage",
++                "input_tokens",
++            ),
++            _fact(
++                "output_tokens",
++                "usage-report",
++                "metadata",
++                "provider_usage",
++                "model_rollup_usage",
++                "output_tokens",
++            ),
++            _fact(
++                "cached_input_tokens",
++                "usage-report",
++                "metadata",
++                "provider_usage",
++                "model_rollup_usage",
++                "cached_input_tokens",
++            ),
++            _fact(
++                "total_tokens",
++                "usage-report",
++                "metadata",
++                "provider_usage",
++                "model_rollup_usage",
++                "total_tokens",
++            ),
++            _fact("pricing_grain", "usage-report", "metadata", "provider_usage", "pricing_grain"),
++        ),
++        evidence=(
++            _evidence(
++                "usage-report",
++                "provider_usage",
++                "exact_total_tokens_evidence",
++                "evidence_refs",
++                "*",
++            ),
++        ),
++        workflows=("resolve-ref-drilldown",),
++        plans=("usage-diagnostic", "reported-token-audit"),
++        coverage=("origin-scoped provider usage", "model rollup", "reported-token evidence"),
++        result_semantics=ContinuityResultSemantics(
++            target_population="provider-reported usage rows for the supplied origin",
++            exactness="aggregate",
++            evidence_contract="retain exact-token evidence refs and pricing grain",
++        ),
++        mutations=("drop-origin-filter", "reported-vs-estimated-collapse"),
++        budget=ContinuityBudget(
++            max_calls=4,
++            max_page_bytes=100_000,
++            max_total_bytes=150_000,
++            max_elapsed_ms=30_000,
++        ),
+     ),
+     _scenario(
+         "self-inspection",
+-        "Inspect the archive itself",
++        "Inspect query capability",
+         "What can you answer about agent work?",
+-        ("capability", "coverage", "freshness"),
+-        ("capability:query",),
+-        ("capability-resource", "status-query"),
+-        ("unpaged-capability-catalog",),
++        steps=(
++            ContinuityRouteStep(
++                "query-explanation",
++                "explain_query_expression",
++                _args(expression="assertions where kind:decision AND status:active"),
++            ),
++            ContinuityRouteStep("read-views", "list_read_view_profiles"),
++        ),
++        facts=(
++            _fact(
++                "selected_units",
++                "query-explanation",
++                "query_explanation",
++                "selected_units",
++                "*",
++                reducer="unique_values",
++            ),
++            _fact(
++                "unsupported_nodes",
++                "query-explanation",
++                "query_explanation",
++                "unsupported_nodes",
++                "*",
++                reducer="count",
++            ),
++            _fact("read_view_count", "read-views", "total"),
++            _fact("read_view_ids", "read-views", "read_views", "*", "view_id", reducer="unique_values"),
++        ),
++        evidence=(),
++        workflows=("find-then-read-messages", "find-then-context-image", "resolve-ref-drilldown"),
++        plans=("grammar-introspection", "read-view-catalog"),
++        equivalent_plan_signatures=(("list_read_view_profiles", "explain_query_expression"),),
++        coverage=("query grammar", "selected terminal units", "read-view profile catalog"),
++        result_semantics=ContinuityResultSemantics(
++            target_population="the executable query grammar and shipped read-view profiles",
++            exactness="capability_inventory",
++            evidence_contract="return machine-readable capability metadata",
++        ),
++        mutations=("unpaged-capability-catalog", "unsupported-terminal-unit"),
+     ),
+     _scenario(
+         "parallel-claude-incident",
+-        "Reconstruct parallel Claude work",
++        "Reconstruct parallel-agent incident membership",
+         "Which agents handled the concerns and what changed?",
+-        ("coordinator", "attempt", "claim", "git-effect", "beads-effect"),
+-        ("session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"),
+-        ("capability-resource", "delegation-query", "effect-query"),
+-        ("lost-continuation-state", "global-delegation-materialization", "wrong-workflow-membership"),
++        steps=(
++            ContinuityRouteStep(
++                "incident-members",
++                "query_units",
++                _args(
++                    expression=(
++                        "messages where text:parallel-child "
++                        'AND text:"workflow_run:{fixture:corpus.parallel_incident.run_ref}"'
++                    ),
++                    limit=17,
++                ),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("message_id",),
++            ),
++            ContinuityRouteStep(
++                "incident-other-members",
++                "query_units",
++                _args(
++                    expression=(
++                        "messages where text:parallel-child "
++                        'AND NOT text:"workflow_run:{fixture:corpus.parallel_incident.run_ref}"'
++                    ),
++                    limit=19,
++                ),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("message_id",),
++            ),
++            ContinuityRouteStep(
++                "incident-all-children",
++                "query_units",
++                _args(
++                    expression=(
++                        "runs where native_parent_session_id:"
++                        '"{fixture:corpus.parallel_incident.coordinator_session_id}" '
++                        "AND role:subagent"
++                    ),
++                    limit=19,
++                ),
++                paginate=True,
++                item_identity_path=("run_ref",),
++            ),
++            ContinuityRouteStep(
++                "incident-invocations",
++                "query_units",
++                _args(
++                    expression=('messages where text:"workflow-invocation:{fixture:corpus.parallel_incident.run_ref}"'),
++                    limit=2,
++                ),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("message_id",),
++            ),
++            ContinuityRouteStep(
++                "incident-final",
++                "query_units",
++                _args(
++                    expression=(
++                        'messages where text:"final-structured-result:{fixture:corpus.parallel_incident.run_ref}"'
++                    ),
++                    limit=2,
++                ),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("message_id",),
++            ),
++            ContinuityRouteStep(
++                "incident-curriculum",
++                "query_units",
++                _args(
++                    expression=('messages where text:"incident-curriculum:{fixture:corpus.parallel_incident.run_ref}"'),
++                    limit=3,
++                ),
++                paginate=True,
++                exact_count_probe=True,
++                item_identity_path=("message_id",),
++            ),
++        ),
++        facts=(
++            _fact(
++                "attempt_transcripts",
++                "incident-members",
++                "items",
++                "*",
++                "session_id",
++                reducer="unique_count",
++                failure_class="source_coverage",
++            ),
++            _fact(
++                "call_keys",
++                "incident-members",
++                "items",
++                "*",
++                "text",
++                reducer="regex_unique_count",
++                pattern=r"call_key:(call-\d{2})",
++            ),
++            _fact(
++                "result_records",
++                "incident-members",
++                "items",
++                "*",
++                "text",
++                reducer="regex_count",
++                pattern=r"result_record:yes",
++            ),
++            _fact(
++                "completed_call_keys",
++                "incident-members",
++                "items",
++                "*",
++                "text",
++                reducer="regex_unique_count",
++                pattern=r"completed_key:(call-\d{2})",
++            ),
++            _fact(
++                "unresolved_call_keys",
++                "incident-members",
++                "items",
++                "*",
++                "text",
++                reducer="regex_unique_count",
++                pattern=r"unresolved_key:(call-\d{2})",
++            ),
++            _fact(
++                "non_workflow_children",
++                "incident-other-members",
++                "items",
++                "*",
++                "session_id",
++                reducer="unique_count",
++                failure_class="source_coverage",
++            ),
++            _fact(
++                "coordinator_children",
++                "incident-all-children",
++                "items",
++                "*",
++                "run_ref",
++                reducer="unique_count",
++                failure_class="source_coverage",
++            ),
++            _fact(
++                "workflow_invocations",
++                "incident-invocations",
++                "items",
++                "*",
++                "message_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++            _fact(
++                "final_result_count",
++                "incident-final",
++                "items",
++                "*",
++                "message_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++            _fact(
++                "incident_curriculum_cases",
++                "incident-curriculum",
++                "items",
++                "*",
++                "message_id",
++                reducer="count",
++                failure_class="source_coverage",
++            ),
++        ),
++        evidence=(
++            _evidence("incident-members", "items", "*", "message_id", prefix="message:"),
++            _evidence("incident-invocations", "items", "*", "message_id", prefix="message:"),
++            _evidence("incident-final", "items", "*", "message_id", prefix="message:"),
++            _evidence("incident-curriculum", "items", "*", "message_id", prefix="message:"),
++        ),
++        workflows=("find-then-read-messages", "resolve-ref-drilldown"),
++        plans=("membership-query", "continuation-census", "effect-evidence"),
++        coverage=(
++            "coordinator-child topology",
++            "target workflow membership",
++            "call/result completion census",
++            "workflow invocations and final result",
++            "original-call classification curriculum",
++        ),
++        result_semantics=ContinuityResultSemantics(
++            target_population="all 129 coordinator children partitioned into 91 target-run and 38 other children",
++            exactness="exact_population",
++            evidence_contract="enumerate every row exactly once and cite target-run, invocation, final, and curriculum messages",
++        ),
++        mutations=(
++            "drop-workflow-filter",
++            "lost-request-state-continuation",
++            "capped-pseudo-total",
++            "identical-call-topology-replay",
++            "hidden-fact-or-grammar-discovery",
++            "missing-source-coverage",
++            "unreasonable-query-classification",
++        ),
++        attempt_curriculum=ContinuityAttemptCurriculumProjection(
++            step_id="incident-curriculum",
++            path=("items", "*", "text"),
++            case_ids=(
++                "candidate-list",
++                "exact-operator-phrase",
++                "sonnet-lexical-proxy",
++                "sessions-only-query",
++                "correct-topology",
++                "correct-delegation",
++            ),
++        ),
++        budget=ContinuityBudget(
++            max_calls=28,
++            max_page_bytes=25_000,
++            max_total_bytes=650_000,
++            max_elapsed_ms=45_000,
++        ),
+     ),
+ )
+ 
+@@ -236,8 +931,15 @@ def continuity_scenario(name: str) -> ContinuityScenarioSpec:
+ __all__ = [
+     "CONTINUITY_SCENARIOS",
+     "CONTINUITY_SCENARIO_BY_ID",
++    "ContinuityAttemptCurriculumProjection",
++    "ContinuityAttemptGrade",
+     "ContinuityBudget",
++    "ContinuityDiscoveryRequirement",
++    "ContinuityEvidenceProjection",
++    "ContinuityFactProjection",
+     "ContinuityFailureClass",
++    "ContinuityResultSemantics",
++    "ContinuityRouteStep",
+     "ContinuityScenarioSpec",
+     "continuity_scenario",
+ ]
+diff --git a/tests/data/continuity/catalog.json b/tests/data/continuity/catalog.json
+new file mode 100644
+index 000000000..de03eb817
+--- /dev/null
++++ b/tests/data/continuity/catalog.json
+@@ -0,0 +1,283 @@
++{
++  "corpus": {
++    "cost": {
++      "cache_write_tokens": 50,
++      "cached_input_tokens": 400,
++      "input_tokens": 1200,
++      "model": "gpt-5.2-codex",
++      "output_tokens": 300,
++      "session_key": "continuity-cost",
++      "total_tokens": 1950
++    },
++    "decision": {
++      "assertion_id": "continuity-decision-cursor-pages",
++      "body": "Use cursor-bound-pages and reject offset-only replay for archive continuations.",
++      "marker": "cursor-bound-pages",
++      "message_key": "decision-evidence",
++      "session_key": "continuity-decision"
++    },
++    "forensic_debug": {
++      "exit_code": 17,
++      "message_key": "forensic-action",
++      "output": "FORENSIC_SENTINEL NameError: continuity_fixture_value",
++      "path": "src/continuity_target.py",
++      "session_key": "continuity-forensic",
++      "tool": "Edit"
++    },
++    "origin": "codex-session",
++    "parallel_incident": {
++      "attempt_curriculum": [
++        {
++          "case": "candidate-list",
++          "corpus_match": "true",
++          "outcome": "rejected",
++          "physical_size": "oversized",
++          "query_shape": "candidate-list",
++          "shipped_instruction": "absent",
++          "structure_discovery": "present"
++        },
++        {
++          "case": "exact-operator-phrase",
++          "corpus_match": "false",
++          "outcome": "empty",
++          "physical_size": "bounded",
++          "query_shape": "exact-operator-phrase",
++          "shipped_instruction": "absent",
++          "structure_discovery": "present"
++        },
++        {
++          "case": "sonnet-lexical-proxy",
++          "corpus_match": "true",
++          "outcome": "empty",
++          "physical_size": "bounded",
++          "query_shape": "sonnet-lexical-proxy",
++          "shipped_instruction": "absent",
++          "structure_discovery": "absent"
++        },
++        {
++          "case": "sessions-only-query",
++          "corpus_match": "true",
++          "outcome": "rejected",
++          "physical_size": "bounded",
++          "query_shape": "sessions-only-query",
++          "shipped_instruction": "advertised",
++          "structure_discovery": "absent"
++        },
++        {
++          "case": "correct-topology",
++          "corpus_match": "true",
++          "outcome": "transport-failure",
++          "physical_size": "bounded",
++          "query_shape": "correct-topology",
++          "shipped_instruction": "absent",
++          "structure_discovery": "present"
++        },
++        {
++          "case": "correct-delegation",
++          "corpus_match": "true",
++          "outcome": "timeout",
++          "physical_size": "bounded",
++          "query_shape": "correct-delegation",
++          "shipped_instruction": "absent",
++          "structure_discovery": "present"
++        }
++      ],
++      "call_keys": 50,
++      "completed_call_keys": 49,
++      "coordinator_key": "continuity-incident-coordinator",
++      "coordinator_session_id": "codex-session:ext-continuity-incident-coordinator",
++      "member_children": 91,
++      "other_children": 38,
++      "result_records": 65,
++      "run_ref": "wf_synthetic_841",
++      "unresolved_call_keys": 1,
++      "workflow_invocations": 4
++    },
++    "postmortem": {
++      "exit_code": 2,
++      "marker": "POSTMORTEM_SENTINEL",
++      "message_key": "postmortem-action",
++      "output": "POSTMORTEM_SENTINEL pytest collection failed because the fixture root was stale",
++      "session_key": "continuity-postmortem",
++      "tool": "Bash"
++    },
++    "prior_art": {
++      "marker": "prior-art-zebra-417",
++      "message_key": "prior-answer",
++      "session_key": "continuity-prior-art",
++      "text": "prior-art-zebra-417 We previously fixed this by binding every page to the retained query request."
++    },
++    "provider": "codex",
++    "resume": {
++      "marker": "continuity-resume-marker",
++      "message_key": "resume-answer",
++      "session_key": "continuity-resume",
++      "text": "continuity-resume-marker Next step: add the cancellation regression test before changing the parser."
++    },
++    "timestamp": "2026-01-15T12:00:00+00:00"
++  },
++  "fixture_id": "continuity-synthetic-v2",
++  "oracles": {
++    "cost": {
++      "facts": {
++        "cached_input_tokens": 400,
++        "input_tokens": 1200,
++        "output_tokens": 300,
++        "pricing_grain": "physical_session",
++        "total_tokens": 1950
++      },
++      "required_evidence_refs": [],
++      "source_refs": [
++        "fixture:corpus.cost",
++        "storage:session_model_usage"
++      ]
++    },
++    "decision": {
++      "facts": {
++        "decision_body": "Use cursor-bound-pages and reject offset-only replay for archive continuations.",
++        "decision_count": 1,
++        "decision_ids": [
++          "continuity-decision-cursor-pages"
++        ],
++        "decision_status": "active"
++      },
++      "required_evidence_refs": [
++        "assertion:continuity-decision-cursor-pages",
++        "message:codex-session:ext-continuity-decision:decision-evidence"
++      ],
++      "source_refs": [
++        "fixture:corpus.decision"
++      ]
++    },
++    "forensic-debug": {
++      "facts": {
++        "exit_code": 17,
++        "failed_actions": 1,
++        "failure_path": "src/continuity_target.py",
++        "file_path": "src/continuity_target.py",
++        "file_rows": 1
++      },
++      "required_evidence_refs": [
++        "message:codex-session:ext-continuity-forensic:forensic-action"
++      ],
++      "source_refs": [
++        "fixture:corpus.forensic_debug"
++      ]
++    },
++    "parallel-claude-incident": {
++      "attempt_grades": {
++        "candidate-list": "reasonable_oversized",
++        "correct-delegation": "execution_failure",
++        "correct-topology": "execution_failure",
++        "exact-operator-phrase": "wrong_corpus_assumption",
++        "sessions-only-query": "product_induced_hidden_grammar",
++        "sonnet-lexical-proxy": "weak_lexical_proxy"
++      },
++      "facts": {
++        "attempt_transcripts": 91,
++        "call_keys": 50,
++        "completed_call_keys": 49,
++        "coordinator_children": 129,
++        "final_result_count": 1,
++        "incident_curriculum_cases": 6,
++        "non_workflow_children": 38,
++        "result_records": 65,
++        "unresolved_call_keys": 1,
++        "workflow_invocations": 4
++      },
++      "required_evidence_refs": [
++        "message:codex-session:ext-continuity-incident-coordinator:workflow-invocation-01",
++        "message:codex-session:ext-continuity-incident-coordinator:final-result",
++        "message:codex-session:ext-continuity-incident-member-001:attempt",
++        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-candidate-list",
++        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-exact-operator-phrase",
++        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-sonnet-lexical-proxy",
++        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-sessions-only-query",
++        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-correct-topology",
++        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-correct-delegation"
++      ],
++      "source_refs": [
++        "fixture:corpus.parallel_incident",
++        "bead:polylogue-z9gh.7",
++        "bead:polylogue-t8t"
++      ]
++    },
++    "postmortem": {
++      "facts": {
++        "exit_code": 2,
++        "failed_action_count": 1,
++        "failed_tool": "Bash",
++        "failure_output": "POSTMORTEM_SENTINEL pytest collection failed because the fixture root was stale"
++      },
++      "required_evidence_refs": [
++        "message:codex-session:ext-continuity-postmortem:postmortem-action"
++      ],
++      "source_refs": [
++        "fixture:corpus.postmortem"
++      ]
++    },
++    "prior-art": {
++      "facts": {
++        "prior_art_text": "prior-art-zebra-417 We previously fixed this by binding every page to the retained query request.",
++        "prior_hits": 1,
++        "session_ids": [
++          "codex-session:ext-continuity-prior-art"
++        ]
++      },
++      "required_evidence_refs": [
++        "message:codex-session:ext-continuity-prior-art:prior-answer"
++      ],
++      "source_refs": [
++        "fixture:corpus.prior_art"
++      ]
++    },
++    "resume": {
++      "facts": {
++        "continuation_text": "continuity-resume-marker Next step: add the cancellation regression test before changing the parser.",
++        "matching_messages": 1,
++        "session_ids": [
++          "codex-session:ext-continuity-resume"
++        ]
++      },
++      "required_evidence_refs": [
++        "message:codex-session:ext-continuity-resume:resume-answer"
++      ],
++      "source_refs": [
++        "fixture:corpus.resume"
++      ]
++    },
++    "self-inspection": {
++      "facts": {
++        "read_view_count": 11,
++        "read_view_ids": [
++          "chronicle",
++          "context",
++          "context-image",
++          "correlation",
++          "dialogue",
++          "messages",
++          "neighbors",
++          "raw",
++          "summary",
++          "temporal",
++          "transcript"
++        ],
++        "selected_units": [
++          "assertion"
++        ],
++        "unsupported_nodes": 0
++      },
++      "required_evidence_refs": [],
++      "source_refs": [
++        "source:polylogue/archive/query/expression.py",
++        "source:polylogue/read_views.py"
++      ]
++    }
++  },
++  "schema_version": 2,
++  "source_evidence": {
++    "authority": "Synthetic constants and incident-attempt features below are planted before any MCP route executes.",
++    "construction": "tests/infra/continuity.py",
++    "declarations": "polylogue/product/continuity_scenarios.py"
++  }
++}
+diff --git a/tests/infra/archive_scenarios.py b/tests/infra/archive_scenarios.py
+index ac6a4b20b..f1b80b152 100644
+--- a/tests/infra/archive_scenarios.py
++++ b/tests/infra/archive_scenarios.py
+@@ -64,6 +64,8 @@ class ScenarioContentBlock:
+     media_type: str | None = None
+     metadata: JSONDocument | None = None
+     semantic_type: str | None = None
++    tool_result_is_error: int | None = None
++    tool_result_exit_code: int | None = None
+ 
+     @classmethod
+     def text_block(cls, text: str, *, semantic_type: str | None = None) -> ScenarioContentBlock:
+@@ -80,8 +82,23 @@ class ScenarioContentBlock:
+         return cls(block_type="tool_use", tool_name=tool_name, tool_id=tool_id, tool_input=tool_input)
+ 
+     @classmethod
+-    def tool_result(cls, text: str, *, tool_name: str | None = None) -> ScenarioContentBlock:
+-        return cls(block_type="tool_result", text=text, tool_name=tool_name)
++    def tool_result(
++        cls,
++        text: str,
++        *,
++        tool_name: str | None = None,
++        tool_id: str | None = None,
++        is_error: bool | None = None,
++        exit_code: int | None = None,
++    ) -> ScenarioContentBlock:
++        return cls(
++            block_type="tool_result",
++            text=text,
++            tool_name=tool_name,
++            tool_id=tool_id,
++            tool_result_is_error=None if is_error is None else int(is_error),
++            tool_result_exit_code=exit_code,
++        )
+ 
+     @classmethod
+     def thinking(cls, text: str) -> ScenarioContentBlock:
+@@ -103,6 +120,10 @@ class ScenarioContentBlock:
+             payload["metadata"] = dict(require_json_document(self.metadata, context="scenario content block metadata"))
+         if self.semantic_type is not None:
+             payload["semantic_type"] = self.semantic_type
++        if self.tool_result_is_error is not None:
++            payload["tool_result_is_error"] = self.tool_result_is_error
++        if self.tool_result_exit_code is not None:
++            payload["tool_result_exit_code"] = self.tool_result_exit_code
+         return payload
+ 
+ 
+diff --git a/tests/infra/continuity.py b/tests/infra/continuity.py
+new file mode 100644
+index 000000000..4f421443d
+--- /dev/null
++++ b/tests/infra/continuity.py
+@@ -0,0 +1,540 @@
++"""Synthetic continuity corpus compiler built on existing test-infra seams.
++
++This module is fixture construction, not a second scenario framework.  It
++loads planted constants from ``tests/data/continuity/catalog.json`` and emits
++archive rows through :class:`ArchiveScenario` / :class:`SessionBuilder`, the
++same builders used throughout the repository's integration tests.
++"""
++
++from __future__ import annotations
++
++import json
++import sqlite3
++from collections.abc import Mapping
++from dataclasses import dataclass
++from pathlib import Path
++from typing import cast
++
++from polylogue.core.json import JSONDocument, JSONValue, require_json_document
++from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
++from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
++from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
++from tests.infra.archive_scenarios import (
++    ArchiveScenario,
++    ScenarioContentBlock,
++    ScenarioMessage,
++    native_session_id_for,
++)
++from tests.infra.storage_records import SessionBuilder
++
++_DEFAULT_CATALOG = Path(__file__).parents[1] / "data" / "continuity" / "catalog.json"
++
++
++@dataclass(frozen=True, slots=True)
++class ContinuityFixtureSeed:
++    """Identity and direct-storage census for one seeded continuity corpus."""
++
++    archive_root: Path
++    fixture_id: str
++    coordinator_session_id: str
++    direct_facts: JSONDocument
++
++
++def continuity_catalog_path() -> Path:
++    """Return the repository-owned independent oracle manifest."""
++
++    return _DEFAULT_CATALOG
++
++
++def load_continuity_catalog(path: Path | None = None) -> JSONDocument:
++    """Load and minimally validate a continuity corpus/oracle manifest."""
++
++    catalog_path = path or continuity_catalog_path()
++    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
++    catalog = require_json_document(payload, context=f"continuity catalog {catalog_path}")
++    if catalog.get("schema_version") != 2:
++        raise ValueError("continuity catalog schema_version must be 2")
++    if not isinstance(catalog.get("fixture_id"), str):
++        raise ValueError("continuity catalog requires fixture_id")
++    if not isinstance(catalog.get("corpus"), Mapping):
++        raise ValueError("continuity catalog requires corpus object")
++    if not isinstance(catalog.get("oracles"), Mapping):
++        raise ValueError("continuity catalog requires oracles object")
++    return dict(catalog)
++
++
++def seed_continuity_archive(
++    archive_root: Path,
++    *,
++    catalog: Mapping[str, JSONValue] | None = None,
++) -> ContinuityFixtureSeed:
++    """Compile the planted synthetic corpus into a fresh archive root.
++
++    The constants are read from the independent manifest before any public
++    query route is invoked.  Construction uses existing archive test builders;
++    only the assertion and usage tables require their established direct seed
++    primitives because those facts live outside parsed transcript rows.
++    """
++
++    fixture = dict(catalog or load_continuity_catalog())
++    corpus = _mapping(fixture, "corpus")
++    provider = _string(corpus, "provider")
++    timestamp = _string(corpus, "timestamp")
++    archive_root = archive_root.resolve()
++    archive_root.mkdir(parents=True, exist_ok=True)
++    db_path = archive_root / "index.db"
++    if db_path.exists() or (archive_root / "user.db").exists():
++        raise ValueError(f"continuity archive root must be fresh: {archive_root}")
++
++    _seed_text_scenario(
++        db_path,
++        provider=provider,
++        timestamp=timestamp,
++        data=_mapping(corpus, "resume"),
++        title="Continuity resume",
++    )
++    _seed_action_scenario(
++        db_path,
++        provider=provider,
++        timestamp=timestamp,
++        data=_mapping(corpus, "forensic_debug"),
++        title="Continuity forensic debug",
++        tool_input={"path": _string(_mapping(corpus, "forensic_debug"), "path")},
++    )
++    _seed_text_scenario(
++        db_path,
++        provider=provider,
++        timestamp=timestamp,
++        data=_mapping(corpus, "prior_art"),
++        title="Continuity prior art",
++    )
++    _seed_text_scenario(
++        db_path,
++        provider=provider,
++        timestamp=timestamp,
++        data={
++            "session_key": _string(_mapping(corpus, "decision"), "session_key"),
++            "message_key": _string(_mapping(corpus, "decision"), "message_key"),
++            "text": "Decision evidence for cursor-bound-pages.",
++        },
++        title="Continuity decision evidence",
++    )
++    _seed_action_scenario(
++        db_path,
++        provider=provider,
++        timestamp=timestamp,
++        data=_mapping(corpus, "postmortem"),
++        title="Continuity postmortem",
++        tool_input={"command": "pytest -q"},
++    )
++    _seed_cost_usage(db_path, provider=provider, timestamp=timestamp, data=_mapping(corpus, "cost"))
++    coordinator_id = _seed_parallel_incident(
++        db_path,
++        provider=provider,
++        timestamp=timestamp,
++        data=_mapping(corpus, "parallel_incident"),
++    )
++    _seed_decision_assertion(archive_root, provider=provider, data=_mapping(corpus, "decision"))
++
++    direct_facts = validate_continuity_population(archive_root, fixture)
++    return ContinuityFixtureSeed(
++        archive_root=archive_root,
++        fixture_id=_string(fixture, "fixture_id"),
++        coordinator_session_id=coordinator_id,
++        direct_facts=direct_facts,
++    )
++
++
++def validate_continuity_population(
++    archive_root: Path,
++    catalog: Mapping[str, JSONValue] | None = None,
++) -> JSONDocument:
++    """Read planted facts directly from SQLite, independently of MCP queries."""
++
++    fixture = dict(catalog or load_continuity_catalog())
++    corpus = _mapping(fixture, "corpus")
++    provider = _string(corpus, "provider")
++    incident = _mapping(corpus, "parallel_incident")
++    run_ref = _string(incident, "run_ref")
++    coordinator = native_session_id_for(provider, _string(incident, "coordinator_key"))
++    db_path = archive_root / "index.db"
++
++    with sqlite3.connect(db_path) as conn:
++        conn.row_factory = sqlite3.Row
++        child_rows = conn.execute(
++            "SELECT session_id FROM sessions WHERE parent_session_id = ? ORDER BY session_id",
++            (coordinator,),
++        ).fetchall()
++        child_ids = [str(row["session_id"]) for row in child_rows]
++        marker_rows = conn.execute(
++            """
++            SELECT b.session_id, b.text
++            FROM blocks AS b
++            JOIN sessions AS s ON s.session_id = b.session_id
++            WHERE s.parent_session_id = ? AND instr(COALESCE(b.text, ''), 'parallel-child') > 0
++            ORDER BY b.session_id
++            """,
++            (coordinator,),
++        ).fetchall()
++        member_rows = [row for row in marker_rows if f"workflow_run:{run_ref}" in str(row["text"])]
++        other_rows = [row for row in marker_rows if f"workflow_run:{run_ref}" not in str(row["text"])]
++        invocation_count = int(
++            conn.execute(
++                "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND instr(COALESCE(text, ''), ?) > 0",
++                (coordinator, f"workflow-invocation:{run_ref}"),
++            ).fetchone()[0]
++        )
++        final_count = int(
++            conn.execute(
++                "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND instr(COALESCE(text, ''), ?) > 0",
++                (coordinator, f"final-structured-result:{run_ref}"),
++            ).fetchone()[0]
++        )
++        curriculum_count = int(
++            conn.execute(
++                "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND instr(COALESCE(text, ''), ?) > 0",
++                (coordinator, f"incident-curriculum:{run_ref}"),
++            ).fetchone()[0]
++        )
++        usage = conn.execute(
++            """
++            SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
++            FROM session_model_usage
++            WHERE session_id = ?
++            """,
++            (native_session_id_for(provider, _string(_mapping(corpus, "cost"), "session_key")),),
++        ).fetchone()
++
++    if len(child_ids) != _integer(incident, "member_children") + _integer(incident, "other_children"):
++        raise AssertionError("planted coordinator child census does not match manifest")
++    if len(member_rows) != _integer(incident, "member_children"):
++        raise AssertionError("planted incident-run membership does not match manifest")
++    if len(other_rows) != _integer(incident, "other_children"):
++        raise AssertionError("planted non-run membership does not match manifest")
++    if invocation_count != _integer(incident, "workflow_invocations"):
++        raise AssertionError("planted workflow invocation count does not match manifest")
++    if final_count != 1:
++        raise AssertionError("planted final-result count must be one")
++    curriculum = _curriculum_records(incident)
++    if curriculum_count != len(curriculum):
++        raise AssertionError("planted incident curriculum count does not match manifest")
++    if usage is None:
++        raise AssertionError("planted provider usage row is missing")
++
++    input_tokens = int(usage["input_tokens"])
++    output_tokens = int(usage["output_tokens"])
++    cache_read_tokens = int(usage["cache_read_tokens"])
++    cache_write_tokens = int(usage["cache_write_tokens"])
++    return {
++        "coordinator_session_id": coordinator,
++        "coordinator_children": len(child_ids),
++        "incident_members": len(member_rows),
++        "other_children": len(other_rows),
++        "workflow_invocations": invocation_count,
++        "final_result_count": final_count,
++        "incident_curriculum_cases": curriculum_count,
++        "usage_input_tokens": input_tokens,
++        "usage_output_tokens": output_tokens,
++        "usage_cached_input_tokens": cache_read_tokens,
++        "usage_cache_write_tokens": cache_write_tokens,
++        "usage_total_tokens": input_tokens + output_tokens + cache_read_tokens + cache_write_tokens,
++    }
++
++
++def _seed_text_scenario(
++    db_path: Path,
++    *,
++    provider: str,
++    timestamp: str,
++    data: Mapping[str, JSONValue],
++    title: str,
++) -> None:
++    ArchiveScenario(
++        name=_string(data, "session_key"),
++        session_id=_string(data, "session_key"),
++        provider=provider,
++        title=title,
++        created_at=timestamp,
++        updated_at=timestamp,
++        messages=(
++            ScenarioMessage(
++                role="assistant",
++                text=_string(data, "text"),
++                message_id=_string(data, "message_key"),
++                timestamp=timestamp,
++            ),
++        ),
++    ).seed(db_path)
++
++
++def _seed_action_scenario(
++    db_path: Path,
++    *,
++    provider: str,
++    timestamp: str,
++    data: Mapping[str, JSONValue],
++    title: str,
++    tool_input: JSONDocument,
++) -> None:
++    message_key = _string(data, "message_key")
++    tool_name = _string(data, "tool")
++    tool_id = f"{message_key}-call"
++    output = _string(data, "output")
++    ArchiveScenario(
++        name=_string(data, "session_key"),
++        session_id=_string(data, "session_key"),
++        provider=provider,
++        title=title,
++        created_at=timestamp,
++        updated_at=timestamp,
++        messages=(
++            ScenarioMessage(
++                role="assistant",
++                text=output,
++                message_id=message_key,
++                timestamp=timestamp,
++                blocks=(
++                    ScenarioContentBlock.tool_use(
++                        tool_name=tool_name,
++                        tool_input=tool_input,
++                        tool_id=tool_id,
++                    ),
++                    ScenarioContentBlock.tool_result(
++                        output,
++                        tool_name=tool_name,
++                        tool_id=tool_id,
++                        is_error=True,
++                        exit_code=_integer(data, "exit_code"),
++                    ),
++                ),
++            ),
++        ),
++    ).seed(db_path)
++
++
++def _seed_cost_usage(
++    db_path: Path,
++    *,
++    provider: str,
++    timestamp: str,
++    data: Mapping[str, JSONValue],
++) -> None:
++    builder = (
++        SessionBuilder(db_path, _string(data, "session_key"))
++        .provider(provider)
++        .title("Continuity cost audit")
++        .created_at(timestamp)
++        .updated_at(timestamp)
++        .add_message(
++            message_id="cost-evidence",
++            role="assistant",
++            text="Synthetic reported usage evidence.",
++            timestamp=timestamp,
++        )
++    )
++    builder.save()
++    with sqlite3.connect(db_path) as conn:
++        conn.execute(
++            """
++            INSERT OR REPLACE INTO session_model_usage (
++                session_id, model_name, input_tokens, output_tokens,
++                cache_read_tokens, cache_write_tokens, message_count,
++                cost_provenance
++            ) VALUES (?, ?, ?, ?, ?, ?, 1, 'origin_reported')
++            """,
++            (
++                builder.native_session_id(),
++                _string(data, "model"),
++                _integer(data, "input_tokens"),
++                _integer(data, "output_tokens"),
++                _integer(data, "cached_input_tokens"),
++                _integer(data, "cache_write_tokens"),
++            ),
++        )
++        conn.commit()
++
++
++def _seed_parallel_incident(
++    db_path: Path,
++    *,
++    provider: str,
++    timestamp: str,
++    data: Mapping[str, JSONValue],
++) -> str:
++    coordinator_key = _string(data, "coordinator_key")
++    run_ref = _string(data, "run_ref")
++    coordinator = (
++        SessionBuilder(db_path, coordinator_key)
++        .provider(provider)
++        .title("Synthetic parallel-agent coordinator")
++        .created_at(timestamp)
++        .updated_at(timestamp)
++    )
++    for index in range(1, _integer(data, "workflow_invocations") + 1):
++        coordinator.add_message(
++            message_id=f"workflow-invocation-{index:02d}",
++            role="assistant",
++            text=f"workflow-invocation:{run_ref} invocation:{index:02d}",
++            timestamp=timestamp,
++        )
++    for record in _curriculum_records(data):
++        case_id = _string(record, "case")
++        fields = (
++            f"incident-curriculum:{run_ref}",
++            f"case:{case_id}",
++            f"query_shape:{_string(record, 'query_shape')}",
++            f"physical_size:{_string(record, 'physical_size')}",
++            f"corpus_match:{_string(record, 'corpus_match')}",
++            f"structure_discovery:{_string(record, 'structure_discovery')}",
++            f"shipped_instruction:{_string(record, 'shipped_instruction')}",
++            f"outcome:{_string(record, 'outcome')}",
++        )
++        coordinator.add_message(
++            message_id=f"incident-curriculum-{case_id}",
++            role="assistant",
++            text=" ".join(fields),
++            timestamp=timestamp,
++        )
++    coordinator.add_message(
++        message_id="final-result",
++        role="assistant",
++        text=f"final-structured-result:{run_ref} outcome:complete",
++        timestamp=timestamp,
++    )
++    coordinator.save()
++    coordinator_native = coordinator.native_session_id()
++    parent_native_id = f"ext-{coordinator_key}"
++
++    member_count = _integer(data, "member_children")
++    call_key_count = _integer(data, "call_keys")
++    result_record_count = _integer(data, "result_records")
++    completed_count = _integer(data, "completed_call_keys")
++    unresolved_count = _integer(data, "unresolved_call_keys")
++    if completed_count + unresolved_count != call_key_count:
++        raise ValueError("incident completed + unresolved call keys must equal call key count")
++    if result_record_count > member_count:
++        raise ValueError("incident result records cannot exceed member children")
++
++    for index in range(1, member_count + 1):
++        call_number = ((index - 1) % call_key_count) + 1
++        call_key = f"call-{call_number:02d}"
++        tokens = [
++            "parallel-child",
++            f"workflow_run:{run_ref}",
++            "attempt_transcript:yes",
++            f"call_key:{call_key}",
++        ]
++        if index <= result_record_count:
++            tokens.append("result_record:yes")
++        if call_number <= completed_count:
++            tokens.append(f"completed_key:{call_key}")
++        else:
++            tokens.append(f"unresolved_key:{call_key}")
++        (
++            SessionBuilder(db_path, f"continuity-incident-member-{index:03d}")
++            .provider(provider)
++            .title(f"Synthetic incident member {index:03d}")
++            .created_at(timestamp)
++            .updated_at(timestamp)
++            .parent_session(parent_native_id)
++            .branch_type("subagent")
++            .add_message(
++                message_id="attempt",
++                role="assistant",
++                text=" ".join(tokens),
++                timestamp=timestamp,
++            )
++            .save()
++        )
++
++    for index in range(1, _integer(data, "other_children") + 1):
++        (
++            SessionBuilder(db_path, f"continuity-incident-other-{index:03d}")
++            .provider(provider)
++            .title(f"Synthetic non-run incident child {index:03d}")
++            .created_at(timestamp)
++            .updated_at(timestamp)
++            .parent_session(parent_native_id)
++            .branch_type("subagent")
++            .add_message(
++                message_id="attempt",
++                role="assistant",
++                text=(
++                    f"parallel-child workflow_run:wf_other_{index:03d} "
++                    f"attempt_transcript:yes call_key:other-{index:03d}"
++                ),
++                timestamp=timestamp,
++            )
++            .save()
++        )
++    return coordinator_native
++
++
++def _seed_decision_assertion(
++    archive_root: Path,
++    *,
++    provider: str,
++    data: Mapping[str, JSONValue],
++) -> None:
++    user_db = archive_root / "user.db"
++    initialize_archive_database(user_db, ArchiveTier.USER)
++    target_session = native_session_id_for(provider, _string(data, "session_key"))
++    message_ref = f"message:{target_session}:{_string(data, 'message_key')}"
++    with sqlite3.connect(user_db) as conn:
++        upsert_assertion(
++            conn,
++            assertion_id=_string(data, "assertion_id"),
++            target_ref=f"session:{target_session}",
++            kind=AssertionKind.DECISION,
++            key="continuity-decision",
++            body_text=_string(data, "body"),
++            author_ref="user:continuity-fixture",
++            author_kind="user",
++            evidence_refs=[message_ref],
++            status="active",
++            visibility="public",
++            now_ms=1_768_478_400_000,
++        )
++        conn.commit()
++
++
++def _mapping(source: Mapping[str, JSONValue], key: str) -> Mapping[str, JSONValue]:
++    value = source.get(key)
++    if not isinstance(value, Mapping):
++        raise ValueError(f"continuity catalog field {key!r} must be an object")
++    return cast(Mapping[str, JSONValue], value)
++
++
++def _string(source: Mapping[str, JSONValue], key: str) -> str:
++    value = source.get(key)
++    if not isinstance(value, str):
++        raise ValueError(f"continuity catalog field {key!r} must be a string")
++    return value
++
++
++def _integer(source: Mapping[str, JSONValue], key: str) -> int:
++    value = source.get(key)
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise ValueError(f"continuity catalog field {key!r} must be an integer")
++    return value
++
++
++def _curriculum_records(source: Mapping[str, JSONValue]) -> tuple[Mapping[str, JSONValue], ...]:
++    value = source.get("attempt_curriculum", [])
++    if not isinstance(value, list):
++        raise ValueError("continuity catalog attempt_curriculum must be a list")
++    records: list[Mapping[str, JSONValue]] = []
++    for index, item in enumerate(value):
++        if not isinstance(item, Mapping):
++            raise ValueError(f"continuity catalog attempt_curriculum[{index}] must be an object")
++        records.append(cast(Mapping[str, JSONValue], item))
++    return tuple(records)
++
++
++__all__ = [
++    "ContinuityFixtureSeed",
++    "continuity_catalog_path",
++    "load_continuity_catalog",
++    "seed_continuity_archive",
++    "validate_continuity_population",
++]
+diff --git a/tests/infra/continuity_mutations.py b/tests/infra/continuity_mutations.py
+new file mode 100644
+index 000000000..90ebef9ea
+--- /dev/null
++++ b/tests/infra/continuity_mutations.py
+@@ -0,0 +1,207 @@
++"""Executable fault injections for continuity replay anti-vacuity tests."""
++
++from __future__ import annotations
++
++import json
++from copy import deepcopy
++from dataclasses import dataclass
++
++from devtools.continuity_replay import ArgumentMutator, DiscoveryMutator, ResponseMutator
++from polylogue.core.json import JSONDocument, require_json_document
++
++_INCIDENT_EXPRESSION = 'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
++_PRIOR_ART_MARKER = "prior-art-zebra-417"
++_CURRICULUM_MARKER = "incident-curriculum:wf_synthetic_841"
++
++
++@dataclass(frozen=True, slots=True)
++class ContinuityMutation:
++    """Named mutation and the diagnostic class it must provoke."""
++
++    name: str
++    scenario: str
++    expected_kind: str
++    expected_failure_class: str
++    argument_mutator: ArgumentMutator | None = None
++    response_mutator: ResponseMutator | None = None
++    discovery_mutator: DiscoveryMutator | None = None
++
++
++def continuity_mutation(name: str) -> ContinuityMutation:
++    """Build a fresh mutation; stateful response faults must not be reused."""
++
++    factories = {
++        "lost-request-state-continuation": _lost_request_state_continuation,
++        "capped-pseudo-total": _capped_pseudo_total,
++        "identical-call-topology-replay": _identical_call_topology_replay,
++        "hidden-fact-or-grammar-discovery": _hidden_grammar_discovery,
++        "missing-source-coverage": _missing_source_coverage,
++        "unreasonable-query-classification": _unreasonable_query_classification,
++    }
++    try:
++        return factories[name]()
++    except KeyError as exc:
++        raise KeyError(f"unknown continuity mutation {name!r}") from exc
++
++
++def continuity_mutation_names() -> tuple[str, ...]:
++    return (
++        "lost-request-state-continuation",
++        "capped-pseudo-total",
++        "identical-call-topology-replay",
++        "hidden-fact-or-grammar-discovery",
++        "missing-source-coverage",
++        "unreasonable-query-classification",
++    )
++
++
++def _lost_request_state_continuation() -> ContinuityMutation:
++    def mutate(tool: str, arguments: dict[str, object], invocation: int) -> dict[str, object]:
++        del invocation
++        expression = arguments.get("expression")
++        if tool == "query_units" and expression == _INCIDENT_EXPRESSION and "continuation" in arguments:
++            return {"expression": expression, "offset": 0, "limit": 17}
++        return arguments
++
++    return ContinuityMutation(
++        name="lost-request-state-continuation",
++        scenario="parallel-claude-incident",
++        expected_kind="pagination_offset_mismatch",
++        expected_failure_class="execution",
++        argument_mutator=mutate,
++    )
++
++
++def _capped_pseudo_total() -> ContinuityMutation:
++    mutated = False
++
++    def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
++        nonlocal mutated
++        del invocation
++        if mutated or tool != "query_units" or arguments.get("expression") != _INCIDENT_EXPRESSION:
++            return response_text
++        payload = require_json_document(json.loads(response_text), context="capped pseudo-total response")
++        payload["continuation"] = None
++        payload["next_offset"] = None
++        mutated = True
++        return json.dumps(payload, sort_keys=True)
++
++    return ContinuityMutation(
++        name="capped-pseudo-total",
++        scenario="parallel-claude-incident",
++        expected_kind="pagination_count_mismatch",
++        expected_failure_class="execution",
++        response_mutator=mutate,
++    )
++
++
++def _identical_call_topology_replay() -> ContinuityMutation:
++    first_response: str | None = None
++    target_calls = 0
++
++    def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
++        nonlocal first_response, target_calls
++        del invocation
++        if tool != "query_units" or arguments.get("expression") != _INCIDENT_EXPRESSION:
++            return response_text
++        target_calls += 1
++        if target_calls == 1:
++            first_response = response_text
++            return response_text
++        if target_calls == 2 and first_response is not None:
++            replayed = require_json_document(json.loads(first_response), context="replayed first topology page")
++            actual = require_json_document(json.loads(response_text), context="actual second topology page")
++            for field in ("offset", "next_offset", "continuation", "query_ref", "result_ref"):
++                replayed[field] = actual.get(field)
++            return json.dumps(replayed, sort_keys=True)
++        return response_text
++
++    return ContinuityMutation(
++        name="identical-call-topology-replay",
++        scenario="parallel-claude-incident",
++        expected_kind="duplicate_pagination_identity",
++        expected_failure_class="execution",
++        response_mutator=mutate,
++    )
++
++
++def _hidden_grammar_discovery() -> ContinuityMutation:
++    def mutate(discovery: JSONDocument) -> JSONDocument:
++        changed = deepcopy(discovery)
++        tools = changed.get("tools")
++        if not isinstance(tools, dict):
++            return changed
++        query_units = tools.get("query_units")
++        if not isinstance(query_units, dict):
++            return changed
++        schema = query_units.get("input_schema")
++        if not isinstance(schema, dict):
++            return changed
++        properties = schema.get("properties")
++        if isinstance(properties, dict):
++            properties.pop("continuation", None)
++        return changed
++
++    return ContinuityMutation(
++        name="hidden-fact-or-grammar-discovery",
++        scenario="parallel-claude-incident",
++        expected_kind="missing_discovered_arguments",
++        expected_failure_class="discovery",
++        discovery_mutator=mutate,
++    )
++
++
++def _missing_source_coverage() -> ContinuityMutation:
++    def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
++        del invocation
++        expression = arguments.get("expression")
++        if tool != "query_units" or not isinstance(expression, str) or _PRIOR_ART_MARKER not in expression:
++            return response_text
++        payload = require_json_document(json.loads(response_text), context="missing source coverage response")
++        if expression.endswith(" | count"):
++            items = payload.get("items")
++            if isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict):
++                items[0]["count"] = 0
++        else:
++            payload["items"] = []
++            payload["total"] = 0
++            payload["continuation"] = None
++            payload["next_offset"] = None
++        return json.dumps(payload, sort_keys=True)
++
++    return ContinuityMutation(
++        name="missing-source-coverage",
++        scenario="prior-art",
++        expected_kind="non_single_projection",
++        expected_failure_class="source_coverage",
++        response_mutator=mutate,
++    )
++
++
++def _unreasonable_query_classification() -> ContinuityMutation:
++    def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
++        del invocation
++        expression = arguments.get("expression")
++        if tool != "query_units" or not isinstance(expression, str) or _CURRICULUM_MARKER not in expression:
++            return response_text
++        return response_text.replace(
++            "case:sessions-only-query query_shape:sessions-only-query physical_size:bounded "
++            "corpus_match:true structure_discovery:absent shipped_instruction:advertised",
++            "case:sessions-only-query query_shape:sessions-only-query physical_size:bounded "
++            "corpus_match:true structure_discovery:absent shipped_instruction:absent",
++        )
++
++    return ContinuityMutation(
++        name="unreasonable-query-classification",
++        scenario="parallel-claude-incident",
++        expected_kind="attempt_grade_mismatch",
++        expected_failure_class="reasoning",
++        response_mutator=mutate,
++    )
++
++
++__all__ = [
++    "ContinuityMutation",
++    "continuity_mutation",
++    "continuity_mutation_names",
++]
+diff --git a/tests/integration/test_continuity_replay.py b/tests/integration/test_continuity_replay.py
+new file mode 100644
+index 000000000..780ed15d5
+--- /dev/null
++++ b/tests/integration/test_continuity_replay.py
+@@ -0,0 +1,209 @@
++"""Known-answer continuity replay through real MCP and focused mutation routes."""
++
++from __future__ import annotations
++
++from copy import deepcopy
++from pathlib import Path
++
++import pytest
++
++from devtools.continuity_replay import replay_archive
++from polylogue.core.json import JSONDocument, json_document_list, require_json_document
++from tests.infra.continuity import ContinuityFixtureSeed, load_continuity_catalog, seed_continuity_archive
++from tests.infra.continuity_mutations import continuity_mutation, continuity_mutation_names
++
++
++@pytest.fixture(scope="module")
++def continuity_corpus(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, JSONDocument, ContinuityFixtureSeed]:
++    archive_root = tmp_path_factory.mktemp("continuity-replay") / "archive"
++    catalog = load_continuity_catalog()
++    seed = seed_continuity_archive(archive_root, catalog=catalog)
++    return archive_root, catalog, seed
++
++
++def test_fixture_compiler_plants_corrected_parallel_incident_population(
++    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
++) -> None:
++    """Direct SQLite census guards the builder independently of query_units."""
++
++    _, _, seed = continuity_corpus
++    assert seed.direct_facts["coordinator_children"] == 129
++    assert seed.direct_facts["incident_members"] == 91
++    assert seed.direct_facts["other_children"] == 38
++    assert seed.direct_facts["workflow_invocations"] == 4
++    assert seed.direct_facts["incident_curriculum_cases"] == 6
++    assert seed.direct_facts["usage_total_tokens"] == 1950
++
++
++@pytest.mark.asyncio
++async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
++    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
++) -> None:
++    """Exercises SDK discovery/calls, stdio framing, FastMCP, DSL lowering, SQLite, and continuations."""
++
++    archive_root, catalog, _ = continuity_corpus
++    report = await replay_archive(archive_root, catalog)
++
++    assert report["transport"] == "mcp-stdio-json-rpc"
++    assert report["status"] == "pass"
++    assert report["passed"] == 8
++    assert report["failed"] == 0
++    discovery = require_json_document(report["discovery_receipt"], context="stdio discovery")
++    assert discovery["transport"] == "mcp-stdio-json-rpc"
++    assert discovery["protocol_version"] != "in-process-registration"
++    assert isinstance(discovery["tool_count"], int)
++    assert discovery["tool_count"] >= 4
++
++    result_documents = json_document_list(report["results"])
++    results = {str(result["scenario"]): result for result in result_documents}
++    incident = results["parallel-claude-incident"]
++    observed_facts = require_json_document(incident["observed_facts"], context="incident observed facts")
++    oracle_catalog = require_json_document(catalog["oracles"], context="continuity oracles")
++    incident_oracle = require_json_document(
++        oracle_catalog["parallel-claude-incident"],
++        context="parallel incident oracle",
++    )
++    expected_facts = require_json_document(incident_oracle["facts"], context="parallel incident facts")
++    assert observed_facts == expected_facts
++    assert incident["observed_attempt_grades"] == incident_oracle["attempt_grades"]
++
++    budget = require_json_document(incident["budget"], context="incident budget")
++    assert isinstance(budget["observed_calls"], int)
++    assert budget["observed_calls"] > 4
++    assert budget["cancellation_exercised"] is False
++    receipts = json_document_list(incident["route_receipts"])
++    member_receipt = next(receipt for receipt in receipts if receipt["step_id"] == "incident-members")
++    assert member_receipt["page_count"] == 6
++    assert member_receipt["enumerated_item_count"] == 91
++    assert member_receipt["unique_identity_count"] == 91
++    assert member_receipt["page_total_sum"] == 91
++    assert member_receipt["page_totals_match_items"] is True
++    count_probe = require_json_document(member_receipt["count_probe"], context="member count probe")
++    assert count_probe["selected_rows_exact"] == 91
++    assert member_receipt["population_count_verified"] is True
++    assert member_receipt["exact_enumeration_verified"] is True
++    assert [page["page_total"] for page in json_document_list(member_receipt["pages"])] == [17, 17, 17, 17, 17, 6]
++    assert isinstance(member_receipt["query_ref"], str)
++    assert isinstance(member_receipt["result_ref"], str)
++
++    cost = results["cost"]
++    [cost_receipt] = json_document_list(cost["route_receipts"])
++    [cost_page] = json_document_list(cost_receipt["pages"])
++    assert cost_page["status"] == "response_budget_exceeded"
++    assert cost_page["budget_exceeded"] is True
++    assert isinstance(cost_page["response_sha256"], str)
++    assert len(cost_page["response_sha256"]) == 64
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("mutation_name", continuity_mutation_names())
++async def test_named_continuity_mutation_curriculum_fails_with_expected_diagnosis(
++    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
++    mutation_name: str,
++) -> None:
++    """Every transport/source/discovery/reasoning mutation named by t8t is executable."""
++
++    archive_root, catalog, _ = continuity_corpus
++    mutation = continuity_mutation(mutation_name)
++    report = await replay_archive(
++        archive_root,
++        catalog,
++        scenario_names=(mutation.scenario,),
++        transport="registered",
++        argument_mutator=mutation.argument_mutator,
++        response_mutator=mutation.response_mutator,
++        discovery_mutator=mutation.discovery_mutator,
++    )
++
++    assert report["status"] == "fail"
++    [result] = json_document_list(report["results"])
++    diagnostics = json_document_list(result["diagnostics"])
++    assert any(
++        diagnostic["kind"] == mutation.expected_kind and diagnostic["failure_class"] == mutation.expected_failure_class
++        for diagnostic in diagnostics
++    ), diagnostics
++
++
++@pytest.mark.asyncio
++async def test_dropping_incident_workflow_filter_fails_known_answer_oracle(
++    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
++) -> None:
++    """Representative production mutation: query_units receives an over-broad member expression."""
++
++    archive_root, catalog, _ = continuity_corpus
++
++    def drop_workflow_filter(tool: str, arguments: dict[str, object], invocation: int) -> dict[str, object]:
++        del invocation
++        expression = arguments.get("expression")
++        if tool == "query_units" and isinstance(expression, str):
++            arguments["expression"] = expression.replace(' AND text:"workflow_run:wf_synthetic_841"', "")
++        return arguments
++
++    report = await replay_archive(
++        archive_root,
++        catalog,
++        scenario_names=("parallel-claude-incident",),
++        transport="registered",
++        argument_mutator=drop_workflow_filter,
++    )
++
++    assert report["status"] == "fail"
++    [result] = json_document_list(report["results"])
++    assert result["classification"] == "source_coverage"
++    observed_facts = require_json_document(result["observed_facts"], context="mutation observed facts")
++    assert observed_facts["attempt_transcripts"] == 129
++    diagnostics = json_document_list(result["diagnostics"])
++    assert {
++        "kind": "fact_mismatch",
++        "failure_class": "source_coverage",
++        "fact": "attempt_transcripts",
++        "expected": 91,
++        "observed": 129,
++        "source_refs": [
++            "fixture:corpus.parallel_incident",
++            "bead:polylogue-z9gh.7",
++            "bead:polylogue-t8t",
++        ],
++    } in diagnostics
++
++
++@pytest.mark.asyncio
++async def test_mutated_planted_fact_is_diagnosed_without_changing_route_output(
++    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
++) -> None:
++    """Representative oracle mutation: a bad planted value identifies expected/observed skew."""
++
++    archive_root, catalog, _ = continuity_corpus
++    mutated = deepcopy(catalog)
++    oracles = mutated["oracles"]
++    assert isinstance(oracles, dict)
++    incident = oracles["parallel-claude-incident"]
++    assert isinstance(incident, dict)
++    facts = incident["facts"]
++    assert isinstance(facts, dict)
++    facts["attempt_transcripts"] = 92
++
++    report = await replay_archive(
++        archive_root,
++        mutated,
++        scenario_names=("parallel-claude-incident",),
++        transport="registered",
++    )
++
++    assert report["status"] == "fail"
++    [result] = json_document_list(report["results"])
++    observed_facts = require_json_document(result["observed_facts"], context="oracle-mutation observed facts")
++    assert observed_facts["attempt_transcripts"] == 91
++    diagnostics = json_document_list(result["diagnostics"])
++    assert {
++        "kind": "fact_mismatch",
++        "failure_class": "source_coverage",
++        "fact": "attempt_transcripts",
++        "expected": 92,
++        "observed": 91,
++        "source_refs": [
++            "fixture:corpus.parallel_incident",
++            "bead:polylogue-z9gh.7",
++            "bead:polylogue-t8t",
++        ],
++    } in diagnostics
+diff --git a/tests/unit/mcp/test_prompt_query_parity.py b/tests/unit/mcp/test_prompt_query_parity.py
+new file mode 100644
+index 000000000..ba2f55c10
+--- /dev/null
++++ b/tests/unit/mcp/test_prompt_query_parity.py
+@@ -0,0 +1,51 @@
++"""Parity between shipped MCP prompt recipes and executable query_units grammar."""
++
++from __future__ import annotations
++
++import re
++from collections.abc import Mapping
++
++import pytest
++
++from polylogue.archive.query.expression import parse_unit_source_expression
++from polylogue.mcp.server import build_server
++from tests.infra.mcp import invoke_surface_async
++
++_QUERY_CALL_RE = re.compile(
++    r"query_units\(expression=(?P<quote>['\"])(?P<expression>.*?)(?P=quote)(?P<arguments>[^)]*)\)",
++    re.DOTALL,
++)
++_ARGUMENT_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*=")
++_PROMPT_CASES: Mapping[str, dict[str, object]] = {
++    "decisions_about": {"topic": "cursor-bound-pages"},
++    "unacknowledged_failures": {"repo": "polylogue", "since": "7d"},
++    "sessions_touching_file": {"path": "polylogue/mcp/server_prompts.py", "repo": "polylogue"},
++}
++
++
++@pytest.mark.asyncio
++async def test_shipped_query_units_prompt_recipes_match_parser_and_discovered_schema() -> None:
++    server = build_server(role="read")
++    query_tool = server._tool_manager._tools["query_units"]
++    properties = query_tool.parameters["properties"]
++    assert isinstance(properties, dict)
++    observed_prompts: set[str] = set()
++
++    for prompt_name, kwargs in _PROMPT_CASES.items():
++        prompt = server._prompt_manager._prompts[prompt_name]
++        rendered = await invoke_surface_async(prompt.fn, **kwargs)
++        assert isinstance(rendered, str)
++        matches = list(_QUERY_CALL_RE.finditer(rendered))
++        assert matches, f"{prompt_name} must expose at least one query_units recipe"
++        observed_prompts.add(prompt_name)
++        for match in matches:
++            expression = match.group("expression")
++            source = parse_unit_source_expression(expression)
++            assert source is not None, f"{prompt_name} advertises a non-executable expression: {expression}"
++            advertised_arguments = {"expression", *_ARGUMENT_RE.findall(match.group("arguments"))}
++            assert advertised_arguments <= set(properties), (
++                f"{prompt_name} advertises hidden query_units arguments: "
++                f"{sorted(advertised_arguments - set(properties))}"
++            )
++
++    assert observed_prompts == set(_PROMPT_CASES)
+diff --git a/tests/unit/product/test_continuity_scenarios.py b/tests/unit/product/test_continuity_scenarios.py
+index 9d959b442..85bcfe4c6 100644
+--- a/tests/unit/product/test_continuity_scenarios.py
++++ b/tests/unit/product/test_continuity_scenarios.py
+@@ -1,112 +1,242 @@
+ from __future__ import annotations
+ 
+-import json
+-from pathlib import Path
+-
+-from devtools.continuity_replay import evaluate_replay
+-from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS, continuity_scenario
+-
+-FIXTURE = json.loads((Path(__file__).parents[2] / "data" / "continuity" / "incident.json").read_text(encoding="utf-8"))
+-
+-
+-def test_continuity_catalog_contains_all_operator_jobs_and_incident_variant() -> None:
+-    assert {scenario.scenario_id for scenario in CONTINUITY_SCENARIOS} == {
+-        "resume",
+-        "forensic-debug",
+-        "prior-art",
+-        "decision",
+-        "postmortem",
+-        "cost",
+-        "self-inspection",
+-        "parallel-claude-incident",
++from copy import deepcopy
++
++from devtools.continuity_replay import (
++    compare_observed_facts,
++    grade_incident_attempt,
++    materialize_route_arguments,
++    project_fact,
++)
++from polylogue.core.json import require_json_document
++from polylogue.product.continuity_scenarios import (
++    CONTINUITY_SCENARIOS,
++    ContinuityFactProjection,
++    continuity_scenario,
++)
++from polylogue.product.workflows import QUERY_ACTION_WORKFLOW_BY_ID
++from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
++from tests.infra.archive_scenarios import ScenarioContentBlock
++from tests.infra.continuity import load_continuity_catalog
++
++_EXPECTED_SCENARIOS = {
++    "resume",
++    "forensic-debug",
++    "prior-art",
++    "decision",
++    "postmortem",
++    "cost",
++    "self-inspection",
++    "parallel-claude-incident",
++}
++
++
++def test_continuity_catalog_extends_existing_scenario_source_seam() -> None:
++    assert {scenario.scenario_id for scenario in CONTINUITY_SCENARIOS} == _EXPECTED_SCENARIOS
++    for scenario in CONTINUITY_SCENARIOS:
++        assert isinstance(scenario, NamedScenarioSource)
++        assert scenario.projection_source_kind is ScenarioProjectionSourceKind.VALIDATION_LANE
++        assert scenario.privacy_level == "synthetic"
++        assert scenario.operator_question
++        assert scenario.route_steps
++        assert scenario.fact_projections
++        assert scenario.required_facts == tuple(fact.name for fact in scenario.fact_projections)
++        payload = scenario.scenario_payload()
++        assert payload["fixture_key"] == scenario.scenario_id
++        assert payload["operator_question"] == scenario.operator_question
++        assert payload["route_steps"]
++        assert payload["fact_projections"]
++
++
++def test_declarations_use_only_allowed_public_tools_and_existing_workflows() -> None:
++    for scenario in CONTINUITY_SCENARIOS:
++        route_tools = {step.tool for step in scenario.route_steps}
++        assert route_tools == set(scenario.allowed_query_surfaces)
++        assert set(scenario.workflow_ids) <= set(QUERY_ACTION_WORKFLOW_BY_ID)
++        assert len(scenario.required_facts) == len(set(scenario.required_facts))
++        assert scenario.canonical_plan_families
++        assert scenario.route_plan_signature in scenario.equivalent_plan_signatures
++        assert scenario.discovery_requirements
++        assert scenario.coverage_inventory
++        assert scenario.result_semantics.target_population
++        assert scenario.result_semantics.evidence_contract
++        assert scenario.stop_conditions
++        assert scenario.failure_taxonomy
++        assert scenario.mutation_cases
++        for step in scenario.route_steps:
++            if step.paginate:
++                assert step.item_identity_path
++                expression = step.argument_dict().get("expression")
++                assert isinstance(expression, str)
++                unit = expression.split(maxsplit=1)[0]
++                assert step.exact_count_probe is (unit in {"messages", "actions", "assertions", "files"})
++
++
++def test_independent_manifest_matches_every_declared_fact_inventory() -> None:
++    catalog = load_continuity_catalog()
++    oracles = catalog["oracles"]
++    assert isinstance(oracles, dict)
++    assert set(oracles) == _EXPECTED_SCENARIOS
++    for scenario in CONTINUITY_SCENARIOS:
++        oracle = oracles[scenario.fixture_key]
++        assert isinstance(oracle, dict)
++        facts = oracle["facts"]
++        assert isinstance(facts, dict)
++        assert set(facts) == set(scenario.required_facts)
++        assert oracle["source_refs"]
++
++
++def test_parallel_incident_curriculum_keeps_features_and_expected_grades_independent() -> None:
++    catalog = load_continuity_catalog()
++    corpus = require_json_document(catalog["corpus"], context="continuity corpus")
++    incident = require_json_document(corpus["parallel_incident"], context="incident corpus")
++    curriculum = incident["attempt_curriculum"]
++    assert isinstance(curriculum, list)
++    assert len(curriculum) == 6
++    for item in curriculum:
++        record = require_json_document(item, context="incident curriculum record")
++        assert "grade" not in record
++        assert "expected" not in record
++
++    oracles = require_json_document(catalog["oracles"], context="continuity oracles")
++    oracle = require_json_document(oracles["parallel-claude-incident"], context="incident oracle")
++    grades = require_json_document(oracle["attempt_grades"], context="incident attempt grades")
++    assert set(grades) == {
++        "candidate-list",
++        "exact-operator-phrase",
++        "sonnet-lexical-proxy",
++        "sessions-only-query",
++        "correct-topology",
++        "correct-delegation",
+     }
+-    assert all(scenario.required_facts for scenario in CONTINUITY_SCENARIOS)
+-    assert all(scenario.canonical_plan_families for scenario in CONTINUITY_SCENARIOS)
+-    assert all(scenario.mutation_cases for scenario in CONTINUITY_SCENARIOS)
+ 
+ 
+-def test_oracle_is_independent_and_classifies_transport_failures() -> None:
+-    fixture = {"resume": ["session:resume-1"]}
+-    scenario = continuity_scenario("resume")
++def test_incident_attempt_grader_matches_t8t_failure_curriculum() -> None:
++    assert grade_incident_attempt({"query_shape": "candidate-list", "physical_size": "oversized"}) == (
++        "reasonable_oversized"
++    )
++    assert grade_incident_attempt({"query_shape": "exact-operator-phrase", "corpus_match": "false"}) == (
++        "wrong_corpus_assumption"
++    )
++    assert (
++        grade_incident_attempt({"query_shape": "sonnet-lexical-proxy", "structure_discovery": "absent"})
++        == "weak_lexical_proxy"
++    )
++    assert (
++        grade_incident_attempt({"query_shape": "sessions-only-query", "shipped_instruction": "advertised"})
++        == "product_induced_hidden_grammar"
++    )
++    assert grade_incident_attempt({"query_shape": "correct-topology", "outcome": "transport-failure"}) == (
++        "execution_failure"
++    )
++    assert grade_incident_attempt({"query_shape": "correct-delegation", "outcome": "timeout"}) == ("execution_failure")
++    assert grade_incident_attempt({"query_shape": "sessions-only-query", "shipped_instruction": "absent"}) == (
++        "unreasonable_query"
++    )
+ 
+-    assert scenario.classify(fixture, observed_refs=["session:resume-1"], calls=2) == "pass"
+-    assert scenario.classify(fixture, observed_refs=[], calls=2, observed_failure="execution") == "execution"
+-    assert scenario.classify(fixture, observed_refs=[], calls=11) == "discovery"
+ 
++def test_route_templates_are_parameterized_by_the_caller_corpus() -> None:
++    catalog = load_continuity_catalog()
++    scenario = continuity_scenario("parallel-claude-incident")
++    [member_step, *_] = scenario.route_steps
++    default_arguments = materialize_route_arguments(member_step, catalog)
++    assert default_arguments["expression"] == (
++        'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
++    )
+ 
+-def test_replay_emits_expected_and_observed_refs() -> None:
+-    result = evaluate_replay(
+-        "parallel-claude-incident",
+-        {
+-            "parallel-claude-incident": [
+-                "session:coordinator",
+-                "run:wf-1",
+-                "commit:abc123",
+-                "bead:xyz",
+-            ]
+-        },
+-        {
+-            "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
+-            "calls": 7,
+-        },
++    live_catalog = deepcopy(catalog)
++    live_corpus = require_json_document(live_catalog["corpus"], context="live corpus")
++    live_incident = require_json_document(live_corpus["parallel_incident"], context="live incident")
++    live_incident["run_ref"] = "wf_authorized_live_001"
++    live_arguments = materialize_route_arguments(member_step, live_catalog)
++    assert live_arguments["expression"] == (
++        'messages where text:parallel-child AND text:"workflow_run:wf_authorized_live_001"'
+     )
+-    assert result["classification"] == "pass"
+-    assert result["expected_refs"] == result["observed_refs"]
+ 
+ 
+-def test_incident_known_answer_preserves_independent_census() -> None:
+-    result = evaluate_replay(
+-        "parallel-claude-incident",
+-        FIXTURE,
++def test_fact_projectors_cover_single_unique_count_and_regex_oracles() -> None:
++    observations = require_json_document(
+         {
+-            "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
+-            "calls": 8,
+-            "answer": {
+-                "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
+-                "run_ref": "wf_54d4fb2e-841",
+-                "workflow_invocations": 4,
+-                "call_keys": 50,
+-                "attempt_transcripts": 91,
+-                "result_records": 65,
+-                "completed_call_keys": 49,
+-                "unresolved_call_keys": 1,
+-                "other_child_sessions": 38,
+-                "source": "independent incident census",
+-            },
+-            "mutations": {
+-                "lost-continuation-state": "detected",
+-                "global-delegation-materialization": "detected",
+-                "wrong-workflow-membership": "detected",
+-            },
++            "step": {
++                "items": [
++                    {"session_id": "s1", "text": "call_key:call-01 result_record:yes"},
++                    {"session_id": "s2", "text": "call_key:call-02 result_record:yes"},
++                    {"session_id": "s2", "text": "call_key:call-02"},
++                ]
++            }
+         },
++        context="projector observations",
+     )
+-
+-    assert result["classification"] == "pass"
+-    assert result["expected_answer"] == {
+-        "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
+-        "run_ref": "wf_54d4fb2e-841",
+-        "workflow_invocations": 4,
+-        "call_keys": 50,
+-        "attempt_transcripts": 91,
+-        "result_records": 65,
+-        "completed_call_keys": 49,
+-        "unresolved_call_keys": 1,
+-        "other_child_sessions": 38,
+-        "source": "independent incident census",
+-    }
+-
+-
+-def test_replay_rejects_duplicate_or_nonprogressing_results() -> None:
+-    scenario = continuity_scenario("resume")
+-    fixture = {"resume": ["session:resume-1"]}
+-
+-    assert scenario.classify(fixture, observed_refs=["session:resume-1", "session:resume-1"], calls=2) == "projection"
+     assert (
+-        scenario.classify(
+-            fixture,
+-            observed_refs=["session:resume-1"],
+-            calls=2,
+-            non_progressing_continuation=True,
++        project_fact(
++            ContinuityFactProjection("sessions", "step", ("items", "*", "session_id"), "unique_count"),
++            observations,
++        )
++        == 2
++    )
++    assert project_fact(
++        ContinuityFactProjection("ids", "step", ("items", "*", "session_id"), "unique_values"),
++        observations,
++    ) == ["s1", "s2"]
++    assert (
++        project_fact(
++            ContinuityFactProjection(
++                "call_keys",
++                "step",
++                ("items", "*", "text"),
++                "regex_unique_count",
++                r"call_key:(call-\d{2})",
++            ),
++            observations,
+         )
+-        == "execution"
++        == 2
+     )
++    assert (
++        project_fact(
++            ContinuityFactProjection(
++                "results",
++                "step",
++                ("items", "*", "text"),
++                "regex_count",
++                r"result_record:yes",
++            ),
++            observations,
++        )
++        == 2
++    )
++
++
++def test_mutated_planted_fact_reports_exact_expected_and_observed_values() -> None:
++    diagnostics = compare_observed_facts(
++        expected={"attempt_transcripts": 92, "call_keys": 50},
++        observed={"attempt_transcripts": 91, "call_keys": 50},
++        source_refs=("fixture:corpus.parallel_incident",),
++    )
++    assert diagnostics == [
++        {
++            "kind": "fact_mismatch",
++            "failure_class": "projection",
++            "fact": "attempt_transcripts",
++            "expected": 92,
++            "observed": 91,
++            "source_refs": ["fixture:corpus.parallel_incident"],
++        }
++    ]
++
++
++def test_existing_archive_scenario_block_seam_can_plant_structural_failures() -> None:
++    payload = ScenarioContentBlock.tool_result(
++        "failed",
++        tool_name="Bash",
++        tool_id="call-1",
++        is_error=True,
++        exit_code=2,
++    ).to_payload()
++    assert payload == {
++        "type": "tool_result",
++        "text": "failed",
++        "tool_name": "Bash",
++        "tool_id": "call-1",
++        "tool_result_is_error": 1,
++        "tool_result_exit_code": 2,
++    }

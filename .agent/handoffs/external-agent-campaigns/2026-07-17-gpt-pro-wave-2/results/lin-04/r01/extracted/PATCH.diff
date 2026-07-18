@@ -1,0 +1,2110 @@
+diff --git a/devtools/codex_exec_child_census.py b/devtools/codex_exec_child_census.py
+new file mode 100644
+index 000000000..c7bd3fb99
+--- /dev/null
++++ b/devtools/codex_exec_child_census.py
+@@ -0,0 +1,310 @@
++"""Census Codex code-mode transport envelopes and lowered child actions.
++
++Run against one or more Codex session JSON/JSONL files or directories. The
++report compares the historical outer-transport-only projection with the
++current parser's typed child projection. Text containing ``exit_code`` is
++reported only as a diagnostic; it never contributes to structured outcomes.
++"""
++
++from __future__ import annotations
++
++import argparse
++import gzip
++import json
++import sys
++from collections import Counter, defaultdict
++from collections.abc import Iterator, Mapping, Sequence
++from pathlib import Path
++from typing import TextIO
++
++from polylogue.core.enums import BlockType
++from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
++from polylogue.sources.parsers.codex import parse_stream
++
++_CHILD_KIND = "codex.functions_exec_child"
++_CHILD_ID_MARKER = "::polylogue-child::"
++_TRANSPORT_TOOL_NAMES = frozenset({"exec", "functions.exec"})
++_SUPPORTED_SUFFIXES = (
++    ".json",
++    ".jsonl",
++    ".ndjson",
++    ".json.gz",
++    ".jsonl.gz",
++    ".ndjson.gz",
++)
++
++
++def _parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("paths", nargs="+", type=Path, help="Codex session files or directories to scan.")
++    parser.add_argument("--output", type=Path, help="Write the JSON report to this path instead of stdout.")
++    parser.add_argument(
++        "--strict",
++        action="store_true",
++        help="Exit non-zero when any discovered file cannot be decoded or parsed.",
++    )
++    return parser
++
++
++def _is_supported(path: Path) -> bool:
++    lowered = path.name.lower()
++    return any(lowered.endswith(suffix) for suffix in _SUPPORTED_SUFFIXES)
++
++
++def _discover(paths: Sequence[Path]) -> list[Path]:
++    discovered: set[Path] = set()
++    for raw_path in paths:
++        path = raw_path.expanduser().resolve()
++        if path.is_file():
++            if _is_supported(path):
++                discovered.add(path)
++            continue
++        if path.is_dir():
++            discovered.update(
++                candidate for candidate in path.rglob("*") if candidate.is_file() and _is_supported(candidate)
++            )
++    return sorted(discovered, key=lambda candidate: candidate.as_posix())
++
++
++def _open_text(path: Path) -> TextIO:
++    if path.name.lower().endswith(".gz"):
++        return gzip.open(path, mode="rt", encoding="utf-8")
++    return path.open(mode="r", encoding="utf-8")
++
++
++def _records(path: Path) -> Iterator[object]:
++    lowered = path.name.lower()
++    with _open_text(path) as handle:
++        if lowered.endswith((".jsonl", ".ndjson", ".jsonl.gz", ".ndjson.gz")):
++            for line_number, line in enumerate(handle, start=1):
++                candidate = line.strip()
++                if not candidate:
++                    continue
++                try:
++                    yield json.loads(candidate)
++                except json.JSONDecodeError as exc:
++                    raise ValueError(f"invalid JSON at line {line_number}: {exc.msg}") from exc
++            return
++        value = json.load(handle)
++    if isinstance(value, list):
++        yield from value
++    else:
++        yield value
++
++
++def _block_type(block: ParsedContentBlock) -> str:
++    value = block.type
++    return value.value if isinstance(value, BlockType) else str(value)
++
++
++def _mapping(value: object) -> Mapping[str, object]:
++    return value if isinstance(value, Mapping) else {}
++
++
++def _child_provenance(block: ParsedContentBlock) -> Mapping[str, object] | None:
++    provenance = _mapping(block.tool_input).get("_polylogue")
++    if not isinstance(provenance, Mapping) or provenance.get("kind") != _CHILD_KIND:
++        return None
++    return provenance
++
++
++def _has_nonempty_string(mapping: Mapping[str, object], *keys: str) -> bool:
++    return any(isinstance(mapping.get(key), str) and bool(str(mapping[key]).strip()) for key in keys)
++
++
++def _has_path(mapping: Mapping[str, object]) -> bool:
++    if _has_nonempty_string(mapping, "path", "file_path"):
++        return True
++    paths = mapping.get("paths") or mapping.get("file_paths")
++    return isinstance(paths, list) and any(isinstance(value, str) and value.strip() for value in paths)
++
++
++def _has_byte_count(mapping: Mapping[str, object]) -> bool:
++    value = mapping.get("byte_count")
++    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
++
++
++def _result_has_path(block: ParsedContentBlock) -> bool:
++    metadata = _mapping(block.metadata)
++    return _has_path(metadata)
++
++
++def _result_has_byte_count(block: ParsedContentBlock) -> bool:
++    return _has_byte_count(_mapping(block.metadata))
++
++
++def _ratio(numerator: int, denominator: int) -> float | None:
++    return round(numerator / denominator, 6) if denominator else None
++
++
++def _session_census(session: ParsedSession) -> dict[str, object]:
++    child_uses: list[ParsedContentBlock] = []
++    child_results: list[ParsedContentBlock] = []
++    transport_uses: list[ParsedContentBlock] = []
++    all_results: list[ParsedContentBlock] = []
++    registry_counts: Counter[str] = Counter()
++    parse_state_counts: Counter[str] = Counter()
++
++    for message in session.messages:
++        for block in message.blocks:
++            block_type = _block_type(block)
++            if block_type == BlockType.TOOL_USE.value:
++                provenance = _child_provenance(block)
++                if provenance is not None:
++                    child_uses.append(block)
++                    registry_counts[str(provenance.get("registry_type") or "unknown")] += 1
++                    parse_state_counts[str(provenance.get("parse_state") or "unknown")] += 1
++                elif isinstance(block.tool_name, str) and block.tool_name.lower() in _TRANSPORT_TOOL_NAMES:
++                    transport_uses.append(block)
++            elif block_type == BlockType.TOOL_RESULT.value:
++                all_results.append(block)
++                if isinstance(block.tool_id, str) and _CHILD_ID_MARKER in block.tool_id:
++                    child_results.append(block)
++
++    transport_ids = Counter(
++        block.tool_id for block in transport_uses if isinstance(block.tool_id, str) and block.tool_id
++    )
++    transport_results = [
++        block
++        for block in all_results
++        if isinstance(block.tool_id, str) and block.tool_id in transport_ids and _CHILD_ID_MARKER not in block.tool_id
++    ]
++
++    results_by_id: dict[str, list[ParsedContentBlock]] = defaultdict(list)
++    for result in child_results:
++        if isinstance(result.tool_id, str) and result.tool_id:
++            results_by_id[result.tool_id].append(result)
++    result_offsets: Counter[str] = Counter()
++    paired_results: list[ParsedContentBlock] = []
++    for child in child_uses:
++        if not isinstance(child.tool_id, str) or not child.tool_id:
++            continue
++        offset = result_offsets[child.tool_id]
++        candidates = results_by_id.get(child.tool_id, [])
++        if offset < len(candidates):
++            paired_results.append(candidates[offset])
++            result_offsets[child.tool_id] += 1
++
++    child_inputs = [_mapping(block.tool_input) for block in child_uses]
++    structured_outcomes = [
++        block for block in child_results if block.is_error is not None or block.exit_code is not None
++    ]
++    return {
++        "transport_actions": len(transport_uses),
++        "transport_results": len(transport_results),
++        "transport_result_texts_with_exit_code_token": sum(
++            1 for block in transport_results if isinstance(block.text, str) and "exit_code" in block.text
++        ),
++        "typed_child_actions": len(child_uses),
++        "child_results": len(child_results),
++        "paired_child_results": len(paired_results),
++        "unpaired_child_actions": len(child_uses) - len(paired_results),
++        "orphan_child_results": len(child_results) - len(paired_results),
++        "child_actions_with_command": sum(1 for value in child_inputs if _has_nonempty_string(value, "command")),
++        "child_actions_with_path": sum(1 for value in child_inputs if _has_path(value)),
++        "child_actions_with_byte_count": sum(1 for value in child_inputs if _has_byte_count(value)),
++        "child_results_with_structured_outcome": len(structured_outcomes),
++        "child_results_with_exit_code": sum(1 for block in child_results if block.exit_code is not None),
++        "child_results_with_path": sum(1 for block in child_results if _result_has_path(block)),
++        "child_results_with_byte_count": sum(1 for block in child_results if _result_has_byte_count(block)),
++        "child_results_with_unknown_outcome": len(child_results) - len(structured_outcomes),
++        "child_result_texts_with_exit_code_token": sum(
++            1 for block in child_results if isinstance(block.text, str) and "exit_code" in block.text
++        ),
++        "children_by_registry_type": dict(sorted(registry_counts.items())),
++        "children_by_parse_state": dict(sorted(parse_state_counts.items())),
++    }
++
++
++def _counter_value(mapping: Mapping[str, object], key: str) -> int:
++    value = mapping.get(key, 0)
++    if not isinstance(value, int) or isinstance(value, bool):
++        raise TypeError(f"counter value for {key} is not an integer")
++    return value
++
++
++def _add_counts(total: dict[str, object], current: Mapping[str, object]) -> None:
++    for key, value in current.items():
++        if isinstance(value, int) and not isinstance(value, bool):
++            total[key] = _counter_value(total, key) + value
++        elif isinstance(value, Mapping):
++            target = total.setdefault(key, {})
++            if not isinstance(target, dict):
++                raise TypeError(f"counter shape changed for {key}")
++            for nested_key, nested_value in value.items():
++                if not isinstance(nested_value, int) or isinstance(nested_value, bool):
++                    raise TypeError(f"nested counter value for {nested_key} is not an integer")
++                nested_name = str(nested_key)
++                target[nested_name] = _counter_value(target, nested_name) + nested_value
++
++
++def build_report(paths: Sequence[Path]) -> dict[str, object]:
++    files = _discover(paths)
++    aggregate: dict[str, object] = {}
++    errors: list[dict[str, str]] = []
++    parsed_sessions = 0
++    for path in files:
++        try:
++            session = parse_stream(_records(path), fallback_id=path.stem)
++        except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
++            errors.append({"path": str(path), "error": f"{type(exc).__name__}: {exc}"})
++            continue
++        parsed_sessions += 1
++        _add_counts(aggregate, _session_census(session))
++
++    for key in ("children_by_registry_type", "children_by_parse_state"):
++        nested = aggregate.get(key)
++        if isinstance(nested, dict):
++            aggregate[key] = dict(sorted(nested.items()))
++
++    transport_actions = _counter_value(aggregate, "transport_actions")
++    typed_children = _counter_value(aggregate, "typed_child_actions")
++    child_results = _counter_value(aggregate, "child_results")
++    paired_results = _counter_value(aggregate, "paired_child_results")
++    structured_outcomes = _counter_value(aggregate, "child_results_with_structured_outcome")
++    paths = _counter_value(aggregate, "child_actions_with_path")
++
++    return {
++        "schema_version": 1,
++        "files_discovered": len(files),
++        "sessions_parsed": parsed_sessions,
++        "parse_errors": errors,
++        "outer_transport_only_baseline": {
++            "method": "counterfactual projection retaining only transport blocks (the pre-polylogue-j2zz behavior)",
++            "transport_actions": transport_actions,
++            "typed_child_actions": 0,
++            "child_actions_with_path": 0,
++            "child_results_with_structured_outcome": 0,
++        },
++        "lowered": aggregate,
++        "coverage": {
++            "typed_children_per_transport": _ratio(typed_children, transport_actions),
++            "paired_result_coverage": _ratio(paired_results, typed_children),
++            "structured_outcome_coverage": _ratio(structured_outcomes, child_results),
++            "path_coverage": _ratio(paths, typed_children),
++        },
++        "methodology": {
++            "pairing": (
++                "Nth child use to Nth child result for the same deterministic child tool_id, "
++                "in transcript order"
++            ),
++            "structural_outcomes": "Only parser-populated is_error/exit_code fields count; text tokens do not",
++            "exit_code_token_counts": "Diagnostic only; never used to promote an outcome",
++        },
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    args = _parser().parse_args(argv)
++    report = build_report(args.paths)
++    rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.output is None:
++        sys.stdout.write(rendered)
++    else:
++        args.output.parent.mkdir(parents=True, exist_ok=True)
++        args.output.write_text(rendered, encoding="utf-8")
++    return 1 if args.strict and bool(report["parse_errors"]) else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/polylogue/archive/viewport/tools.py b/polylogue/archive/viewport/tools.py
+index 70d0840bc..3c189d39d 100644
+--- a/polylogue/archive/viewport/tools.py
++++ b/polylogue/archive/viewport/tools.py
+@@ -40,7 +40,7 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
+     if name_lower in ("write", "create"):
+         return ToolCategory.FILE_WRITE
+     if (
+-        name_lower in ("edit", "patch", "sed", "notebookedit", "multiedit")
++        name_lower in ("edit", "patch", "apply_patch", "sed", "notebookedit", "multiedit")
+         or "__edit_file" in name_lower
+         or "__create_or_update_file" in name_lower
+     ):
+@@ -111,6 +111,7 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
+             "update_plan",
+             "write_stdin",
+             "send_input",
++            "wait",
+             "wait_agent",
+             "close_agent",
+             "initial_instructions",
+diff --git a/polylogue/sources/parsers/codex.py b/polylogue/sources/parsers/codex.py
+index 85a7b4801..d3f2bc6cf 100644
+--- a/polylogue/sources/parsers/codex.py
++++ b/polylogue/sources/parsers/codex.py
+@@ -4,7 +4,11 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
++import re
++import shlex
++from collections import defaultdict
+ from collections.abc import Iterable, Sequence
++from dataclasses import dataclass, replace
+ from datetime import datetime
+ 
+ from pydantic import ValidationError
+@@ -43,6 +47,124 @@ _EXECUTION_TOOL_NAMES = frozenset(
+         "terminal",
+     }
+ )
++_CODE_MODE_EXEC_TOOL_NAMES = frozenset({"exec", "functions.exec"})
++_CODE_MODE_CHILD_PROVENANCE_KEY = "_polylogue"
++_CODE_MODE_CHILD_ID_MARKER = "::polylogue-child::"
++_CODE_MODE_CHILD_COLLECTION_KEYS = (
++    "calls",
++    "tool_calls",
++    "children",
++    "operations",
++    "actions",
++    "invocations",
++)
++_CODE_MODE_RESULT_COLLECTION_KEYS = (
++    "results",
++    "tool_results",
++    "children",
++    "outputs",
++    "responses",
++)
++_STRUCTURAL_PATH_KEYS = frozenset({"path", "file_path", "paths", "file_paths", "image_path"})
++_STRUCTURAL_BYTE_KEYS = frozenset({"bytes", "byte_count", "bytes_written", "size_bytes", "written_bytes"})
++
++
++@dataclass(frozen=True, slots=True)
++class _CodexExecChildType:
++    kind: str
++    aliases: frozenset[str]
++
++
++_CODE_MODE_CHILD_REGISTRY = (
++    _CodexExecChildType(
++        kind="exec_command",
++        aliases=frozenset(
++            {
++                "bash",
++                "exec_command",
++                "local_shell_call",
++                "shell",
++                "shell_command",
++                "terminal",
++                "unified_exec",
++            }
++        ),
++    ),
++    _CodexExecChildType(kind="apply_patch", aliases=frozenset({"apply_patch", "patch"})),
++    _CodexExecChildType(kind="write_stdin", aliases=frozenset({"send_input", "write_stdin"})),
++    _CodexExecChildType(kind="update_plan", aliases=frozenset({"plan", "update_plan"})),
++    _CodexExecChildType(kind="wait", aliases=frozenset({"wait", "wait_for_cell", "wait_for_process"})),
++    _CodexExecChildType(
++        kind="web",
++        aliases=frozenset(
++            {
++                "open_url",
++                "search",
++                "tool_search",
++                "web",
++                "web_open",
++                "web_search",
++            }
++        ),
++    ),
++    _CodexExecChildType(
++        kind="image",
++        aliases=frozenset(
++            {
++                "generated_image",
++                "image",
++                "image_generation",
++                "image_query",
++                "view_image",
++            }
++        ),
++    ),
++    _CodexExecChildType(
++        kind="mcp",
++        aliases=frozenset(
++            {
++                "list_mcp_resource_templates",
++                "list_mcp_resources",
++                "read_mcp_resource",
++            }
++        ),
++    ),
++)
++
++
++@dataclass(frozen=True, slots=True)
++class _CodexExecChildCall:
++    tool_path: tuple[str, ...]
++    tool_name: str
++    registry_type: str
++    argument: object
++    raw_argument: str | None
++    parse_state: str
++    source_start: int | None = None
++    source_end: int | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class _CodexExecChildResult:
++    raw: object
++    text: str | None
++    is_error: bool | None
++    exit_code: int | None
++    paths: tuple[str, ...]
++    byte_count: int | None
++
++
++@dataclass(frozen=True, slots=True)
++class _CodexExecEnvelope:
++    transport_tool_name: str
++    transport_tool_id: str | None
++    transport_provider_message_id: str
++    children: tuple[_CodexExecChildCall, ...]
++    results: tuple[_CodexExecChildResult, ...] = ()
++
++
++class _JsLiteralError(ValueError):
++    pass
+ 
+ 
+ def _iso_or_none(value: str | int | float | None) -> str | None:
+@@ -341,6 +463,935 @@ def _extract_cwd(payload: dict[str, object] | None) -> str | None:
+     return None
+ 
+ 
++def _is_js_identifier_start(char: str) -> bool:
++    return char == "_" or char == "$" or char.isalpha()
++
++
++def _is_js_identifier_part(char: str) -> bool:
++    return _is_js_identifier_start(char) or char.isdigit()
++
++
++class _JsLiteralParser:
++    """Conservative parser for the JSON-like argument literals used by Code Mode.
++
++    This deliberately accepts only literals. Expressions, interpolation, spreads,
++    and references stay as raw evidence instead of being evaluated or guessed.
++    """
++
++    def __init__(self, text: str) -> None:
++        self.text = text
++        self.position = 0
++
++    def parse(self) -> object:
++        self._skip_space_and_comments()
++        value = self._parse_value()
++        self._skip_space_and_comments()
++        if self.position != len(self.text):
++            raise _JsLiteralError("trailing JavaScript expression")
++        return value
++
++    def _peek(self) -> str | None:
++        if self.position >= len(self.text):
++            return None
++        return self.text[self.position]
++
++    def _skip_space_and_comments(self) -> None:
++        while self.position < len(self.text):
++            char = self.text[self.position]
++            if char.isspace():
++                self.position += 1
++                continue
++            if self.text.startswith("//", self.position):
++                newline = self.text.find("\n", self.position + 2)
++                self.position = len(self.text) if newline == -1 else newline + 1
++                continue
++            if self.text.startswith("/*", self.position):
++                end = self.text.find("*/", self.position + 2)
++                if end == -1:
++                    raise _JsLiteralError("unterminated JavaScript comment")
++                self.position = end + 2
++                continue
++            return
++
++    def _parse_value(self) -> object:
++        char = self._peek()
++        if char is None:
++            raise _JsLiteralError("missing JavaScript literal")
++        if char == "{":
++            return self._parse_object()
++        if char == "[":
++            return self._parse_array()
++        if char in {'"', "'", "`"}:
++            return self._parse_string()
++        if char == "-" or char.isdigit():
++            return self._parse_number()
++        if _is_js_identifier_start(char):
++            identifier = self._parse_identifier()
++            if identifier == "true":
++                return True
++            if identifier == "false":
++                return False
++            if identifier in {"null", "undefined"}:
++                return None
++            raise _JsLiteralError(f"non-literal JavaScript identifier: {identifier}")
++        raise _JsLiteralError(f"unsupported JavaScript literal token: {char}")
++
++    def _parse_object(self) -> dict[str, object]:
++        self.position += 1
++        result: dict[str, object] = {}
++        self._skip_space_and_comments()
++        if self._peek() == "}":
++            self.position += 1
++            return result
++        while True:
++            self._skip_space_and_comments()
++            key_char = self._peek()
++            if key_char in {'"', "'", "`"}:
++                key_value = self._parse_string()
++                if not isinstance(key_value, str):
++                    raise _JsLiteralError("object key is not text")
++                key = key_value
++            elif key_char is not None and _is_js_identifier_start(key_char):
++                key = self._parse_identifier()
++            else:
++                raise _JsLiteralError("unsupported JavaScript object key")
++            self._skip_space_and_comments()
++            if self._peek() != ":":
++                raise _JsLiteralError("JavaScript object shorthand is not a literal")
++            self.position += 1
++            self._skip_space_and_comments()
++            result[key] = self._parse_value()
++            self._skip_space_and_comments()
++            delimiter = self._peek()
++            if delimiter == "}":
++                self.position += 1
++                return result
++            if delimiter != ",":
++                raise _JsLiteralError("missing JavaScript object delimiter")
++            self.position += 1
++            self._skip_space_and_comments()
++            if self._peek() == "}":
++                self.position += 1
++                return result
++
++    def _parse_array(self) -> list[object]:
++        self.position += 1
++        result: list[object] = []
++        self._skip_space_and_comments()
++        if self._peek() == "]":
++            self.position += 1
++            return result
++        while True:
++            self._skip_space_and_comments()
++            result.append(self._parse_value())
++            self._skip_space_and_comments()
++            delimiter = self._peek()
++            if delimiter == "]":
++                self.position += 1
++                return result
++            if delimiter != ",":
++                raise _JsLiteralError("missing JavaScript array delimiter")
++            self.position += 1
++            self._skip_space_and_comments()
++            if self._peek() == "]":
++                self.position += 1
++                return result
++
++    def _parse_identifier(self) -> str:
++        start = self.position
++        if self.position >= len(self.text) or not _is_js_identifier_start(self.text[self.position]):
++            raise _JsLiteralError("missing JavaScript identifier")
++        self.position += 1
++        while self.position < len(self.text) and _is_js_identifier_part(self.text[self.position]):
++            self.position += 1
++        return self.text[start : self.position]
++
++    def _parse_string(self) -> str:
++        quote = self.text[self.position]
++        self.position += 1
++        parts: list[str] = []
++        while self.position < len(self.text):
++            char = self.text[self.position]
++            self.position += 1
++            if char == quote:
++                return "".join(parts)
++            if quote == "`" and char == "$" and self._peek() == "{":
++                raise _JsLiteralError("template interpolation is not a literal")
++            if char != "\\":
++                parts.append(char)
++                continue
++            if self.position >= len(self.text):
++                raise _JsLiteralError("unterminated JavaScript string escape")
++            escaped = self.text[self.position]
++            self.position += 1
++            escapes = {
++                "b": "\b",
++                "f": "\f",
++                "n": "\n",
++                "r": "\r",
++                "t": "\t",
++                "v": "\v",
++                "0": "\0",
++                "\\": "\\",
++                "'": "'",
++                '"': '"',
++                "`": "`",
++            }
++            if escaped in escapes:
++                parts.append(escapes[escaped])
++                continue
++            if escaped in {"\n", "\r"}:
++                if escaped == "\r" and self._peek() == "\n":
++                    self.position += 1
++                continue
++            if escaped == "x":
++                parts.append(self._parse_hex_escape(2))
++                continue
++            if escaped == "u":
++                if self._peek() == "{":
++                    self.position += 1
++                    end = self.text.find("}", self.position)
++                    if end == -1:
++                        raise _JsLiteralError("unterminated JavaScript Unicode escape")
++                    token = self.text[self.position : end]
++                    self.position = end + 1
++                    try:
++                        parts.append(chr(int(token, 16)))
++                    except (ValueError, OverflowError) as exc:
++                        raise _JsLiteralError("invalid JavaScript Unicode escape") from exc
++                else:
++                    parts.append(self._parse_hex_escape(4))
++                continue
++            # JavaScript treats an otherwise-unknown escaped character as the
++            # character itself. Preserving it is safer than rejecting evidence.
++            parts.append(escaped)
++        raise _JsLiteralError("unterminated JavaScript string")
++
++    def _parse_hex_escape(self, width: int) -> str:
++        token = self.text[self.position : self.position + width]
++        if len(token) != width or any(char not in "0123456789abcdefABCDEF" for char in token):
++            raise _JsLiteralError("invalid JavaScript hexadecimal escape")
++        self.position += width
++        return chr(int(token, 16))
++
++    def _parse_number(self) -> int | float:
++        match = re.match(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?", self.text[self.position :])
++        if match is None:
++            raise _JsLiteralError("invalid JavaScript number")
++        token = match.group(0)
++        self.position += len(token)
++        return float(token) if any(char in token for char in ".eE") else int(token)
++
++
++def _parse_js_literal(text: str) -> tuple[object, bool]:
++    candidate = text.strip()
++    if not candidate:
++        return None, True
++    try:
++        return json.loads(candidate), True
++    except (json.JSONDecodeError, TypeError):
++        pass
++    try:
++        return _JsLiteralParser(candidate).parse(), True
++    except _JsLiteralError:
++        return candidate, False
++
++
++def _skip_js_string_or_comment(source: str, position: int) -> int | None:
++    if source.startswith("//", position):
++        newline = source.find("\n", position + 2)
++        return len(source) if newline == -1 else newline + 1
++    if source.startswith("/*", position):
++        end = source.find("*/", position + 2)
++        return len(source) if end == -1 else end + 2
++    if position >= len(source) or source[position] not in {'"', "'", "`"}:
++        return None
++    quote = source[position]
++    position += 1
++    while position < len(source):
++        char = source[position]
++        position += 1
++        if char == "\\":
++            position += 1
++            continue
++        if char == quote:
++            return position
++    return len(source)
++
++
++def _skip_js_space_and_comments(source: str, position: int) -> int:
++    while position < len(source):
++        if source[position].isspace():
++            position += 1
++            continue
++        skipped = _skip_js_string_or_comment(source, position)
++        if skipped is not None and source.startswith(("//", "/*"), position):
++            position = skipped
++            continue
++        return position
++    return position
++
++
++def _parse_js_member_chain(source: str, position: int) -> tuple[tuple[str, ...], int] | None:
++    if position >= len(source) or not _is_js_identifier_start(source[position]):
++        return None
++    start = position
++    position += 1
++    while position < len(source) and _is_js_identifier_part(source[position]):
++        position += 1
++    parts = [source[start:position]]
++    while True:
++        position = _skip_js_space_and_comments(source, position)
++        if position < len(source) and source[position] == ".":
++            position = _skip_js_space_and_comments(source, position + 1)
++            if position >= len(source) or not _is_js_identifier_start(source[position]):
++                return tuple(parts), position
++            start = position
++            position += 1
++            while position < len(source) and _is_js_identifier_part(source[position]):
++                position += 1
++            parts.append(source[start:position])
++            continue
++        if position < len(source) and source[position] == "[":
++            member_start = _skip_js_space_and_comments(source, position + 1)
++            if member_start >= len(source) or source[member_start] not in {'"', "'", "`"}:
++                return tuple(parts), position
++            parser = _JsLiteralParser(source[member_start:])
++            try:
++                member = parser._parse_string()
++            except _JsLiteralError:
++                return tuple(parts), position
++            member_end = member_start + parser.position
++            member_end = _skip_js_space_and_comments(source, member_end)
++            if member_end >= len(source) or source[member_end] != "]":
++                return tuple(parts), position
++            parts.append(member)
++            position = member_end + 1
++            continue
++        return tuple(parts), position
++
++
++def _balanced_js_call_argument(source: str, open_position: int) -> tuple[str, int, bool]:
++    depth = 1
++    position = open_position + 1
++    argument_start = position
++    while position < len(source):
++        skipped = _skip_js_string_or_comment(source, position)
++        if skipped is not None:
++            position = skipped
++            continue
++        char = source[position]
++        if char == "(":
++            depth += 1
++        elif char == ")":
++            depth -= 1
++            if depth == 0:
++                return source[argument_start:position], position + 1, True
++        position += 1
++    return source[argument_start:], len(source), False
++
++
++def _first_js_argument(arguments: str) -> str:
++    depths = {"(": 0, "[": 0, "{": 0}
++    closers = {")": "(", "]": "[", "}": "{"}
++    position = 0
++    while position < len(arguments):
++        skipped = _skip_js_string_or_comment(arguments, position)
++        if skipped is not None:
++            position = skipped
++            continue
++        char = arguments[position]
++        if char in depths:
++            depths[char] += 1
++        elif char in closers:
++            opener = closers[char]
++            depths[opener] = max(depths[opener] - 1, 0)
++        elif char == "," and all(depth == 0 for depth in depths.values()):
++            return arguments[:position]
++        position += 1
++    return arguments
++
++
++def _classify_code_mode_child(tool_path: tuple[str, ...]) -> str:
++    normalized = tuple(part.strip().lower().replace("-", "_") for part in tool_path if part.strip())
++    child_parts = normalized[1:] if normalized and normalized[0] in {"tools", "functions"} else normalized
++    if not child_parts:
++        return "unknown"
++
++    # Namespaced tools are MCP delegations unless the namespace itself is a
++    # first-class Codex family. This check intentionally precedes leaf aliases:
++    # tools.mcp.repo.search is MCP, not a generic web search.
++    if child_parts[0] == "web":
++        return "web"
++    if child_parts[0] == "image":
++        return "image"
++    if any("mcp" in part for part in child_parts) or len(child_parts) > 1:
++        return "mcp"
++
++    leaf = child_parts[-1]
++    for spec in _CODE_MODE_CHILD_REGISTRY:
++        if leaf in spec.aliases:
++            return spec.kind
++    return "unknown"
++
++
++def _code_mode_tool_name(tool_path: tuple[str, ...], registry_type: str) -> str:
++    child_parts = tool_path[1:] if tool_path and tool_path[0].lower() in {"tools", "functions"} else tool_path
++    raw_name = ".".join(child_parts) if child_parts else "unknown"
++    # First-class registry entries use stable names so downstream semantic
++    # normalization does not depend on provider spelling. MCP and unknown
++    # calls keep their exact names; their registry type remains in provenance.
++    return registry_type if registry_type not in {"mcp", "unknown"} else raw_name
++
++
++def _scan_code_mode_child_calls(source: str) -> tuple[_CodexExecChildCall, ...]:
++    calls: list[_CodexExecChildCall] = []
++    position = 0
++    while position < len(source):
++        skipped = _skip_js_string_or_comment(source, position)
++        if skipped is not None:
++            position = skipped
++            continue
++        if not _is_js_identifier_start(source[position]):
++            position += 1
++            continue
++        parsed_chain = _parse_js_member_chain(source, position)
++        if parsed_chain is None:
++            position += 1
++            continue
++        tool_path, after_chain = parsed_chain
++        after_chain = _skip_js_space_and_comments(source, after_chain)
++        if not tool_path or tool_path[0].lower() not in {"tools", "functions"}:
++            position = max(after_chain, position + 1)
++            continue
++        if len(tool_path) < 2 or after_chain >= len(source) or source[after_chain] != "(":
++            position = max(after_chain, position + 1)
++            continue
++        raw_arguments, call_end, balanced = _balanced_js_call_argument(source, after_chain)
++        first_argument = _first_js_argument(raw_arguments)
++        argument, parsed = _parse_js_literal(first_argument)
++        registry_type = _classify_code_mode_child(tool_path)
++        calls.append(
++            _CodexExecChildCall(
++                tool_path=tool_path,
++                tool_name=_code_mode_tool_name(tool_path, registry_type),
++                registry_type=registry_type,
++                argument=argument,
++                raw_argument=first_argument.strip() or None,
++                parse_state="parsed" if parsed and balanced else "malformed",
++                source_start=position,
++                source_end=call_end,
++            )
++        )
++        position = max(call_end, position + 1)
++    return tuple(calls)
++
++
++def _mapping_string(record: dict[str, object], *keys: str) -> str | None:
++    for key in keys:
++        value = record.get(key)
++        if isinstance(value, str) and value.strip():
++            return value.strip()
++    return None
++
++
++def _structured_code_mode_child_calls(value: object) -> tuple[_CodexExecChildCall, ...]:
++    if isinstance(value, str):
++        try:
++            value = json.loads(value)
++        except json.JSONDecodeError:
++            return ()
++    if not isinstance(value, dict):
++        return ()
++    child_items: list[object] | None = None
++    for key in _CODE_MODE_CHILD_COLLECTION_KEYS:
++        candidate = value.get(key)
++        if isinstance(candidate, list):
++            child_items = candidate
++            break
++    if child_items is None:
++        return ()
++    calls: list[_CodexExecChildCall] = []
++    for item in child_items:
++        if not isinstance(item, dict):
++            calls.append(
++                _CodexExecChildCall(
++                    tool_path=("tools", "unknown"),
++                    tool_name="unknown",
++                    registry_type="unknown",
++                    argument=item,
++                    raw_argument=_codex_tool_output_text(item),
++                    parse_state="malformed",
++                )
++            )
++            continue
++        raw_name = _mapping_string(item, "name", "tool_name", "tool", "operation", "kind", "type")
++        if raw_name:
++            name_parts = tuple(part for part in raw_name.replace("::", ".").split(".") if part)
++            tool_path = (
++                name_parts
++                if name_parts and name_parts[0].lower() in {"tools", "functions"}
++                else ("tools", *name_parts)
++            )
++        else:
++            tool_path = ("tools", "unknown")
++        argument: object = {}
++        for key in ("arguments", "input", "action", "params", "parameters"):
++            if key in item:
++                argument = item[key]
++                break
++        if isinstance(argument, str):
++            parsed_argument, parsed = _parse_js_literal(argument)
++        else:
++            parsed_argument, parsed = argument, True
++        registry_type = _classify_code_mode_child(tool_path)
++        calls.append(
++            _CodexExecChildCall(
++                tool_path=tool_path,
++                tool_name=_code_mode_tool_name(tool_path, registry_type),
++                registry_type=registry_type,
++                argument=parsed_argument,
++                raw_argument=argument if isinstance(argument, str) else _codex_tool_output_text(argument),
++                parse_state="parsed" if raw_name and parsed else "malformed",
++            )
++        )
++    return tuple(calls)
++
++
++def _code_mode_source(value: object) -> str | None:
++    if isinstance(value, str):
++        try:
++            parsed = json.loads(value)
++        except json.JSONDecodeError:
++            return value
++        if isinstance(parsed, dict):
++            value = parsed
++        else:
++            return value
++    if not isinstance(value, dict):
++        return None
++    for key in ("source", "code", "script", "javascript", "js", "command", "arguments", "input"):
++        candidate = value.get(key)
++        if isinstance(candidate, str) and candidate.strip():
++            return candidate
++    return None
++
++
++def _code_mode_children(value: object) -> tuple[_CodexExecChildCall, ...]:
++    structured = _structured_code_mode_child_calls(value)
++    if structured:
++        return structured
++    source = _code_mode_source(value)
++    return _scan_code_mode_child_calls(source) if source else ()
++
++
++def _dedupe_strings(values: Iterable[str]) -> tuple[str, ...]:
++    seen: set[str] = set()
++    result: list[str] = []
++    for value in values:
++        normalized = value.strip()
++        if not normalized or normalized in seen or normalized == "/dev/null":
++            continue
++        seen.add(normalized)
++        result.append(normalized)
++    return tuple(result)
++
++
++def _patch_touched_paths(patch: str) -> tuple[str, ...]:
++    paths: list[str] = []
++    marker_prefixes = (
++        "*** Add File:",
++        "*** Update File:",
++        "*** Delete File:",
++        "*** Move to:",
++        "*** Move File:",
++    )
++    for line in patch.splitlines():
++        stripped = line.strip()
++        for prefix in marker_prefixes:
++            if stripped.startswith(prefix):
++                paths.append(stripped.removeprefix(prefix).strip())
++                break
++        else:
++            if stripped.startswith(("+++ ", "--- ")):
++                candidate = stripped[4:].split("\t", 1)[0].strip()
++                if candidate.startswith(("a/", "b/")):
++                    candidate = candidate[2:]
++                paths.append(candidate)
++            elif stripped.startswith("diff --git "):
++                pieces = stripped.removeprefix("diff --git ").split()
++                if len(pieces) >= 2:
++                    candidate = pieces[-1]
++                    paths.append(candidate[2:] if candidate.startswith("b/") else candidate)
++    return _dedupe_strings(paths)
++
++
++def _structural_paths(value: object) -> tuple[str, ...]:
++    paths: list[str] = []
++
++    def visit(item: object, *, depth: int) -> None:
++        if depth > 8:
++            return
++        if isinstance(item, dict):
++            for raw_key, child in item.items():
++                key = str(raw_key).lower()
++                if key in _STRUCTURAL_PATH_KEYS:
++                    if isinstance(child, str):
++                        paths.append(child)
++                    elif isinstance(child, list):
++                        paths.extend(value for value in child if isinstance(value, str))
++                if isinstance(child, dict | list):
++                    visit(child, depth=depth + 1)
++        elif isinstance(item, list):
++            for child in item:
++                if isinstance(child, dict | list):
++                    visit(child, depth=depth + 1)
++
++    visit(value, depth=0)
++    return _dedupe_strings(paths)
++
++
++def _structural_byte_count(value: object) -> int | None:
++    if isinstance(value, dict):
++        for raw_key, child in value.items():
++            if str(raw_key).lower() in _STRUCTURAL_BYTE_KEYS and isinstance(child, int) and not isinstance(child, bool):
++                return child if child >= 0 else None
++        for child in value.values():
++            if isinstance(child, dict | list):
++                nested = _structural_byte_count(child)
++                if nested is not None:
++                    return nested
++    elif isinstance(value, list):
++        for child in value:
++            if isinstance(child, dict | list):
++                nested = _structural_byte_count(child)
++                if nested is not None:
++                    return nested
++    return None
++
++
++def _structural_outcome(value: object) -> tuple[bool | None, int | None]:
++    wrappers: list[dict[str, object]] = []
++    if isinstance(value, dict):
++        wrappers.append(value)
++        for key in ("metadata", "result", "output"):
++            nested = value.get(key)
++            if isinstance(nested, dict):
++                wrappers.append(nested)
++    exit_code: int | None = None
++    is_error: bool | None = None
++    for wrapper in wrappers:
++        raw_exit = wrapper.get("exit_code")
++        if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
++            exit_code = raw_exit
++            break
++    for wrapper in wrappers:
++        raw_error = wrapper.get("is_error")
++        if isinstance(raw_error, bool):
++            is_error = raw_error
++            break
++    if exit_code is not None:
++        derived = exit_code != 0
++        if is_error is None:
++            is_error = derived
++    return is_error, exit_code
++
++
++def _decoded_json_value(value: object) -> object | None:
++    if not isinstance(value, str):
++        return value
++    try:
++        return json.loads(value)
++    except (json.JSONDecodeError, TypeError):
++        return None
++
++
++def _decoded_structural_text_item(item: object) -> tuple[object, ...]:
++    if not isinstance(item, dict):
++        return ()
++    item_type = item.get("type")
++    if item_type not in {"input_text", "output_text"}:
++        return ()
++    text = item.get("text")
++    if not isinstance(text, str):
++        return ()
++    decoded = _decoded_json_value(text)
++    if isinstance(decoded, dict):
++        for key in _CODE_MODE_RESULT_COLLECTION_KEYS:
++            candidate = decoded.get(key)
++            if isinstance(candidate, list) and all(isinstance(value, dict | list) for value in candidate):
++                return tuple(candidate)
++        return (decoded,)
++    if isinstance(decoded, list):
++        # A JSON array emitted as one content item represents ordered child
++        # results only when every element is itself a structured value.
++        if all(isinstance(value, dict | list) for value in decoded):
++            return tuple(decoded)
++    return ()
++
++
++def _code_mode_result_items(output: object, *, child_count: int) -> tuple[object, ...]:
++    if child_count <= 0:
++        return ()
++    parsed = _decoded_json_value(output)
++    if isinstance(parsed, dict):
++        for key in _CODE_MODE_RESULT_COLLECTION_KEYS:
++            candidate = parsed.get(key)
++            if isinstance(candidate, list):
++                return tuple(candidate[:child_count])
++        if parsed.get("type") in {"input_text", "output_text", "input_image", "image"}:
++            return _decoded_structural_text_item(parsed)[:child_count]
++        # A non-content-item mapping is one exact child result when the
++        # envelope has one child. It may carry no promoted outcome fields; in
++        # that case the paired result is retained with outcome=unknown.
++        return (parsed,) if child_count == 1 else ()
++    if isinstance(parsed, list):
++        if all(
++            isinstance(item, dict) and item.get("type") in {"input_text", "output_text", "input_image", "image"}
++            for item in parsed
++        ):
++            emitted: list[object] = []
++            for item in parsed:
++                emitted.extend(_decoded_structural_text_item(item))
++                if len(emitted) >= child_count:
++                    break
++            return tuple(emitted[:child_count])
++        return tuple(parsed[:child_count])
++    return ()
++
++
++def _code_mode_child_results(output: object, *, child_count: int) -> tuple[_CodexExecChildResult, ...]:
++    results: list[_CodexExecChildResult] = []
++    for item in _code_mode_result_items(output, child_count=child_count):
++        is_error, exit_code = _structural_outcome(item)
++        results.append(
++            _CodexExecChildResult(
++                raw=item,
++                text=_codex_tool_output_text(item),
++                is_error=is_error,
++                exit_code=exit_code,
++                paths=_structural_paths(item),
++                byte_count=_structural_byte_count(item),
++            )
++        )
++    return tuple(results)
++
++
++def _response_inner_record(item: object) -> dict[str, object] | None:
++    record = _dict_record(item)
++    if record is None or _record_type(record) not in {"response_item", "event_msg"}:
++        return None
++    inner = _payload_record(record)
++    return inner if inner is not None and not _is_message(inner) else None
++
++
++def _code_mode_exec_envelopes(records: Sequence[object]) -> dict[int, _CodexExecEnvelope]:
++    call_occurrences: dict[str, list[tuple[int, _CodexExecEnvelope]]] = defaultdict(list)
++    output_occurrences: dict[str, list[tuple[int, dict[str, object]]]] = defaultdict(list)
++    envelopes_by_record: dict[int, _CodexExecEnvelope] = {}
++    for index, item in enumerate(records, start=1):
++        inner = _response_inner_record(item)
++        if inner is None:
++            continue
++        payload = _record_payload(inner)
++        record_type = _record_type(inner)
++        if record_type in {
++            "function_call",
++            "custom_tool_call",
++            "tool_search_call",
++            "web_search_call",
++            "local_shell_call",
++        }:
++            tool_name = payload.get("name")
++            if not isinstance(tool_name, str) or not tool_name:
++                tool_name = payload.get("execution")
++            if not isinstance(tool_name, str) or tool_name.lower() not in _CODE_MODE_EXEC_TOOL_NAMES:
++                continue
++            raw_arguments = payload.get("arguments")
++            if raw_arguments is None:
++                raw_arguments = payload.get("input")
++            if raw_arguments is None:
++                raw_arguments = payload.get("action")
++            children = _code_mode_children(raw_arguments)
++            if not children:
++                continue
++            raw_tool_id = payload.get("call_id") or payload.get("id")
++            tool_id = str(raw_tool_id) if raw_tool_id else None
++            provider_message_id = str(payload.get("id") or raw_tool_id or f"function-call-{index}")
++            envelope = _CodexExecEnvelope(
++                transport_tool_name=tool_name,
++                transport_tool_id=tool_id,
++                transport_provider_message_id=provider_message_id,
++                children=children,
++            )
++            envelopes_by_record[index] = envelope
++            if tool_id:
++                call_occurrences[tool_id].append((index, envelope))
++        elif record_type in {
++            "function_call_output",
++            "custom_tool_call_output",
++            "tool_search_output",
++            "web_search_output",
++        }:
++            raw_tool_id = payload.get("call_id") or payload.get("id")
++            if raw_tool_id:
++                output_occurrences[str(raw_tool_id)].append((index, inner))
++
++    for tool_id, calls in call_occurrences.items():
++        outputs = output_occurrences.get(tool_id, [])
++        for occurrence, (call_index, envelope) in enumerate(calls):
++            if occurrence >= len(outputs):
++                continue
++            output_index, output_record = outputs[occurrence]
++            output = output_record.get("output")
++            if output is None:
++                output = output_record.get("tools")
++            if output is None:
++                output = output_record.get("result")
++            enriched = replace(
++                envelope,
++                results=_code_mode_child_results(output, child_count=len(envelope.children)),
++            )
++            envelopes_by_record[call_index] = enriched
++            envelopes_by_record[output_index] = enriched
++    return envelopes_by_record
++
++
++def _normalized_command(value: object) -> str | None:
++    if isinstance(value, str) and value.strip():
++        return value.strip()
++    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
++        return shlex.join(value)
++    return None
++
++
++def _child_tool_input(
++    child: _CodexExecChildCall,
++    *,
++    child_index: int,
++    envelope: _CodexExecEnvelope,
++    result: _CodexExecChildResult | None,
++) -> dict[str, object]:
++    if isinstance(child.argument, dict):
++        tool_input: dict[str, object] = {str(key): value for key, value in child.argument.items()}
++    elif child.argument is None:
++        tool_input = {}
++    else:
++        tool_input = {"input": child.argument}
++
++    command: str | None = None
++    if child.parse_state == "parsed" and child.registry_type == "exec_command":
++        command = _normalized_command(tool_input.get("command")) or _normalized_command(tool_input.get("cmd"))
++        if command is None:
++            command = _normalized_command(child.argument)
++    elif child.parse_state == "parsed" and child.registry_type == "apply_patch":
++        patch = (
++            _normalized_command(tool_input.get("patch"))
++            or _normalized_command(tool_input.get("input"))
++            or _normalized_command(tool_input.get("command"))
++            or _normalized_command(child.argument)
++        )
++        if patch is not None:
++            tool_input.setdefault("patch", patch)
++            command = patch
++            patch_paths = _patch_touched_paths(patch)
++            if patch_paths:
++                tool_input["paths"] = list(patch_paths)
++                tool_input["path"] = patch_paths[0]
++    if command is not None:
++        tool_input["command"] = command
++
++    paths = list(_structural_paths(tool_input))
++    byte_count = _structural_byte_count(tool_input)
++    if result is not None:
++        paths.extend(result.paths)
++        if byte_count is None:
++            byte_count = result.byte_count
++    normalized_paths = _dedupe_strings(paths)
++    if normalized_paths:
++        tool_input["paths"] = list(normalized_paths)
++        tool_input.setdefault("path", normalized_paths[0])
++    if byte_count is not None:
++        tool_input["byte_count"] = byte_count
++    if (child.parse_state != "parsed" or child.registry_type == "unknown") and child.raw_argument is not None:
++        tool_input["raw_arguments"] = child.raw_argument
++
++    provenance: dict[str, object] = {
++        "kind": "codex.functions_exec_child",
++        "registry_type": child.registry_type,
++        "parse_state": child.parse_state,
++        "raw_tool_path": ".".join(child.tool_path),
++        "transport_child_index": child_index,
++        "transport": {
++            "provider_message_id": envelope.transport_provider_message_id,
++            "tool_id": envelope.transport_tool_id,
++            "tool_name": envelope.transport_tool_name,
++            "block_position": 0,
++        },
++    }
++    if child.source_start is not None and child.source_end is not None:
++        provenance["source_span"] = [child.source_start, child.source_end]
++    if result is not None and (result.paths or result.byte_count is not None):
++        result_fields: dict[str, object] = {}
++        if result.paths:
++            result_fields["paths"] = list(result.paths)
++        if result.byte_count is not None:
++            result_fields["byte_count"] = result.byte_count
++        provenance["structural_result_fields"] = result_fields
++    tool_input[_CODE_MODE_CHILD_PROVENANCE_KEY] = provenance
++    return tool_input
++
++
++def _child_tool_id(envelope: _CodexExecEnvelope, child_index: int) -> str | None:
++    if not envelope.transport_tool_id:
++        return None
++    return f"{envelope.transport_tool_id}{_CODE_MODE_CHILD_ID_MARKER}{child_index}"
++
++
++def _code_mode_child_use_blocks(envelope: _CodexExecEnvelope) -> list[ParsedContentBlock]:
++    blocks: list[ParsedContentBlock] = []
++    for child_index, child in enumerate(envelope.children):
++        result = envelope.results[child_index] if child_index < len(envelope.results) else None
++        blocks.append(
++            ParsedContentBlock(
++                type=BlockType.TOOL_USE,
++                tool_name=child.tool_name,
++                tool_id=_child_tool_id(envelope, child_index),
++                tool_input=_child_tool_input(
++                    child,
++                    child_index=child_index,
++                    envelope=envelope,
++                    result=result,
++                ),
++            )
++        )
++    return blocks
++
++
++def _code_mode_child_result_blocks(envelope: _CodexExecEnvelope) -> list[ParsedContentBlock]:
++    blocks: list[ParsedContentBlock] = []
++    for child_index, result in enumerate(envelope.results):
++        metadata: dict[str, object] = {
++            "codex_functions_exec_child_index": child_index,
++            "codex_functions_exec_registry_type": envelope.children[child_index].registry_type,
++        }
++        if result.paths:
++            metadata["paths"] = list(result.paths)
++        if result.byte_count is not None:
++            metadata["byte_count"] = result.byte_count
++        blocks.append(
++            ParsedContentBlock(
++                type=BlockType.TOOL_RESULT,
++                tool_id=_child_tool_id(envelope, child_index),
++                text=result.text,
++                metadata=metadata,
++                is_error=result.is_error,
++                exit_code=result.exit_code,
++            )
++        )
++    return blocks
++
++
+ def _tool_input_from_arguments(value: object, *, tool_name: str) -> dict[str, object]:
+     if isinstance(value, dict):
+         tool_input = dict(value)
+@@ -381,6 +1432,7 @@ def _codex_tool_message(
+     index: int,
+     position: int,
+     timestamp_fallback: str | int | float | None = None,
++    exec_envelope: _CodexExecEnvelope | None = None,
+ ) -> ParsedMessage | None:
+     payload = _record_payload(record)
+     record_type = _record_type(record)
+@@ -405,6 +1457,8 @@ def _codex_tool_message(
+                 tool_input=_tool_input_from_arguments(raw_arguments, tool_name=tool_name),
+             )
+         ]
++        if exec_envelope is not None:
++            blocks.extend(_code_mode_child_use_blocks(exec_envelope))
+         return ParsedMessage(
+             provider_message_id=str(payload.get("id") or tool_id or f"function-call-{index}"),
+             role=Role.ASSISTANT,
+@@ -425,24 +1479,10 @@ def _codex_tool_message(
+         output_text = _codex_tool_output_text(output)
+         if not tool_id and not output_text:
+             return None
+-        # Keystone: Codex shell/function results wrap the payload as
+-        # {"output": "...", "metadata": {"exit_code": N, ...}}. Capture the
+-        # structured exit code so outcomes are readable instead of inferred.
+-        exit_code: int | None = None
+-        is_error: bool | None = None
+-        parsed_output: object = output
+-        if isinstance(output, str):
+-            try:
+-                parsed_output = json.loads(output)
+-            except (ValueError, TypeError):
+-                parsed_output = None
+-        if isinstance(parsed_output, dict):
+-            metadata = parsed_output.get("metadata")
+-            if isinstance(metadata, dict):
+-                raw_exit = metadata.get("exit_code")
+-                if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+-                    exit_code = raw_exit
+-                    is_error = raw_exit != 0
++        # Only exact structured fields affect the outcome. Text containing
++        # exit-code-like prose remains evidence text with an unknown outcome.
++        parsed_output = _decoded_json_value(output)
++        is_error, exit_code = _structural_outcome(parsed_output)
+         blocks = [
+             ParsedContentBlock(
+                 type=BlockType.TOOL_RESULT,
+@@ -452,6 +1492,8 @@ def _codex_tool_message(
+                 exit_code=exit_code,
+             )
+         ]
++        if exec_envelope is not None:
++            blocks.extend(_code_mode_child_result_blocks(exec_envelope))
+         return ParsedMessage(
+             provider_message_id=str(payload.get("id") or tool_id or f"function-call-output-{index}"),
+             role=Role.TOOL,
+@@ -624,6 +1666,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
+     - format_type: Detected format generation
+     """
+     record_list = list(records)
++    code_mode_envelopes = _code_mode_exec_envelopes(record_list)
+     response_signatures = _response_message_signatures(record_list)
+     messages: list[ParsedMessage] = []
+     session_events: list[ParsedSessionEvent] = []
+@@ -765,6 +1808,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
+                     index=idx,
+                     position=message_position,
+                     timestamp_fallback=timestamp_fallback,
++                    exec_envelope=code_mode_envelopes.get(idx),
+                 )
+                 if tool_message is not None:
+                     messages.append(tool_message)
+diff --git a/tests/data/codex_event_stream/functions_exec_multiple.jsonl b/tests/data/codex_event_stream/functions_exec_multiple.jsonl
+new file mode 100644
+index 000000000..92626646d
+--- /dev/null
++++ b/tests/data/codex_event_stream/functions_exec_multiple.jsonl
+@@ -0,0 +1,3 @@
++{"type":"session_meta","payload":{"id":"codex-functions-exec-multiple","timestamp":"2026-07-15T11:00:00Z","cwd":"/repo"}}
++{"type":"response_item","payload":{"type":"function_call","id":"fc-multiple","call_id":"exec-multiple","name":"functions.exec","arguments":"{\"source\":\"const commandResult = await tools.exec_command({\\n  cmd: [\\\"git\\\", \\\"status\\\", \\\"--short\\\"],\\n  workdir: \\\"/repo\\\"\\n});\\nconst patchResult = await tools.apply_patch(`*** Begin Patch\\n*** Update File: src/example.py\\n@@\\n-old = true\\n+old = false\\n*** Move to: src/renamed.py\\n*** End Patch`);\\nconst stdinResult = await tools.write_stdin({session_id: \\\"proc-1\\\", chars: \\\"yes\\\\n\\\"});\\nconst planResult = await tools.update_plan({plan: [{step: \\\"inspect\\\", status: \\\"completed\\\"}]});\\nconst waitResult = await tools.wait({cell_id: \\\"cell-7\\\"});\\nconst webResult = await tools.web.search({query: \\\"Polylogue action pairs\\\"});\\nconst imageResult = await tools.view_image({path: \\\"artifacts/preview.png\\\"});\\nconst mcpResult = await tools.mcp.repo_memory.search({query: \\\"delegation provenance\\\"});\\nconst unknownResult = await tools.future_tool({opaque: true});\\nconst malformedResult = await tools.exec_command(dynamicArgs;\\n\"}"}}
++{"type":"response_item","payload":{"type":"function_call_output","id":"fco-multiple","call_id":"exec-multiple","output":[{"type":"input_text","text":"Script completed\nWall time 0.3 seconds\nOutput:\n"},{"type":"input_text","text":"{\"exit_code\":2,\"output\":\"command failed\"}"},{"type":"input_text","text":"{\"path\":\"src/renamed.py\",\"bytes_written\":42}"},{"type":"input_text","text":"{\"bytes\":4}"},{"type":"input_text","text":"{}"},{"type":"input_text","text":"{\"status\":\"completed\"}"},{"type":"input_text","text":"{\"url\":\"https://example.test/polylogue\"}"},{"type":"input_text","text":"{\"file_path\":\"artifacts/preview.png\",\"size_bytes\":100}"},{"type":"input_text","text":"{\"result\":{\"path\":\"docs/delegation.md\",\"exit_code\":0}}"},{"type":"input_text","text":"{\"status\":\"opaque\",\"message\":\"exit_code=7 is prose only\"}"},{"type":"input_text","text":"{\"status\":\"malformed\",\"message\":\"exit_code=9 is prose only\"}"}]}}
+diff --git a/tests/data/codex_event_stream/functions_exec_single.jsonl b/tests/data/codex_event_stream/functions_exec_single.jsonl
+new file mode 100644
+index 000000000..07cd64ce9
+--- /dev/null
++++ b/tests/data/codex_event_stream/functions_exec_single.jsonl
+@@ -0,0 +1,3 @@
++{"type":"session_meta","payload":{"id":"codex-functions-exec-single","timestamp":"2026-07-15T10:00:00Z","cwd":"/repo"}}
++{"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc-single","call_id":"exec-single","name":"exec","input":"const result = await tools.exec_command({\n  cmd: \"git status --short\",\n  workdir: \"/repo\"\n});\ntext(JSON.stringify(result));"}}
++{"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco-single","call_id":"exec-single","output":[{"type":"input_text","text":"Script completed\nWall time 0.1 seconds\nOutput:\n"},{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"clean\",\"bytes_written\":5}"}]}}
+diff --git a/tests/unit/cli/test_query_expression.py b/tests/unit/cli/test_query_expression.py
+index f311d30cc..3a0a6e516 100644
+--- a/tests/unit/cli/test_query_expression.py
++++ b/tests/unit/cli/test_query_expression.py
+@@ -2997,9 +2997,10 @@ class TestBooleanQueryExpression:
+         with ArchiveStore.open_existing(archive_root) as archive:
+             rows = archive.query_actions(source.predicate, limit=100)
+ 
+-        assert [(row.session_id, row.semantic_type, row.tool_command) for row in rows] == [
+-            (session_id, "shell", script)
+-        ]
++        assert {(row.session_id, row.tool_name, row.semantic_type, row.tool_command) for row in rows} == {
++            (session_id, "exec", "shell", script),
++            (session_id, "exec_command", "shell", "polylogue find repo:polylogue"),
++        }
+ 
+     def test_legacy_codex_execution_payloads_are_queryable_without_rewrite(
+         self,
+diff --git a/tests/unit/devtools/test_codex_exec_child_census.py b/tests/unit/devtools/test_codex_exec_child_census.py
+new file mode 100644
+index 000000000..849e8c877
+--- /dev/null
++++ b/tests/unit/devtools/test_codex_exec_child_census.py
+@@ -0,0 +1,69 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from devtools.codex_exec_child_census import build_report
++
++CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "codex_event_stream"
++
++
++def test_census_reports_outer_only_counterfactual_and_lowered_coverage() -> None:
++    """Exercise the production parser through the census entrypoint.
++
++    Removing child lowering must drive typed/path/outcome counts to zero and
++    make this test fail, while the explicit outer-only baseline remains zero.
++    """
++    report = build_report(
++        [
++            CATALOG_DIR / "functions_exec_single.jsonl",
++            CATALOG_DIR / "functions_exec_multiple.jsonl",
++        ]
++    )
++
++    assert report["parse_errors"] == []
++    assert report["files_discovered"] == 2
++    assert report["sessions_parsed"] == 2
++    assert report["outer_transport_only_baseline"] == {
++        "method": "counterfactual projection retaining only transport blocks (the pre-polylogue-j2zz behavior)",
++        "transport_actions": 2,
++        "typed_child_actions": 0,
++        "child_actions_with_path": 0,
++        "child_results_with_structured_outcome": 0,
++    }
++    assert report["lowered"] == {
++        "transport_actions": 2,
++        "transport_results": 2,
++        "transport_result_texts_with_exit_code_token": 2,
++        "typed_child_actions": 11,
++        "child_results": 11,
++        "paired_child_results": 11,
++        "unpaired_child_actions": 0,
++        "orphan_child_results": 0,
++        "child_actions_with_command": 3,
++        "child_actions_with_path": 3,
++        "child_actions_with_byte_count": 4,
++        "child_results_with_structured_outcome": 3,
++        "child_results_with_exit_code": 3,
++        "child_results_with_path": 3,
++        "child_results_with_byte_count": 4,
++        "child_results_with_unknown_outcome": 8,
++        "child_result_texts_with_exit_code_token": 5,
++        "children_by_registry_type": {
++            "apply_patch": 1,
++            "exec_command": 3,
++            "image": 1,
++            "mcp": 1,
++            "unknown": 1,
++            "update_plan": 1,
++            "wait": 1,
++            "web": 1,
++            "write_stdin": 1,
++        },
++        "children_by_parse_state": {"malformed": 1, "parsed": 10},
++    }
++    assert report["coverage"] == {
++        "typed_children_per_transport": 5.5,
++        "paired_result_coverage": 1.0,
++        "structured_outcome_coverage": 0.272727,
++        "path_coverage": 0.272727,
++    }
+diff --git a/tests/unit/sources/test_codex_event_stream_contract.py b/tests/unit/sources/test_codex_event_stream_contract.py
+index 3fffde051..b19f1c4d6 100644
+--- a/tests/unit/sources/test_codex_event_stream_contract.py
++++ b/tests/unit/sources/test_codex_event_stream_contract.py
+@@ -29,7 +29,7 @@ import pytest
+ from polylogue.archive.message.roles import Role
+ from polylogue.archive.session.branch_type import BranchType
+ from polylogue.core.enums import BlockType, MaterialOrigin
+-from polylogue.sources.parsers.base import ParsedSession
++from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
+ from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
+ from polylogue.sources.parsers.codex import parse as _parse_impl
+ from polylogue.sources.parsers.codex import parse_stream
+@@ -435,3 +435,487 @@ class TestCrossMessageReferences:
+         assert len(compactions) == 1
+         assert compactions[0].payload["replacement_history_count"] == 1
+         assert compactions[0].payload["summary"] == "Conversation compacted"
++
++
++# ---------------------------------------------------------------------------
++# Modern Code Mode functions.exec lowering
++# ---------------------------------------------------------------------------
++
++
++class TestFunctionsExecLowering:
++    """Pin transport-preserving lowering of nested Code Mode operations.
++
++    These tests exercise the production Codex parser. Removing the envelope
++    pre-scan or child-block emission must collapse the asserted child actions
++    back to the historical outer-only shape and fail this class.
++    """
++
++    @staticmethod
++    def _blocks(session: ParsedSession, block_type: BlockType) -> list[ParsedContentBlock]:
++        return [block for message in session.messages for block in message.blocks if block.type == block_type]
++
++    def test_single_child_retains_transport_and_promotes_exact_structural_result(self) -> None:
++        session = _parse(_load_catalog("functions_exec_single.jsonl"), "functions-exec-single")
++        tool_uses = self._blocks(session, BlockType.TOOL_USE)
++        tool_results = self._blocks(session, BlockType.TOOL_RESULT)
++
++        assert [block.tool_name for block in tool_uses] == ["exec", "exec_command"]
++        assert [block.tool_id for block in tool_uses] == [
++            "exec-single",
++            "exec-single::polylogue-child::0",
++        ]
++        child = tool_uses[1]
++        assert child.tool_input is not None
++        assert child.tool_input["command"] == "git status --short"
++        assert child.tool_input["workdir"] == "/repo"
++        assert child.tool_input["byte_count"] == 5
++        provenance = child.tool_input["_polylogue"]
++        assert provenance == {
++            "kind": "codex.functions_exec_child",
++            "registry_type": "exec_command",
++            "parse_state": "parsed",
++            "raw_tool_path": "tools.exec_command",
++            "transport_child_index": 0,
++            "transport": {
++                "provider_message_id": "ctc-single",
++                "tool_id": "exec-single",
++                "tool_name": "exec",
++                "block_position": 0,
++            },
++            "source_span": [21, 92],
++            "structural_result_fields": {"byte_count": 5},
++        }
++
++        # The outer content-item envelope remains evidence. Only the exact JSON
++        # child item gets a structured outcome; the script-status prose does not.
++        assert len(tool_results) == 2
++        assert tool_results[0].tool_id == "exec-single"
++        assert tool_results[0].is_error is None
++        assert tool_results[0].exit_code is None
++        assert tool_results[1].tool_id == "exec-single::polylogue-child::0"
++        assert tool_results[1].is_error is False
++        assert tool_results[1].exit_code == 0
++        assert tool_results[1].metadata == {
++            "codex_functions_exec_child_index": 0,
++            "codex_functions_exec_registry_type": "exec_command",
++            "byte_count": 5,
++        }
++
++    def test_multiple_children_preserve_order_registry_paths_and_unknown_states(self) -> None:
++        session = _parse(_load_catalog("functions_exec_multiple.jsonl"), "functions-exec-multiple")
++        tool_uses = self._blocks(session, BlockType.TOOL_USE)
++        tool_results = self._blocks(session, BlockType.TOOL_RESULT)
++        children = tool_uses[1:]
++
++        assert tool_uses[0].tool_name == "functions.exec"
++        assert [block.tool_name for block in children] == [
++            "exec_command",
++            "apply_patch",
++            "write_stdin",
++            "update_plan",
++            "wait",
++            "web",
++            "image",
++            "mcp.repo_memory.search",
++            "future_tool",
++            "exec_command",
++        ]
++        provenances = [block.tool_input["_polylogue"] for block in children if block.tool_input is not None]
++        assert [value["registry_type"] for value in provenances] == [
++            "exec_command",
++            "apply_patch",
++            "write_stdin",
++            "update_plan",
++            "wait",
++            "web",
++            "image",
++            "mcp",
++            "unknown",
++            "exec_command",
++        ]
++        assert [value["transport_child_index"] for value in provenances] == list(range(10))
++        assert [value["parse_state"] for value in provenances] == ["parsed"] * 9 + ["malformed"]
++
++        command_input = children[0].tool_input
++        patch_input = children[1].tool_input
++        unknown_input = children[8].tool_input
++        malformed_input = children[-1].tool_input
++        assert command_input is not None and command_input["command"] == "git status --short"
++        assert patch_input is not None
++        assert patch_input["paths"] == ["src/example.py", "src/renamed.py"]
++        assert patch_input["path"] == "src/example.py"
++        assert patch_input["command"].startswith("*** Begin Patch")
++        assert patch_input["_polylogue"]["structural_result_fields"] == {
++            "paths": ["src/renamed.py"],
++            "byte_count": 42,
++        }
++        assert unknown_input is not None
++        assert unknown_input["raw_arguments"] == "{opaque: true}"
++        assert unknown_input["_polylogue"]["registry_type"] == "unknown"
++        assert malformed_input is not None
++        assert malformed_input["raw_arguments"] == "dynamicArgs;"
++        assert "command" not in malformed_input
++        assert malformed_input["_polylogue"]["parse_state"] == "malformed"
++
++        child_results = tool_results[1:]
++        assert [block.tool_id for block in child_results] == [
++            f"exec-multiple::polylogue-child::{index}" for index in range(10)
++        ]
++        assert [(block.is_error, block.exit_code) for block in child_results] == [
++            (True, 2),
++            (None, None),
++            (None, None),
++            (None, None),
++            (None, None),
++            (None, None),
++            (None, None),
++            (False, 0),
++            (None, None),
++            (None, None),
++        ]
++        assert child_results[1].metadata["paths"] == ["src/renamed.py"]
++        assert child_results[1].metadata["byte_count"] == 42
++        assert child_results[6].metadata["paths"] == ["artifacts/preview.png"]
++        assert child_results[6].metadata["byte_count"] == 100
++        assert "exit_code=7" in (child_results[8].text or "")
++        assert "exit_code=9" in (child_results[9].text or "")
++
++    def test_repeated_transport_ids_pair_children_by_occurrence_rank(self) -> None:
++        records: list[object] = []
++        for occurrence, exit_code in enumerate((7, 0), start=1):
++            records.extend(
++                [
++                    {
++                        "type": "response_item",
++                        "payload": {
++                            "type": "custom_tool_call",
++                            "id": f"call-{occurrence}",
++                            "call_id": "repeated-exec",
++                            "name": "exec",
++                            "input": f'tools.exec_command({{cmd: "echo {occurrence}"}});',
++                        },
++                    },
++                    {
++                        "type": "response_item",
++                        "payload": {
++                            "type": "custom_tool_call_output",
++                            "id": f"result-{occurrence}",
++                            "call_id": "repeated-exec",
++                            "output": [
++                                {"type": "input_text", "text": "Script completed\nOutput:\n"},
++                                {
++                                    "type": "input_text",
++                                    "text": json.dumps({"exit_code": exit_code, "output": f"result-{occurrence}"}),
++                                },
++                            ],
++                        },
++                    },
++                ]
++            )
++
++        session = _parse(records, "repeated-exec")
++        child_uses = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_USE)
++            if block.tool_id == "repeated-exec::polylogue-child::0"
++        ]
++        child_results = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_RESULT)
++            if block.tool_id == "repeated-exec::polylogue-child::0"
++        ]
++        assert [block.tool_input["command"] for block in child_uses if block.tool_input is not None] == [
++            "echo 1",
++            "echo 2",
++        ]
++        assert [(block.text, block.exit_code) for block in child_results] == [
++            ('{"exit_code": 7, "output": "result-1"}', 7),
++            ('{"exit_code": 0, "output": "result-2"}', 0),
++        ]
++
++        # Exercise the production action-pair SQL rather than reproducing its
++        # join in the test. The repeated deterministic child id must pair Nth
++        # use to Nth result, never fan out into a cross product.
++        import sqlite3
++
++        from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
++
++        conn = sqlite3.connect(":memory:")
++        conn.row_factory = sqlite3.Row
++        conn.executescript(
++            """
++            CREATE TABLE messages (
++                message_id TEXT PRIMARY KEY,
++                position INTEGER NOT NULL,
++                variant_index INTEGER NOT NULL
++            );
++            CREATE TABLE blocks (
++                block_id TEXT PRIMARY KEY,
++                session_id TEXT NOT NULL,
++                message_id TEXT NOT NULL,
++                position INTEGER NOT NULL,
++                block_type TEXT NOT NULL,
++                tool_name TEXT,
++                semantic_type TEXT,
++                tool_command TEXT,
++                tool_path TEXT,
++                tool_input TEXT,
++                tool_id TEXT,
++                text TEXT,
++                tool_result_is_error INTEGER,
++                tool_result_exit_code INTEGER
++            );
++            CREATE TABLE action_pairs (
++                tool_use_block_id TEXT PRIMARY KEY,
++                session_id TEXT NOT NULL,
++                message_id TEXT NOT NULL,
++                tool_id TEXT,
++                use_rank INTEGER,
++                tool_name TEXT,
++                semantic_type TEXT,
++                tool_command TEXT,
++                tool_path TEXT,
++                tool_input TEXT,
++                tool_result_block_id TEXT,
++                output_text TEXT,
++                is_error INTEGER,
++                exit_code INTEGER
++            );
++            """
++        )
++        for message in session.messages:
++            message_id = message.provider_message_id
++            conn.execute(
++                "INSERT INTO messages(message_id, position, variant_index) VALUES (?, ?, ?)",
++                (message_id, message.position, message.variant_index or 0),
++            )
++            for block_position, block in enumerate(message.blocks):
++                tool_input = dict(block.tool_input or {})
++                conn.execute(
++                    """
++                    INSERT INTO blocks(
++                        block_id, session_id, message_id, position, block_type,
++                        tool_name, tool_command, tool_path, tool_input, tool_id,
++                        text, tool_result_is_error, tool_result_exit_code
++                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                    """,
++                    (
++                        f"{message_id}:{block_position}",
++                        "session",
++                        message_id,
++                        block_position,
++                        block.type.value,
++                        block.tool_name,
++                        tool_input.get("command"),
++                        tool_input.get("path") or tool_input.get("file_path"),
++                        json.dumps(tool_input, sort_keys=True) if block.tool_input is not None else None,
++                        block.tool_id,
++                        block.text,
++                        block.is_error,
++                        block.exit_code,
++                    ),
++                )
++        refresh_action_pairs(conn, "session")
++        rows = conn.execute(
++            """
++            SELECT use_rank, tool_command, output_text, is_error, exit_code
++            FROM action_pairs
++            WHERE tool_id = 'repeated-exec::polylogue-child::0'
++            ORDER BY use_rank
++            """
++        ).fetchall()
++        assert [dict(row) for row in rows] == [
++            {
++                "use_rank": 1,
++                "tool_command": "echo 1",
++                "output_text": '{"exit_code": 7, "output": "result-1"}',
++                "is_error": 1,
++                "exit_code": 7,
++            },
++            {
++                "use_rank": 2,
++                "tool_command": "echo 2",
++                "output_text": '{"exit_code": 0, "output": "result-2"}',
++                "is_error": 0,
++                "exit_code": 0,
++            },
++        ]
++
++    def test_structured_content_item_result_collection_expands_in_child_order(self) -> None:
++        records = [
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call",
++                    "id": "collection-call",
++                    "call_id": "collection-exec",
++                    "name": "exec",
++                    "input": 'tools.exec_command({cmd: "one"}); tools.exec_command({cmd: "two"});',
++                },
++            },
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call_output",
++                    "id": "collection-output",
++                    "call_id": "collection-exec",
++                    "output": [
++                        {"type": "input_text", "text": "Script completed\nOutput:\n"},
++                        {
++                            "type": "input_text",
++                            "text": json.dumps(
++                                {
++                                    "results": [
++                                        {"exit_code": 4, "output": "one"},
++                                        {"exit_code": 0, "output": "two"},
++                                    ]
++                                }
++                            ),
++                        },
++                    ],
++                },
++            },
++        ]
++
++        session = _parse(records, "collection-exec")
++        child_results = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_RESULT)
++            if block.tool_id and "::polylogue-child::" in block.tool_id
++        ]
++
++        assert [(block.text, block.exit_code) for block in child_results] == [
++            ('{"exit_code": 4, "output": "one"}', 4),
++            ('{"exit_code": 0, "output": "two"}', 0),
++        ]
++
++    def test_missing_structural_child_result_keeps_use_unpaired(self) -> None:
++        records = [
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call",
++                    "id": "unpaired-call",
++                    "call_id": "unpaired-exec",
++                    "name": "exec",
++                    "input": 'tools.exec_command({cmd: "still-running"});',
++                },
++            },
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call_output",
++                    "id": "unpaired-output",
++                    "call_id": "unpaired-exec",
++                    "output": [{"type": "input_text", "text": "Script completed\nOutput:\n"}],
++                },
++            },
++        ]
++
++        session = _parse(records, "unpaired-exec")
++        child_uses = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_USE)
++            if block.tool_id and "::polylogue-child::" in block.tool_id
++        ]
++        child_results = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_RESULT)
++            if block.tool_id and "::polylogue-child::" in block.tool_id
++        ]
++
++        assert len(child_uses) == 1
++        assert child_uses[0].tool_input is not None
++        assert child_uses[0].tool_input["command"] == "still-running"
++        assert child_results == []
++
++    def test_single_status_mapping_pairs_with_unknown_outcome(self) -> None:
++        records = [
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call",
++                    "id": "status-call",
++                    "call_id": "status-exec",
++                    "name": "exec",
++                    "input": 'tools.wait({cell_id: "cell-9"});',
++                },
++            },
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call_output",
++                    "id": "status-output",
++                    "call_id": "status-exec",
++                    "output": {"status": "completed"},
++                },
++            },
++        ]
++
++        session = _parse(records, "status-exec")
++        child_results = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_RESULT)
++            if block.tool_id and "::polylogue-child::" in block.tool_id
++        ]
++
++        assert len(child_results) == 1
++        assert child_results[0].text == '{"status": "completed"}'
++        assert child_results[0].is_error is None
++        assert child_results[0].exit_code is None
++
++    def test_result_before_use_pairs_by_envelope_occurrence_without_recovery_guess(self) -> None:
++        records = [
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call_output",
++                    "id": "early-output",
++                    "call_id": "early-exec",
++                    "output": {"exit_code": 3, "output": "early"},
++                },
++            },
++            {
++                "type": "response_item",
++                "payload": {
++                    "type": "custom_tool_call",
++                    "id": "late-call",
++                    "call_id": "early-exec",
++                    "name": "exec",
++                    "input": 'tools.exec_command({cmd: "late"});',
++                },
++            },
++        ]
++
++        session = _parse(records, "early-exec")
++        child_uses = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_USE)
++            if block.tool_id and "::polylogue-child::" in block.tool_id
++        ]
++        child_results = [
++            block
++            for block in self._blocks(session, BlockType.TOOL_RESULT)
++            if block.tool_id and "::polylogue-child::" in block.tool_id
++        ]
++
++        assert len(child_uses) == 1
++        assert child_uses[0].tool_input is not None
++        assert child_uses[0].tool_input["command"] == "late"
++        assert [(block.text, block.exit_code) for block in child_results] == [
++            ('{"exit_code": 3, "output": "early"}', 3)
++        ]
++
++    def test_lowered_blocks_change_semantic_content_hash(self) -> None:
++        from polylogue.pipeline.ids import session_content_hash
++
++        lowered = _parse(_load_catalog("functions_exec_single.jsonl"), "functions-exec-hash")
++        outer_only = lowered.model_copy(
++            update={
++                "messages": [
++                    message.model_copy(update={"blocks": message.blocks[:1]}) for message in lowered.messages
++                ]
++            }
++        )
++
++        assert session_content_hash(lowered) != session_content_hash(outer_only)
+diff --git a/tests/unit/sources/test_tool_aliases.py b/tests/unit/sources/test_tool_aliases.py
+index 51e53bf6b..e27650056 100644
+--- a/tests/unit/sources/test_tool_aliases.py
++++ b/tests/unit/sources/test_tool_aliases.py
+@@ -20,3 +20,8 @@ def test_codex_agent_aliases_share_canonical_names() -> None:
+     assert classify_tool("update_plan", {}) is ToolCategory.AGENT
+     assert canonical_tool_name("spawn_agent") == "task"
+     assert canonical_tool_name("update_plan") == "todo"
++
++
++def test_codex_code_mode_child_aliases_have_queryable_categories() -> None:
++    assert classify_tool("apply_patch", {"path": "src/example.py"}) is ToolCategory.FILE_EDIT
++    assert classify_tool("wait", {"cell_id": "cell-7"}) is ToolCategory.AGENT

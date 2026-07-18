@@ -1,0 +1,2054 @@
+diff --git a/docs/internals.md b/docs/internals.md
+index baab32c885672d0d4345a26cbe4f2ede1b575801..32164e19ac11f2a4704d06eb8f70915fdf3874fb 100644
+--- a/docs/internals.md
++++ b/docs/internals.md
+@@ -173,6 +173,18 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
+   hash, so concurrent publishers of identical bytes remain independent.
+   Existing v3 tiers migrate additively through
+   `004_blob_publication_reservations.sql` after a verified backup manifest.
++- Index schema version 39 adds one compact `lineage_prefix_witnesses` row
++  per normalized prefix-sharing edge and admits the typed
++  `dangling_branch_point` relation state. The witness stores only prefix length
++  and an ordered SHA-256 digest of semantic message signatures; it deliberately
++  contains no parent transcript content and no message foreign key. Existing
++  v38 indexes cannot reconstruct the removed inherited child prefix exactly, so
++  they require authoritative semantic replay through
++  `polylogue ops reset --index && polylogued run`.
++- Index schema version 38 materializes bounded `action_pairs` and
++  `delegation_facts` projections (polylogue-z9gh / PR #3018) behind compatibility
++  views. Those rows encode writer/parser semantics rather than a DDL-only
++  transform, so an older index requires authoritative semantic replay.
+ - Index schema version 37 drops the three run-projection materialized cache
+   tables — `session_runs`, `session_observed_events`,
+   `session_context_snapshots` — added by v11 (polylogue-dab). Their write
+@@ -499,8 +511,10 @@ carries the original provider-native parent id. The same table also carries the
+   (continuation / sidechain / subagent / branch / fork / resume / repaired),
+   re-exported as `TopologyEdgeType` from
+   `polylogue/archive/topology/edge.py`, and `TopologyEdgeStatus`
+-  (unresolved / resolved / repaired / quarantined). `quarantined` marks a link
+-  the topology reducer dropped to break a cycle.
++  (unresolved / resolved / repaired / dangling_branch_point / quarantined).
++  `dangling_branch_point` preserves a readable, explicitly incomplete lineage
++  cut after parent replacement; `quarantined` marks a link the topology reducer
++  dropped to break a cycle.
+ - **Resolve:** every session save runs `resolve_session_links_for_session`
+   (`polylogue/storage/sqlite/queries/session_links.py`) so that an out-of-order
+   child's edge flips to `resolved` the moment its parent's native id appears in
+diff --git a/polylogue/core/enums.py b/polylogue/core/enums.py
+index 7d7a98055c06950292cc52ea6693eae2e79fd6c3..c80b20305cfcacd58fb4bf5df52b4db9a1ccfa5e 100644
+--- a/polylogue/core/enums.py
++++ b/polylogue/core/enums.py
+@@ -326,6 +326,7 @@ class TopologyEdgeStatus(PolylogueStrEnum):
+     UNRESOLVED = "unresolved"
+     RESOLVED = "resolved"
+     REPAIRED = "repaired"
++    DANGLING_BRANCH_POINT = "dangling_branch_point"
+     QUARANTINED = "quarantined"
+ 
+ 
+diff --git a/polylogue/insights/transforms.py b/polylogue/insights/transforms.py
+index 0211af69f6b721651be106d08450f705baf96e89..19905dfb8d0a2a732c921ac8388364797fa0651f 100644
+--- a/polylogue/insights/transforms.py
++++ b/polylogue/insights/transforms.py
+@@ -74,7 +74,7 @@ ContextEvidenceWindowKind = Literal[
+     "unavailable_source_material",
+ ]
+ SuccessorContextOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted", "missing_evidence"]
+-SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
++SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "dangling_branch_point", "quarantined"]
+ 
+ _GITHUB_REPO_REF = r"[\w.-]+/[\w.-]+#"
+ _ISSUE_RE = re.compile(
+@@ -1785,7 +1785,7 @@ def _enrich_subagent_reports_with_links(
+             report.model_copy(
+                 update={
+                     "child_link_status": status
+-                    if status in {"resolved", "unresolved", "repaired", "quarantined"}
++                    if status in {"resolved", "unresolved", "repaired", "dangling_branch_point", "quarantined"}
+                     else None,
+                     "child_link_type": _optional_text(link.get("link_type")),
+                     "resolved_child_session_id": _optional_text(link.get("resolved_dst_session_id")),
+diff --git a/polylogue/storage/sqlite/archive_tiers/index.py b/polylogue/storage/sqlite/archive_tiers/index.py
+index 309db0a6dc405825e9083c70ecd9fe33d10db377..a40bd67eb8ccdfa69f14e7844f57b9fadd5a94d7 100644
+--- a/polylogue/storage/sqlite/archive_tiers/index.py
++++ b/polylogue/storage/sqlite/archive_tiers/index.py
+@@ -24,7 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
+ )
+ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
+ 
+-INDEX_SCHEMA_VERSION = 38
++INDEX_SCHEMA_VERSION = 39
+ 
+ FTS_FRESHNESS_STATE_DDL = """
+ CREATE TABLE IF NOT EXISTS fts_freshness_state (
+@@ -555,7 +555,7 @@ CREATE TABLE IF NOT EXISTS session_links (
+     -- composition (the cascade fires before the re-INSERT) — see #2467 audit.
+     branch_point_message_id TEXT,
+     inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
+-    status                  TEXT CHECK(status IN ('repaired', 'quarantined') OR status IS NULL),
++    status                  TEXT CHECK(status IN ('repaired', 'dangling_branch_point', 'quarantined') OR status IS NULL),
+     method                  TEXT,
+     confidence              REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0 AND 1),
+     evidence_json           TEXT NOT NULL DEFAULT '[]',
+@@ -571,6 +571,23 @@ WHERE resolved_dst_session_id IS NOT NULL;
+ CREATE INDEX IF NOT EXISTS idx_session_links_dst_native
+ ON session_links(dst_origin, dst_native_id);
+ 
++-- Compact semantic proof for a normalized prefix-sharing cut.  The accepted
++-- branch-point identity remains on session_links; this row stores only the
++-- prefix length and a SHA-256 digest of its ordered semantic message signatures.
++-- No parent transcript content or message FK is copied into the child relation.
++CREATE TABLE IF NOT EXISTS lineage_prefix_witnesses (
++    src_session_id       TEXT NOT NULL,
++    dst_origin           TEXT NOT NULL,
++    dst_native_id        TEXT NOT NULL,
++    link_type            TEXT NOT NULL,
++    prefix_length        INTEGER NOT NULL CHECK(prefix_length > 0),
++    semantic_prefix_hash TEXT NOT NULL CHECK(length(semantic_prefix_hash) = 64),
++    PRIMARY KEY(src_session_id, dst_origin, dst_native_id, link_type),
++    FOREIGN KEY(src_session_id, dst_origin, dst_native_id, link_type)
++        REFERENCES session_links(src_session_id, dst_origin, dst_native_id, link_type)
++        ON DELETE CASCADE
++) STRICT;
++
+ CREATE TABLE IF NOT EXISTS threads (
+     thread_id                    TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+     dominant_repo_id             TEXT REFERENCES repos(repo_id) ON DELETE SET NULL,
+diff --git a/polylogue/storage/sqlite/archive_tiers/write.py b/polylogue/storage/sqlite/archive_tiers/write.py
+index 3ea6cdab4066b06094011f7f8b712ad85914e1d9..fd69de19d4b7f970cf3200708e18aeca221015ad 100644
+--- a/polylogue/storage/sqlite/archive_tiers/write.py
++++ b/polylogue/storage/sqlite/archive_tiers/write.py
+@@ -254,6 +254,7 @@ def write_parsed_session_to_archive(
+     lineage_inheritance: str | None = None
+     parent_session_id: str | None = None
+     inherited_source_message_ids: dict[str, str] = {}
++    lineage_prefix_witness: list[tuple[str, str]] = []
+     if not merge_append:
+         parent_session_id = _existing_parent_session_id(conn, session, origin.value)
+         if parent_session_id is not None and messages:
+@@ -262,6 +263,7 @@ def write_parsed_session_to_archive(
+                 lineage_inheritance,
+                 messages,
+                 inherited_source_message_ids,
++                lineage_prefix_witness,
+             ) = _extract_prefix_tail(conn, parent_session_id, messages, cache=signature_cache)
+     duplicate_message_native_ids = _duplicate_message_native_ids(messages)
+     active_leaf_message_id = _active_leaf_message_id(
+@@ -460,6 +462,8 @@ def write_parsed_session_to_archive(
+             session,
+             branch_point_message_id=branch_point_message_id,
+             inheritance=lineage_inheritance,
++            prefix_witness=lineage_prefix_witness,
++            preserve_existing_lineage=merge_append,
+         )
+         add_timing("index.session_link", t0)
+         t0 = time.perf_counter()
+@@ -631,6 +635,11 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
+         "DELETE FROM session_events WHERE session_id = ? AND event_type != 'capture_gap'",
+         (session_id,),
+     )
++    # Bulk index rebuilds intentionally suspend foreign-key enforcement while
++    # projection triggers are absent.  Do not rely on the witness table's
++    # ON DELETE CASCADE in that lane: a replacement that removes the parent
++    # relation must not strand an edge-owned semantic proof.
++    conn.execute("DELETE FROM lineage_prefix_witnesses WHERE src_session_id = ?", (session_id,))
+     conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (session_id,))
+ 
+ 
+@@ -1800,6 +1809,53 @@ def _write_parent_links(
+         )
+ 
+ 
++def _semantic_prefix_witness(
++    prefix: Sequence[tuple[str, str]],
++) -> tuple[int, str] | None:
++    """Return a compact proof of one exact ordered semantic prefix."""
++    if not prefix:
++        return None
++    return (
++        len(prefix),
++        _hash_bytes("lineage-prefix-v1", *(signature for _message_id, signature in prefix)).hex(),
++    )
++
++
++def _replace_lineage_prefix_witness(
++    conn: sqlite3.Connection,
++    *,
++    src_session_id: str,
++    dst_origin: str,
++    dst_native_id: str,
++    link_type: str,
++    witness: tuple[int, str] | None,
++) -> None:
++    """Atomically replace the compact semantic proof for one lineage cut."""
++    edge_key = (src_session_id, dst_origin, dst_native_id, link_type)
++    if witness is None:
++        conn.execute(
++            """
++            DELETE FROM lineage_prefix_witnesses
++            WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
++            """,
++            edge_key,
++        )
++        return
++    prefix_length, semantic_prefix_hash = witness
++    conn.execute(
++        """
++        INSERT INTO lineage_prefix_witnesses (
++            src_session_id, dst_origin, dst_native_id, link_type,
++            prefix_length, semantic_prefix_hash
++        ) VALUES (?, ?, ?, ?, ?, ?)
++        ON CONFLICT(src_session_id, dst_origin, dst_native_id, link_type) DO UPDATE SET
++            prefix_length = excluded.prefix_length,
++            semantic_prefix_hash = excluded.semantic_prefix_hash
++        """,
++        (*edge_key, prefix_length, semantic_prefix_hash),
++    )
++
++
+ def _write_session_link(
+     conn: sqlite3.Connection,
+     session_id: str,
+@@ -1807,10 +1863,25 @@ def _write_session_link(
+     *,
+     branch_point_message_id: str | None = None,
+     inheritance: str | None = None,
++    prefix_witness: Sequence[tuple[str, str]] = (),
++    preserve_existing_lineage: bool = False,
+ ) -> None:
+     if not session.parent_session_provider_id:
+         return
+     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
++    dst_origin = origin_from_provider(session.source_name).value
++    dst_native_id = _sqlite_text(session.parent_session_provider_id)
++    if preserve_existing_lineage:
++        existing = conn.execute(
++            """
++            SELECT 1 FROM session_links
++            WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
++            LIMIT 1
++            """,
++            (session_id, dst_origin, dst_native_id, link_type),
++        ).fetchone()
++        if existing is not None:
++            return
+     conn.execute(
+         """
+         INSERT OR REPLACE INTO session_links (
+@@ -1821,8 +1892,8 @@ def _write_session_link(
+         """,
+         (
+             session_id,
+-            origin_from_provider(session.source_name).value,
+-            _sqlite_text(session.parent_session_provider_id),
++            dst_origin,
++            dst_native_id,
+             link_type,
+             branch_point_message_id,
+             inheritance,
+@@ -1832,6 +1903,14 @@ def _write_session_link(
+             _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0,
+         ),
+     )
++    _replace_lineage_prefix_witness(
++        conn,
++        src_session_id=session_id,
++        dst_origin=dst_origin,
++        dst_native_id=dst_native_id,
++        link_type=link_type,
++        witness=_semantic_prefix_witness(prefix_witness) if inheritance == "prefix-sharing" else None,
++    )
+ 
+ 
+ def _branch_type_from_link_type(link_type: object) -> str | None:
+@@ -1918,8 +1997,15 @@ def _resolve_session_graph(
+ 
+     impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
+     t0 = time.perf_counter()
+-    _repair_stale_prefix_branch_points_db(conn, impacted_session_ids, cache=cache, composed_cache=composed_cache)
+-    record_substage("repair_stale_branch_points", t0)
++    impacted_session_ids.update(
++        _reconcile_prefix_sharing_subtree(
++            conn,
++            (session_id,),
++            cache=cache,
++            composed_cache=composed_cache,
++        )
++    )
++    record_substage("reconcile_prefix_subtree", t0)
+     t0 = time.perf_counter()
+     old_root_ids = _root_ids(conn, impacted_session_ids)
+     projection_seen: set[str] = set()
+@@ -1931,6 +2017,10 @@ def _resolve_session_graph(
+     for root_session_id in root_ids_to_refresh:
+         _refresh_thread(conn, root_session_id)
+     record_substage("thread_refresh", t0)
++    t0 = time.perf_counter()
++    for impacted_session_id in sorted(impacted_session_ids - {session_id}):
++        refresh_delegation_facts_for_session(conn, impacted_session_id)
++    record_substage("delegation_refresh", t0)
+ 
+ 
+ def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
+@@ -3430,6 +3520,7 @@ def _reextract_prefix_tail_db(
+         WHERE src_session_id = ?
+           AND resolved_dst_session_id = ?
+           AND inheritance IS NULL
++          AND status IS NULL
+         LIMIT 1
+         """,
+         (child_session_id, parent_session_id),
+@@ -3465,8 +3556,9 @@ def _reextract_prefix_tail_db(
+         conn.execute(
+             """
+             UPDATE session_links
+-            SET branch_point_message_id = ?, inheritance = ?
++            SET branch_point_message_id = ?, inheritance = ?, status = NULL
+             WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
++              AND status IS NOT 'quarantined'
+             """,
+             (branch_point_message_id, inheritance, child_session_id, dst_origin, dst_native_id, link_type),
+         )
+@@ -3474,6 +3566,14 @@ def _reextract_prefix_tail_db(
+     if k == 0:
+         t0 = time.perf_counter()
+         _set_edge(None, "spawned-fresh")
++        _replace_lineage_prefix_witness(
++            conn,
++            src_session_id=child_session_id,
++            dst_origin=str(dst_origin),
++            dst_native_id=str(dst_native_id),
++            link_type=str(link_type),
++            witness=None,
++        )
+         record_substage("edge_update", t0)
+         return
+     prefix_message_ids = [child_composed[i][0] for i in range(k)]
+@@ -3515,9 +3615,18 @@ def _reextract_prefix_tail_db(
+     if composed_cache is not None:
+         composed_cache.pop(child_session_id, None)
+     _set_edge(parent_composed[k - 1][0], "prefix-sharing")
++    _replace_lineage_prefix_witness(
++        conn,
++        src_session_id=child_session_id,
++        dst_origin=str(dst_origin),
++        dst_native_id=str(dst_native_id),
++        link_type=str(link_type),
++        witness=_semantic_prefix_witness(parent_composed[:k]),
++    )
+     record_substage("edge_update", t0)
+     t0 = time.perf_counter()
+     _refresh_session_counts(conn, child_session_id)
++    refresh_action_pairs(conn, child_session_id)
+     record_substage("count_refresh", t0)
+ 
+ 
+@@ -3569,6 +3678,219 @@ def _replacement_for_stale_prefix_branch_point(
+     return predecessor[1]
+ 
+ 
++def _lineage_prefix_witness(
++    conn: sqlite3.Connection,
++    *,
++    src_session_id: str,
++    dst_origin: str,
++    dst_native_id: str,
++    link_type: str,
++) -> tuple[int, str] | None:
++    row = conn.execute(
++        """
++        SELECT prefix_length, semantic_prefix_hash
++        FROM lineage_prefix_witnesses
++        WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
++        """,
++        (src_session_id, dst_origin, dst_native_id, link_type),
++    ).fetchone()
++    if row is None:
++        return None
++    return (int(row[0]), str(row[1]))
++
++
++def _prefix_through_message(
++    parent_composed: Sequence[tuple[str, str]],
++    branch_point_message_id: str,
++) -> list[tuple[str, str]] | None:
++    prefix: list[tuple[str, str]] = []
++    for message_id, signature in parent_composed:
++        prefix.append((message_id, signature))
++        if message_id == branch_point_message_id:
++            return prefix
++    return None
++
++
++def _semantic_witness_matches_prefix(
++    witness: tuple[int, str] | None,
++    parent_composed: Sequence[tuple[str, str]],
++) -> bool:
++    if witness is None:
++        return False
++    prefix_length, semantic_prefix_hash = witness
++    if prefix_length > len(parent_composed):
++        return False
++    return _semantic_prefix_witness(parent_composed[:prefix_length]) == (prefix_length, semantic_prefix_hash)
++
++
++def _reconcile_prefix_sharing_edge_db(
++    conn: sqlite3.Connection,
++    *,
++    src_session_id: str,
++    parent_session_id: str,
++    dst_origin: str,
++    dst_native_id: str,
++    link_type: str,
++    branch_point_message_id: str,
++    status: str | None,
++    cache: dict[str, list[tuple[str, str]]] | None = None,
++    composed_cache: dict[str, list[tuple[str, str]]] | None = None,
++) -> tuple[bool, bool]:
++    """Converge one prefix cut against its parent's accepted composition.
++
++    Exact message identity remains authoritative.  When identity churned, the
++    complete persisted semantic-prefix witness must match the new parent prefix
++    position-for-position before rebinding.  Anything less is an explicit
++    dangling state; no nearest-row or shorter-prefix content is fabricated.
++    Returns ``(changed, branch_point_rebound)``.
++    """
++    if status == "quarantined":
++        return (False, False)
++
++    local_composed_cache = composed_cache if composed_cache is not None else {}
++    parent_composed = _composed_db_signatures(
++        conn,
++        parent_session_id,
++        cache=cache,
++        composed_cache=local_composed_cache,
++    )
++    witness = _lineage_prefix_witness(
++        conn,
++        src_session_id=src_session_id,
++        dst_origin=dst_origin,
++        dst_native_id=dst_native_id,
++        link_type=link_type,
++    )
++
++    target_branch_point = branch_point_message_id
++    target_status: str | None = "dangling_branch_point"
++    target_witness = witness
++
++    surviving_prefix = _prefix_through_message(parent_composed, branch_point_message_id)
++    if surviving_prefix is not None:
++        # Stable identity is the strongest authority. Refresh the digest too:
++        # later identity churn must map the newest accepted parent semantics,
++        # not content observed before a same-id replacement.
++        target_status = None
++        target_witness = _semantic_prefix_witness(surviving_prefix)
++    elif _semantic_witness_matches_prefix(witness, parent_composed):
++        assert witness is not None
++        prefix_length = witness[0]
++        target_witness = _semantic_prefix_witness(parent_composed[:prefix_length])
++        target_branch_point = parent_composed[prefix_length - 1][0]
++        target_status = None
++    elif witness is None:
++        # Rebuild-only v39 guarantees witnesses for newly parsed rows. Keep the
++        # pre-v39 deterministic mapper solely as a compatibility repair for
++        # manually imported/witnessless rows; it is never preferred over proof.
++        suffix = _suffix_after_session_id(branch_point_message_id, parent_session_id)
++        replacement = (
++            _replacement_for_stale_prefix_branch_point(parent_composed, suffix) if suffix is not None else None
++        )
++        if replacement is not None:
++            replacement_prefix = _prefix_through_message(parent_composed, replacement)
++            if replacement_prefix is not None:
++                target_branch_point = replacement
++                target_status = None
++                target_witness = _semantic_prefix_witness(replacement_prefix)
++
++    branch_point_rebound = target_branch_point != branch_point_message_id
++    edge_changed = branch_point_rebound or target_status != status
++    if edge_changed:
++        conn.execute(
++            """
++            UPDATE session_links
++            SET branch_point_message_id = ?, status = ?
++            WHERE src_session_id = ?
++              AND dst_origin = ?
++              AND dst_native_id = ?
++              AND link_type = ?
++              AND inheritance = 'prefix-sharing'
++              AND status IS NOT 'quarantined'
++            """,
++            (
++                target_branch_point,
++                target_status,
++                src_session_id,
++                dst_origin,
++                dst_native_id,
++                link_type,
++            ),
++        )
++
++    witness_changed = target_witness != witness
++    if witness_changed:
++        _replace_lineage_prefix_witness(
++            conn,
++            src_session_id=src_session_id,
++            dst_origin=dst_origin,
++            dst_native_id=dst_native_id,
++            link_type=link_type,
++            witness=target_witness,
++        )
++    if composed_cache is not None:
++        composed_cache.pop(src_session_id, None)
++    return (edge_changed or witness_changed, branch_point_rebound)
++
++
++def _reconcile_prefix_sharing_subtree(
++    conn: sqlite3.Connection,
++    parent_session_ids: Iterable[str],
++    *,
++    cache: dict[str, list[tuple[str, str]]] | None = None,
++    composed_cache: dict[str, list[tuple[str, str]]] | None = None,
++) -> set[str]:
++    """Reconcile every reachable prefix-sharing descendant, parent first.
++
++    Parent normalization or replacement can alter the composed identities seen
++    by grandchildren without touching their immediate parent's own rows.  This
++    indexed breadth-first walk closes that transitive gap while a visited set
++    bounds quarantined or malformed cycles.
++    """
++    local_composed_cache = composed_cache if composed_cache is not None else {}
++    queue = list(dict.fromkeys(str(session_id) for session_id in parent_session_ids))
++    visited: set[str] = set()
++    impacted: set[str] = set(queue)
++    cursor = 0
++    while cursor < len(queue):
++        parent_session_id = queue[cursor]
++        cursor += 1
++        if parent_session_id in visited:
++            continue
++        visited.add(parent_session_id)
++        rows = conn.execute(
++            """
++            SELECT src_session_id, dst_origin, dst_native_id, link_type,
++                   branch_point_message_id, status
++            FROM session_links
++            WHERE resolved_dst_session_id = ?
++              AND inheritance = 'prefix-sharing'
++              AND branch_point_message_id IS NOT NULL
++              AND status IS NOT 'quarantined'
++            ORDER BY src_session_id, dst_origin, dst_native_id, link_type
++            """,
++            (parent_session_id,),
++        ).fetchall()
++        for row in rows:
++            child_session_id = str(row[0])
++            _reconcile_prefix_sharing_edge_db(
++                conn,
++                src_session_id=child_session_id,
++                parent_session_id=parent_session_id,
++                dst_origin=str(row[1]),
++                dst_native_id=str(row[2]),
++                link_type=str(row[3]),
++                branch_point_message_id=str(row[4]),
++                status=str(row[5]) if row[5] is not None else None,
++                cache=cache,
++                composed_cache=local_composed_cache,
++            )
++            impacted.add(child_session_id)
++            if child_session_id not in visited:
++                queue.append(child_session_id)
++    return impacted
++
++
+ def _repair_stale_prefix_branch_points_db(
+     conn: sqlite3.Connection,
+     session_ids: set[str] | tuple[str, ...] | list[str] | None = None,
+@@ -3577,14 +3899,12 @@ def _repair_stale_prefix_branch_points_db(
+     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
+     limit: int | None = None,
+ ) -> int:
+-    """Repair stale immediate-parent branch-point IDs in prefix-sharing edges.
+-
+-    Older lineage rows can name a branch point as ``<immediate-parent>:<suffix>``
+-    even after that parent has itself been normalized to tail-only storage. The
+-    composed reader can only find physical ancestor message IDs, so these stale
+-    rows make the child bail to its own tail. If the suffix maps to exactly one
+-    message in the resolved parent's composed transcript, update the edge to the
+-    composed message id. Ambiguous or unmappable rows stay visible to validation.
++    """Repair stale cuts, preferring persisted semantic-prefix proof.
++
++    This public maintenance lane remains intentionally narrow: it scans only
++    rows whose branch-point identity is not currently materialized. Normal
++    writes use ``_reconcile_prefix_sharing_subtree`` so surviving identities
++    also refresh their semantic witness after accepted content replacement.
+     """
+     params: list[object] = []
+     scope_clause = ""
+@@ -3603,11 +3923,14 @@ def _repair_stale_prefix_branch_points_db(
+         params.append(limit)
+     rows = conn.execute(
+         f"""
+-        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id
++        SELECT l.src_session_id, l.resolved_dst_session_id,
++               l.dst_origin, l.dst_native_id, l.link_type,
++               l.branch_point_message_id, l.status
+         FROM session_links l
+         WHERE l.inheritance = 'prefix-sharing'
+           AND l.resolved_dst_session_id IS NOT NULL
+           AND l.branch_point_message_id IS NOT NULL
++          AND l.status IS NOT 'quarantined'
+           {scope_clause}
+           AND NOT EXISTS (
+               SELECT 1 FROM messages m
+@@ -3619,36 +3942,21 @@ def _repair_stale_prefix_branch_points_db(
+         tuple(params),
+     ).fetchall()
+     repaired = 0
+-    local_composed_cache: dict[str, list[tuple[str, str]]] = composed_cache if composed_cache is not None else {}
+-    for src_session_id, parent_session_id, branch_point_message_id in rows:
+-        parent_id = str(parent_session_id)
+-        stale_branch_point = str(branch_point_message_id)
+-        suffix = _suffix_after_session_id(stale_branch_point, parent_id)
+-        if suffix is None:
+-            continue
+-        parent_composed = _composed_db_signatures(
++    local_composed_cache = composed_cache if composed_cache is not None else {}
++    for row in rows:
++        _changed, rebound = _reconcile_prefix_sharing_edge_db(
+             conn,
+-            parent_id,
++            src_session_id=str(row[0]),
++            parent_session_id=str(row[1]),
++            dst_origin=str(row[2]),
++            dst_native_id=str(row[3]),
++            link_type=str(row[4]),
++            branch_point_message_id=str(row[5]),
++            status=str(row[6]) if row[6] is not None else None,
+             cache=cache,
+             composed_cache=local_composed_cache,
+         )
+-        replacement = _replacement_for_stale_prefix_branch_point(parent_composed, suffix)
+-        if replacement is None:
+-            continue
+-        if replacement == stale_branch_point:
+-            continue
+-        conn.execute(
+-            """
+-            UPDATE session_links
+-            SET branch_point_message_id = ?
+-            WHERE src_session_id = ?
+-              AND resolved_dst_session_id = ?
+-              AND branch_point_message_id = ?
+-              AND inheritance = 'prefix-sharing'
+-            """,
+-            (replacement, str(src_session_id), parent_id, stale_branch_point),
+-        )
+-        repaired += 1
++        repaired += int(rebound)
+     return repaired
+ 
+ 
+@@ -3868,23 +4176,24 @@ def _extract_prefix_tail(
+     messages: list[ParsedMessage],
+     *,
+     cache: dict[str, list[tuple[str, str]]] | None = None,
+-) -> tuple[str | None, str | None, list[ParsedMessage], dict[str, str]]:
+-    """Align ``messages`` (the child's full parsed messages, which replay the
+-    parent's prefix) against the parent's composed transcript. Returns
+-    ``(branch_point_message_id, inheritance, tail_messages, inherited_refs)``.
+-    ``inherited_refs`` maps unambiguous provider-local child message ids to the
+-    canonical parent message rows that physically own the replayed prefix.
++) -> tuple[str | None, str | None, list[ParsedMessage], dict[str, str], list[tuple[str, str]]]:
++    """Align a replaying child against the parent's composed transcript.
++
++    The final element is the exact ordered ``(parent_message_id, signature)``
++    prefix used in this transaction. The link writer reduces it to one compact
++    length-plus-SHA-256 witness, allowing later identity churn to be proven
++    without persisting copied parent transcript content or ordinal guesses.
+     """
+     parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
+     if not parent_composed:
+-        return (None, "spawned-fresh", messages, {})
++        return (None, "spawned-fresh", messages, {}, [])
+     child_sigs = [_parsed_message_signature(m) for m in messages]
+     k = 0
+     limit = min(len(parent_composed), len(child_sigs))
+     while k < limit and parent_composed[k][1] == child_sigs[k]:
+         k += 1
+     if k == 0:
+-        return (None, "spawned-fresh", messages, {})
++        return (None, "spawned-fresh", messages, {}, [])
+     branch_point_message_id = parent_composed[k - 1][0]
+     duplicate_native_ids = _duplicate_message_native_ids(messages)
+     inherited_refs: dict[str, str] = {}
+@@ -3892,7 +4201,7 @@ def _extract_prefix_tail(
+         provider_id = message.provider_message_id
+         if provider_id and provider_id not in duplicate_native_ids:
+             inherited_refs[provider_id] = parent_composed[index][0]
+-    return (branch_point_message_id, "prefix-sharing", messages[k:], inherited_refs)
++    return (branch_point_message_id, "prefix-sharing", messages[k:], inherited_refs, parent_composed[:k])
+ 
+ 
+ def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:
+diff --git a/polylogue/storage/sqlite/lifecycle.py b/polylogue/storage/sqlite/lifecycle.py
+index 545c1f417e965b5eb66b63d9e16d08bc11376ad5..ea40ebd0835c28b89c48cb01dc763a4e6a0fcd8b 100644
+--- a/polylogue/storage/sqlite/lifecycle.py
++++ b/polylogue/storage/sqlite/lifecycle.py
+@@ -208,6 +208,19 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
+             ),
+         ),
+     ),
++    IndexDeltaDeclaration(
++        version=38,
++        # v38 introduced writer-populated action/delegation projections.  A
++        # clone cannot infer their accepted parser semantics from DDL alone.
++        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
++    ),
++    IndexDeltaDeclaration(
++        version=39,
++        # Prefix witnesses describe semantic content that normalized child
++        # rows intentionally no longer store.  Existing v38 indexes cannot
++        # reconstruct that evidence exactly; replay authoritative raw input.
++        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
++    ),
+ )
+ 
+ 
+diff --git a/polylogue/storage/sqlite/queries/session_links.py b/polylogue/storage/sqlite/queries/session_links.py
+index b74b7be6e936f0be21b673e4e3e15b13ebc9bd7d..136f2131a9e0820169744c96fc19ca7c6c9a7af1 100644
+--- a/polylogue/storage/sqlite/queries/session_links.py
++++ b/polylogue/storage/sqlite/queries/session_links.py
+@@ -27,6 +27,8 @@ def _status_value(status: TopologyEdgeStatus) -> str | None:
+         return TopologyEdgeStatus.QUARANTINED.value
+     if status is TopologyEdgeStatus.REPAIRED:
+         return TopologyEdgeStatus.REPAIRED.value
++    if status is TopologyEdgeStatus.DANGLING_BRANCH_POINT:
++        return TopologyEdgeStatus.DANGLING_BRANCH_POINT.value
+     return None
+ 
+ 
+diff --git a/tests/property/test_write_path_state_machine.py b/tests/property/test_write_path_state_machine.py
+index a1237ea55ec60aa9d0c8135f9de42a4e23e69a44..a61ec4d94c501e8b3126796ee06a514b7a9177ef 100644
+--- a/tests/property/test_write_path_state_machine.py
++++ b/tests/property/test_write_path_state_machine.py
+@@ -15,7 +15,8 @@ from datetime import UTC, datetime, timedelta
+ from pathlib import Path
+ 
+ import aiosqlite
+-from hypothesis import HealthCheck, settings
++from hypothesis import HealthCheck, given, settings
++from hypothesis import strategies as st
+ from hypothesis.stateful import RuleBasedStateMachine, initialize, rule
+ 
+ from polylogue.archive.message.roles import Role
+@@ -231,6 +232,148 @@ class WritePathStateMachine(RuleBasedStateMachine):
+         assert [tuple(row) for row in rows] == [(0, 0), (0, 1)]
+         self._check_invariants()
+ 
++    @rule()
++    def replace_parent_with_equivalent_new_message_identities(self) -> None:
++        """Identity churn with equal semantics must rebind every child cut."""
++        if self._deletion_done:
++            return
++        candidates = sorted(
++            session_id
++            for session_id, model in self._models.items()
++            if model.parent_id is None
++            and model.can_be_parent
++            and session_id not in self._pending_children
++            and any(child.parent_id == session_id and child.prefix_length > 0 for child in self._models.values())
++        )
++        if not candidates:
++            return
++        parent_id = candidates[self._next_text % len(candidates)]
++        parent = self._models[parent_id]
++        children = sorted(
++            session_id
++            for session_id, child in self._models.items()
++            if child.parent_id == parent_id and child.prefix_length > 0
++        )
++        before = {
++            child_id: (
++                self._conn.execute(
++                    "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
++                    (child_id,),
++                ).fetchone()[0],
++                [
++                    tuple(row)
++                    for row in self._conn.execute(
++                        "SELECT native_id, position, variant_index FROM messages "
++                        "WHERE session_id = ? ORDER BY position, variant_index, message_id",
++                        (child_id,),
++                    ).fetchall()
++                ],
++            )
++            for child_id in children
++        }
++        updated_at = self._fresh_timestamp()
++        self._write(
++            parent.native_id,
++            list(parent.own_texts),
++            updated_at=updated_at,
++            message_id_prefix=f"semantic-replacement-{self._next_fresh_version}",
++        )
++        parent.updated_at = updated_at
++
++        for child_id in children:
++            link = self._conn.execute(
++                "SELECT branch_point_message_id, status FROM session_links WHERE src_session_id = ?",
++                (child_id,),
++            ).fetchone()
++            assert link is not None
++            assert link[0] != before[child_id][0]
++            assert link[1] is None
++            physical = [
++                tuple(row)
++                for row in self._conn.execute(
++                    "SELECT native_id, position, variant_index FROM messages "
++                    "WHERE session_id = ? ORDER BY position, variant_index, message_id",
++                    (child_id,),
++                ).fetchall()
++            ]
++            assert physical == before[child_id][1]
++            assert self._message_texts(child_id) == self._logical_texts(child_id)
++        self._check_invariants()
++
++    @rule()
++    def shorten_parent_then_semantically_reingest(self) -> None:
++        """A removed branch cut is typed and a proven reingest restores it."""
++        if self._deletion_done:
++            return
++        candidates: list[tuple[str, str]] = []
++        for child_id, child in self._models.items():
++            parent_id = child.parent_id
++            if (
++                parent_id is not None
++                and child.prefix_length > 1
++                and parent_id not in self._pending_children
++                and self._models[parent_id].parent_id is None
++                and self._models[parent_id].can_be_parent
++                and len(self._models[parent_id].own_texts) > 1
++            ):
++                candidates.append((parent_id, child_id))
++        if not candidates:
++            return
++        parent_id, child_id = sorted(candidates)[self._next_text % len(candidates)]
++        parent = self._models[parent_id]
++        child = self._models[child_id]
++        original_texts = list(parent.own_texts)
++        child_physical = [
++            tuple(row)
++            for row in self._conn.execute(
++                "SELECT native_id, position, variant_index FROM messages "
++                "WHERE session_id = ? ORDER BY position, variant_index, message_id",
++                (child_id,),
++            ).fetchall()
++        ]
++
++        shortened_at = self._fresh_timestamp()
++        self._write(
++            parent.native_id,
++            original_texts[:1],
++            updated_at=shortened_at,
++            message_id_prefix=f"shortened-{self._next_fresh_version}",
++        )
++        link = self._conn.execute(
++            "SELECT branch_point_message_id, inheritance, status FROM session_links WHERE src_session_id = ?",
++            (child_id,),
++        ).fetchone()
++        assert link is not None
++        assert tuple(link[1:]) == ("prefix-sharing", TopologyEdgeStatus.DANGLING_BRANCH_POINT.value)
++        assert [
++            tuple(row)
++            for row in self._conn.execute(
++                "SELECT native_id, position, variant_index FROM messages "
++                "WHERE session_id = ? ORDER BY position, variant_index, message_id",
++                (child_id,),
++            ).fetchall()
++        ] == child_physical
++        envelope = read_archive_session_envelope(self._conn, child_id)
++        assert envelope.lineage_complete is False
++        assert envelope.lineage_truncation_reason == "dangling_branch_point"
++        assert self._texts_from_envelope(envelope) == child.own_texts
++
++        restored_at = self._fresh_timestamp()
++        self._write(
++            parent.native_id,
++            original_texts,
++            updated_at=restored_at,
++            message_id_prefix=f"restored-{self._next_fresh_version}",
++        )
++        parent.updated_at = restored_at
++        restored_link = self._conn.execute(
++            "SELECT inheritance, status FROM session_links WHERE src_session_id = ?",
++            (child_id,),
++        ).fetchone()
++        assert tuple(restored_link) == ("prefix-sharing", None)
++        assert self._message_texts(child_id) == self._logical_texts(child_id)
++        self._check_invariants()
++
+     @rule()
+     def stale_replace_attempt(self) -> None:
+         session_id = self._choose_session_id()
+@@ -266,20 +409,33 @@ class WritePathStateMachine(RuleBasedStateMachine):
+         assert parent_id is not None
+         parent_messages = read_archive_session_envelope(self._conn, parent_id).messages
+         branch_point = parent_messages[child.prefix_length - 1].message_id
+-        parent_message_positions = {message.message_id: index for index, message in enumerate(parent_messages)}
+         self._conn.execute("DELETE FROM messages WHERE message_id = ?", (branch_point,))
+         self._conn.commit()
+         self._deletion_done = True
+         deleted_position = child.prefix_length - 1
+         self._models[parent_id].own_texts.pop(deleted_position)
++
++        # A deletion in an ancestor contracts every surviving composed prefix,
++        # including a grandchild cut that names its immediate parent's owned
++        # tail. Rebase each still-readable cut against the production composed
++        # parent rather than assuming the deleted row appears in that edge's
++        # branch-point identity. Missing cuts deliberately keep their previous
++        # logical bound so the incomplete-read suffix oracle remains strict.
+         for candidate_id, candidate in self._models.items():
++            if candidate.parent_id is None or candidate.prefix_length == 0:
++                continue
++            parent_envelope = read_archive_session_envelope(self._conn, candidate.parent_id)
++            if not parent_envelope.lineage_complete:
++                continue
+             link = self._conn.execute(
+                 "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
+                 (candidate_id,),
+             ).fetchone()
+-            linked_position = parent_message_positions.get(link[0]) if link is not None else None
+-            if linked_position is not None and linked_position > deleted_position:
+-                candidate.prefix_length -= 1
++            branch_point_id = str(link[0]) if link is not None and link[0] is not None else None
++            for position, message in enumerate(parent_envelope.messages, start=1):
++                if message.message_id == branch_point_id:
++                    candidate.prefix_length = position
++                    break
+         self._models[parent_id].can_be_parent = False
+         for candidate_id, candidate in self._models.items():
+             if self._has_ancestor(candidate_id, parent_id):
+@@ -383,7 +539,12 @@ class WritePathStateMachine(RuleBasedStateMachine):
+     def _check_invariants(self) -> None:
+         status_rows = self._conn.execute("SELECT status FROM session_links").fetchall()
+         assert {row[0] for row in status_rows}.issubset(
+-            {None, TopologyEdgeStatus.REPAIRED.value, TopologyEdgeStatus.QUARANTINED.value}
++            {
++                None,
++                TopologyEdgeStatus.REPAIRED.value,
++                TopologyEdgeStatus.DANGLING_BRANCH_POINT.value,
++                TopologyEdgeStatus.QUARANTINED.value,
++            }
+         )
+ 
+         indexed_docids = {row[0] for row in self._conn.execute("SELECT id FROM messages_fts_docsize").fetchall()}
+@@ -447,6 +608,11 @@ class WritePathStateMachine(RuleBasedStateMachine):
+         assert row[3] is None
+         if model.prefix_length:
+             parent_messages = read_archive_session_envelope(self._conn, model.parent_id).messages
++            assert model.prefix_length <= len(parent_messages), (
++                child_id,
++                model.prefix_length,
++                len(parent_messages),
++            )
+             assert row[1] == parent_messages[model.prefix_length - 1].message_id
+         else:
+             assert row[1] is None
+@@ -455,6 +621,117 @@ class WritePathStateMachine(RuleBasedStateMachine):
+         self._conn.close()
+ 
+ 
++@given(order=st.permutations(("old-parent", "child", "final-parent")))
++@settings(max_examples=12, deadline=None)
++def test_composed_reads_converge_over_permuted_equivalent_histories(order: list[str]) -> None:
++    """Every permutation reaches the same physical/link/composed fixed point.
++
++    This is independent of the state-machine model: the expected final state is
++    asserted directly through SQL rows and the production composed reader. The
++    old and final parent have equal semantics but different message identities,
++    forcing the semantic witness transition rather than exact-ID survival.
++    """
++
++    def _message(
++        provider_message_id: str,
++        role: Role,
++        text: str,
++        position: int,
++        *,
++        variant_index: int = 0,
++    ) -> ParsedMessage:
++        return ParsedMessage(
++            provider_message_id=provider_message_id,
++            role=role,
++            text=text,
++            position=position,
++            variant_index=variant_index,
++        )
++
++    sessions = {
++        "old-parent": ParsedSession(
++            source_name=Provider.CLAUDE_CODE,
++            provider_session_id="permuted-parent",
++            updated_at="2027-01-01T00:00:01Z",
++            messages=[
++                _message("old-0", Role.USER, "root", 0),
++                _message("old-1", Role.ASSISTANT, "primary", 1),
++                _message("old-1-alt", Role.ASSISTANT, "sibling", 1, variant_index=1),
++            ],
++        ),
++        "child": ParsedSession(
++            source_name=Provider.CLAUDE_CODE,
++            provider_session_id="permuted-child",
++            parent_session_provider_id="permuted-parent",
++            branch_type=BranchType.FORK,
++            updated_at="2027-01-01T00:00:02Z",
++            messages=[
++                _message("child-0", Role.USER, "root", 0),
++                _message("child-1", Role.ASSISTANT, "primary", 1),
++                _message("child-1-alt", Role.ASSISTANT, "sibling", 1, variant_index=1),
++                _message("child-2", Role.USER, "tail", 2),
++            ],
++        ),
++        "final-parent": ParsedSession(
++            source_name=Provider.CLAUDE_CODE,
++            provider_session_id="permuted-parent",
++            updated_at="2027-01-01T00:00:03Z",
++            messages=[
++                _message("final-0", Role.USER, "root", 0),
++                _message("final-1", Role.ASSISTANT, "primary", 1),
++                _message("final-1-alt", Role.ASSISTANT, "sibling", 1, variant_index=1),
++            ],
++        ),
++    }
++
++    conn = sqlite3.connect(":memory:")
++    conn.row_factory = sqlite3.Row
++    _ensure_schema(conn)
++    try:
++        for transition in order:
++            parsed = sessions[transition]
++            write_parsed_session_to_archive(conn, parsed, content_hash=session_content_hash(parsed))
++
++        parent_id = "claude-code-session:permuted-parent"
++        child_id = "claude-code-session:permuted-child"
++        physical = [
++            tuple(row)
++            for row in conn.execute(
++                "SELECT native_id, position, variant_index FROM messages "
++                "WHERE session_id = ? ORDER BY position, variant_index, message_id",
++                (child_id,),
++            ).fetchall()
++        ]
++        link = tuple(
++            conn.execute(
++                "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
++                "FROM session_links WHERE src_session_id = ?",
++                (child_id,),
++            ).fetchone()
++        )
++        witness = conn.execute(
++            "SELECT prefix_length, semantic_prefix_hash FROM lineage_prefix_witnesses WHERE src_session_id = ?",
++            (child_id,),
++        ).fetchone()
++        envelope = read_archive_session_envelope(conn, child_id)
++
++        assert physical == [("child-2", 2, 0)]
++        assert link == (
++            parent_id,
++            f"{parent_id}:final-1-alt",
++            "prefix-sharing",
++            None,
++        )
++        assert witness is not None
++        assert tuple(witness)[0] == 3
++        assert len(str(tuple(witness)[1])) == 64
++        assert WritePathStateMachine._texts_from_envelope(envelope) == ["root", "primary", "sibling", "tail"]
++        assert envelope.lineage_complete is True
++        assert envelope.lineage_truncation_reason is None
++    finally:
++        conn.close()
++
++
+ def test_repository_get_messages_composes_prefix_sharing_child() -> None:
+     """The public repository route composes a prefix-sharing child transcript."""
+     with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
+@@ -516,7 +793,15 @@ def test_session_link_resolver_quarantines_cycle() -> None:
+                 messages=[ParsedMessage(provider_message_id="child-0", role=Role.USER, text="child", position=0)],
+             )
+             parent_id = write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
+-            write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
++            child_id = write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
++            before_physical = [
++                tuple(row)
++                for row in conn.execute(
++                    "SELECT session_id, native_id, position, variant_index FROM messages "
++                    "WHERE session_id IN (?, ?) ORDER BY session_id, position, variant_index, message_id",
++                    (parent_id, child_id),
++                ).fetchall()
++            ]
+             conn.execute(
+                 """
+                 INSERT INTO session_links (
+@@ -543,14 +828,30 @@ def test_session_link_resolver_quarantines_cycle() -> None:
+ 
+         assert asyncio.run(resolve_cycle()) == 0
+         with sqlite3.connect(str(db_path)) as verify_conn:
++            verify_conn.row_factory = sqlite3.Row
+             row = verify_conn.execute(
+-                "SELECT resolved_dst_session_id, status, evidence_json FROM session_links WHERE src_session_id = ?",
++                "SELECT resolved_dst_session_id, inheritance, status, evidence_json "
++                "FROM session_links WHERE src_session_id = ? AND dst_native_id = 'cycle-child'",
+                 (parent_id,),
+             ).fetchone()
++            after_physical = [
++                tuple(item)
++                for item in verify_conn.execute(
++                    "SELECT session_id, native_id, position, variant_index FROM messages "
++                    "WHERE session_id IN (?, ?) ORDER BY session_id, position, variant_index, message_id",
++                    (parent_id, child_id),
++                ).fetchall()
++            ]
++            parent_envelope = read_archive_session_envelope(verify_conn, parent_id)
++            child_envelope = read_archive_session_envelope(verify_conn, child_id)
+         assert row is not None
+-        assert row[0] is None
+-        assert row[1] == TopologyEdgeStatus.QUARANTINED.value
+-        assert '"reason": "cycle_rejected"' in row[2]
++        assert tuple(row[:3]) == (None, None, TopologyEdgeStatus.QUARANTINED.value)
++        assert '"reason": "cycle_rejected"' in row[3]
++        assert after_physical == before_physical
++        assert WritePathStateMachine._texts_from_envelope(parent_envelope) == ["parent"]
++        assert WritePathStateMachine._texts_from_envelope(child_envelope) == ["child"]
++        assert parent_envelope.lineage_complete is True
++        assert child_envelope.lineage_complete is True
+ 
+ 
+ TestWritePathStateMachine = WritePathStateMachine.TestCase
+diff --git a/tests/unit/insights/test_topology_cycle_rejection.py b/tests/unit/insights/test_topology_cycle_rejection.py
+index a2a0ee56c1b33e34a36992765e80d62dd2039af4..0be904cb6d7197dd398c7f3ae4788aa4b96a4b33 100644
+--- a/tests/unit/insights/test_topology_cycle_rejection.py
++++ b/tests/unit/insights/test_topology_cycle_rejection.py
+@@ -151,6 +151,40 @@ def cycle_db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+         conn.close()
+ 
+ 
++def test_session_link_upsert_persists_dangling_branch_point_status(
++    cycle_db: sqlite3.Connection,
++) -> None:
++    """The async topology writer must preserve the typed lineage state.
++
++    Production dependency: ``session_links._status_value`` and the canonical
++    schema CHECK both accept ``DANGLING_BRANCH_POINT``. Removing either branch
++    makes this production upsert fail or silently collapse the state to NULL.
++    """
++    import asyncio
++
++    _insert_session(
++        cycle_db,
++        session_id="conv-child",
++        source_name="codex",
++        provider_session_id="native-child",
++    )
++    edge = TopologyEdgeRecord(
++        src_session_id=SessionId(_sid("conv-child")),
++        dst_origin=Origin.CODEX_SESSION,
++        dst_native_id="native-parent",
++        link_type=TopologyEdgeType.FORK,
++        status=TopologyEdgeStatus.DANGLING_BRANCH_POINT,
++    )
++    assert asyncio.run(upsert_session_links(_AsyncSqliteAdapter(cycle_db), [edge])) == 1  # type: ignore[arg-type]
++
++    row = cycle_db.execute(
++        "SELECT status FROM session_links WHERE src_session_id = ?",
++        (_sid("conv-child"),),
++    ).fetchone()
++    assert row is not None
++    assert row["status"] == TopologyEdgeStatus.DANGLING_BRANCH_POINT.value
++
++
+ def _seed_edge(
+     conn: sqlite3.Connection,
+     *,
+diff --git a/tests/unit/insights/test_transforms.py b/tests/unit/insights/test_transforms.py
+index 798aada8f8db4137ab959207e6ddb53cb1be5524..dad40e486d3f121eed7f7133628ec4a406993666 100644
+--- a/tests/unit/insights/test_transforms.py
++++ b/tests/unit/insights/test_transforms.py
+@@ -515,6 +515,31 @@ def test_session_digest_enriches_subagent_reports_from_session_links() -> None:
+     assert "resolved_child_session_id=codex-session:child-42" in digest.resume_markdown
+ 
+ 
++def test_session_digest_preserves_dangling_branch_point_link_status() -> None:
++    """Typed truncation survives the session-link to insight transform.
++
++    Production dependency: ``_enrich_subagent_reports_with_links`` must retain
++    the closed ``dangling_branch_point`` token. Removing it from either the
++    transform filter or the report model makes this assertion fail.
++    """
++    digest = compile_session_digest(
++        _session(),
++        session_links=(
++            {
++                "dst_origin": "codex-session",
++                "dst_native_id": "child-42",
++                "resolved_dst_session_id": "codex-session:child-42",
++                "status": "dangling_branch_point",
++                "link_type": "subagent",
++            },
++        ),
++    )
++
++    [subagent] = digest.subagent_reports
++    assert subagent.child_link_status == "dangling_branch_point"
++    assert "child_link_status=dangling_branch_point" in digest.resume_markdown
++
++
+ def test_forensic_index_groups_claims_by_raw_ref() -> None:
+     digest = compile_session_digest(_session())
+     entries = {entry.evidence_id: entry for entry in digest.forensic_index.entries}
+diff --git a/tests/unit/storage/test_archive_tiers_ddl.py b/tests/unit/storage/test_archive_tiers_ddl.py
+index 3047ecc25508a409fee9c656540908657261b62e..2942804d34366c55e3e33f58c564445a88873c85 100644
+--- a/tests/unit/storage/test_archive_tiers_ddl.py
++++ b/tests/unit/storage/test_archive_tiers_ddl.py
+@@ -539,6 +539,26 @@ def test_archive_tiers_sessions_raw_id_is_cross_tier_pointer_not_foreign_key(tmp
+     assert not any(row["from"] == "raw_id" and row["table"] == "raw_sessions" for row in foreign_keys)
+ 
+ 
++def test_lineage_cut_evidence_is_non_fk_but_edge_owned(tmp_path: Path) -> None:
++    """Parent message replacement cannot cascade away a durable lineage cut."""
++    conn = _connect(tmp_path / "index.db")
++    _apply_tier(conn, ArchiveTier.INDEX)
++
++    link_foreign_keys = conn.execute("PRAGMA foreign_key_list('session_links')").fetchall()
++    witness_foreign_keys = conn.execute("PRAGMA foreign_key_list('lineage_prefix_witnesses')").fetchall()
++
++    assert not any(row["from"] == "branch_point_message_id" for row in link_foreign_keys)
++    witness_columns = {row["name"] for row in conn.execute("PRAGMA table_info('lineage_prefix_witnesses')")}
++    assert witness_columns >= {"prefix_length", "semantic_prefix_hash"}
++    assert "parent_message_id" not in witness_columns
++    assert {(row["from"], row["table"], row["on_delete"]) for row in witness_foreign_keys} == {
++        ("src_session_id", "session_links", "CASCADE"),
++        ("dst_origin", "session_links", "CASCADE"),
++        ("dst_native_id", "session_links", "CASCADE"),
++        ("link_type", "session_links", "CASCADE"),
++    }
++
++
+ def test_archive_tiers_database_split_keeps_source_index_embeddings_user_and_ops_separate() -> None:
+     tier_tables: dict[ArchiveTier, set[str]] = {}
+     for tier in ArchiveTier:
+diff --git a/tests/unit/storage/test_index_fast_forward_lifecycle.py b/tests/unit/storage/test_index_fast_forward_lifecycle.py
+index 7f1e90ebf5ec06c331438273bfa103b24525818c..12716f0efa1d9c0c119442e38f4606a255cc0280 100644
+--- a/tests/unit/storage/test_index_fast_forward_lifecycle.py
++++ b/tests/unit/storage/test_index_fast_forward_lifecycle.py
+@@ -78,6 +78,15 @@ def test_v37_cache_removal_is_a_clone_safe_declared_delta() -> None:
+     )
+ 
+ 
++def test_v39_lineage_witness_requires_authoritative_semantic_reparse() -> None:
++    """Normalized child tails cannot reconstruct an exact missing parent prefix."""
++    declaration = next(item for item in lifecycle.INDEX_DELTA_DECLARATIONS if item.version == 39)
++
++    assert declaration.classes == (DerivedDeltaClass.SEMANTIC_REPARSE,)
++    assert declaration.operations == ()
++    assert index_fast_forward_plan(38, 39) is None
++
++
+ def test_current_index_schema_has_a_complete_delta_declaration() -> None:
+     """Exercise the exact declaration report consumed by the schema policy lint."""
+     report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
+@@ -105,7 +114,10 @@ def test_nonsemantic_delta_without_operations_is_rejected(monkeypatch: pytest.Mo
+     monkeypatch.setattr(
+         lifecycle,
+         "INDEX_DELTA_DECLARATIONS",
+-        (*lifecycle.INDEX_DELTA_DECLARATIONS, empty_declaration),
++        (
++            *(declaration for declaration in lifecycle.INDEX_DELTA_DECLARATIONS if declaration.version <= 37),
++            empty_declaration,
++        ),
+     )
+ 
+     report = lifecycle.index_delta_declaration_report(37)
+@@ -131,7 +143,10 @@ def test_delta_without_a_declared_class_is_rejected(monkeypatch: pytest.MonkeyPa
+     monkeypatch.setattr(
+         lifecycle,
+         "INDEX_DELTA_DECLARATIONS",
+-        (*lifecycle.INDEX_DELTA_DECLARATIONS, unclassified_declaration),
++        (
++            *(declaration for declaration in lifecycle.INDEX_DELTA_DECLARATIONS if declaration.version <= 37),
++            unclassified_declaration,
++        ),
+     )
+ 
+     assert lifecycle.index_delta_declaration_report(37)["invalid_versions"] == (37,)
+diff --git a/tests/unit/storage/test_lineage_normalization.py b/tests/unit/storage/test_lineage_normalization.py
+index 6179cc1e550257d6127d1aaf06975e0a72b2573f..95f4aa8c5796f403f0469f56685bbd2c149a21ed 100644
+--- a/tests/unit/storage/test_lineage_normalization.py
++++ b/tests/unit/storage/test_lineage_normalization.py
+@@ -10,6 +10,7 @@ import asyncio
+ import json
+ import sqlite3
+ from collections.abc import Callable
++from itertools import permutations
+ from pathlib import Path
+ 
+ import aiosqlite
+@@ -78,6 +79,49 @@ async def _read_texts(path: Path, session_id: str) -> list[str | None]:
+         await conn.close()
+ 
+ 
++def _physical_message_oracle(conn: sqlite3.Connection, session_id: str) -> list[tuple[object, ...]]:
++    return [
++        tuple(row)
++        for row in conn.execute(
++            "SELECT native_id, position, variant_index FROM messages "
++            "WHERE session_id = ? ORDER BY position, variant_index, message_id",
++            (session_id,),
++        ).fetchall()
++    ]
++
++
++def _link_oracle(conn: sqlite3.Connection, session_id: str) -> tuple[object, ...]:
++    row = conn.execute(
++        "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
++        "FROM session_links WHERE src_session_id = ?",
++        (session_id,),
++    ).fetchone()
++    assert row is not None
++    return tuple(row)
++
++
++def _witness_oracle(conn: sqlite3.Connection, session_id: str) -> tuple[int, str] | None:
++    row = conn.execute(
++        "SELECT prefix_length, semantic_prefix_hash FROM lineage_prefix_witnesses WHERE src_session_id = ?",
++        (session_id,),
++    ).fetchone()
++    if row is None:
++        return None
++    return (int(row[0]), str(row[1]))
++
++
++def _composed_oracle(
++    conn: sqlite3.Connection,
++    session_id: str,
++) -> tuple[list[str | None], bool, str | None]:
++    envelope = read_archive_session_envelope(conn, session_id)
++    return (
++        [message.blocks[0].text for message in envelope.messages],
++        envelope.lineage_complete,
++        envelope.lineage_truncation_reason,
++    )
++
++
+ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> None:
+     db = tmp_path / "index.db"
+     conn = _connect(db)
+@@ -166,6 +210,61 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
+     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
+ 
+ 
++def test_merge_append_preserves_prefix_lineage_edge_and_witness(tmp_path: Path) -> None:
++    """The merge-append fast path must not replace an established lineage cut.
++
++    Removing ``preserve_existing_lineage=merge_append`` from the production
++    ``_write_session_link`` call rewrites the edge with a NULL branch point and
++    deletes its compact witness, so this test fails through all three oracles.
++    """
++    conn = _connect(tmp_path / "index.db")
++    parent = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="parent",
++        title="parent",
++        messages=[
++            _msg("p0", Role.USER, "root prompt", 0),
++            _msg("p1", Role.ASSISTANT, "root reply", 1),
++        ],
++    )
++    write_parsed_session_to_archive(conn, parent)
++    child = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="child",
++        title="child",
++        parent_session_provider_id="parent",
++        branch_type=BranchType.FORK,
++        messages=[
++            _msg("c0", Role.USER, "root prompt", 0),
++            _msg("c1", Role.ASSISTANT, "root reply", 1),
++            _msg("c2", Role.USER, "child tail", 2),
++        ],
++    )
++    child_id = write_parsed_session_to_archive(conn, child)
++    link_before = _link_oracle(conn, child_id)
++    witness_before = _witness_oracle(conn, child_id)
++    assert witness_before is not None
++
++    appended = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="child",
++        title="child",
++        parent_session_provider_id="parent",
++        branch_type=BranchType.FORK,
++        messages=[_msg("c3", Role.ASSISTANT, "appended tail", 0)],
++    )
++    write_parsed_session_to_archive(conn, appended, merge_append=True)
++
++    assert _physical_message_oracle(conn, child_id) == [("c2", 2, 0), ("c3", 3, 0)]
++    assert _link_oracle(conn, child_id) == link_before
++    assert _witness_oracle(conn, child_id) == witness_before
++    assert _composed_oracle(conn, child_id) == (
++        ["root prompt", "root reply", "child tail", "appended tail"],
++        True,
++        None,
++    )
++
++
+ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: Path) -> None:
+     db = tmp_path / "index.db"
+     conn = _connect(db)
+@@ -398,6 +497,102 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
+     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
+ 
+ 
++def test_child_before_parent_reextract_refreshes_action_pair_ranks(tmp_path: Path) -> None:
++    """Deferred prefix deletion must rebuild child-scoped action projections.
++
++    The unresolved child initially owns two uses of the same provider-local
++    tool id, so its divergent use has ``use_rank = 2``.  Resolving the parent
++    deletes the inherited first use/result while derived-refresh triggers are
++    suspended.  Removing the production ``refresh_action_pairs`` call from
++    ``_normalize_resolved_child_prefix_db`` therefore leaves rank 2 behind and
++    makes this mutation-killing fixture fail.
++    """
++    conn = _connect(tmp_path / "index.db")
++
++    def tool_use(command: str) -> ParsedContentBlock:
++        return ParsedContentBlock(
++            type=BlockType.TOOL_USE,
++            tool_name="Bash",
++            tool_id="shared-tool-id",
++            tool_input={"command": command},
++        )
++
++    def tool_result(text: str) -> ParsedContentBlock:
++        return ParsedContentBlock(
++            type=BlockType.TOOL_RESULT,
++            tool_id="shared-tool-id",
++            text=text,
++        )
++
++    def block_message(
++        provider_message_id: str,
++        role: Role,
++        position: int,
++        block: ParsedContentBlock,
++    ) -> ParsedMessage:
++        return ParsedMessage(
++            provider_message_id=provider_message_id,
++            role=role,
++            position=position,
++            blocks=[block],
++        )
++
++    child = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="child",
++        parent_session_provider_id="parent",
++        branch_type=BranchType.FORK,
++        messages=[
++            block_message("c0", Role.ASSISTANT, 0, tool_use("echo inherited")),
++            block_message("c1", Role.TOOL, 1, tool_result("inherited result")),
++            block_message("c2", Role.ASSISTANT, 2, tool_use("echo child-tail")),
++        ],
++    )
++    child_id = write_parsed_session_to_archive(conn, child)
++    before = conn.execute(
++        """
++        SELECT use_rank, tool_result_block_id, output_text
++        FROM action_pairs
++        WHERE session_id = ?
++        ORDER BY use_rank
++        """,
++        (child_id,),
++    ).fetchall()
++    assert [tuple(row) for row in before] == [
++        (1, f"{child_id}:c1:0", "inherited result"),
++        (2, None, None),
++    ]
++
++    parent = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="parent",
++        messages=[
++            block_message("p0", Role.ASSISTANT, 0, tool_use("echo inherited")),
++            block_message("p1", Role.TOOL, 1, tool_result("inherited result")),
++        ],
++    )
++    write_parsed_session_to_archive(conn, parent)
++
++    # Physical oracle: only the divergent tool use remains under the child.
++    assert _physical_message_oracle(conn, child_id) == [("c2", 2, 0)]
++    # Link oracle: deferred normalization produced a typed prefix-sharing cut.
++    assert _link_oracle(conn, child_id)[2:] == ("prefix-sharing", None)
++    assert _witness_oracle(conn, child_id) is not None
++    # Derived-write oracle: the remaining action is now the first use and is
++    # not incorrectly paired with the deleted inherited result.
++    after = conn.execute(
++        """
++        SELECT use_rank, tool_result_block_id, output_text
++        FROM action_pairs
++        WHERE session_id = ?
++        """,
++        (child_id,),
++    ).fetchall()
++    assert [tuple(row) for row in after] == [(1, None, None)]
++    # Composed-read oracle still sees the inherited pair plus child-owned use.
++    assert _composed_oracle(conn, child_id) == ([None, "inherited result", None], True, None)
++
++
+ @pytest.mark.parametrize("child_first", [False, True], ids=["parent-first", "child-first"])
+ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
+     tmp_path: Path, child_first: bool
+@@ -454,6 +649,9 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
+         (child_id,),
+     ).fetchone()
+     assert tuple(link) == (parent_id, f"{parent_id}:p1-alt", "prefix-sharing", None)
++    initial_witness = _witness_oracle(conn, child_id)
++    assert initial_witness is not None
++    assert initial_witness[0] == 3
+     assert asyncio.run(_read_texts(db, child_id)) == ["root", "primary v1", "sibling v1", "child tail"]
+ 
+     replacement = parent.model_copy(
+@@ -469,6 +667,10 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
+     write_parsed_session_to_archive(conn, replacement)
+ 
+     assert asyncio.run(_read_texts(db, child_id)) == ["root", "primary v2", "sibling v2", "child tail"]
++    replacement_witness = _witness_oracle(conn, child_id)
++    assert replacement_witness is not None
++    assert replacement_witness[0] == 3
++    assert replacement_witness[1] != initial_witness[1]
+     assert (
+         conn.execute(
+             "SELECT native_id, position, variant_index FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+@@ -487,6 +689,385 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
+     conn.close()
+ 
+ 
++def test_semantic_prefix_witness_converges_all_sibling_replacement_orders(tmp_path: Path) -> None:
++    """Equivalent accepted histories converge across all six arrival orders.
++
++    Production dependencies: full-replace tail extraction, delayed parent
++    normalization, semantic witness persistence, subtree reconciliation, and
++    the independent composed envelope reader. Removing witness matching or
++    descendant reconciliation makes the ``old-parent -> child -> final-parent``
++    histories retain the stale cut while the other permutations remain complete.
++    """
++
++    def _session(kind: str) -> ParsedSession:
++        if kind == "old-parent":
++            return ParsedSession(
++                source_name=Provider.CODEX,
++                provider_session_id="parent",
++                updated_at="2027-01-01T00:00:01Z",
++                messages=[
++                    _msg("p0", Role.USER, "root", 0),
++                    _msg("p1", Role.ASSISTANT, "primary", 1),
++                    _msg("p1-alt", Role.ASSISTANT, "sibling", 1, variant_index=1),
++                ],
++            )
++        if kind == "final-parent":
++            return ParsedSession(
++                source_name=Provider.CODEX,
++                provider_session_id="parent",
++                updated_at="2027-01-01T00:00:03Z",
++                messages=[
++                    _msg("q0", Role.USER, "root", 0),
++                    _msg("q1", Role.ASSISTANT, "primary", 1),
++                    _msg("q1-alt", Role.ASSISTANT, "sibling", 1, variant_index=1),
++                ],
++            )
++        return ParsedSession(
++            source_name=Provider.CODEX,
++            provider_session_id="child",
++            parent_session_provider_id="parent",
++            branch_type=BranchType.FORK,
++            updated_at="2027-01-01T00:00:02Z",
++            messages=[
++                _msg("c0", Role.USER, "root", 0),
++                _msg("c1", Role.ASSISTANT, "primary", 1),
++                _msg("c1-alt", Role.ASSISTANT, "sibling", 1, variant_index=1),
++                _msg("c2", Role.USER, "child tail", 2),
++            ],
++        )
++
++    states: dict[tuple[str, ...], tuple[object, ...]] = {}
++    for order in permutations(("old-parent", "child", "final-parent")):
++        conn = _connect(tmp_path / f"direct-{'-'.join(order)}.db")
++        for transition in order:
++            write_parsed_session_to_archive(conn, _session(transition))
++
++        parent_id = "codex-session:parent"
++        child_id = "codex-session:child"
++        state = (
++            _physical_message_oracle(conn, parent_id),
++            _physical_message_oracle(conn, child_id),
++            _link_oracle(conn, child_id),
++            _witness_oracle(conn, child_id),
++            _composed_oracle(conn, child_id),
++        )
++        states[order] = state
++        conn.close()
++
++    expected_parent = [("q0", 0, 0), ("q1", 1, 0), ("q1-alt", 1, 1)]
++    expected_child = [("c2", 2, 0)]
++    expected_link = (
++        "codex-session:parent",
++        "codex-session:parent:q1-alt",
++        "prefix-sharing",
++        None,
++    )
++    for state in states.values():
++        parent_rows, child_rows, link, witness, composed = state
++        assert parent_rows == expected_parent
++        assert child_rows == expected_child
++        assert link == expected_link
++        assert witness is not None
++        assert witness[0] == 3
++        assert len(witness[1]) == 64
++        assert composed == (["root", "primary", "sibling", "child tail"], True, None)
++    assert len({repr(state) for state in states.values()}) == 1
++
++
++def test_nested_prefix_witness_converges_all_root_parent_child_orders(tmp_path: Path) -> None:
++    """Deferred normalization propagates canonical ancestor cuts to descendants.
++
++    The child branches from an inherited root message in its immediate parent.
++    Without the parent-first subtree walk, child-before-parent-before-root leaves
++    the child naming a deleted parent-owned replay row. Every permutation must
++    instead converge through the same root-owned branch point.
++    """
++
++    def _session(kind: str) -> ParsedSession:
++        if kind == "root":
++            return ParsedSession(
++                source_name=Provider.CODEX,
++                provider_session_id="root",
++                messages=[
++                    _msg("r0", Role.USER, "root prompt", 0),
++                    _msg("r1", Role.ASSISTANT, "root reply", 1),
++                ],
++            )
++        if kind == "parent":
++            return ParsedSession(
++                source_name=Provider.CODEX,
++                provider_session_id="parent",
++                parent_session_provider_id="root",
++                branch_type=BranchType.FORK,
++                messages=[
++                    _msg("p0", Role.USER, "root prompt", 0),
++                    _msg("p1", Role.ASSISTANT, "root reply", 1),
++                    _msg("p2", Role.USER, "parent tail", 2),
++                ],
++            )
++        return ParsedSession(
++            source_name=Provider.CODEX,
++            provider_session_id="child",
++            parent_session_provider_id="parent",
++            branch_type=BranchType.FORK,
++            messages=[
++                _msg("c0", Role.USER, "root prompt", 0),
++                _msg("c1", Role.ASSISTANT, "root reply", 1),
++                _msg("c3", Role.ASSISTANT, "child tail", 2),
++            ],
++        )
++
++    states: dict[tuple[str, ...], tuple[object, ...]] = {}
++    for order in permutations(("root", "parent", "child")):
++        conn = _connect(tmp_path / f"nested-{'-'.join(order)}.db")
++        for transition in order:
++            write_parsed_session_to_archive(conn, _session(transition))
++
++        parent_id = "codex-session:parent"
++        child_id = "codex-session:child"
++        state = (
++            _physical_message_oracle(conn, parent_id),
++            _physical_message_oracle(conn, child_id),
++            _link_oracle(conn, parent_id),
++            _link_oracle(conn, child_id),
++            _witness_oracle(conn, parent_id),
++            _witness_oracle(conn, child_id),
++            _composed_oracle(conn, child_id),
++        )
++        states[order] = state
++        conn.close()
++
++    for state in states.values():
++        parent_rows, child_rows, parent_link, child_link, parent_witness, child_witness, composed = state
++        assert parent_rows == [("p2", 2, 0)]
++        assert child_rows == [("c3", 2, 0)]
++        assert parent_link == (
++            "codex-session:root",
++            "codex-session:root:r1",
++            "prefix-sharing",
++            None,
++        )
++        assert child_link == (
++            "codex-session:parent",
++            "codex-session:root:r1",
++            "prefix-sharing",
++            None,
++        )
++        assert parent_witness is not None
++        assert child_witness is not None
++        assert parent_witness[0] == child_witness[0] == 2
++        assert parent_witness[1] == child_witness[1]
++        assert len(parent_witness[1]) == 64
++        assert composed == (["root prompt", "root reply", "child tail"], True, None)
++    assert len({repr(state) for state in states.values()}) == 1
++
++
++def test_ancestor_rebind_refreshes_descendant_delegation_fact(tmp_path: Path) -> None:
++    """A nested cut rebind must refresh the affected parent delegation cohort.
++
++    The subagent child's cut is inside context inherited by its immediate
++    parent. Replacing the root with equivalent messages changes that cut's
++    canonical identity without directly writing either descendant. Removing
++    the descendant ``refresh_delegation_facts_for_session`` loop from
++    ``_resolve_session_graph`` leaves the materialized fact naming ``r1``
++    while the canonical session link names ``q1``.
++    """
++    conn = _connect(tmp_path / "delegation-rebind.db")
++    root = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="root",
++        messages=[
++            _msg("r0", Role.USER, "root prompt", 0),
++            _msg("r1", Role.ASSISTANT, "root reply", 1),
++        ],
++    )
++    root_id = write_parsed_session_to_archive(conn, root)
++
++    dispatch = ParsedMessage(
++        provider_message_id="dispatch",
++        role=Role.ASSISTANT,
++        position=2,
++        blocks=[
++            ParsedContentBlock(
++                type=BlockType.TOOL_USE,
++                tool_name="Task",
++                tool_id="task-1",
++                tool_input={"prompt": "audit the child"},
++            )
++        ],
++    )
++    parent = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="parent",
++        parent_session_provider_id="root",
++        branch_type=BranchType.FORK,
++        messages=[
++            _msg("p0", Role.USER, "root prompt", 0),
++            _msg("p1", Role.ASSISTANT, "root reply", 1),
++            dispatch,
++        ],
++    )
++    parent_id = write_parsed_session_to_archive(conn, parent)
++    child = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="child",
++        parent_session_provider_id="parent",
++        branch_type=BranchType.SUBAGENT,
++        messages=[
++            _msg("c0", Role.USER, "root prompt", 0),
++            _msg("c1", Role.ASSISTANT, "root reply", 1),
++            _msg("c2", Role.USER, "child work", 2),
++        ],
++    )
++    child_id = write_parsed_session_to_archive(conn, child)
++
++    before = conn.execute(
++        """
++        SELECT child_session_id, branch_point_message_id, mapping_state,
++               instruction_message_id
++        FROM delegation_facts
++        WHERE parent_session_id = ?
++        """,
++        (parent_id,),
++    ).fetchone()
++    assert before is not None
++    assert tuple(before) == (
++        child_id,
++        f"{root_id}:r1",
++        "resolved",
++        f"{parent_id}:dispatch",
++    )
++
++    replacement = root.model_copy(
++        update={
++            "messages": [
++                _msg("q0", Role.USER, "root prompt", 0),
++                _msg("q1", Role.ASSISTANT, "root reply", 1),
++            ]
++        }
++    )
++    write_parsed_session_to_archive(conn, replacement)
++
++    # Physical oracle: neither descendant's owned tail was rewritten.
++    assert _physical_message_oracle(conn, parent_id) == [("dispatch", 2, 0)]
++    assert _physical_message_oracle(conn, child_id) == [("c2", 2, 0)]
++    # Link oracle: both inherited cuts now name the replacement root identity.
++    assert _link_oracle(conn, parent_id) == (
++        root_id,
++        f"{root_id}:q1",
++        "prefix-sharing",
++        None,
++    )
++    assert _link_oracle(conn, child_id) == (
++        parent_id,
++        f"{root_id}:q1",
++        "prefix-sharing",
++        None,
++    )
++    # Materialized-write oracle: the cached descendant fact moved in the same
++    # transaction rather than retaining the deleted root message identity.
++    after = conn.execute(
++        """
++        SELECT child_session_id, branch_point_message_id, mapping_state,
++               instruction_message_id
++        FROM delegation_facts
++        WHERE parent_session_id = ?
++        """,
++        (parent_id,),
++    ).fetchone()
++    assert after is not None
++    assert tuple(after) == (
++        child_id,
++        f"{root_id}:q1",
++        "resolved",
++        f"{parent_id}:dispatch",
++    )
++    # Composed-read oracle remains complete and bounded through the nested cut.
++    assert _composed_oracle(conn, child_id) == (
++        ["root prompt", "root reply", "child work"],
++        True,
++        None,
++    )
++
++
++def test_parent_shortening_degrades_then_semantic_reingest_restores_cut(tmp_path: Path) -> None:
++    """A missing cut is typed, bounded, rollback-safe data rather than a crash.
++
++    Production dependencies: exact-prefix witness retention on degradation and
++    semantic rebinding on later identity churn. Clearing the witness when the
++    parent shortens makes the final reingest permanently unreadable.
++    """
++    conn = _connect(tmp_path / "shorten-restore.db")
++    parent = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="parent",
++        updated_at="2027-01-01T00:00:01Z",
++        messages=[
++            _msg("p0", Role.USER, "root", 0),
++            _msg("p1", Role.ASSISTANT, "reply", 1),
++        ],
++    )
++    parent_id = write_parsed_session_to_archive(conn, parent)
++    child = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="child",
++        parent_session_provider_id="parent",
++        branch_type=BranchType.FORK,
++        updated_at="2027-01-01T00:00:02Z",
++        messages=[
++            _msg("c0", Role.USER, "root", 0),
++            _msg("c1", Role.ASSISTANT, "reply", 1),
++            _msg("c2", Role.USER, "child tail", 2),
++        ],
++    )
++    child_id = write_parsed_session_to_archive(conn, child)
++    child_physical = _physical_message_oracle(conn, child_id)
++    original_witness = _witness_oracle(conn, child_id)
++
++    shortened = parent.model_copy(
++        update={
++            "updated_at": "2027-01-01T00:00:03Z",
++            "messages": [_msg("s0", Role.USER, "root", 0)],
++        }
++    )
++    write_parsed_session_to_archive(conn, shortened)
++
++    assert _physical_message_oracle(conn, child_id) == child_physical == [("c2", 2, 0)]
++    assert _link_oracle(conn, child_id) == (
++        parent_id,
++        f"{parent_id}:p1",
++        "prefix-sharing",
++        "dangling_branch_point",
++    )
++    assert _witness_oracle(conn, child_id) == original_witness
++    assert _composed_oracle(conn, child_id) == (["child tail"], False, "dangling_branch_point")
++
++    restored = parent.model_copy(
++        update={
++            "updated_at": "2027-01-01T00:00:04Z",
++            "messages": [
++                _msg("q0", Role.USER, "root", 0),
++                _msg("q1", Role.ASSISTANT, "reply", 1),
++            ],
++        }
++    )
++    write_parsed_session_to_archive(conn, restored)
++
++    assert _physical_message_oracle(conn, child_id) == child_physical
++    assert _link_oracle(conn, child_id) == (
++        parent_id,
++        f"{parent_id}:q1",
++        "prefix-sharing",
++        None,
++    )
++    restored_witness = _witness_oracle(conn, child_id)
++    assert restored_witness is not None
++    assert restored_witness[0] == 2
++    assert len(restored_witness[1]) == 64
++    assert _composed_oracle(conn, child_id) == (["root", "reply", "child tail"], True, None)
++    conn.close()
++
++
+ def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path) -> None:
+     """A full parent replacement may not substitute a shorter sibling prefix."""
+     db = tmp_path / "index.db"
+@@ -533,7 +1114,7 @@ def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path
+     link = conn.execute(
+         "SELECT branch_point_message_id, inheritance, status FROM session_links WHERE src_session_id = ?", (child_id,)
+     ).fetchone()
+-    assert tuple(link) == (f"{parent_id}:p1-alt", "prefix-sharing", None)
++    assert tuple(link) == (f"{parent_id}:p1-alt", "prefix-sharing", "dangling_branch_point")
+     envelope = read_archive_session_envelope(conn, child_id)
+     assert [message.blocks[0].text for message in envelope.messages] == ["child tail"]
+     assert envelope.lineage_complete is False
+@@ -723,7 +1304,14 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
+     )
+     child_id = write_parsed_session_to_archive(conn, child)
+ 
+-    def _state() -> tuple[list[tuple[object, ...]], tuple[object, ...], list[str | None], bool, str | None]:
++    def _state() -> tuple[
++        list[tuple[object, ...]],
++        tuple[object, ...],
++        tuple[int, str] | None,
++        list[str | None],
++        bool,
++        str | None,
++    ]:
+         physical = [
+             tuple(row)
+             for row in conn.execute(
+@@ -732,17 +1320,12 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
+                 (parent_id, child_id),
+             ).fetchall()
+         ]
+-        link = tuple(
+-            conn.execute(
+-                "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
+-                "FROM session_links WHERE src_session_id = ?",
+-                (child_id,),
+-            ).fetchone()
+-        )
++        link = _link_oracle(conn, child_id)
+         envelope = read_archive_session_envelope(conn, child_id)
+         return (
+             physical,
+             link,
++            _witness_oracle(conn, child_id),
+             [message.blocks[0].text for message in envelope.messages],
+             envelope.lineage_complete,
+             envelope.lineage_truncation_reason,
+@@ -790,7 +1373,7 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
+     monkeypatch.setattr(_write_module, "_resolve_session_graph", real_resolve)
+     write_parsed_session_to_archive(conn, replacement)
+     after_retry = _state()
+-    assert after_retry[2:] == (["root", "parent v2", "child tail"], True, None)
++    assert after_retry[3:] == (["root", "parent v2", "child tail"], True, None)
+     write_parsed_session_to_archive(conn, replacement)
+     assert _state() == after_retry
+     conn.close()
+@@ -906,6 +1489,10 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
+     )
+     child_id = write_parsed_session_to_archive(conn, child)
+ 
++    conn.execute(
++        "DELETE FROM lineage_prefix_witnesses WHERE src_session_id = ?",
++        (child_id,),
++    )
+     conn.execute(
+         """
+         UPDATE session_links
+@@ -1033,6 +1620,72 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
+     conn.close()
+ 
+ 
++def test_full_replace_without_parent_clears_witness_when_foreign_keys_suspended(
++    tmp_path: Path,
++) -> None:
++    """A rebuild-time relation removal must not strand an edge-owned witness.
++
++    Bulk rebuilds disable foreign-key enforcement, so the witness table's
++    ``ON DELETE CASCADE`` cannot protect this transition. Removing the explicit
++    witness delete from ``_clear_session_projection_rows`` leaves one orphan
++    row and makes ``PRAGMA foreign_key_check`` fail after the replacement.
++    """
++    conn = _connect(tmp_path / "index.db")
++    parent = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="parent",
++        messages=[_msg("p0", Role.USER, "shared", 0)],
++    )
++    write_parsed_session_to_archive(conn, parent)
++    child = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="child",
++        parent_session_provider_id="parent",
++        branch_type=BranchType.FORK,
++        messages=[
++            _msg("c0", Role.USER, "shared", 0),
++            _msg("c1", Role.ASSISTANT, "child tail", 1),
++        ],
++    )
++    child_id = write_parsed_session_to_archive(conn, child)
++    assert _witness_oracle(conn, child_id) is not None
++    conn.commit()
++
++    conn.execute("PRAGMA foreign_keys = OFF")
++    conn.execute("BEGIN IMMEDIATE")
++    standalone = ParsedSession(
++        source_name=Provider.CODEX,
++        provider_session_id="child",
++        messages=[_msg("n0", Role.USER, "standalone replacement", 0)],
++    )
++    write_parsed_session_to_archive(
++        conn,
++        standalone,
++        force_replace=True,
++        manage_transaction=False,
++    )
++
++    # Physical oracle: the accepted standalone replacement owns one row.
++    assert _physical_message_oracle(conn, child_id) == [("n0", 0, 0)]
++    # Link-row oracle: both the relation and its compact proof are gone.
++    assert (
++        conn.execute(
++            "SELECT COUNT(*) FROM session_links WHERE src_session_id = ?",
++            (child_id,),
++        ).fetchone()[0]
++        == 0
++    )
++    assert _witness_oracle(conn, child_id) is None
++    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
++    # Composed-read oracle: no stale parent prefix remains observable.
++    assert _composed_oracle(conn, child_id) == (["standalone replacement"], True, None)
++
++    conn.commit()
++    conn.execute("PRAGMA foreign_keys = ON")
++    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
++    conn.close()
++
++
+ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) -> None:
+     """A child that is entirely inherited should remove dependents by session.
+ 

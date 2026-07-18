@@ -1,0 +1,4 @@
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  /mnt/data/polylogue-hot-daemon.patch
+2b7d37b6ee8cee35299f38c1316499796d0d9163bcdf2b671d9fcdeb5c7ba0ca  /mnt/data/polylogue-hot-daemon-delivery.tar.gz
+3444846c143265f987533be6cf3eb8a8e66357a93c29bdeac00e5c587a740cda  /mnt/data/polylogue-hot-daemon-validation.md
+b425ab020b5d9ec32e353dc5a11fbc4c220efa0618a4ec9a316ac3fbebacbdbd  /mnt/data/polylogue-hot-daemon-summary.md

@@ -37,6 +37,11 @@ its result is adjudicated against whatever the lane actually landed.
 - `res` (4): deep research + outreach/application drafts (use the
   deep-research contract for res-01/res-02).
 - `misc` (3): config closure, embedding freshness, FTS identity ledger.
+- `mandate` (3): Claude artifact admission, observed-work effects, and the
+  terminal replay gate; run in dependency order.
+- `lane-support` (4): independent, implementation-grade support lanes for the
+  four local war-room lanes. They own distinct reusable substrate and synthetic
+  proofs; the paired local lane remains owner of private/live validation.
 
 Contracts: `../contracts/chatgpt-pro-implementation.md` (default),
 `../contracts/chatgpt-pro-analysis.md` (ann-03, res-04),
