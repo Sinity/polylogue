@@ -127,13 +127,11 @@
       "result_semantics": [
         "single_object",
         "exhaustive_page",
-        "bounded_context",
-        "recursive_graph"
+        "bounded_context"
       ],
       "schema_status": "cutover-parameterized",
       "source_declarations": [
-        "read",
-        "graph"
+        "read"
       ],
       "supports_continuation": true
     },

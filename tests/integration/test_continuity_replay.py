@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from devtools.continuity_replay import replay_archive
+from polylogue.archive.query.transaction import QueryContinuation
 from polylogue.core.json import JSONDocument, JSONValue, json_document_list, require_json_document
 from tests.infra.continuity import ContinuityFixtureSeed, load_continuity_catalog, seed_continuity_archive
 from tests.infra.continuity_mutations import continuity_mutation, continuity_mutation_names
@@ -25,7 +26,7 @@ def continuity_corpus(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, J
 def test_fixture_compiler_plants_corrected_parallel_incident_population(
     continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
 ) -> None:
-    """Direct SQLite census guards the builder independently of query_units."""
+    """Direct SQLite census guards the builder independently of the MCP query route."""
 
     _, _, seed = continuity_corpus
     assert seed.direct_facts["coordinator_children"] == 129
@@ -90,14 +91,15 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
     cost = results["cost"]
     [cost_receipt] = json_document_list(cost["route_receipts"])
     [cost_page] = json_document_list(cost_receipt["pages"])
-    assert cost_page["status"] == "response_budget_exceeded"
-    assert cost_page["budget_exceeded"] is True
+    assert cost_receipt["tool"] == "status"
+    assert cost_page["status"] is None
+    assert cost_page["budget_exceeded"] is False
     assert isinstance(cost_page["response_sha256"], str)
     assert len(cost_page["response_sha256"]) == 64
 
 
 @pytest.mark.asyncio
-async def test_query_units_continuation_accepts_distinct_multi_page_rows(
+async def test_query_continuation_accepts_distinct_multi_page_rows(
     continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
 ) -> None:
     """The registered FastMCP route preserves actual distinct unit rows across pages."""
@@ -120,7 +122,7 @@ async def test_query_units_continuation_accepts_distinct_multi_page_rows(
 
 
 @pytest.mark.asyncio
-async def test_query_units_continuation_rejects_duplicate_row_with_advancing_offset(
+async def test_query_continuation_rejects_duplicate_row_with_advancing_offset(
     continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
 ) -> None:
     """A real handler response that repeats a prior row fails before fact reducers can mask it."""
@@ -137,8 +139,14 @@ async def test_query_units_continuation_rejects_duplicate_row_with_advancing_off
     ) -> str:
         del invocation
         nonlocal first_page_item
-        if tool != "query_units" or arguments.get("expression") != (
-            'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
+        expression = arguments.get("expression")
+        if not isinstance(expression, str):
+            continuation = arguments.get("continuation")
+            if isinstance(continuation, str):
+                expression = QueryContinuation.decode(continuation).request.arguments.get("expression")
+        if (
+            tool != "query"
+            or expression != 'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
         ):
             return response_text
         payload = require_json_document(json.loads(response_text), context="duplicate continuation response")
@@ -210,14 +218,14 @@ async def test_named_continuity_mutation_curriculum_fails_with_expected_diagnosi
 async def test_dropping_incident_workflow_filter_fails_known_answer_oracle(
     continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
 ) -> None:
-    """Representative production mutation: query_units receives an over-broad member expression."""
+    """Representative production mutation: query receives an over-broad member expression."""
 
     archive_root, catalog, _ = continuity_corpus
 
     def drop_workflow_filter(tool: str, arguments: dict[str, object], invocation: int) -> dict[str, object]:
         del invocation
         expression = arguments.get("expression")
-        if tool == "query_units" and isinstance(expression, str):
+        if tool == "query" and isinstance(expression, str):
             arguments["expression"] = expression.replace(' AND text:"workflow_run:wf_synthetic_841"', "")
         return arguments
 

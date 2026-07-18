@@ -139,7 +139,7 @@ class MCPContinuityRoute:
         services = RuntimeServices(config=config, db_path=config.db_path)
         _set_runtime_services(services)
         self._services = services
-        self._server = build_server(role="read")
+        self._server = build_server(role="read", services=services)
         self._discovery = _registered_discovery(self._server, self.transport_name)
         if self.discovery_mutator is not None:
             self._discovery = require_json_document(
@@ -1162,7 +1162,7 @@ def _continuation_arguments(arguments: Mapping[str, object], continuation: str |
             kind="missing_pagination_expression",
             failure_class="plan",
         )
-    return {"expression": expression, "continuation": continuation}
+    return {"continuation": continuation}
 
 
 def _validate_scenario_declaration(scenario: ContinuityScenarioSpec) -> None:
@@ -1193,7 +1193,7 @@ def _validate_scenario_declaration(scenario: ContinuityScenarioSpec) -> None:
                 kind="missing_item_identity_contract",
                 failure_class="plan",
             )
-        if step.exact_count_probe and (not step.paginate or step.tool != "query_units"):
+        if step.exact_count_probe and (not step.paginate or step.tool != "query"):
             raise ContinuityReplayError(
                 f"step {step.step_id!r} declares an unsupported exact-count probe",
                 kind="invalid_exact_count_probe_contract",

@@ -150,8 +150,8 @@ def _validate_call(tool: str, arguments: Mapping[str, object]) -> str | None:
         if not contract.supports_continuation:
             return f"{tool}: continuation-only call documented for non-continuable transaction"
         value = arguments.get("continuation")
-        if not isinstance(value, str) or not value.startswith("q1."):
-            return f"{tool}: continuation example is not an opaque q1 token"
+        if not isinstance(value, str) or not value.startswith("q2."):
+            return f"{tool}: continuation example is not an opaque q2 token"
         return None
     missing = set(contract.required_initial_arguments) - names
     if missing:

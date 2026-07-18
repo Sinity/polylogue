@@ -555,13 +555,18 @@ def query_unit_envelope(
         if next_offset is not None
         else None
     )
-    return envelope.model_copy(
+    result = envelope.model_copy(
         update={
             "query_ref": canonical_request.query_ref,
             "result_ref": result_ref,
             "continuation": continuation,
         }
     )
+    # MCP may clip one physical storage page to its smaller byte budget. Keep
+    # the framed request outside the public payload so it can mint a cursor
+    # from the retained prefix even when the storage page was final.
+    object.__setattr__(result, "_transaction_request", canonical_request)
+    return result
 
 
 __all__ = [

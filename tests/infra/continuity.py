@@ -85,6 +85,10 @@ def seed_continuity_archive(
     db_path = archive_root / "index.db"
     if db_path.exists() or (archive_root / "user.db").exists():
         raise ValueError(f"continuity archive root must be fresh: {archive_root}")
+    # The public q2 continuation binds the derived index frame.  Seed through
+    # the real current DDL so the stdio and registered MCP routes exercise the
+    # same frame table rather than a legacy SessionBuilder-only schema.
+    initialize_archive_database(db_path, ArchiveTier.INDEX)
 
     _seed_text_scenario(
         db_path,

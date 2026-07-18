@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from typing_extensions import Self, TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
@@ -2700,6 +2700,7 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     query_ref: str | None = None
     result_ref: str | None = None
     continuation: str | None = None
+    _transaction_request: object | None = PrivateAttr(default=None)
 
 
 class QueryUnitAggregateEnvelope(SurfacePayloadModel):
@@ -2724,6 +2725,7 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
     query_ref: str | None = None
     result_ref: str | None = None
     continuation: str | None = None
+    _transaction_request: object | None = PrivateAttr(default=None)
 
 
 QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope

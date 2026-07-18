@@ -2913,10 +2913,10 @@ class PolylogueArchiveMixin:
 
     async def query_units(
         self,
-        expression: str,
+        expression: str | None = None,
         *,
-        limit: int = 50,
-        offset: int = 0,
+        limit: int | None = None,
+        offset: int | None = None,
         origin: str | None = None,
         origins: tuple[str, ...] = (),
         excluded_origins: tuple[str, ...] = (),
@@ -2948,16 +2948,79 @@ class PolylogueArchiveMixin:
         min_words: int | None = None,
         max_words: int | None = None,
         message_type: str | None = None,
+        continuation: str | None = None,
     ) -> QueryUnitResultEnvelope:
         """Execute a terminal unit-source query."""
         from polylogue.archive.query.execution_control import classify_unit_expression_workload
-        from polylogue.archive.query.transaction import QueryTransaction, query_units_transaction_request
+        from polylogue.archive.query.transaction import (
+            QueryContinuationInvalidError,
+            QueryTransaction,
+            decode_query_units_continuation,
+            query_units_transaction_request,
+        )
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+
+        supplied_filters = any(
+            (
+                origin is not None,
+                origins,
+                excluded_origins,
+                tag is not None,
+                tags,
+                excluded_tags,
+                repo is not None,
+                repo_names,
+                project is not None,
+                project_refs,
+                has_types,
+                tool_terms,
+                excluded_tool_terms,
+                action_terms,
+                excluded_action_terms,
+                action_sequence,
+                action_text_terms,
+                referenced_paths,
+                cwd_prefix is not None,
+                title is not None,
+                since is not None,
+                until is not None,
+                has_tool_use,
+                has_thinking,
+                has_paste,
+                typed_only,
+                min_messages is not None,
+                max_messages is not None,
+                min_words is not None,
+                max_words is not None,
+                message_type is not None,
+            )
+        )
+        continuation_request = None
+        if continuation is not None:
+            if expression is not None or limit is not None or offset is not None or supplied_filters:
+                raise QueryContinuationInvalidError(
+                    "continuation requests must not override the original query parameters"
+                )
+            continuation_request = decode_query_units_continuation(continuation).request
+            continuation_arguments = continuation_request.arguments
+            expression = str(continuation_arguments["expression"])
+            session_filters = continuation_arguments["session_filters"]
+            assert isinstance(session_filters, Mapping)
+            effective_limit = continuation_request.page_size
+            effective_offset = continuation_request.offset
+        else:
+            if expression is None or not expression.strip():
+                raise QueryContinuationInvalidError("initial query requires a non-empty expression")
+            session_filters = None
+            effective_limit = max(1, limit if limit is not None else 50)
+            effective_offset = max(0, offset if offset is not None else 0)
+        assert expression is not None
 
         request = query_unit_request(
             expression=expression,
-            limit=limit,
-            offset=offset,
+            limit=effective_limit,
+            offset=effective_offset,
+            session_filters=session_filters,
             origin=origin,
             origins=origins,
             tags=(tag,) if tag else tags,
@@ -2992,11 +3055,12 @@ class PolylogueArchiveMixin:
         archive_root = _active_archive_root(self.config)
         transaction = QueryTransaction(
             archive_root,
-            query_units_transaction_request(
+            continuation_request
+            or query_units_transaction_request(
                 expression=expression,
                 session_filters=request.session_filters or {},
-                page_size=max(1, limit),
-                offset=offset,
+                page_size=effective_limit,
+                offset=effective_offset,
             ),
             workload_class=classify_unit_expression_workload(expression),
         )

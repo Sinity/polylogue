@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from polylogue.core.json import JSONValue
 from polylogue.insights.authored_payloads import PayloadDict
 from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
 
@@ -33,10 +34,12 @@ ContinuityAttemptGrade = Literal[
     "unreasonable_query",
 ]
 ContinuityTool = Literal[
-    "query_units",
-    "provider_usage",
-    "explain_query_expression",
-    "list_read_view_profiles",
+    "query",
+    "read",
+    "get",
+    "explain",
+    "context",
+    "status",
 ]
 ContinuityFactReducer = Literal[
     "count",
@@ -49,7 +52,7 @@ ContinuityFactReducer = Literal[
 ]
 JsonPathSegment: TypeAlias = str | int
 JsonPath: TypeAlias = tuple[JsonPathSegment, ...]
-RouteArgumentValue: TypeAlias = str | int | float | bool | None
+RouteArgumentValue: TypeAlias = JSONValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,9 +120,9 @@ class ContinuityRouteStep:
     @property
     def plan_atom(self) -> str:
         expression = self.argument_dict().get("expression")
-        if self.tool == "query_units" and isinstance(expression, str):
+        if self.tool == "query" and isinstance(expression, str):
             unit = expression.split(maxsplit=1)[0]
-            return f"query_units:{unit}"
+            return f"query:{unit}"
         return self.tool
 
 
@@ -357,7 +360,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "resume-messages",
-                "query_units",
+                "query",
                 _args(expression="messages where text:{fixture:corpus.resume.marker}", limit=2),
                 paginate=True,
                 exact_count_probe=True,
@@ -395,7 +398,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "forensic-actions",
-                "query_units",
+                "query",
                 _args(expression="actions where path:{fixture:corpus.forensic_debug.path} AND is_error:true", limit=2),
                 paginate=True,
                 exact_count_probe=True,
@@ -403,7 +406,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             ),
             ContinuityRouteStep(
                 "forensic-files",
-                "query_units",
+                "query",
                 _args(expression="files where path:{fixture:corpus.forensic_debug.path}", limit=2),
                 paginate=True,
                 exact_count_probe=True,
@@ -432,7 +435,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         ),
         workflows=("find-then-read-messages", "resolve-ref-drilldown"),
         plans=("action-query", "file-query"),
-        equivalent_plan_signatures=(("query_units:files", "query_units:actions"),),
+        equivalent_plan_signatures=(("query:files", "query:actions"),),
         coverage=("error actions", "referenced files", "message and block evidence"),
         result_semantics=ContinuityResultSemantics(
             target_population="error actions and file references for the supplied path",
@@ -448,7 +451,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "prior-messages",
-                "query_units",
+                "query",
                 _args(expression="messages where text:{fixture:corpus.prior_art.marker}", limit=2),
                 paginate=True,
                 exact_count_probe=True,
@@ -501,7 +504,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "decision-assertions",
-                "query_units",
+                "query",
                 _args(expression="assertions where kind:decision AND text:{fixture:corpus.decision.marker}", limit=2),
                 paginate=True,
                 exact_count_probe=True,
@@ -543,7 +546,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "failed-actions",
-                "query_units",
+                "query",
                 _args(expression="actions where output:{fixture:corpus.postmortem.marker} AND is_error:true", limit=2),
                 paginate=True,
                 exact_count_probe=True,
@@ -585,15 +588,14 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "usage-report",
-                "provider_usage",
-                _args(origin="{fixture:corpus.origin}", limit=10, detail="headline"),
+                "status",
+                _args(scope="archive", include=["provider_usage"], ref="{fixture:corpus.origin}"),
             ),
         ),
         facts=(
             _fact(
                 "input_tokens",
                 "usage-report",
-                "metadata",
                 "provider_usage",
                 "model_rollup_usage",
                 "input_tokens",
@@ -601,7 +603,6 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             _fact(
                 "output_tokens",
                 "usage-report",
-                "metadata",
                 "provider_usage",
                 "model_rollup_usage",
                 "output_tokens",
@@ -609,7 +610,6 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             _fact(
                 "cached_input_tokens",
                 "usage-report",
-                "metadata",
                 "provider_usage",
                 "model_rollup_usage",
                 "cached_input_tokens",
@@ -617,12 +617,11 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             _fact(
                 "total_tokens",
                 "usage-report",
-                "metadata",
                 "provider_usage",
                 "model_rollup_usage",
                 "total_tokens",
             ),
-            _fact("pricing_grain", "usage-report", "metadata", "provider_usage", "pricing_grain"),
+            _fact("pricing_grain", "usage-report", "provider_usage", "pricing_grain"),
         ),
         evidence=(
             _evidence(
@@ -656,16 +655,16 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "query-explanation",
-                "explain_query_expression",
-                _args(expression="assertions where kind:decision AND status:active"),
+                "explain",
+                _args(subject="query", expression="assertions where kind:decision AND status:active"),
             ),
-            ContinuityRouteStep("read-views", "list_read_view_profiles"),
+            ContinuityRouteStep("read-views", "explain", _args(subject="capability")),
         ),
         facts=(
             _fact(
                 "selected_units",
                 "query-explanation",
-                "query_explanation",
+                "explanation",
                 "selected_units",
                 "*",
                 reducer="unique_values",
@@ -673,7 +672,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             _fact(
                 "unsupported_nodes",
                 "query-explanation",
-                "query_explanation",
+                "explanation",
                 "unsupported_nodes",
                 "*",
                 reducer="count",
@@ -684,7 +683,6 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         evidence=(),
         workflows=("find-then-read-messages", "find-then-context-image", "resolve-ref-drilldown"),
         plans=("grammar-introspection", "read-view-catalog"),
-        equivalent_plan_signatures=(("list_read_view_profiles", "explain_query_expression"),),
         coverage=("query grammar", "selected terminal units", "read-view profile catalog"),
         result_semantics=ContinuityResultSemantics(
             target_population="the executable query grammar and shipped read-view profiles",
@@ -700,7 +698,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
         steps=(
             ContinuityRouteStep(
                 "incident-members",
-                "query_units",
+                "query",
                 _args(
                     expression=(
                         "messages where text:parallel-child "
@@ -714,7 +712,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             ),
             ContinuityRouteStep(
                 "incident-other-members",
-                "query_units",
+                "query",
                 _args(
                     expression=(
                         "messages where text:parallel-child "
@@ -728,7 +726,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             ),
             ContinuityRouteStep(
                 "incident-all-children",
-                "query_units",
+                "query",
                 _args(
                     expression=(
                         "runs where native_parent_session_id:"
@@ -742,7 +740,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             ),
             ContinuityRouteStep(
                 "incident-invocations",
-                "query_units",
+                "query",
                 _args(
                     expression=('messages where text:"workflow-invocation:{fixture:corpus.parallel_incident.run_ref}"'),
                     limit=2,
@@ -753,7 +751,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             ),
             ContinuityRouteStep(
                 "incident-final",
-                "query_units",
+                "query",
                 _args(
                     expression=(
                         'messages where text:"final-structured-result:{fixture:corpus.parallel_incident.run_ref}"'
@@ -766,7 +764,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
             ),
             ContinuityRouteStep(
                 "incident-curriculum",
-                "query_units",
+                "query",
                 _args(
                     expression=('messages where text:"incident-curriculum:{fixture:corpus.parallel_incident.run_ref}"'),
                     limit=3,

@@ -3903,7 +3903,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         from polylogue.archive.query.expression import ExpressionCompileError
         from polylogue.archive.query.spec import clamp_query_limit
-        from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
+        from polylogue.archive.query.transaction import (
+            QueryContinuationInvalidError,
+            QueryTransactionRequest,
+            decode_query_units_continuation,
+        )
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
         continuation_token = self._get_param(params, "continuation")
@@ -3918,27 +3922,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                continuation = QueryContinuation.decode(continuation_token)
+                continuation = decode_query_units_continuation(continuation_token)
                 continuation_request = continuation.request
                 arguments = continuation_request.arguments
                 expression_value = arguments.get("expression")
                 filters_value = arguments.get("session_filters", {})
-                expected_result_ref = continuation_request.result_ref
-                if (
-                    continuation_request.operation != "query_units"
-                    or continuation_request.projection != "terminal-unit-envelope"
-                    or continuation_request.stable_order != "canonical"
-                    or set(arguments) != {"expression", "session_filters"}
-                    or not isinstance(expression_value, str)
-                    or not expression_value.strip()
-                    or not isinstance(filters_value, Mapping)
-                    or continuation.result_ref != expected_result_ref
-                ):
-                    raise ValueError("continuation does not identify a query-unit result")
+                if not isinstance(expression_value, str) or not isinstance(filters_value, Mapping):
+                    raise QueryContinuationInvalidError("continuation does not identify a query-unit result")
                 expression = expression_value
                 session_filters = {str(key): value for key, value in filters_value.items()}
                 limit = clamp_query_limit(continuation_request.page_size, default=50)
                 offset = continuation_request.offset
+            except QueryContinuationInvalidError as exc:
+                self._send_error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
+                return
             except (TypeError, ValueError) as exc:
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_continuation", str(exc))
                 return
