@@ -1374,6 +1374,138 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
 
 
 @pytest.mark.asyncio
+async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A Workflow snapshot is raw authority, not a failed zero-session JSON file."""
+
+    root = workspace_env["data_root"] / "claude-projects"
+    run_path = root / "fixture" / "workflows" / "wf_live_fact.json"
+    run_path.parent.mkdir(parents=True)
+    run_path.write_text(
+        json.dumps(
+            {
+                "runId": "wf_live_fact",
+                "taskId": "live-fact-admission",
+                "status": "running",
+            }
+        ),
+        encoding="utf-8",
+    )
+    db_path = workspace_env["archive_root"] / "index.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        metrics = await processor.ingest_files([run_path], emit_event=False)
+
+        assert metrics.succeeded_file_count == 1
+        assert metrics.failed_file_count == 0
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM raw_sessions WHERE source_path = ?",
+                    (str(run_path),),
+                ).fetchone()[0]
+                == 1
+            )
+
+        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+
+        summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
+        assert summary.current_artifact_count == 1
+        assert summary.artifact_counts == {"workflow_run_snapshot": 1}
+        assert summary.run_count == 1
+        assert any("missing workflow journal" in gap for gap in summary.gaps)
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A growing Workflow journal retains full raw revisions and advances its current pointer."""
+
+    root = workspace_env["data_root"] / "claude-projects"
+    run_id = "wf_live_journal"
+    run_path = root / "fixture" / "workflows" / f"{run_id}.json"
+    journal_path = root / "fixture" / "subagents" / "workflows" / run_id / "journal.jsonl"
+    run_path.parent.mkdir(parents=True)
+    journal_path.parent.mkdir(parents=True)
+    run_path.write_text(json.dumps({"runId": run_id, "status": "running"}), encoding="utf-8")
+    _write_jsonl(
+        journal_path,
+        [
+            {
+                "runId": run_id,
+                "event": "attempt_started",
+                "contentKey": "call-00",
+                "attemptId": "attempt-00",
+            }
+        ],
+    )
+    db_path = workspace_env["archive_root"] / "index.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        first = await processor.ingest_files([run_path, journal_path], emit_event=False)
+        with journal_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "runId": run_id,
+                        "event": "result",
+                        "contentKey": "call-00",
+                        "attemptId": "attempt-00",
+                        "structuredResult": {"ok": True},
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        second = await processor.ingest_files([journal_path], emit_event=False)
+
+        assert first.succeeded_file_count == 2
+        assert second.succeeded_file_count == 1
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM raw_sessions WHERE source_path = ?",
+                    (str(journal_path),),
+                ).fetchone()[0]
+                == 2
+            )
+
+        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+
+        summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
+        assert summary.current_artifact_count == 2
+        assert summary.retained_raw_revision_count == 3
+        assert summary.artifact_counts == {
+            "workflow_journal": 1,
+            "workflow_run_snapshot": 1,
+        }
+        assert summary.call_count == 1
+        assert summary.journal_result_count == 1
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_live_append_merges_tail_visible_through_public_archive_read(workspace_env: dict[str, Path]) -> None:
     root = workspace_env["data_root"] / "claude-projects"
     project = root / "project"
@@ -2229,6 +2361,16 @@ def test_inbox_source_accepts_zip_and_archive_formats() -> None:
     assert ".json" in inbox.suffixes
     assert ".jsonl" in inbox.suffixes
     assert ".ndjson" in inbox.suffixes
+
+
+def test_claude_default_source_projects_originspec_suffixes() -> None:
+    """Claude live admission must follow the OriginSpec artifact contract."""
+    from polylogue.sources.live.watcher import default_sources
+
+    claude = next(source for source in default_sources() if source.name == "claude-code")
+    assert set(claude.suffixes) == {".json", ".jsonl", ".ndjson"}
+    assert claude.accepts(claude.root / "workflows" / "wf.json")
+    assert claude.accepts(claude.root / "project" / "session.jsonl")
 
 
 def test_browser_capture_spool_is_default_json_source(

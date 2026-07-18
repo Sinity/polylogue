@@ -1,10 +1,9 @@
 """Claude Code Workflow artifact admission and evidence-preserving parsing.
 
-Workflow artifacts are not synthetic sessions.  This module parses their
-provider-native fields into fact-shaped values with a source-path provenance
-handle, while the generic work-evidence adapter decides how to materialize
-them.  Missing counterpart artifacts are reported as gaps rather than paired
-by filename wishful thinking.
+Workflow fact artifacts remain source-tier authorities rather than synthetic
+sessions.  This module parses provider-native fields while retaining the source
+path and line that support each fact.  Association and graph materialization
+are separate: missing peers become coverage debt instead of filename guesses.
 """
 
 from __future__ import annotations
@@ -18,6 +17,69 @@ from pathlib import Path
 from polylogue.core.enums import Provider
 from polylogue.sources.origin_specs import artifact_rule_for_path
 
+_DOCUMENT_FIELDS = frozenset(
+    {
+        "runId",
+        "run_id",
+        "workflowRunId",
+        "workflow_run_id",
+        "taskId",
+        "task_id",
+        "resumeFromRunId",
+        "resume_from_run_id",
+        "workflow",
+        "workflowName",
+        "workflow_name",
+        "name",
+        "scriptPath",
+        "script_path",
+        "scriptHash",
+        "script_hash",
+        "phases",
+        "labels",
+        "status",
+        "phase",
+        "progress",
+        "model",
+        "timing",
+        "startedAt",
+        "started_at",
+        "completedAt",
+        "completed_at",
+        "tokens",
+        "tools",
+        "result",
+        "results",
+        "structuredResult",
+        "structured_result",
+        "finalResult",
+        "final_result",
+        "agentId",
+        "agent_id",
+        "sessionId",
+        "session_id",
+        "attempt",
+        "attemptId",
+        "attempt_id",
+        "contentKey",
+        "content_key",
+        "callKey",
+        "call_key",
+        "transcriptPath",
+        "transcript_path",
+        "metaPath",
+        "meta_path",
+        "attributionAgent",
+        "attribution_agent",
+        "entrypoint",
+        "adoptedSessionId",
+        "adopted_session_id",
+        "unresolved",
+        "error",
+    }
+)
+_JOURNAL_FIELDS = _DOCUMENT_FIELDS | frozenset({"type", "event", "key", "ordinal", "retryOf", "retry_of"})
+
 
 def _string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
@@ -30,9 +92,16 @@ def _first_string(payload: Mapping[str, object], *keys: str) -> str | None:
     return None
 
 
+def _agent_id_from_path(source_path: str) -> str | None:
+    name = Path(source_path).name
+    if not name.startswith("agent-"):
+        return None
+    return name.removesuffix(".meta.json").removesuffix(".jsonl").removesuffix(".ndjson")
+
+
 @dataclass(frozen=True, slots=True)
 class ClaudeOrchestrationFact:
-    """One provider-native fact plus direct raw-artifact provenance."""
+    """One provider-native fact plus its direct raw-artifact location."""
 
     kind: str
     source_path: str
@@ -42,6 +111,25 @@ class ClaudeOrchestrationFact:
     content_key: str | None
     payload: dict[str, object]
 
+    @property
+    def attempt_id(self) -> str | None:
+        return _first_string(self.payload, "attemptId", "attempt_id", "attempt") or self.agent_id
+
+    @property
+    def transcript_path(self) -> str | None:
+        return _first_string(self.payload, "transcriptPath", "transcript_path")
+
+    @property
+    def meta_path(self) -> str | None:
+        return _first_string(self.payload, "metaPath", "meta_path")
+
+    @property
+    def is_result(self) -> bool:
+        return any(
+            key in self.payload
+            for key in ("structuredResult", "structured_result", "result", "finalResult", "final_result")
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ClaudeOrchestrationArtifact:
@@ -49,23 +137,25 @@ class ClaudeOrchestrationArtifact:
     source_path: str
     parse_policy: str
     facts: tuple[ClaudeOrchestrationFact, ...]
+    parse_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ClaudeOrchestrationCoverage:
     artifact_counts: dict[str, int]
     paired_agent_ids: tuple[str, ...]
+    run_ids: tuple[str, ...]
     gaps: tuple[str, ...]
 
 
 def parse_claude_orchestration_artifact(
-    source_path: str, payload: bytes | str | object
+    source_path: str,
+    payload: bytes | str | object,
 ) -> ClaudeOrchestrationArtifact | None:
-    """Parse one declared Claude orchestration artifact without inventing links.
+    """Parse one OriginSpec-declared Claude orchestration artifact.
 
-    ``source_path`` itself is the raw-evidence handle.  Callers retain the raw
-    revision and attach its raw id when these facts cross the work-graph
-    boundary; this parser intentionally does not guess one.
+    The source path is kept as the evidence locator.  The archive materializer
+    attaches the retained raw revision ObjectRef; this parser never invents one.
     """
 
     rule = artifact_rule_for_path(Provider.CLAUDE_CODE, source_path)
@@ -87,7 +177,7 @@ def parse_claude_orchestration_artifact(
 
 
 def inventory_claude_orchestration_artifacts(paths: Iterable[str | Path]) -> ClaudeOrchestrationCoverage:
-    """Inventory declared workflow members and report only evidence-backed gaps."""
+    """Inventory declared members and report only evidence-backed gaps."""
 
     artifacts: list[tuple[str, str]] = []
     transcripts: set[str] = set()
@@ -102,9 +192,11 @@ def inventory_claude_orchestration_artifacts(paths: Iterable[str | Path]) -> Cla
         artifacts.append((rule.kind, source_path))
         name = Path(source_path).name
         if rule.kind == "agent_transcript":
-            transcripts.add(name.removesuffix(".jsonl").removesuffix(".ndjson"))
+            if agent_id := _agent_id_from_path(source_path):
+                transcripts.add(agent_id)
         elif rule.kind == "agent_sidecar_meta":
-            metas.add(name.removesuffix(".meta.json"))
+            if agent_id := _agent_id_from_path(source_path):
+                metas.add(agent_id)
         elif rule.kind == "workflow_run_snapshot":
             runs.add(name.removesuffix(".json"))
         elif rule.kind == "workflow_journal":
@@ -118,6 +210,7 @@ def inventory_claude_orchestration_artifacts(paths: Iterable[str | Path]) -> Cla
     return ClaudeOrchestrationCoverage(
         artifact_counts=dict(sorted(Counter(kind for kind, _ in artifacts).items())),
         paired_agent_ids=tuple(sorted(transcripts & metas)),
+        run_ids=tuple(sorted(runs | journals)),
         gaps=tuple(gaps),
     )
 
@@ -133,74 +226,49 @@ def _decode(payload: bytes | str | object, *, jsonl: bool) -> object:
 
 
 def _document_fact(kind: str, source_path: str, payload: Mapping[str, object]) -> ClaudeOrchestrationFact:
-    run_id = _first_string(payload, "runId", "run_id", "workflowRunId", "id")
-    agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
-    retained = {
-        key: value
-        for key, value in payload.items()
-        if key
-        in {
+    fallback_run_id = Path(source_path).stem if kind == "workflow_run_snapshot" else None
+    run_id = (
+        _first_string(
+            payload,
             "runId",
             "run_id",
             "workflowRunId",
-            "taskId",
-            "task_id",
-            "resumeFromRunId",
-            "resume_from_run_id",
-            "workflow",
-            "workflowName",
-            "name",
-            "scriptPath",
-            "scriptHash",
-            "phases",
-            "labels",
-            "status",
-            "model",
-            "timing",
-            "tokens",
-            "tools",
-            "result",
-            "structuredResult",
-            "agentId",
-            "sessionId",
-        }
-    }
-    return ClaudeOrchestrationFact(kind, source_path, None, run_id, agent_id, None, retained)
+            "workflow_run_id",
+            "id",
+        )
+        or fallback_run_id
+    )
+    agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
+    if kind == "agent_sidecar_meta":
+        agent_id = agent_id or _agent_id_from_path(source_path)
+    content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
+    retained = {key: value for key, value in payload.items() if key in _DOCUMENT_FIELDS}
+    return ClaudeOrchestrationFact(kind, source_path, None, run_id, agent_id, content_key, retained)
 
 
 def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) -> ClaudeOrchestrationFact:
-    run_id = _first_string(payload, "runId", "run_id", "workflowRunId") or Path(source_path).parent.name
+    run_id = (
+        _first_string(
+            payload,
+            "runId",
+            "run_id",
+            "workflowRunId",
+            "workflow_run_id",
+        )
+        or Path(source_path).parent.name
+    )
     agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
     content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
-    retained = {
-        key: value
-        for key, value in payload.items()
-        if key
-        in {
-            "type",
-            "event",
-            "callKey",
-            "call_key",
-            "contentKey",
-            "content_key",
-            "attempt",
-            "attemptId",
-            "agentId",
-            "model",
-            "status",
-            "phase",
-            "progress",
-            "timing",
-            "tokens",
-            "tools",
-            "result",
-            "structuredResult",
-            "unresolved",
-            "transcriptPath",
-            "metaPath",
-        }
-    }
-    return ClaudeOrchestrationFact("workflow_journal_entry", source_path, line, run_id, agent_id, content_key, retained)
+    retained = {key: value for key, value in payload.items() if key in _JOURNAL_FIELDS}
+    return ClaudeOrchestrationFact(
+        "workflow_journal_entry",
+        source_path,
+        line,
+        run_id,
+        agent_id,
+        content_key,
+        retained,
+    )
 
 
 __all__ = [

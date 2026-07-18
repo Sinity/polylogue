@@ -45,6 +45,7 @@ class OriginArtifactRule:
     parser_path: str | None
     coverage_role: str
     fidelity_note: str
+    path_suffixes: tuple[str, ...]
 
     def matches(self, source_path: str) -> bool:
         return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
@@ -130,6 +131,12 @@ class OriginSpecRegistry:
             for rule in spec.artifact_rules:
                 if rule.parse_policy != "raw-only" and rule.parser_path is None:
                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires a parser binding")
+                if not rule.path_suffixes:
+                    raise ValueError(f"{spec.origin.value}: {rule.kind} requires acquisition suffixes")
+                if any(not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.path_suffixes):
+                    raise ValueError(
+                        f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes"
+                    )
         elif spec.parser_paths or spec.stream_parser_path is not None:
             raise ValueError(f"{spec.origin.value}: non-executable origin cannot declare a parser binding")
         self._kernel.register(spec.declaration)
@@ -250,6 +257,7 @@ def _claude_code_spec() -> OriginSpec:
                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
                 coverage_role="run_snapshot",
                 fidelity_note="Authoritative mutable workflow run snapshot; every observed revision is retained.",
+                path_suffixes=(".json",),
             ),
             OriginArtifactRule(
                 kind="workflow_journal",
@@ -257,7 +265,10 @@ def _claude_code_spec() -> OriginSpec:
                 parse_policy="fact",
                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
                 coverage_role="journal",
-                fidelity_note="Append-only workflow journal; content keys and unresolved references remain provider evidence.",
+                fidelity_note=(
+                    "Append-only workflow journal; content keys and unresolved references remain provider evidence."
+                ),
+                path_suffixes=(".jsonl",),
             ),
             OriginArtifactRule(
                 kind="agent_transcript",
@@ -266,6 +277,7 @@ def _claude_code_spec() -> OriginSpec:
                 parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
                 coverage_role="attempt_transcript",
                 fidelity_note="Attempt transcript is a session only when provider workflow evidence links it to a run.",
+                path_suffixes=(".jsonl", ".ndjson"),
             ),
             OriginArtifactRule(
                 kind="agent_sidecar_meta",
@@ -274,6 +286,7 @@ def _claude_code_spec() -> OriginSpec:
                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
                 coverage_role="attempt_meta",
                 fidelity_note="Agent metadata never fabricates a transcript pair; missing peers are coverage gaps.",
+                path_suffixes=(".json",),
             ),
             OriginArtifactRule(
                 kind="adopt_manifest",
@@ -282,6 +295,19 @@ def _claude_code_spec() -> OriginSpec:
                 parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
                 coverage_role="adopt_manifest",
                 fidelity_note="Recovery manifest preserves resume/adoption evidence without asserting completed work.",
+                path_suffixes=(".json",),
+            ),
+            OriginArtifactRule(
+                kind="coordinator_session_stream",
+                path_pattern=r"(?:^|/)projects/[^/]+/[^/]+\.(?:jsonl|ndjson)$",
+                parse_policy="session",
+                parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+                coverage_role="coordinator_invocation_stream",
+                fidelity_note=(
+                    "Coordinator streams retain authored prompts and Workflow tool-use events; "
+                    "child topology alone never establishes run membership."
+                ),
+                path_suffixes=(".jsonl", ".ndjson"),
             ),
         ),
     )
@@ -297,6 +323,26 @@ def artifact_rule_for_path(provider: Provider, source_path: str) -> OriginArtifa
             if rule.matches(source_path):
                 return rule
     return None
+
+
+def artifact_suffixes_for_provider(
+    provider: Provider,
+    *,
+    defaults: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Project live-acquisition suffixes from the owning OriginSpec rules.
+
+    Acquisition may add a generic default, but provider artifact families must
+    not maintain a second suffix inventory beside OriginSpec.
+    """
+
+    suffixes = list(defaults)
+    for spec in ORIGIN_SPECS:
+        if provider not in spec.provider_wires:
+            continue
+        for rule in spec.artifact_rules:
+            suffixes.extend(rule.path_suffixes)
+    return tuple(dict.fromkeys(suffix.lower() for suffix in suffixes))
 
 
 def _chatgpt_spec() -> OriginSpec:
@@ -795,5 +841,6 @@ __all__ = [
     "OriginSpecRegistry",
     "origin_specs",
     "artifact_rule_for_path",
+    "artifact_suffixes_for_provider",
     "validate_dispatch_precedence",
 ]

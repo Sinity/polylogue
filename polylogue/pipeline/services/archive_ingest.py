@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
@@ -143,6 +144,11 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
     shared_raw_ids: dict[tuple[str, str, int, str], str] = {}
 
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        counters["raw_rows"] += _admit_non_session_origin_artifacts(
+            archive,
+            sources,
+            acquired_at_ms=acquired_at_ms,
+        )
 
         async def write_pair(
             source: Source,
@@ -322,6 +328,27 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
 
     raw_rows_written = counters["raw_rows"]
     index_rows_written = counters["index_rows"]
+    if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
+        try:
+            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+
+            workflow_summary = materialize_claude_workflow_archive(archive_root)
+            result.batch_observations.append(
+                {
+                    "claude_workflow_materialization": True,
+                    **workflow_summary.as_dict(),
+                }
+            )
+        except Exception as exc:
+            logger.error("Claude Workflow materialization failed after direct archive ingest", exc_info=True)
+            result.batch_observations.append(
+                {
+                    "claude_workflow_materialization": True,
+                    "failed": True,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
     result.batch_observations.append(
         {
             "primary_ingest_store": "archive_file_set",
@@ -339,6 +366,46 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
         }
     )
     return result
+
+
+def _admit_non_session_origin_artifacts(
+    archive: ArchiveStore,
+    sources: list[Source],
+    *,
+    acquired_at_ms: int,
+) -> int:
+    """Retain configured OriginSpec fact artifacts skipped by session parsing."""
+
+    admitted = 0
+    for source in sources:
+        if Provider.from_string(source.name) is not Provider.CLAUDE_CODE:
+            continue
+        walk = _setup_source_walk(
+            source,
+            cursor_state=None,
+            include_mtime=False,
+            known_mtimes=None,
+            discover_sidecars=True,
+        )
+        if walk is None:
+            continue
+        for path in walk.paths_to_process:
+            candidate = path[0] if isinstance(path, tuple) else path
+            classification = classify_artifact_path(candidate, provider=source.name)
+            if classification is None or classification.parse_as_session:
+                continue
+            try:
+                archive.write_raw_payload(
+                    provider=Provider.CLAUDE_CODE,
+                    payload=Path(candidate).read_bytes(),
+                    source_path=str(candidate),
+                    source_index=0,
+                    acquired_at_ms=acquired_at_ms,
+                )
+                admitted += 1
+            except Exception:
+                logger.error("Failed to admit configured Claude fact artifact %s", candidate, exc_info=True)
+    return admitted
 
 
 def _record_post_commit_upkeep(archive_root: Path, result: ParseResult, *, reason: str) -> None:

@@ -12,6 +12,7 @@ from polylogue.sources.origin_specs import (
     ORIGIN_SPEC_REGISTRY,
     ORIGIN_SPECS,
     OriginSpecRegistry,
+    artifact_suffixes_for_provider,
     validate_dispatch_precedence,
 )
 
@@ -36,7 +37,9 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "agent_transcript",
         "agent_sidecar_meta",
         "adopt_manifest",
+        "coordinator_session_stream",
     }
+    assert artifact_suffixes_for_provider(Provider.CLAUDE_CODE) == (".json", ".jsonl", ".ndjson")
     assert claude.detector_tightness == 60
     assert chatgpt.detector_tightness == 70
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")

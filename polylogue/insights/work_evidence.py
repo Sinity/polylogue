@@ -8,7 +8,7 @@ state update on an external object.
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Final, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -43,6 +43,32 @@ WorkEvidenceEdgeKind = Literal[
 ]
 WorkEvidenceAuthority = Literal["provider", "operator", "inferred", "unknown"]
 WorkEvidenceAssociationState = Literal["resolved", "unresolved", "ambiguous", "contradicted", "superseded"]
+WorkEvidenceSourceRef: TypeAlias = EvidenceRef | ObjectRef
+
+
+def parse_work_evidence_source_ref(value: str) -> WorkEvidenceSourceRef:
+    """Parse a durable graph evidence pointer.
+
+    Message/session evidence keeps the established ``EvidenceRef`` string form.
+    Source-tier evidence uses an ``artifact:`` ObjectRef, which lets derived
+    graphs cite retained raw revisions without fabricating a session message.
+    """
+
+    if value.startswith("artifact:"):
+        ref = ObjectRef.parse(value)
+        if ref.kind != "artifact":
+            raise ValueError("raw work-evidence refs must use artifact ObjectRef kind")
+        return ref
+    return EvidenceRef.parse(value)
+
+
+def _validate_source_refs(refs: tuple[WorkEvidenceSourceRef, ...]) -> None:
+    if not refs:
+        raise ValueError("work-evidence records require source evidence")
+    for ref in refs:
+        if isinstance(ref, ObjectRef) and ref.kind != "artifact":
+            raise ValueError("ObjectRef work evidence must use artifact kind")
+
 
 _NODE_REF_KINDS: Final[dict[WorkEvidenceNodeKind, frozenset[str]]] = {
     "run": frozenset({"run"}),
@@ -65,7 +91,7 @@ class WorkEvidenceNode(ArchiveInsightModel):
     ref: ObjectRef
     kind: WorkEvidenceNodeKind
     label: str
-    evidence_refs: tuple[EvidenceRef, ...]
+    evidence_refs: tuple[WorkEvidenceSourceRef, ...]
     corpus_snapshot_ref: ObjectRef
     authority: WorkEvidenceAuthority = "unknown"
     confidence: float = Field(ge=0.0, le=1.0)
@@ -82,8 +108,7 @@ class WorkEvidenceNode(ArchiveInsightModel):
             raise ValueError(f"{self.kind} nodes require a {expected} ref, not {self.ref.kind}")
         if not self.label.strip():
             raise ValueError("work-evidence node label cannot be empty")
-        if not self.evidence_refs:
-            raise ValueError("work-evidence nodes require source evidence")
+        _validate_source_refs(self.evidence_refs)
         if self.kind == "claim" and not (self.claim_text and self.claim_text.strip()):
             raise ValueError("claim nodes require claim_text")
         if self.kind != "claim" and self.claim_text is not None:
@@ -104,7 +129,7 @@ class WorkEvidenceEdge(ArchiveInsightModel):
     kind: WorkEvidenceEdgeKind
     source_ref: ObjectRef
     target_ref: ObjectRef
-    evidence_refs: tuple[EvidenceRef, ...]
+    evidence_refs: tuple[WorkEvidenceSourceRef, ...]
     corpus_snapshot_ref: ObjectRef
     authority: WorkEvidenceAuthority = "unknown"
     confidence: float = Field(ge=0.0, le=1.0)
@@ -117,8 +142,7 @@ class WorkEvidenceEdge(ArchiveInsightModel):
             raise ValueError("work-evidence edges require a work-edge ref")
         if self.source_ref == self.target_ref:
             raise ValueError("work-evidence edges cannot self-reference")
-        if not self.evidence_refs:
-            raise ValueError("work-evidence edges require source evidence")
+        _validate_source_refs(self.evidence_refs)
         return self
 
 
@@ -208,6 +232,8 @@ __all__ = [
     "WorkEvidenceNode",
     "WorkEvidenceNodeKind",
     "WorkEvidenceTraversal",
+    "WorkEvidenceSourceRef",
+    "parse_work_evidence_source_ref",
     "node_from_projected_run",
     "session_segment_from_observed_events",
 ]

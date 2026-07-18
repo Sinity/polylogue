@@ -1105,6 +1105,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
     (which stages to ``archive_root()/inbox``) is observed by the
     daemon-owned watcher.
     """
+    from polylogue.core.enums import Provider
     from polylogue.paths import (
         antigravity_path,
         archive_root,
@@ -1114,9 +1115,14 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         gemini_cli_path,
         hermes_sessions_path,
     )
+    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
     return (
-        WatchSource(name="claude-code", root=claude_code_path()),
+        WatchSource(
+            name="claude-code",
+            root=claude_code_path(),
+            suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
+        ),
         WatchSource(name="codex", root=codex_path()),
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
         # Hermes emits four independently durable source classes under its

@@ -8,10 +8,12 @@ already decoded for parsing anyway).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.ingest_support import PARSE_STAGES
 from polylogue.pipeline.payload_types import ParseBatchObservation, ParseBatchObservationSummary
@@ -273,6 +275,19 @@ async def ingest_sources(
             failures=parse_result.parse_failures,
         )
 
+    workflow_diagnostics: dict[str, object] | None = None
+    if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
+        t0 = time.perf_counter()
+        try:
+            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+
+            summary = await asyncio.to_thread(materialize_claude_workflow_archive, service.archive_root)
+            workflow_diagnostics = summary.as_dict()
+        except Exception as exc:
+            logger.error("Claude Workflow materialization failed after configured ingest", exc_info=True)
+            workflow_diagnostics = {"failed": True, "error": f"{type(exc).__name__}: {exc}"}
+        timings["claude_workflow"] = time.perf_counter() - t0
+
     total_s = time.perf_counter() - t_total
     logger.info(
         "ingest_complete",
@@ -280,16 +295,20 @@ async def ingest_sources(
         **{f"{k}_s": round(v, 2) for k, v in timings.items()},
     )
 
+    diagnostics = {
+        "acquisition": acquire_result.diagnostics,
+        "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
+    }
+    if workflow_diagnostics is not None:
+        diagnostics["claude_workflow"] = workflow_diagnostics
+
     return IngestResult(
         acquire_result=acquire_result,
         validation_result=None,
         parse_result=parse_result,
         parse_raw_ids=parse_raw_ids,
         timings=timings,
-        diagnostics={
-            "acquisition": acquire_result.diagnostics,
-            "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
-        },
+        diagnostics=diagnostics,
     )
 
 

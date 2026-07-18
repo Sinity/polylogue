@@ -99,6 +99,7 @@ class ParseBatchObservationSummary(TypedDict, total=False):
 class IngestDiagnostics(TypedDict, total=False):
     acquisition: AcquireDiagnostics
     batch_observations: ParseBatchObservationSummary
+    claude_workflow: dict[str, object]
 
 
 class MaterializeStageObservation(TypedDict, total=False):

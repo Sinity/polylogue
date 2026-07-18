@@ -21,9 +21,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
+from polylogue.core.enums import Provider
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
+from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
@@ -318,6 +320,74 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         execute_sessions=execute_sessions,
         cpu_bound=False,
         false_means_pending=True,
+    )
+
+
+# ── Stage: Claude Workflow evidence ──────────────────────────────
+
+
+def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
+    """Rebuild Claude Workflow graphs after any admitted family member changes."""
+
+    def archive_root() -> Path:
+        active_index = _active_archive_index_path(db_path)
+        return (active_index or db_path).parent
+
+    def relevant(path: Path) -> bool:
+        return artifact_rule_for_path(Provider.CLAUDE_CODE, str(path)) is not None
+
+    def check(path: Path) -> bool:
+        if not relevant(path):
+            return False
+        try:
+            from polylogue.insights.claude_workflow_materializer import (
+                claude_workflow_materialization_needed,
+            )
+
+            return claude_workflow_materialization_needed(archive_root())
+        except FileNotFoundError:
+            return False
+        except Exception:
+            logger.warning("claude-workflow freshness probe failed", exc_info=True)
+            return True
+
+    def execute(path: Path) -> StageExecuteReturn:
+        if not relevant(path):
+            return True
+        try:
+            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+
+            summary = materialize_claude_workflow_archive(archive_root())
+            logger.info(
+                "claude-workflow: materialized runs=%d calls=%d attempts=%d gaps=%d",
+                summary.run_count,
+                summary.call_count,
+                summary.attempt_count,
+                len(summary.gaps),
+            )
+            return True
+        except Exception:
+            logger.warning("claude-workflow: materialization failed", exc_info=True)
+            return False
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        candidates = {path for path in paths if relevant(path)}
+        if not candidates:
+            return set()
+        return candidates if check(next(iter(candidates))) else set()
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        candidates = [path for path in paths if relevant(path)]
+        return True if not candidates else execute(candidates[0])
+
+    return ConvergenceStage(
+        name="claude_workflow",
+        description="Rebuild evidence-backed Claude Workflow topology from current raw authority",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+        cpu_bound=False,
     )
 
 
@@ -711,6 +781,7 @@ def make_default_convergence_stages(
         (
             make_fts_stage(db_path),
             make_embed_stage(db_path),
+            make_claude_workflow_stage(db_path),
             make_insights_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )
@@ -1906,6 +1977,7 @@ def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequenc
 
 
 __all__ = [
+    "make_claude_workflow_stage",
     "make_default_convergence_stages",
     "make_embed_stage",
     "make_fts_stage",

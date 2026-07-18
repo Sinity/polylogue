@@ -137,7 +137,9 @@ def _graph() -> WorkEvidenceGraph:
     result = _node("structured-result", "result:1")
     original_claim = _node("claim", "claim:1", claim_text="task completed")
     corrected_claim = _node("claim", "claim:2", claim_text="task completed with residual scope")
-    artifact = _node("artifact", "archive:result.json")
+    artifact = _node("artifact", "archive:result.json").model_copy(
+        update={"evidence_refs": (ObjectRef(kind="artifact", object_id="raw:artifact-result"),)}
+    )
     nodes = (
         run,
         actor_node,
@@ -205,6 +207,11 @@ async def test_codex_agent_task_graph_round_trips_and_traverses_bidirectionally(
             focal_ref="actor:agent:codex",
             direction="incoming",
         )
+        artifact_traversal = await repository.traverse_work_evidence(
+            graph_id=graph.graph_id,
+            focal_ref="artifact:archive:result.json",
+            direction="incoming",
+        )
 
     assert traversal is not None
     assert {node.ref.object_id for node in traversal.nodes} >= {
@@ -218,6 +225,9 @@ async def test_codex_agent_task_graph_round_trips_and_traverses_bidirectionally(
     assert [(edge.kind, edge.source_ref.object_id) for edge in incoming.edges] == [("invoked", "codex:invoke:1")]
     assert actor_traversal is not None
     assert [(edge.kind, edge.source_ref.kind) for edge in actor_traversal.edges] == [("mentioned", "run")]
+    assert artifact_traversal is not None
+    stored_artifact = next(node for node in artifact_traversal.nodes if node.kind == "artifact")
+    assert stored_artifact.evidence_refs == (ObjectRef(kind="artifact", object_id="raw:artifact-result"),)
 
 
 def test_graph_preserves_many_to_many_retries_resumes_and_unresolved_associations() -> None:
