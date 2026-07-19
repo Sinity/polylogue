@@ -155,8 +155,8 @@ deliberate tricks:
 - Hot-file quiet deferral (`convergence_stages.py`) batches still-appending
   Codex/Claude sessions until a quiet window; embed runs in bounded windows.
 
-CPU-bound stages go to a `ProcessPoolExecutor`; the main process stays the
-**sole SQLite writer**. Blob GC uses two independent safety invariants (leases +
+The main process is the **sole SQLite writer** — no convergence stage runs in
+a worker process. Blob GC uses two independent safety invariants (leases +
 snapshot reference check) to bridge the acquire-blob → commit-row window.
 
 ### Schema regimes (durability-keyed)
