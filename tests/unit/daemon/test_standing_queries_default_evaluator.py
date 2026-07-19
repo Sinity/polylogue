@@ -71,7 +71,7 @@ def test_default_stage_set_evaluates_a_watched_query_without_an_injected_fake(tm
 
     stages = make_default_convergence_stages(archive_root / "index.db")
     standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
-    converger = DaemonConverger(stages=(standing_stage,), max_workers=1)
+    converger = DaemonConverger(stages=(standing_stage,))
     states, _timings = converger.converge_sessions((session_id,))
     assert states[session_id].stages["standing-queries"].value == "done"
 

@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.pipeline.services.process_pool import process_pool_executor, terminate_process_pool
 
 logger = get_logger(__name__)
 _INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
@@ -76,8 +74,6 @@ class ConvergenceStage:
     # These avoid resolving a failed derived subject back to source files.
     check_sessions: Callable[[Sequence[str]], set[str]] | None = None
     execute_sessions: Callable[[Sequence[str]], StageExecuteReturn] | None = None
-    # Can run in a worker process (CPU-bound, no SQLite write).
-    cpu_bound: bool = False
     # Some stages intentionally return False after doing bounded successful
     # work so the remaining backlog is retried as convergence debt.
     false_means_pending: bool = False
@@ -167,28 +163,17 @@ class DaemonConverger:
     """Drives archive state toward desired state for all source files.
 
     Runs a set of :class:`ConvergenceStage` checks against each file.
-    CPU-bound stages are dispatched to a :class:`~concurrent.futures.ProcessPoolExecutor`.
     The main process is the only SQLite writer.
     """
 
-    def __init__(
-        self,
-        stages: Iterable[ConvergenceStage],
-        *,
-        max_workers: int | None = None,
-    ) -> None:
+    def __init__(self, stages: Iterable[ConvergenceStage]) -> None:
         self._stages: dict[str, ConvergenceStage] = {s.name: s for s in stages}
-        self._max_workers = max_workers or 2
         self._file_states: dict[Path, FileState] = {}
         self._session_states: dict[str, SessionState] = {}
-        self._executor: ProcessPoolExecutor | None = None
 
     @property
     def stage_names(self) -> list[str]:
         return list(self._stages)
-
-    def _has_cpu_bound_stage(self) -> bool:
-        return any(stage.cpu_bound for stage in self._stages.values())
 
     def stage_status(self) -> dict[str, dict[str, object]]:
         """Return bounded stage-owned status without propagating secret detail."""
@@ -278,29 +263,6 @@ class DaemonConverger:
             return set(session_ids)
         return blocked.intersection(session_ids)
 
-    async def start(self) -> None:
-        if self._executor is not None:
-            return
-        if not self._has_cpu_bound_stage():
-            logger.info(
-                "converger: started without worker pool, stages=%s",
-                list(self._stages),
-            )
-            return
-        self._executor = process_pool_executor(max_workers=self._max_workers)
-        logger.info(
-            "converger: started with %d worker(s), stages=%s",
-            self._max_workers,
-            list(self._stages),
-        )
-
-    async def stop(self) -> None:
-        executor = self._executor
-        self._executor = None
-        if executor is not None:
-            terminate_process_pool(executor)
-        logger.info("converger: stopped")
-
     def converge_file(self, path: Path) -> FileState:
         """Converge one file while honoring durable stage barriers."""
         if path not in self._file_states:
@@ -334,11 +296,7 @@ class DaemonConverger:
                         state.stages[stage_name] = StageState.IN_PROGRESS
                         t_stage = time.perf_counter()
                         try:
-                            if stage.cpu_bound and self._executor is not None:
-                                future = self._executor.submit(stage.execute, path)
-                                execute_result = future.result()
-                            else:
-                                execute_result = stage.execute(path)
+                            execute_result = stage.execute(path)
                         except Exception as exc:
                             logger.warning(
                                 "converger: execute failed for %s stage=%s: %s",
@@ -412,7 +370,7 @@ class DaemonConverger:
             if not active_paths:
                 continue
 
-            if stage.check_many is None or stage.execute_many is None or stage.cpu_bound:
+            if stage.check_many is None or stage.execute_many is None:
                 for path in active_paths:
                     state = self._file_states[path]
                     try:
@@ -561,7 +519,7 @@ class DaemonConverger:
             if not active_ids:
                 continue
 
-            if stage.check_sessions is None or stage.execute_sessions is None or stage.cpu_bound:
+            if stage.check_sessions is None or stage.execute_sessions is None:
                 for session_id in active_ids:
                     self._session_states[session_id].stages[stage_name] = StageState.SKIPPED
             else:

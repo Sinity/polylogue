@@ -204,7 +204,7 @@ def test_promoted_expected_count_divergence_targets_original_finding_without_wat
         mark_assertion_status(conn, original.assertion_id, AssertionStatus.ACCEPTED, now_ms=2)
         conn.commit()
     stage = make_standing_query_stage(index_db, evaluator=_Evaluator(members=("session:one", "session:two")))
-    converger = DaemonConverger(stages=(stage,), max_workers=1)
+    converger = DaemonConverger(stages=(stage,))
     states, _ = converger.converge_sessions(("session:changed",))
     assert states["session:changed"].stages["standing-queries"].value == "done"
 

@@ -257,7 +257,6 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         execute_many=execute_many,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
-        cpu_bound=False,
         false_means_pending=True,
     )
 
@@ -337,7 +336,6 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
         execute_many=execute_many,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
-        cpu_bound=False,
         false_means_pending=True,
     )
 
@@ -406,7 +404,6 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_many=check_many,
         execute_many=execute_many,
-        cpu_bound=False,
     )
 
 
@@ -641,7 +638,6 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         execute_many=execute_many,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
-        cpu_bound=False,
         false_means_pending=True,
     )
 
@@ -759,7 +755,6 @@ def make_sinex_publication_stage(
         execute_many=execute_many,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
-        cpu_bound=False,
         false_means_pending=True,
         blocks_following_stages=service.mode is PublicationMode.PRIMARY,
         barrier_check=barrier,

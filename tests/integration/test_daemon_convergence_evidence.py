@@ -181,10 +181,7 @@ def test_daemon_convergence_evidence_full_archive_state(
     assert before["fts_trigger_state"]["all_present"] is True, before["fts_trigger_state"]
 
     # ── Drive convergence: same primitives as polylogued run ─────────
-    converger = DaemonConverger(
-        stages=make_default_convergence_stages(db_path),
-        max_workers=2,
-    )
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = _MinimalPolylogue(tmp_path, db_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
@@ -194,15 +191,7 @@ def test_daemon_convergence_evidence_full_archive_state(
         converger=converger,
     )
 
-    async def _run_convergence() -> Any:
-        await converger.start()
-        try:
-            metrics = await processor.ingest_files(files, emit_event=False)
-        finally:
-            await converger.stop()
-        return metrics
-
-    metrics = asyncio.run(_run_convergence())
+    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
 
     # ── Ingest completeness ─────────────────────────────────────────
     assert metrics.failed_file_count == 0, (

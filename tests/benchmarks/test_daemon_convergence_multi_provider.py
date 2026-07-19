@@ -71,7 +71,7 @@ def _run_convergence_probe(
     # Filter only session files (skip metadata)
     files = [f for f in files if not f.name.startswith(".")]
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=4)
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = _BenchmarkPolylogue(tmp_path, db_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),

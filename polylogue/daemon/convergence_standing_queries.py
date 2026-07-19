@@ -117,7 +117,6 @@ def make_standing_query_stage(
         execute=execute,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
-        cpu_bound=False,
         false_means_pending=True,
     )
 
