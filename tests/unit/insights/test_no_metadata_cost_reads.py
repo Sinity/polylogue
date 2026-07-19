@@ -1,9 +1,8 @@
 """Guard: cost readers must not inspect metadata escape hatches.
 
 Current archive cost facts are typed: message token/model columns,
-``session_reported_costs``, ``session_model_usage``, and materialized
-``session_profiles`` cost fields. No runtime reader may recover cost or
-usage from a metadata bag.
+``session_model_usage``, and materialized ``session_profiles`` cost fields.
+No runtime reader may recover cost or usage from a metadata bag.
 """
 
 from __future__ import annotations

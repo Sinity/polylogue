@@ -92,9 +92,9 @@ accounting and prose projection.
 | `model_name` | `str?` | Model that produced the message |
 
 Cost and per-model token rollups are **not** message-level properties. They are
-materialized at the session level in `session_model_usage`,
-`session_reported_costs`, and `session_profiles`, and surfaced through the
-session insight reads (e.g. `session_costs`, `cost_rollups`). See
+materialized at the session level in `session_model_usage` and
+`session_profiles`, and surfaced through the session insight reads (e.g.
+`session_costs`, `cost_rollups`). See
 [Architecture § Derived Read Models](architecture.md#2-derived-read-models).
 
 ### Semantic classification
