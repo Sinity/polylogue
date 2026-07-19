@@ -93,10 +93,7 @@ def test_convergence_produces_consistent_final_archive_state(
         _write_claude_code_session(p, session_id, n_msgs)
         files.append(p)
 
-    converger = DaemonConverger(
-        stages=make_default_convergence_stages(db_path),
-        max_workers=2,
-    )
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = _MinimalPolylogue(tmp_path, db_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),

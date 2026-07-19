@@ -212,25 +212,21 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
 
     scale = scale_from_db_path(db_path)
     workload = generate_daemon_live_workload(db_path.parent, scale=scale)
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=2)
-    await converger.start()
-    try:
-        async with Polylogue(archive_root=db_path.parent, db_path=db_path) as polylogue:
-            processor = LiveBatchProcessor(
-                polylogue,
-                tuple(WatchSource(name=source.name, root=source.root) for source in workload.sources),
-                cursor=CursorStore(db_path),
-                parser_fingerprint="daemon-live-benchmark-v1",
-                converger=converger,
-            )
-            initial_metrics = await processor.ingest_files(workload.files, emit_event=False)
-            workload = append_daemon_live_workload(
-                workload,
-                message_index=DAEMON_LIVE_SCALE_SPECS.get(scale, DAEMON_LIVE_SCALE_SPECS["small"]).messages_per_file,
-            )
-            append_metrics = await processor.ingest_files(workload.files, emit_event=False)
-    finally:
-        await converger.stop()
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
+    async with Polylogue(archive_root=db_path.parent, db_path=db_path) as polylogue:
+        processor = LiveBatchProcessor(
+            polylogue,
+            tuple(WatchSource(name=source.name, root=source.root) for source in workload.sources),
+            cursor=CursorStore(db_path),
+            parser_fingerprint="daemon-live-benchmark-v1",
+            converger=converger,
+        )
+        initial_metrics = await processor.ingest_files(workload.files, emit_event=False)
+        workload = append_daemon_live_workload(
+            workload,
+            message_index=DAEMON_LIVE_SCALE_SPECS.get(scale, DAEMON_LIVE_SCALE_SPECS["small"]).messages_per_file,
+        )
+        append_metrics = await processor.ingest_files(workload.files, emit_event=False)
 
     total_wall_s = initial_metrics.total_time_s + append_metrics.total_time_s
     files_per_s = (

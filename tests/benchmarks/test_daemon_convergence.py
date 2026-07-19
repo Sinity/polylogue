@@ -128,7 +128,7 @@ def _run_convergence_probe(
     # Collect all JSONL files.
     files = list(corpus_root.rglob("*.jsonl"))
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=4)
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = _BenchmarkPolylogue(tmp_path, db_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
@@ -264,7 +264,7 @@ def _run_convergence_memory_probe(
 
     files = list(corpus_root.rglob("*.jsonl"))
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=4)
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = _BenchmarkPolylogue(tmp_path, db_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),

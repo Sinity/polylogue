@@ -1147,7 +1147,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
             session_ids = tuple(
                 dict.fromkeys(debt.subject_id for debt in stage_debt if debt.subject_type == "session_id")
             )
-            converger = DaemonConverger(stages=selected_stages, max_workers=2)
+            converger = DaemonConverger(stages=selected_stages)
             path_states, _path_timings = converger.converge_batch(paths)
             session_states, _session_timings = converger.converge_sessions(session_ids)
             subject_states.update(
@@ -1728,9 +1728,7 @@ async def run_daemon_services(
                     _db,
                     embed_defer=(lambda: embed_gate is not None and not embed_gate.is_set()),
                 ),
-                max_workers=2,
             )
-            await converger.start()
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
@@ -1821,21 +1819,14 @@ async def run_daemon_services(
                 )
             if watcher is not None:
                 watcher.stop()
-            if converger is not None:
-                try:
-                    async with asyncio.timeout(5.0):
-                        await converger.stop()
-                except TimeoutError:
-                    logger.warning("daemon: timed out stopping convergence executor")
             if _daemon_parse_stage_singleton is not None:
                 # polylogue-m6tp phase (a), CodeRabbit PR #3168: the parse-stage
                 # warmer's ThreadPoolExecutor is created lazily only when
                 # daemon_parse_stage_split is enabled, and otherwise never
                 # touched here. shutdown() is non-blocking (wait=False,
-                # cancel_futures=True) so no timeout wrapper is needed -- unlike
-                # converger.stop() above, it cannot itself hang the shutdown
-                # sequence; it just stops the pool from keeping the process
-                # alive at exit.
+                # cancel_futures=True) so no timeout wrapper is needed: it
+                # cannot itself hang the shutdown sequence; it just stops the
+                # pool from keeping the process alive at exit.
                 _daemon_parse_stage_singleton.shutdown()
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")

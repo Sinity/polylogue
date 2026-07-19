@@ -166,15 +166,7 @@ class DaemonConverger:
     The main process is the only SQLite writer.
     """
 
-    def __init__(
-        self,
-        stages: Iterable[ConvergenceStage],
-        *,
-        max_workers: int | None = None,
-    ) -> None:
-        # max_workers is accepted for caller compatibility but unused: no
-        # convergence stage runs in a worker process (polylogue-7uqr).
-        _ = max_workers
+    def __init__(self, stages: Iterable[ConvergenceStage]) -> None:
         self._stages: dict[str, ConvergenceStage] = {s.name: s for s in stages}
         self._file_states: dict[Path, FileState] = {}
         self._session_states: dict[str, SessionState] = {}
@@ -270,12 +262,6 @@ class DaemonConverger:
                 self._mark_barrier_failure(self._session_states[session_id], stage_name=stage_name)
             return set(session_ids)
         return blocked.intersection(session_ids)
-
-    async def start(self) -> None:
-        logger.info("converger: started, stages=%s", list(self._stages))
-
-    async def stop(self) -> None:
-        logger.info("converger: stopped")
 
     def converge_file(self, path: Path) -> FileState:
         """Converge one file while honoring durable stage barriers."""

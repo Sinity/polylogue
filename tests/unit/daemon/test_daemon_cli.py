@@ -3454,13 +3454,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
     class FakeConverger:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        async def start(self) -> None:
             events.append("converger")
-
-        async def stop(self) -> None:
-            events.append("converger-stop")
 
     class FakeAPIServer:
         def __init__(self) -> None:
@@ -3742,11 +3736,7 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
             self.close_called = True
 
     class FakeConverger:
-        async def start(self) -> None:
-            return None
-
-        async def stop(self) -> None:
-            return None
+        pass
 
     async def noop() -> None:
         return None
