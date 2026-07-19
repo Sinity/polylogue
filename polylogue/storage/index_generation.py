@@ -271,6 +271,28 @@ class IndexGenerationStore:
         payload = json.loads(self._transaction_path(operation_id).read_text(encoding="utf-8"))
         return IndexRebuildTransaction(**payload)
 
+    def save_pass_receipt(self, operation_id: str, receipt: dict[str, object]) -> Path:
+        """Durably persist one rebuild pass's receipt for post-hoc recovery.
+
+        The CLI's only other copy of a pass receipt is a JSON blob written to
+        stdout; if the invoking shell's pipe dies (killed shell, SIGPIPE) an
+        orphaned rebuild process keeps working but the receipt is gone
+        (polylogue-k8kj live incident: two page receipts lost this way in one
+        night). Each pass gets its own numbered file under a
+        ``<operation_id>.receipts/`` directory alongside the transaction
+        record, written with the same tmp+os.replace+fsync pattern as
+        ``save_transaction``.
+        """
+        directory = self.transactions_root / f"{operation_id}.receipts"
+        directory.mkdir(parents=True, exist_ok=True)
+        sequence = len(list(directory.glob("pass-*.json")))
+        path = directory / f"pass-{sequence:06d}.json"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        os.replace(temporary, path)
+        _fsync_directory(directory)
+        return path
+
     def save_transaction(self, transaction: IndexRebuildTransaction) -> IndexRebuildTransaction:
         """Atomically checkpoint a transaction after one bounded replay pass."""
         updated = IndexRebuildTransaction(**{**asdict(transaction), "updated_at_ms": int(time.time() * 1000)})
