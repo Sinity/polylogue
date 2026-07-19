@@ -4,11 +4,20 @@
   "workload_id": "warroom-wave2",
   "job_id": "ann-04",
   "package_revision": "r01",
-  "state": "needs_rebase_review",
+  "state": "superseded",
   "artifact": {
     "filename": "PATCH.diff",
     "sha256": "a72c7e066521721cec2de5784d3e8071f2604496c5bb27ea2bb90b7699e7ec76",
     "size_bytes": 189695
   },
-  "verification": "Loose-file delivery (no ZIP); clipboard FINAL-SUMMARY captured and matches HANDOFF.md. PATCH.diff built against 536a53e; git apply --check fails on current master (docs/cli-reference.md, archive_tiers/archive.py, archive_tiers/user_write.py, help snapshots). 41ow writer-slot fix (BEGIN IMMEDIATE/SAVEPOINT) with two-connection race regression is the load-bearing content; adjudicate via rebase-review before Lane G's 41ow item."
+  "verification": "Loose-file delivery (no ZIP); clipboard FINAL-SUMMARY captured and matches HANDOFF.md. PATCH.diff built against 536a53e; git apply --check fails on current master (docs/cli-reference.md, archive_tiers/archive.py, archive_tiers/user_write.py, help snapshots). 41ow writer-slot fix (BEGIN IMMEDIATE/SAVEPOINT) with two-connection race regression is the load-bearing content; adjudicate via rebase-review before Lane G's 41ow item.",
+  "reassessments": [
+    {
+      "date": "2026-07-20",
+      "trigger": "identical-SHA duplicate re-download landed at /realm/tmp/gpt-pro-intake-0719/judgment-*.md/.diff on 2026-07-19; per custody policy (results/README.md: 'Duplicated browser downloads with identical SHA-256 values are deliberately not copied twice') no new package revision or raw/extracted copy was created -- sha256 of PATCH.diff/HANDOFF.md/EVIDENCE.md/TESTS.md all match this r01 record exactly (diff -q reports no differences).",
+      "state_change": "needs_rebase_review -> superseded",
+      "finding": "Supersession is now total, not partial as originally judged before Lane G's follow-through PRs landed. bd polylogue-41ow (closed) shows master independently fixed the writer-slot TOCTOU race via PR #3101 (SAVEPOINT + zero-row-write lock upgrade, a different mechanism than this delivery's BEGIN IMMEDIATE/SAVEPOINT approach but covering the same invariant) plus PR #3110 (foreign_keys pragma normalization, this delivery's completeness addendum). bd polylogue-2o3d (closed, PR #3138) shows the delivery's entire non-overlapping additive scope -- bounded evidence previews (list_assertion_candidate_reviews), queue health (assertion_candidate_queue_health in judge --status/daemon status/polylogue status), mark-candidates-to-root-judge consolidation, actor-scoped capture idempotency (--idempotency-key on note) -- was independently rebased and landed after 2o3d's own line-by-line audit found the MCP-surface hunks obsolete (six-tool cutover, commit d2cd05973/PR #3095) and the delivery's own transaction mechanism redundant with #3101 (both auto-merged with zero textual conflict during a rebase attempt; the redundant one was dropped as a real defect, not shipped). No portable residual remains: every acceptance-matrix row this delivery claims has an independent, already-merged, already-adjudicated master implementation.",
+      "reverification": "git apply --check re-run against the stated snapshot 536a53efac0cbe4a2473ad379e4db49ef3fce74d: still passes cleanly. Re-run against origin/master at both e963e87f5 and (after rebase) 1c0f4eccd: fails identically both times on all 20 production files -- polylogue/mcp/server_mutation_tools.py and two MCP test files report 'No such file or directory' (retired by the six-tool cutover), the rest report 'patch does not apply' (user_write.py, archive_tiers/archive.py, cli/commands/judge.py, query_verbs.py, api/archive.py, daemon/status.py, surfaces/payloads.py, etc. all diverged)."
+    }
+  ]
 }
