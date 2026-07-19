@@ -495,7 +495,7 @@ files:
     owner: archive-raw-payload
     reason: archive-domain semantics
   - path: polylogue/archive/raw_payload/decode.py
-    loc: 354
+    loc: 352
     target: polylogue/archive/raw_payload/decode.py
     owner: archive-raw-payload
     reason: archive-domain semantics
@@ -968,7 +968,7 @@ files:
     target: polylogue/cli/commands/maintenance/_status.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_verify_archive.py
-    loc: 113
+    loc: 114
     target: polylogue/cli/commands/maintenance/_verify_archive.py
     owner: stable
   - path: polylogue/cli/commands/note.py
@@ -1349,7 +1349,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/json.py
-    loc: 152
+    loc: 401
     target: polylogue/core/json.py
     owner: core-primitive
     reason: core primitive
@@ -2035,7 +2035,7 @@ files:
     target: polylogue/maintenance/__init__.py
     owner: stable
   - path: polylogue/maintenance/archive_verification.py
-    loc: 692
+    loc: 709
     target: polylogue/maintenance/archive_verification.py
     owner: stable
   - path: polylogue/maintenance/cost_backfill.py
@@ -2099,7 +2099,7 @@ files:
     target: polylogue/material_protocol/v1/__init__.py
     owner: stable
   - path: polylogue/material_protocol/v1/canonical.py
-    loc: 52
+    loc: 48
     target: polylogue/material_protocol/v1/canonical.py
     owner: stable
   - path: polylogue/material_protocol/v1/constants.py
@@ -2191,7 +2191,7 @@ files:
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
-    loc: 114
+    loc: 117
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_cutover.py
@@ -2356,7 +2356,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_summary.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
-    loc: 694
+    loc: 697
     target: polylogue/pipeline/services/ingest_worker.py
     owner: stable
   - path: polylogue/pipeline/services/parsing.py
@@ -2490,7 +2490,7 @@ files:
     target: polylogue/rendering/renderers/html_sanitizer.py
     owner: stable
   - path: polylogue/rendering/renderers/html_template.py
-    loc: 37
+    loc: 45
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
   - path: polylogue/rendering/semantic_card_models.py
@@ -2857,7 +2857,7 @@ files:
     target: polylogue/schemas/registry.py
     owner: stable
   - path: polylogue/schemas/runtime_registry.py
-    loc: 811
+    loc: 835
     target: polylogue/schemas/runtime_registry.py
     owner: stable
   - path: polylogue/schemas/sampling.py
@@ -3048,7 +3048,7 @@ files:
     target: polylogue/sources/cursor.py
     owner: stable
   - path: polylogue/sources/decoder_json.py
-    loc: 323
+    loc: 324
     target: polylogue/sources/decoder_json.py
     owner: stable
   - path: polylogue/sources/decoder_zip.py
@@ -3144,7 +3144,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 585
+    loc: 584
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -3443,7 +3443,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_store.py
-    loc: 583
+    loc: 587
     target: polylogue/storage/blob_store.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3838,7 +3838,7 @@ files:
     target: polylogue/storage/search/cache.py
     owner: stable
   - path: polylogue/storage/search/models.py
-    loc: 77
+    loc: 83
     target: polylogue/storage/search/models.py
     owner: stable
   - path: polylogue/storage/search/query_builders.py

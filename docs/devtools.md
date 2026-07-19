@@ -217,6 +217,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace index-fast-forward` | Apply a declared clone-first index.db fast-forward with receipts and rollback. |
 | `devtools workspace index-v37-fast-forward` | Clone-forward index v36 to v37 by retiring derived caches without raw replay. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
+| `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
