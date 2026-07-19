@@ -15,7 +15,7 @@
       pkgs = import nixpkgs {
         inherit system;
       };
-      python = pkgs.python313;
+      python = pkgs.python314;
 
       # Script body lives in nix/devtools-wrapper.sh so it can be unit-tested
       # directly (see tests/unit/devtools/test_cli_wrapper.py).
@@ -40,7 +40,7 @@
         else
           "unknown";
 
-      polylogue = pkgs.python313Packages.buildPythonPackage {
+      polylogue = pkgs.python314Packages.buildPythonPackage {
         pname = "polylogue";
         # Single authoritative version: pyproject.toml (release-please owns bumps).
         version = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project.version;
@@ -54,7 +54,7 @@
           BUILDEOF
         '';
 
-        build-system = with pkgs.python313Packages; [
+        build-system = with pkgs.python314Packages; [
           hatchling
         ];
 
@@ -62,7 +62,7 @@
           pkgs.makeWrapper
         ];
 
-        dependencies = with pkgs.python313Packages; [
+        dependencies = with pkgs.python314Packages; [
           google-auth-oauthlib
           google-api-python-client
           google-auth-httplib2
