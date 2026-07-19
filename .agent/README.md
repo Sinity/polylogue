@@ -17,6 +17,7 @@ repo conventions in [`CONVENTIONS.md`](CONVENTIONS.md).
   intentional).
 - `scripts/bd-graph-lint` — bead-graph invariant lint; run before shipping
   bead-state deltas.
-- `scratch/`, `archive/`, `reports/` — gitignored thinking space and retired
-  scaffold/evidence, present only in a working checkout; `demos/`,
-  `task-history/`, `tools/` — tracked shelves.
+- `scratch/`, `archive/`, `reports/`, `task-history/` — gitignored, present
+  only in a working checkout (thinking space, retired scaffold/evidence,
+  report artifacts, local task-history JSONL respectively); `demos/`,
+  `handoffs/`, `tools/` — tracked shelves.

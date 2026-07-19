@@ -264,10 +264,12 @@ These override default agent behavior.
 
 This repo uses `bd` (Beads) for durable task state AND as the devloop: `bd
 prime` -> `bd ready` -> claim -> work -> PR -> close with reasons. The former
-bespoke conductor packet is archived at `.agent/archive/devloop-2026-07/`
-(evidence, never scaffold — do not resurrect it or `devloop-*` scripts). Repo
-agent conventions: `.agent/CONVENTIONS.md`; run `.agent/scripts/bd-graph-lint`
-before shipping bead-state deltas. Run `bd prime` when task
+bespoke conductor packet is retired — do not resurrect it or `devloop-*`
+scripts under any name. (Its evidence may still sit in a gitignored,
+untracked `.agent/archive/devloop-2026-07/` in some working checkouts —
+polylogue-ocby — it is not part of the repo and a fresh clone will not have
+it.) Repo agent conventions: `.agent/CONVENTIONS.md`; run
+`.agent/scripts/bd-graph-lint` before shipping bead-state deltas. Run `bd prime` when task
 context, ready work, blockers, or project memory matter. Use `bd ready --json`,
 `bd show <id> --json`, `bd update <id> --claim --json`,
 `bd close <id> --reason "…" --json`. Create linked Beads issues for discovered
