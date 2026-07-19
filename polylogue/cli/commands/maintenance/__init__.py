@@ -121,6 +121,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "embedding_orphan_reconcile_command",
         "Inspect (default) or reconcile embeddings.db rows orphaned by an index rebuild.",
     ),
+    (
+        "embeddings-rescue",
+        "_embeddings_rescue",
+        "embeddings_rescue_command",
+        "Inspect (default) or apply a content-hash vector rescue from a retired embeddings tier.",
+    ),
     ("gc-history", "_blob_gc", "gc_history_command", "Show recent blob-GC passes recorded in ``gc_generations``."),
     ("status", "_status", "status_command", "Inspect persisted maintenance operations (#1197)."),
     (
