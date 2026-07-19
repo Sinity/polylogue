@@ -1147,6 +1147,24 @@ class TestReaderSearchState:
         assert hit["match"]["anchor"] == "message-claude-code-session-c1-m-c1"
         assert hit["match"]["actions"]["copy_text"]["enabled"] is True
 
+    def test_search_hit_rank_lives_under_match_not_top_level(self, workspace_env: dict[str, Path]) -> None:
+        """Regression for polylogue-ajmu: the CLI's ``_hit_line`` text renderer and
+        the webui's ``_render_search_hit`` both read ``hit["match"]["rank"]`` (matching
+        the ``SessionSearchMatchPayload.rank`` contract every other search-hit
+        producer -- direct CLI ``_hit_payload``, MCP ``archive_search_hit_payload`` --
+        already honors). The daemon HTTP handler once put ``rank`` as a top-level
+        sibling of ``session``/``match`` instead, so a keyword ``find`` proxied
+        through the daemon rendered its result via ``_hit_line`` and crashed with
+        ``KeyError: 'rank'`` even for a single, unambiguous match.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/sessions?query=Hello")
+        assert isinstance(payload, dict)
+        assert payload["hits"], "fixture query must actually match rows, or this assertion is vacuous"
+        for hit in payload["hits"]:
+            assert "rank" not in hit, "rank must not be a top-level sibling of session/match"
+            assert isinstance(hit["match"]["rank"], int)
+
     def test_archive_file_set_lists_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],

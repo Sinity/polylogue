@@ -190,3 +190,56 @@ def test_facets_json_parity_between_direct_and_daemon(
     direct_payload.pop("generated_at", None)
     daemon_payload.pop("generated_at", None)
     assert daemon_payload == direct_payload
+
+
+def test_find_then_read_transcript_survives_daemon_proxied_keyword_search(
+    golden_parity_workspace: dict[str, Path],
+    _uds_runtime_dir: Path,
+) -> None:
+    """Regression for polylogue-ajmu.
+
+    ``find QUERY then read --view transcript`` (default plain-text rendering,
+    the "summary"/"transcript" views' shared query-set renderer) used to crash
+    with ``KeyError: 'rank'`` once a daemon was reachable and the query was a
+    keyword FTS search rather than an exact session ref -- even with exactly
+    one matching session, no disambiguation involved. Root cause: the daemon's
+    ``_archive_search_hit_payload`` (``daemon/http.py``) put ``rank`` as a
+    top-level sibling of ``session``/``match``, while the shared text renderer
+    ``_hit_line`` (``cli/archive_query.py``) -- and every other search-hit
+    producer (direct CLI ``_hit_payload``, MCP ``archive_search_hit_payload``)
+    -- reads ``match["rank"]``.
+    """
+    del golden_parity_workspace
+    from polylogue.cli import cli
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
+
+    socket_path = daemon_socket_path(str(_uds_runtime_dir))
+    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
+    server.auth_token = ""
+    thread = threading.Thread(target=server.serve_forever, name="golden-parity-transcript-uds", daemon=True)
+    thread.start()
+    try:
+        from polylogue.cli.daemon_client import DaemonClient
+
+        client = DaemonClient(socket_path, timeout_s=1.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if client.request_json("GET", "/api/health") is not None:
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("daemon UDS server did not become ready")
+
+        runner = CliRunner()
+        # "exceptions" only appears in conv1's seeded message text, so this is
+        # a single-hit keyword search -- the exact shape the bead reported.
+        result = runner.invoke(cli, ["--plain", "find", "exceptions", "then", "read", "--view", "transcript"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.exit_code == 0, result.output
+    assert result.exception is None
+    assert "Python Error Handling" in result.output

@@ -3290,7 +3290,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         session_ref = TargetRefPayload.session(session_id)
         message_ref = TargetRefPayload.message(session_id=session_id, message_id=message_id)
         return {
-            "rank": hit.rank,
             "session": {
                 "id": session_id,
                 "title": hit.title or session_id,
@@ -3300,6 +3299,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "actions": _dump_actions(reader_session_actions()),
             },
             "match": {
+                "rank": hit.rank,
                 "message_id": message_id,
                 "block_id": hit.block_id,
                 "snippet": hit.snippet,
