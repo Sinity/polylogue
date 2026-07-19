@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class SearchHit:
     session_id: str
     source_name: str | None
@@ -17,9 +17,15 @@ class SearchHit:
     session_url: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class SearchResult:
-    hits: list[SearchHit]
+    """Immutable so ``search_messages_cached``'s ``@lru_cache`` can safely hand
+    the same instance to concurrent callers by reference: a mutable ``hits``
+    list would let one caller's in-place sort/filter/append corrupt the value
+    every other concurrent or subsequent identical-query cache hit observes.
+    """
+
+    hits: tuple[SearchHit, ...]
 
 
 @dataclass(frozen=True)

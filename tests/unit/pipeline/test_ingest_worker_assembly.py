@@ -10,12 +10,15 @@ production mutation) fails ``test_canonical_ingest_applies_thread_name``.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from polylogue.core.enums import Provider, TitleSource
+from polylogue.pipeline.services import ingest_worker as ingest_worker_module
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.runtime import RawSessionRecord
@@ -130,3 +133,55 @@ def test_canonical_ingest_message_fallback_without_sidecars(blob_store: BlobStor
 
     assert title == "refactor the daemon status loop"
     assert title_source == TitleSource.HEURISTIC.value
+
+
+def test_runtime_schema_registry_singleton_is_race_safe_under_concurrent_first_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent first access must construct exactly one SchemaRegistry (polylogue-xikl.1).
+
+    ``_runtime_schema_registry()``'s check-then-set on the module-global
+    ``_SCHEMA_REGISTRY`` used to be unguarded, and this is called once per
+    parsed record on the parse path that phase 2 plans to run on a
+    ThreadPoolExecutor. A short delay in the registry constructor forces the
+    interleaving window open: before the fix this reliably produced multiple
+    distinct registries (last writer wins); with the lock guarding the whole
+    check-then-construct section, exactly one thread ever constructs one.
+    """
+    original = ingest_worker_module._SCHEMA_REGISTRY
+    ingest_worker_module._SCHEMA_REGISTRY = None
+
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+
+    original_init = SchemaRegistry.__init__
+    built: list[object] = []
+    built_lock = threading.Lock()
+
+    def delayed_init(self: SchemaRegistry, *args: object, **kwargs: object) -> None:
+        time.sleep(0.02)
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        with built_lock:
+            built.append(self)
+
+    monkeypatch.setattr(SchemaRegistry, "__init__", delayed_init)
+
+    registries: list[object] = []
+    registries_lock = threading.Lock()
+
+    def worker() -> None:
+        registry = ingest_worker_module._runtime_schema_registry()
+        with registries_lock:
+            registries.append(registry)
+
+    try:
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert len(registries) == 8
+        assert len(built) == 1, f"concurrent first access built {len(built)} registries, expected exactly 1"
+        assert len({id(registry) for registry in registries}) == 1
+    finally:
+        ingest_worker_module._SCHEMA_REGISTRY = original

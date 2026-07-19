@@ -4265,7 +4265,7 @@ class PolylogueArchiveMixin:
             operation="archive.search",
             arguments={"query": query, "source": source, "since": since},
             work=lambda archive: SearchResult(
-                hits=[
+                hits=tuple(
                     _archive_search_hit_to_domain(hit)
                     for hit in archive.search_summaries(
                         query,
@@ -4273,7 +4273,7 @@ class PolylogueArchiveMixin:
                         origin=source,
                         since_ms=_archive_query_date_ms("since", since),
                     )
-                ]
+                )
             ),
             page_size=limit,
             projection="search-hits",

@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
+
+import pytest
 
 from polylogue.storage.blob_store import (
     BlobStore,
     BlobVerifyAllResult,
     BlobVerifyFailure,
+    get_blob_store,
+    reset_blob_store,
 )
 
 # ---------------------------------------------------------------------------
@@ -483,3 +489,57 @@ def test_blob_verify_all_result_failed_property() -> None:
     r = BlobVerifyAllResult(checked=10, checked_bytes=100, failures=(f,), truncated=False)
     assert not r.passed
     assert r.failed_count == 1
+
+
+# ---------------------------------------------------------------------------
+# get_blob_store() lazy-singleton thread safety (polylogue-xikl.2)
+# ---------------------------------------------------------------------------
+
+
+def test_get_blob_store_singleton_is_race_safe_under_concurrent_first_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Concurrent first access must not construct duplicate BlobStore instances.
+
+    ``get_blob_store()``'s check-then-set used to be unguarded; the daemon's
+    real ``archive_query_executor`` already dispatches concurrent request
+    handlers onto real OS threads today, so N threads racing the very first
+    ``get_blob_store()`` call is a live scenario, not a hypothetical one. A
+    short delay is injected into ``BlobStore.__init__`` to force the
+    interleaving window open regardless of scheduling luck: before the fix
+    this reliably produced multiple distinct instances (last writer wins);
+    with the lock guarding the whole check-then-construct section, exactly
+    one thread ever constructs the instance.
+    """
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    reset_blob_store()
+
+    original_init = BlobStore.__init__
+
+    def delayed_init(self: BlobStore, *args: object, **kwargs: object) -> None:
+        time.sleep(0.02)
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(BlobStore, "__init__", delayed_init)
+
+    results: list[BlobStore] = []
+    results_lock = threading.Lock()
+
+    def worker() -> None:
+        store = get_blob_store()
+        with results_lock:
+            results.append(store)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    try:
+        assert len(results) == 8
+        assert len({id(store) for store in results}) == 1, (
+            "concurrent first access constructed more than one BlobStore instance"
+        )
+    finally:
+        reset_blob_store()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gzip
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -251,3 +253,95 @@ def test_resolve_payload_returns_none_when_catalog_is_absent(monkeypatch: pytest
     monkeypatch.setattr(registry, "load_package_catalog", lambda _provider: None)
 
     assert registry.resolve_payload("chatgpt", {"mapping": {}}) is None
+
+
+# ---------------------------------------------------------------------------
+# Thread safety (polylogue-xikl.1): SchemaRegistry's three cache dicts used to
+# be read via unlocked check-then-get, so a concurrent clear_cache() (as
+# save_package_catalog()/write_package() perform after an admin schema
+# update) could land between a reader's membership check and its dict
+# access and raise an uncaught KeyError. The cache_lock now makes each
+# check+get (or check+set) atomic.
+# ---------------------------------------------------------------------------
+
+
+class _SlowContainsDict(dict):  # type: ignore[type-arg]
+    """Dict whose ``__contains__`` sleeps *after* a positive membership check.
+
+    This reproduces the exact check-then-get race deterministically: the
+    membership check answers ``True`` against the current (populated) state,
+    then sleeps -- giving a concurrent ``clear_cache()`` a wide window to
+    empty the dict -- and only then returns ``True`` to the caller, which
+    proceeds to a ``cache[key]`` access that now raises ``KeyError``. Under
+    the fix, the whole check+get happens inside ``self._cache_lock``, so this
+    sleep just makes the lock-holding reader slower -- the clearer thread
+    blocks on the same lock for the sleep's duration and cannot interleave,
+    proving the lock (not scheduling luck) is what prevents the KeyError.
+    """
+
+    def __contains__(self, key: object) -> bool:
+        found = super().__contains__(key)
+        if found:
+            time.sleep(0.01)
+        return found
+
+
+def test_concurrent_schema_reads_survive_concurrent_clear_cache(tmp_path: Path) -> None:
+    """Regression test for the SchemaRegistry unlocked-cache-vs-clear_cache race.
+
+    Reader threads repeatedly resolve the same cached catalog/schema/workload
+    profile while a separate thread repeatedly calls clear_cache(). The three
+    cache dicts are swapped for ``_SlowContainsDict`` after warming so every
+    check-then-get on a cache hit has an artificially widened window: on the
+    pre-fix unlocked dict this reproduced KeyError on essentially every run;
+    with the lock in place it must never raise, since the clearer cannot
+    acquire the lock while a reader's slow membership check holds it.
+    """
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    catalog = _catalog(_package("v1", schema_file="session_document.schema.json.gz"))
+    registry.replace_provider_packages(
+        "chatgpt",
+        catalog,
+        {"v1": {"session_document": {"type": "object"}}},
+    )
+    # Warm all three caches via the normal path first, then swap in the
+    # artificially slow dicts so every subsequent access is a cache hit
+    # (the vulnerable check-then-get path), not a cold-miss populate.
+    registry.get_element_schema("chatgpt", version="v1")
+    registry.load_package_catalog("chatgpt")
+    registry.get_workload_profile("chatgpt", version="v1")
+    registry._schema_cache = _SlowContainsDict(registry._schema_cache)
+    registry._catalog_cache = _SlowContainsDict(registry._catalog_cache)
+    registry._workload_profile_cache = _SlowContainsDict(registry._workload_profile_cache)
+
+    errors: list[BaseException] = []
+    errors_lock = threading.Lock()
+    stop = threading.Event()
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                registry.get_element_schema("chatgpt", version="v1")
+                registry.load_package_catalog("chatgpt")
+                registry.get_workload_profile("chatgpt", version="v1")
+            except BaseException as exc:  # want to observe any race failure, not just KeyError
+                with errors_lock:
+                    errors.append(exc)
+                return
+
+    def clearer() -> None:
+        while not stop.is_set():
+            registry.clear_cache()
+
+    readers = [threading.Thread(target=reader) for _ in range(4)]
+    clear_thread = threading.Thread(target=clearer)
+    for reader_thread in readers:
+        reader_thread.start()
+    clear_thread.start()
+    time.sleep(0.5)
+    stop.set()
+    clear_thread.join(timeout=5)
+    for reader_thread in readers:
+        reader_thread.join(timeout=5)
+
+    assert errors == [], f"concurrent cache read/clear race triggered: {errors!r}"

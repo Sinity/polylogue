@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import gzip
 import json
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -242,12 +243,23 @@ class SchemaRegistry:
         self._catalog_cache: dict[str, SchemaPackageCatalog | None] = {}
         self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
         self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
+        # Guards read-check/populate/clear of the three cache dicts above so a
+        # concurrent clear_cache() (e.g. from save_package_catalog()) cannot
+        # land between a reader's membership check and its dict access and
+        # raise KeyError. Construction of cache values (file reads, JSON
+        # parsing, object building) intentionally happens OUTSIDE the lock —
+        # only the dict access itself is serialized, so parallel parse
+        # threads never block on each other's schema-loading I/O, only on the
+        # cheap dict read/write. A redundant miss just re-does the (idempotent)
+        # load; the last writer's value wins the dict slot.
+        self._cache_lock = threading.Lock()
 
     def clear_cache(self) -> None:
         """Clear internal caches. Call after modifying schema packages."""
-        self._catalog_cache.clear()
-        self._schema_cache.clear()
-        self._workload_profile_cache.clear()
+        with self._cache_lock:
+            self._catalog_cache.clear()
+            self._schema_cache.clear()
+            self._workload_profile_cache.clear()
 
     @property
     def storage_root(self) -> Path:
@@ -293,14 +305,17 @@ class SchemaRegistry:
 
     def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None:
         provider_token = _provider_token(provider)
-        if provider_token in self._catalog_cache:
-            return self._catalog_cache[provider_token]
+        with self._cache_lock:
+            if provider_token in self._catalog_cache:
+                return self._catalog_cache[provider_token]
         provider_dir = self._provider_dir_for_catalog(provider_token)
-        if provider_dir is None:
-            self._catalog_cache[provider_token] = None
-            return None
-        catalog = SchemaPackageCatalog.from_dict(_read_json_dict(_catalog_path(provider_dir)))
-        self._catalog_cache[provider_token] = catalog
+        catalog = (
+            SchemaPackageCatalog.from_dict(_read_json_dict(_catalog_path(provider_dir)))
+            if provider_dir is not None
+            else None
+        )
+        with self._cache_lock:
+            self._catalog_cache[provider_token] = catalog
         return catalog
 
     def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
@@ -329,32 +344,39 @@ class SchemaRegistry:
     ) -> PublicSchemaDocument | None:
         provider_token = _provider_token(provider)
         cache_key: SchemaCacheKey = (provider_token, version, element_kind)
-        if cache_key in self._schema_cache:
-            return self._schema_cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._schema_cache:
+                return self._schema_cache[cache_key]
 
+        schema = self._load_element_schema(provider_token, version=version, element_kind=element_kind)
+        with self._cache_lock:
+            self._schema_cache[cache_key] = schema
+        return schema
+
+    def _load_element_schema(
+        self,
+        provider_token: str,
+        *,
+        version: str,
+        element_kind: str | None,
+    ) -> PublicSchemaDocument | None:
         package = self.get_package(provider_token, version=version)
         if package is None:
-            self._schema_cache[cache_key] = None
             return None
 
         element = package.element(element_kind)
         if element is None or element.schema_file is None:
-            self._schema_cache[cache_key] = None
             return None
 
         provider_dir = self._provider_dir_for_package(provider_token, package.version)
         if provider_dir is None:
-            self._schema_cache[cache_key] = None
             return None
 
         path = provider_dir / "versions" / package.version / "elements" / element.schema_file
         if not path.exists():
-            self._schema_cache[cache_key] = None
             return None
 
-        schema = _read_gzip_json_dict(path)
-        self._schema_cache[cache_key] = schema
-        return schema
+        return _read_gzip_json_dict(path)
 
     def get_schema(self, provider: str, version: str = "default") -> PublicSchemaDocument | None:
         return self.get_element_schema(provider, version=version)
@@ -367,23 +389,25 @@ class SchemaRegistry:
         """Load the privacy-safe workload profile carried by a package."""
         provider_token = _provider_token(provider)
         cache_key = (provider_token, version)
-        if cache_key in self._workload_profile_cache:
-            return self._workload_profile_cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._workload_profile_cache:
+                return self._workload_profile_cache[cache_key]
+        profile = self._load_workload_profile(provider_token, version=version)
+        with self._cache_lock:
+            self._workload_profile_cache[cache_key] = profile
+        return profile
+
+    def _load_workload_profile(self, provider_token: str, *, version: str) -> PublicSchemaDocument | None:
         package = self.get_package(provider_token, version=version)
         if package is None or package.workload_profile_file is None:
-            self._workload_profile_cache[cache_key] = None
             return None
         provider_dir = self._provider_dir_for_package(provider_token, package.version)
         if provider_dir is None:
-            self._workload_profile_cache[cache_key] = None
             return None
         path = provider_dir / "versions" / package.version / package.workload_profile_file
         if not path.exists():
-            self._workload_profile_cache[cache_key] = None
             return None
-        profile = _read_gzip_json_dict(path)
-        self._workload_profile_cache[cache_key] = profile
-        return profile
+        return _read_gzip_json_dict(path)
 
     def list_versions(self, provider: str) -> list[str]:
         provider_token = _provider_token(provider)

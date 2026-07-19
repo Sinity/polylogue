@@ -1917,7 +1917,7 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
 
     first_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
     cache_version_before = get_cache_stats()["cache_version"]
-    assert first_result.hits == []
+    assert first_result.hits == ()
 
     def fake_ingest_record(
         record: RawSessionRecord,
