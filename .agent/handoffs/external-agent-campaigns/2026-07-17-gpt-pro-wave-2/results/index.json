@@ -22,7 +22,7 @@
   {
    "job": "ann-04",
    "revision": "r01",
-   "state": "needs_rebase_review"
+   "state": "superseded"
   },
   {
    "job": "ann-05",
