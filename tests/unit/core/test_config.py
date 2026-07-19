@@ -5,6 +5,7 @@ Consolidated from test_config.py and test_logging.py.
 
 from __future__ import annotations
 
+import logging
 import sys
 from io import StringIO
 from pathlib import Path
@@ -74,6 +75,54 @@ class TestConfig:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data-b"))
 
         assert config.db_path == archive_root / "index.db"
+
+    def test_config_db_path_follows_active_generation_pointer(self, tmp_path: Path) -> None:
+        """A promoted generation's pointer must not be silently bypassed (polylogue-k8kj).
+
+        Ordinary ``Config(archive_root=..., sources=[])`` construction (the
+        common MCP/CLI/daemon-status pattern) must resolve db_path through
+        ``.index-active-pointer`` rather than the conventional
+        ``archive_root/index.db`` join, or a fresh process can silently see a
+        stale generation left behind by an interrupted rebuild.
+        """
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        generation_dir = tmp_path / "generation"
+        generation_dir.mkdir()
+        active_index = generation_dir / "index.db"
+        active_index.write_text("active generation data")
+        (archive_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+        config = Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[])
+
+        assert config.db_path == active_index
+
+    def test_config_db_path_warns_on_stale_conventional_index_shadowing_pointer(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stale regular file at the conventional path must not be served silently.
+
+        An interrupted rebuild can update ``.index-active-pointer`` without
+        ever swapping the conventional ``archive_root/index.db`` path over to
+        a symlink, leaving a stale regular file behind (polylogue-k8kj
+        finding 1, live incident). ``Config`` must still resolve to the
+        pointer target -- never the stale file -- and must report the
+        divergence loudly rather than silently.
+        """
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        (archive_root / "index.db").write_text("stale near-empty generation")
+        generation_dir = tmp_path / "generation"
+        generation_dir.mkdir()
+        active_index = generation_dir / "index.db"
+        active_index.write_text("real active generation")
+        (archive_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            config = Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[])
+
+        assert config.db_path == active_index
+        assert "stale conventional index path" in caplog.text
 
     def test_active_index_resolver_uses_index_db(self, tmp_path: Path) -> None:
         """index.db is the active query store."""

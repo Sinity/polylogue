@@ -21,6 +21,7 @@ import tomllib
 from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
 from .paths import GEMINI_DRIVE_FOLDER
+from .storage.archive_identity import resolve_active_index_path
 
 
 class ConfigError(PolylogueError):
@@ -72,7 +73,14 @@ class Config:
 
     ``Config`` never reads the environment, current directory, home directory,
     or :mod:`polylogue.paths`.  When ``db_path`` is omitted it is derived only
-    from the explicit ``archive_root`` supplied by the caller.
+    from the explicit ``archive_root`` supplied by the caller -- including
+    following that archive's own ``.index-active-pointer`` file when present,
+    so a bare ``Config(archive_root=..., sources=[])`` (the common MCP/CLI/
+    daemon-status construction) can never silently resolve to a stale
+    conventional ``index.db`` left behind by an interrupted rebuild
+    (polylogue-k8kj). This is still a pure function of ``archive_root``, not
+    an ambient read: no environment variable, cwd, or home directory is
+    consulted.
 
     Handwritten (not ``@dataclass``) so that the constructor can accept an
     optional ``db_path`` while the resolved attribute is always a concrete
@@ -99,7 +107,7 @@ class Config:
         self.archive_root = archive_root
         self.render_root = render_root
         self.sources = sources
-        self.db_path = db_path if db_path is not None else archive_root / "index.db"
+        self.db_path = db_path if db_path is not None else resolve_active_index_path(archive_root)
         self.drive_config = drive_config
         self.index_config = index_config
         for attr in ("archive_root", "render_root", "db_path"):
@@ -1663,7 +1671,7 @@ def resolve_runtime_config(
     paths = ResolvedArchivePaths(
         archive_root=archive,
         source_db=archive / "source.db",
-        index_db=archive / "index.db",
+        index_db=resolve_active_index_path(archive),
         embeddings_db=archive / "embeddings.db",
         user_db=archive / "user.db",
         ops_db=archive / "ops.db",
