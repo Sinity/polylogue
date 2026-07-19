@@ -1020,6 +1020,69 @@ def test_census_batch_crash_loses_at_most_one_batch_and_resumes_cleanly(
         )
 
 
+def test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-oikv: with ``commit_batch_size`` set, the REPLAY phase now
+    batches index.db writes + terminal source.db markers across MULTIPLE
+    independent cohorts (not just within one cohort, as the two
+    unbatched-default pinned tests above still prove unmodified). A fault
+    partway through an uncommitted replay batch must discard the WHOLE
+    batch -- every cohort's index writes and terminal markers together,
+    since neither side ever committed -- never a partial one, and a resume
+    must converge to the same terminal state as an uninterrupted run with
+    zero duplication (mirrors the census-phase proof above)."""
+    raw_count = 10
+    batch_size = 4
+    root = tmp_path / "archive"
+    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000)
+
+    original_apply = ArchiveStore.apply_raw_revision_replay
+    calls = 0
+    # Batch 1 (cohorts 1-4) commits cleanly and resets the counter. Batch 2
+    # starts (cohort 5 applies, uncommitted), then crashes on cohort 6 --
+    # before batch 2 reaches batch_size and self-commits.
+    crash_at_call = 6
+
+    def crash_partway(self: ArchiveStore, plan: object, parsed_by_raw_id: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == crash_at_call:
+            raise RuntimeError("injected crash mid replay-batch")
+        return original_apply(self, plan, parsed_by_raw_id, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ArchiveStore, "apply_raw_revision_replay", crash_partway)
+    with pytest.raises(RuntimeError, match="injected crash mid replay-batch"):
+        backfill_historical_revision_evidence(root, commit_batch_size=batch_size)
+
+    with sqlite3.connect(root / "index.db") as conn:
+        session_count_after_crash = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    # Exactly one fully-committed batch survives the crash -- never a partial one.
+    assert session_count_after_crash == batch_size
+    with sqlite3.connect(root / "source.db") as conn:
+        parsed_after_crash = conn.execute(
+            "SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL"
+        ).fetchone()[0]
+    assert parsed_after_crash == batch_size
+
+    monkeypatch.setattr(ArchiveStore, "apply_raw_revision_replay", original_apply)
+    result = backfill_historical_revision_evidence(root, commit_batch_size=batch_size)
+
+    assert result.scanned == raw_count
+    assert result.replayed_logical_sources == raw_count
+    assert result.quarantined == 0
+    with sqlite3.connect(root / "index.db") as conn:
+        session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        application_count = conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
+    assert session_count == raw_count
+    # One application receipt per raw, no duplicates from the retried batch.
+    assert application_count == raw_count
+    with sqlite3.connect(root / "source.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == raw_count
+        )
+
+
 def test_partition_raws_by_dispatch_size_routes_small_to_pool_large_sequential() -> None:
     """polylogue-amg1 lever (b): raws under the size ceiling are pool-eligible
     (parallel parse pays off), raws at/above it stay sequential (pickling the

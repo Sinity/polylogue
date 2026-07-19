@@ -492,18 +492,32 @@ def backfill_historical_revision_evidence(
     parse output for an unbounded (``max_payload_bytes=None``) census without
     also activating envelope blocking.
 
-    ``commit_batch_size`` (polylogue-amg1) batches the CENSUS phase's
-    per-raw source.db commits only; the replay phase's cohort-apply and
-    terminal-raw finalize commit granularity is unchanged (see
-    ``_census_historical_revision_evidence`` for why: the replay phase's
-    "index commits, then source terminal marker commits" ordering is a
-    crash-recovery invariant pinned by
+    ``commit_batch_size`` (polylogue-amg1, extended to the replay phase by
+    polylogue-oikv) batches commits in BOTH phases: the CENSUS phase's
+    per-raw source.db commits (see ``_census_historical_revision_evidence``),
+    and the REPLAY phase's per-cohort index.db writes plus terminal source.db
+    parse-state markers (see ``apply_raw_revision_replay`` /
+    ``apply_raw_membership_classification``), across up to
+    ``commit_batch_size`` cohorts sharing one commit window.
+
+    ``None`` (the default) preserves the exact original per-unit commit
+    granularity for every existing caller in both phases. When set, the
+    "index commits, then source terminal marker commits" ordering invariant
+    pinned by
     ``test_backfill_resumes_after_index_receipt_commits_before_source_terminal``
-    et al. and batching it needs its own reviewed change).
+    et al. still holds for the replay phase -- just at BATCH granularity
+    instead of per-cohort: a crash inside an open batch discards every
+    cohort in that batch (its index writes and terminal markers together,
+    since neither has committed), never leaves index ahead of source across
+    a batch boundary, and a resume reprocesses every lost cohort from
+    scratch with zero duplication (proof:
+    ``test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly``).
     """
     adoption_deferred = 0
     quarantined = 0
     logical_keys: set[str] = set()
+    replay_batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
+    replay_batched = replay_batch_size is not None
     archive_context = (
         ArchiveStore.open_owned_inactive_generation(
             archive_root,
@@ -540,6 +554,15 @@ def backfill_historical_revision_evidence(
         logical_keys.update(selected_keys)
         _selected_membership_raws, selected_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         membership_keys = set(selected_membership_keys)
+
+        pending_replay_commits = 0
+
+        def commit_replay_unit() -> None:
+            nonlocal pending_replay_commits
+            pending_replay_commits += 1
+            if replay_batch_size is not None and pending_replay_commits >= replay_batch_size:
+                archive.commit()
+                pending_replay_commits = 0
 
         replayed = 0
         byte_replayed_keys: set[str] = set()
@@ -584,9 +607,13 @@ def backfill_historical_revision_evidence(
                     archive.release_provisional_full_revisions(sorted(plan_raw_ids))
                 adoption_deferred += len(plan.accepted_raw_ids)
                 continue
-            archive.apply_raw_revision_replay(plan, parsed_by_raw_id, acquired_at_ms=0)
+            archive.apply_raw_revision_replay(
+                plan, parsed_by_raw_id, acquired_at_ms=0, manage_transaction=not replay_batched
+            )
             replayed += 1
             byte_replayed_keys.add(logical_key)
+            if replay_batched:
+                commit_replay_unit()
 
         for logical_key in sorted(membership_keys):
             if logical_key in byte_replayed_keys:
@@ -628,9 +655,14 @@ def backfill_historical_revision_evidence(
                 member_sessions,
                 projections,
                 acquired_at_ms=0,
+                manage_transaction=not replay_batched,
             )
             if classification.accepted_raw_ids:
                 replayed += 1
+            if replay_batched:
+                commit_replay_unit()
+        if replay_batched:
+            archive.commit()
     return RevisionBackfillResult(
         census.scanned,
         census.classified,

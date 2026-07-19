@@ -2919,8 +2919,25 @@ class ArchiveStore:
         acquired_at_ms: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "revision_replay",
+        manage_transaction: bool = True,
     ) -> tuple[str, tuple[str, ...]]:
-        """Apply a proven chain and atomically receipt its exact index state."""
+        """Apply a proven chain and atomically receipt its exact index state.
+
+        ``manage_transaction=False`` batches this cohort's index.db writes
+        and terminal source.db parse-state markers into the caller's open
+        transaction/pending-state instead of committing them immediately
+        (polylogue-oikv) -- the caller must call ``commit()`` (or
+        ``rollback()`` on failure) itself, exactly once per batch, after
+        every cohort in the batch has been applied. ``commit()`` always
+        commits the index connection before flushing pending source markers
+        (``_flush_pending_raw_parse_states``), so the "index commits, then
+        source terminal markers commit" ordering invariant now holds at
+        BATCH granularity instead of per-cohort: a crash anywhere before the
+        shared ``commit()`` call discards the whole uncommitted batch (every
+        batched cohort's index writes and terminal markers together), never
+        a partial one, and a resume reprocesses every lost cohort from
+        scratch with zero duplication.
+        """
         if not plan.accepted_raw_ids:
             raise ValueError("cannot apply a revision plan without an accepted chain")
         candidates = {item.raw_id: item for item in self._raw_revision_candidates(plan.logical_source_key)}
@@ -2944,7 +2961,7 @@ class ArchiveStore:
         for raw_id, refs in attachment_refs_by_raw_id.items():
             write_source_blob_refs(self._ensure_source_conn(), raw_id, refs)
         session_ids: set[str] = set()
-        with self._conn:
+        with self._conn if manage_transaction else nullcontext():
             existing_head = self._conn.execute(
                 """SELECT session_id, accepted_raw_id, accepted_source_revision,
                           accepted_content_hash, accepted_frontier_kind, accepted_frontier
@@ -3049,7 +3066,10 @@ class ArchiveStore:
         }
         for raw_id in terminal_raw_ids:
             provider, _blob_hash, _source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
-            self.mark_raw_parse_succeeded(raw_id, provider=provider)
+            if manage_transaction:
+                self.mark_raw_parse_succeeded(raw_id, provider=provider)
+            else:
+                self._pending_raw_parse_states.append((raw_id, self._raw_parse_success_state(provider)))
         return session_id, plan.accepted_raw_ids
 
     def apply_raw_membership_classification(
@@ -3062,8 +3082,17 @@ class ArchiveStore:
         acquired_at_ms: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "membership_replay",
+        manage_transaction: bool = True,
     ) -> str | None:
-        """Apply one semantic member head and persist every membership decision."""
+        """Apply one semantic member head and persist every membership decision.
+
+        ``manage_transaction=False`` batches this cohort's index.db head
+        write, its source.db membership-decision updates, and its terminal
+        source.db parse-state marker into the caller's open
+        transaction/pending-state instead of committing them immediately
+        (polylogue-oikv) -- see ``apply_raw_revision_replay`` for the shared
+        batch-commit invariant this mirrors.
+        """
         conn = self._ensure_source_conn()
         decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
         decisions: dict[str, str] = dict.fromkeys(classification.ambiguous_raw_ids, "ambiguous")
@@ -3086,7 +3115,7 @@ class ArchiveStore:
             if self._blob_publisher is not None:
                 self._blob_publisher.flush()
             write_source_blob_refs(conn, accepted_raw_id, refs)
-            with self._conn:
+            with self._conn if manage_transaction else nullcontext():
                 existing_head = self._conn.execute(
                     """
                     SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id
@@ -3187,7 +3216,7 @@ class ArchiveStore:
                     )
             decisions[accepted_raw_id] = "applied"
 
-        with conn:
+        with conn if manage_transaction else nullcontext():
             for raw_id, decision in decisions.items():
                 conn.execute(
                     """
@@ -3223,8 +3252,15 @@ class ArchiveStore:
             ).fetchone()
             if complete is not None and bool(complete[0]):
                 provider, _blob_hash, _source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
-                self.mark_raw_parse_succeeded(raw_id, provider=provider)
+                if manage_transaction:
+                    self.mark_raw_parse_succeeded(raw_id, provider=provider)
+                else:
+                    self._pending_raw_parse_states.append((raw_id, self._raw_parse_success_state(provider)))
             else:
+                # Incomplete cohort: this raw is not yet finalized (a sibling
+                # member is still undecided), so this is a correction, not a
+                # terminal marker -- always commits immediately regardless of
+                # batching, matching prior behavior.
                 with conn:
                     conn.execute(
                         "UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL WHERE raw_id = ?",

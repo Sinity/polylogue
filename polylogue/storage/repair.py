@@ -5606,12 +5606,20 @@ def repair_raw_materialization(
     order remain strictly sequential in this single writer regardless of
     worker count.
 
-    ``commit_batch_size`` (polylogue-amg1) batches the CENSUS phase's
-    per-raw source.db commits; ``None`` resolves
+    ``commit_batch_size`` (polylogue-amg1, extended to the replay phase by
+    polylogue-oikv) batches both the CENSUS phase's per-raw source.db
+    commits and the REPLAY phase's per-cohort index.db + terminal source.db
+    marker commits; ``None`` resolves
     ``POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE`` /
-    ``RAW_MATERIALIZATION_COMMIT_BATCH_SIZE``. Only the census phase batches
-    -- see ``_census_historical_revision_evidence`` for why the replay
-    phase's commit granularity is unchanged.
+    ``RAW_MATERIALIZATION_COMMIT_BATCH_SIZE`` (default 20) -- see
+    ``backfill_historical_revision_evidence`` for the batch-commit ordering
+    invariant. This loop calls ``backfill_historical_revision_evidence``
+    once per plan/component (``selected_raw_ids=[raw_id]``), so a single
+    call typically covers only that component's own cohort(s); replay
+    batching's cross-cohort benefit is realized by callers that pass a
+    wider ``selected_raw_ids=None`` scope (e.g. the CLI
+    ``ops maintenance rebuild-index`` full-archive path), not by this
+    per-component daemon loop.
     """
     if max_payload_bytes < 1:
         raise ValueError("max_payload_bytes must be positive")
