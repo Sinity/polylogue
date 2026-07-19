@@ -48,7 +48,7 @@ def search_messages_impl(
         include_snippet=True,
     )
     if query_spec is None:
-        return SearchResult(hits=[])
+        return SearchResult(hits=())
 
     sql, params = query_spec.sql, query_spec.params
     with open_read_connection(db_path) as conn:
@@ -86,7 +86,7 @@ def search_messages_impl(
                 session_url=session_web_url(session_id),
             )
         )
-    return SearchResult(hits=hits)
+    return SearchResult(hits=tuple(hits))
 
 
 def _search_archive_blocks(
