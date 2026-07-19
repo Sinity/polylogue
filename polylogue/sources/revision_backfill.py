@@ -719,14 +719,20 @@ def backfill_historical_revision_evidence(
                     archive.release_provisional_full_revisions(sorted(plan_raw_ids))
                 adoption_deferred += len(plan.accepted_raw_ids)
                 continue
-            archive.apply_raw_revision_replay(
-                plan,
-                parsed_by_raw_id,
-                acquired_at_ms=0,
-                manage_transaction=not replay_batched,
-                bulk_fts=bulk_fts,
-                bulk_build=bulk_build,
-            )
+            try:
+                archive.apply_raw_revision_replay(
+                    plan,
+                    parsed_by_raw_id,
+                    acquired_at_ms=0,
+                    manage_transaction=not replay_batched,
+                    bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise sqlite3.IntegrityError(
+                    f"backfill_historical_revision_evidence: byte-proven replay failed for "
+                    f"logical_key={plan.logical_source_key!r}: {exc}"
+                ) from exc
             replayed += 1
             byte_replayed_keys.add(logical_key)
             if replay_batched:
@@ -766,16 +772,22 @@ def backfill_historical_revision_evidence(
                 )
                 adoption_deferred += len(classification.accepted_raw_ids)
                 continue
-            archive.apply_raw_membership_classification(
-                logical_key,
-                classification,
-                member_sessions,
-                projections,
-                acquired_at_ms=0,
-                manage_transaction=not replay_batched,
-                bulk_fts=bulk_fts,
-                bulk_build=bulk_build,
-            )
+            try:
+                archive.apply_raw_membership_classification(
+                    logical_key,
+                    classification,
+                    member_sessions,
+                    projections,
+                    acquired_at_ms=0,
+                    manage_transaction=not replay_batched,
+                    bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise sqlite3.IntegrityError(
+                    f"backfill_historical_revision_evidence: membership replay failed for "
+                    f"logical_key={logical_key!r}: {exc}"
+                ) from exc
             if classification.accepted_raw_ids:
                 replayed += 1
             if replay_batched:
