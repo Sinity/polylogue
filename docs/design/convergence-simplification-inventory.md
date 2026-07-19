@@ -263,25 +263,24 @@ existing generation-store pointer swap) gives the daemon itself everything
 source. Once that lands, an operator should never need to invoke
 `rebuild-index` for routine backlog drains.
 
-**What survives:** the command itself is NOT deleted. Per the
-automagic-invariants doctrine (an operator surface for routine work must be
-subsumed by automatic convergence, not merely duplicated by it), it becomes
-**disaster-recovery break-glass only** — the path used when the daemon
-itself cannot run (corrupted state, daemon-dead scenarios; polylogue-k8kj's
-robustness work already targets this exact scenario). Its resumable,
-transactional, blue-green-generation design is exactly what a break-glass
-path needs and should not be simplified away.
+**What survives:** the *machinery*, not the operator surface. The resumable,
+transactional, blue-green-generation implementation in
+`polylogue/maintenance/rebuild_index.py` becomes daemon-internal — phase (c)
+invokes it from convergence routing. The `ops maintenance rebuild-index` CLI
+command is **deleted** once the daemon path is proven equivalent
+(polylogue-gd6v acceptance). There is no break-glass tier (operator doctrine,
+2026-07-19): a redundant manual surface kept "just in case" is exactly the
+random-machinery packing this codebase aggressively purges. The scenarios
+that seemed to justify one dissolve on inspection — a daemon that cannot run
+is a bug to fix in the daemon, and a corrupted/mismatched derived tier is
+already the daemon's own rebuild-on-mismatch invariant (the derived-tier
+schema regime). Read-only *diagnostic* inspection surfaces may survive;
+nothing that mutates does.
 
-**Which phase deletes/collapses it:** (c) is what makes the daemon's own
-convergence loop sufficient for ordinary bulk backlogs; the CLI command's
-*operator-tool* status (documented recommendation, routine-use expectation)
-is retired at that point, while the command and its underlying
-`polylogue/maintenance/rebuild_index.py` machinery remain as the
-break-glass path. No code deletion is scoped here — only a documentation/
-recommendation change (stop telling operators to run it routinely) plus,
-optionally, gating it behind an explicit `--i-know-the-daemon-is-down` style
-confirmation in a later bead if the break-glass framing needs to be load-bearing
-in the CLI itself.
+**Which phase deletes/collapses it:** (c) lands the daemon routing and, in
+the same change-train once equivalence is proven, deletes the CLI command,
+its Click plumbing, and its operator documentation. No confirmation flags,
+no deprecation period, no alias.
 
 ## What phase (a) (this PR) does NOT touch
 
