@@ -21,6 +21,27 @@ from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import ArchiveLocation
 
+_PLANNER_STATS_ANALYSIS_LIMIT = 1000
+
+
+def _refresh_generation_planner_statistics(index_path: Path) -> None:
+    """Replace bootstrap-seeded planner stats with measured ones after a page.
+
+    A generation is bulk-written from empty, so the relative selectivities the
+    planner needs (session-scoped indexes are narrow, type-scoped ones are not)
+    drift fast as tables grow.  A bounded ANALYZE per page keeps writer-hot
+    plans (e.g. per-session ``action_pairs`` refresh) on the session-scoped
+    indexes; skipping it reproduced an O(N^2) replay measured at >20x slower.
+    Failures are non-fatal: stale stats degrade speed, never correctness.
+    """
+    try:
+        with contextlib.closing(sqlite3.connect(index_path, timeout=60)) as conn:
+            conn.execute(f"PRAGMA analysis_limit = {_PLANNER_STATS_ANALYSIS_LIMIT}")
+            conn.execute("ANALYZE")
+            conn.commit()
+    except sqlite3.Error:
+        return
+
 
 @dataclass(frozen=True, slots=True)
 class RebuildIndexRequest:
@@ -256,6 +277,8 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 progress_callback=None,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
             )
+            if selected_raw_ids:
+                _refresh_generation_planner_statistics(Path(generation.index_path))
             if transaction is not None and selected_raw_ids:
                 if source_revision_snapshot(root) != transaction.source_snapshot:
                     transaction = generation_store.checkpoint_transaction(
