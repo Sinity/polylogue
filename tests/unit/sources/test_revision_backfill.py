@@ -1098,6 +1098,53 @@ def test_partition_raws_by_dispatch_size_routes_small_to_pool_large_sequential()
     assert sequential_ids == ["large-1", "large-2"]
 
 
+def test_pool_dispatch_floor_rejects_small_aggregate_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Worker spawn+import (~1.5-2s each, measured live 2026-07-19) dominates
+    tiny batches: a per-cohort census batch of a few sub-256KiB raws must parse
+    sequentially, not spawn a short-lived pool that spends ~95% of its life in
+    importlib."""
+    sizes = {"a": 100_000, "b": 200_000, "c": 50_000}
+    assert not revision_backfill._pool_dispatch_amortizes(["a", "b", "c"], sizes)
+    assert not revision_backfill._pool_dispatch_amortizes(["a"], sizes)
+    big = {f"r{i}": 250_000 for i in range(400)}  # 100MB aggregate
+    assert revision_backfill._pool_dispatch_amortizes(list(big), big)
+    monkeypatch.setenv("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES", "100000")
+    assert revision_backfill._pool_dispatch_amortizes(["a", "b"], sizes)
+    monkeypatch.setenv("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES", "not-a-number")
+    assert not revision_backfill._pool_dispatch_amortizes(["a", "b"], sizes)
+
+
+def test_parse_retained_raws_small_batch_never_creates_a_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """End-to-end: a small pool-eligible batch under the aggregate floor must
+    not construct a ProcessPoolExecutor at all (the churn measured live: 20
+    workers in 25s, each ~95% importlib)."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(3):
+            payload = (
+                f'{{"type":"session_meta","payload":{{"id":"floor-{index}"}}}}\n'
+                f'{{"type":"response_item","payload":{{"type":"message","id":"one","role":"user",'
+                f'"content":[{{"type":"input_text","text":"tiny"}}]}}}}\n'
+            ).encode()
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"floor-{index}.jsonl",
+                acquired_at_ms=index,
+            )
+
+    def forbidden_pool(**kwargs: object) -> object:
+        raise AssertionError("pool must not be created for a sub-floor batch")
+
+    import polylogue.pipeline.services.process_pool as process_pool_module
+
+    monkeypatch.setattr(process_pool_module, "process_pool_executor", forbidden_pool)
+
+    result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
+    assert result.scanned == 3
+    assert result.quarantined == 0
+
+
 def test_size_aware_dispatch_keeps_large_raws_off_the_process_pool(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
