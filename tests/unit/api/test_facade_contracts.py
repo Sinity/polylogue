@@ -3339,6 +3339,114 @@ async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
         await archive.close()
 
 
+def _write_facade_continuation_message(archive_db: ArchiveStore, native_id: str, text: str) -> None:
+    archive_db.write_parsed(
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            title="Facade continuation session",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text=text,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                )
+            ],
+        )
+    )
+
+
+async def test_query_units_continuation_resumes_and_drains_all_rows(tmp_path: Path) -> None:
+    """``query_units(continuation=...)`` advances the same request to its next page.
+
+    Reuses the shared ``QueryTransaction``/``QueryTransactionRequest``/
+    ``QueryContinuation`` primitives that MCP's ``query`` tool and daemon
+    HTTP's ``/api/query-units`` already validate directly; this facade
+    method delegates to the exact same ``query_units_transaction_request``
+    constructor (see ``polylogue/api/archive.py``), but had no direct test
+    exercising its own ``continuation`` keyword before this (polylogue-z9gh.9.1
+    residual-gap trail note dated 2026-07-18).
+    """
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            for index in range(3):
+                _write_facade_continuation_message(archive_db, f"facade-continuation-{index}", f"needle {index}")
+
+        first = await archive.query_units("messages where text:needle", limit=1)
+        assert first.continuation is not None
+        second = await archive.query_units(continuation=first.continuation)
+        assert second.continuation is not None
+        third = await archive.query_units(continuation=second.continuation)
+
+        assert first.query_ref == second.query_ref == third.query_ref
+        assert first.result_ref == second.result_ref == third.result_ref
+        message_ids = {cast(Any, item).message_id for page in (first, second, third) for item in page.items}
+        assert len(message_ids) == 3
+        assert third.continuation is None
+    finally:
+        await archive.close()
+
+
+async def test_query_units_rejects_continuation_parameter_overrides(tmp_path: Path) -> None:
+    """A continuation must be resumed alone; it cannot also carry a new expression."""
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            for index in range(2):
+                _write_facade_continuation_message(
+                    archive_db, f"facade-continuation-override-{index}", "override needle"
+                )
+
+        first = await archive.query_units("messages where text:needle", limit=1)
+        assert first.continuation is not None
+        with pytest.raises(QueryContinuationInvalidError):
+            await archive.query_units("messages where text:other", continuation=first.continuation)
+    finally:
+        await archive.close()
+
+
+async def test_query_units_rejects_stale_continuation_epoch(tmp_path: Path) -> None:
+    """A continuation issued before a write lands is rejected, never silently replayed.
+
+    Production dependency exercised: ``validate_continuation_epoch`` inside
+    ``query_unit_envelope`` (``polylogue/archive/query/unit_results.py``) --
+    removing that epoch check would let this resume advance a stale offset
+    across the newly-written session instead of raising.
+    """
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            for index in range(2):
+                _write_facade_continuation_message(archive_db, f"facade-continuation-stale-{index}", "stale needle")
+
+        first = await archive.query_units("messages where text:needle", limit=1)
+
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            _write_facade_continuation_message(archive_db, "facade-continuation-stale-mutation", "stale needle")
+
+        with pytest.raises(QueryContinuationStaleError):
+            await archive.query_units(continuation=first.continuation)
+    finally:
+        await archive.close()
+
+
+async def test_query_units_rejects_malformed_continuation(tmp_path: Path) -> None:
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError
+
+    archive = _archive(tmp_path)
+    try:
+        with pytest.raises(QueryContinuationInvalidError):
+            await archive.query_units(continuation="q1._not-a-real-token")
+    finally:
+        await archive.close()
+
+
 async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
     """Archive API opt-in methods read index.db files directly."""
     from polylogue.archive.message.roles import Role
