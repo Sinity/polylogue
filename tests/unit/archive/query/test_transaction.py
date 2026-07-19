@@ -4,10 +4,12 @@ import base64
 import json
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.archive.query.transaction import (
+    QueryArchiveEpochUnreadableError,
     QueryContinuation,
     QueryContinuationInvalidError,
     QueryContinuationStaleError,
@@ -119,6 +121,51 @@ def test_archive_snapshot_epoch_changes_for_user_assertion_mutation(tmp_path: Pa
         )
 
     assert _snapshot_epoch(tmp_path) != issued
+
+
+class _BareConnArchive:
+    """Minimal stand-in exposing only the ``_conn`` attribute ``archive_snapshot_epoch`` reads.
+
+    Deliberately bypasses ``ArchiveStore``'s open/bootstrap path (which
+    ensures runtime indexes on open and could self-heal a missing table) so
+    the test controls the exact physical schema shape rather than depending
+    on that unrelated machinery's current completeness.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._conn = connection
+
+
+def test_archive_snapshot_epoch_gives_clear_rebuild_guidance_when_frame_table_missing(tmp_path: Path) -> None:
+    """A generation missing query_unit_frame_state must reject clearly, not crash opaquely.
+
+    Reproduces polylogue-k8kj finding 2: a derived-tier generation can lack
+    ``query_unit_frame_state`` (built before the epoch-tracking table existed,
+    or an interrupted rebuild that never promoted a generation carrying it)
+    even though nothing about opening it looked wrong. The bare
+    ``sqlite3.OperationalError: no such table`` must not leak through the
+    generic "could not establish archive frame" message -- the operator
+    needs the specific rebuild command, since derived tiers have no
+    in-place upgrade chain.
+    """
+    # Neither tier has query_unit_frame_state -- SQLite resolves an
+    # unqualified table name across every attached schema, so the table must
+    # be absent from *both* index.db and user.db or the query would silently
+    # succeed against whichever schema happens to have it.
+    index_db = tmp_path / "index.db"
+    user_db = tmp_path / "user.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE placeholder(x INTEGER)")
+    with sqlite3.connect(user_db) as conn:
+        conn.execute("CREATE TABLE other_placeholder(x INTEGER)")
+
+    conn = sqlite3.connect(index_db)
+    conn.execute("ATTACH DATABASE ? AS user_tier", (str(user_db),))
+    try:
+        with pytest.raises(QueryArchiveEpochUnreadableError, match="query_unit_frame_state epoch-tracking table"):
+            archive_snapshot_epoch(cast(ArchiveStore, _BareConnArchive(conn)))
+    finally:
+        conn.close()
 
 
 def test_result_ref_binds_query_identity_to_declared_archive_epoch() -> None:
