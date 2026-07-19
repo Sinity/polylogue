@@ -256,6 +256,22 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=42,
+        # The writer stops materializing `token_count`/`message_usage`/
+        # `agent_policy`/`agent_message` rows into `session_events`
+        # (polylogue-bo9n zero-evidence-loss filtering) -- each is fully
+        # re-derivable from a sibling typed table already written at the
+        # same commit (`session_provider_usage_events`, `session_agent_policies`)
+        # or from a twin `ParsedMessage`, so no unique evidence is lost. This
+        # is a writer-materialization change, not a DDL change (session_events
+        # keeps its existing columns) -- there is no declared clone-safe SQL
+        # delta because a fast-forward would require re-deriving which
+        # already-persisted rows a fresh parse would have skipped; existing
+        # index tiers rebuild from source evidence instead
+        # (`polylogue ops reset --index && polylogued run`).
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

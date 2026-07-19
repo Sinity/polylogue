@@ -173,6 +173,43 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 42 stops materializing `session_events` rows for four
+  event types that are fully redundant with a sibling typed table
+  (`token_count`, `message_usage`, `agent_policy`, `agent_message`;
+  polylogue-bo9n consumer audit). `token_count`/`message_usage` are already
+  unpacked into `session_provider_usage_events`'s typed columns (the cost
+  model's sole read path, `storage/usage.py`); `agent_policy` is already
+  unpacked into `session_agent_policies` (the sole confirmed reader,
+  `read_session_agent_policies`); `agent_message` payloads never carry text
+  (Codex never populates it there) and the real text is guaranteed to exist
+  as a twin `ParsedMessage` via `_codex_event_message`. On a live generation
+  these four types combined were 2,496,806 rows (37% of `session_events`) and
+  694.4MB of `payload_json`, blended-share estimate ≈846MB of the table's
+  2.31GB. Parsers keep emitting all four event types unchanged (feeding
+  `material_protocol`'s parse-time transcript encode, which reads
+  `ParsedSession.session_events` directly and is unaffected); only the writer
+  (`_write_session_events` in `storage/sqlite/archive_tiers/write.py`) filters
+  them out of the `session_events` INSERT. `reasoning`/`agent_reasoning`
+  (zero captured content today -- an evidence gap, not duplication) and
+  `turn_context` (low urgency, no confirmed payload reader) are deliberately
+  excluded pending an explicit operator evidence-doctrine call; `function_call`/
+  `function_call_output` payload-slimming is a separate, not-yet-decided
+  change. This is a writer-behavior change with no DDL delta on
+  `session_events` itself, so there is no declared clone-safe SQL
+  fast-forward (see `IndexDeltaDeclaration` for v42 in
+  `polylogue/storage/sqlite/lifecycle.py`); existing index tiers rebuild from
+  source evidence (`polylogue ops reset --index && polylogued run`). A
+  companion finding from the same audit -- `session_provider_usage_events.
+  payload_json` totaling ~700MB with zero readers in `storage/usage.py` --
+  was **not** dropped in this version: `_reextract_provider_usage_tail_db`
+  (branch-tail re-extraction for prefix-sharing forks/resumes) reads
+  `json_extract(payload_json, '$.estimated_cost_usd' | ...)` to decide
+  whether a zero-token-count row still carries Hermes cost-provenance
+  evidence before deleting it, a reader the audit's `storage/usage.py`-only
+  sweep missed. Dropping the column outright would break that query; keeping
+  it requires either preserving the JSON column or promoting the eight
+  provenance keys (`hermes_state.py`) to typed columns, a follow-up decision
+  left to polylogue-c3ip.
 - Index schema version 41 stops materializing `tool_input`/`output_text` text
   copies on `action_pairs` (polylogue-2i2w). `action_pairs` keeps only
   join/rank/outcome columns for a paired `tool_use`/`tool_result` block
