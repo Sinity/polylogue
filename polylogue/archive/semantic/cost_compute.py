@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from polylogue.archive.semantic.cost_records import SessionCostBreakdown, SessionCostSummary
+from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostBreakdown, SessionCostSummary
 from polylogue.archive.semantic.pricing import (
     CATALOG_EFFECTIVE_DATE,
     CATALOG_PROVENANCE,
@@ -30,8 +31,23 @@ def compute_session_cost(
     *,
     session_estimate: CostEstimatePayload | None = None,
     estimate_if_missing: bool = True,
+    model_usage: Sequence[ModelUsageTotals] | None = None,
 ) -> SessionCostSummary:
-    """Compute per-model cost breakdown and aggregate cost summary."""
+    """Compute per-model cost breakdown and aggregate cost summary.
+
+    ``model_usage`` is the canonical per-model tally from
+    ``session_model_usage`` (polylogue-r7p6). When supplied and non-empty it
+    is the sole source of per-model token counts -- provider-neutrally, for
+    every origin, not just Codex -- because that table is already the single
+    substrate the archive's own cost/usage rollups are built from. Per-message
+    fields on ``session.messages`` are read only as a fallback for callers
+    that build an ad hoc profile without a materialized ``session_model_usage``
+    to hand (e.g. a query-time estimate for a session with no persisted
+    profile row yet); Codex rarely populates those per-message fields at all
+    (its real usage arrives as periodic cumulative ``token_count`` events, not
+    per-message ``usage`` blocks), which is what made the per-message fallback
+    ~1000x too small for Codex sessions when it was the only source.
+    """
     estimate = session_estimate or (estimate_session_cost(session) if estimate_if_missing else None)
     if estimate is not None and estimate.status == "exact":
         return SessionCostSummary(
@@ -68,34 +84,9 @@ def compute_session_cost(
                 ),
             ),
         )
-    per_model: dict[str, SessionCostBreakdown] = {}
-
-    for message in session.messages:
-        model_name = _get_message_model_name(message)
-        norm_model = _normalize_model(model_name) if model_name else None
-        key = norm_model or "unknown"
-
-        if key not in per_model:
-            per_model[key] = SessionCostBreakdown(
-                normalized_model=norm_model,
-                provider_model_name=model_name,
-            )
-
-        tokens = _get_message_token_counts(message)
-        word_count: int = getattr(message, "word_count", 0) or 0
-
-        if tokens is not None and getattr(tokens, "billable_tokens", 0) > 0:
-            per_model[key] = _add_provider_reported_tokens(per_model[key], tokens, model_name)
-        elif word_count > 0:
-            est = estimate_tokens_from_words(word_count)
-            per_model[key] = SessionCostBreakdown(
-                normalized_model=per_model[key].normalized_model,
-                provider_model_name=per_model[key].provider_model_name,
-                input_tokens=per_model[key].input_tokens + est.input_tokens,
-                total_tokens=per_model[key].total_tokens + est.input_tokens,
-                confidence="estimated",
-                provenance="heuristic_estimated",
-            )
+    per_model: dict[str, SessionCostBreakdown] = (
+        _per_model_from_model_usage(model_usage) if model_usage else _per_model_from_messages(session)
+    )
 
     breakdowns: list[SessionCostBreakdown] = []
     total_api = 0.0
@@ -172,6 +163,80 @@ def compute_session_cost(
         price_snapshot_version=_PRICE_SNAPSHOT_VERSION,
         per_model=tuple(breakdowns),
     )
+
+
+def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict[str, SessionCostBreakdown]:
+    """Build the per-model breakdown seed from canonical ``session_model_usage`` rows.
+
+    Every row is provider-reported evidence by construction (the row would not
+    exist without an ingested usage event or message token sum), so this never
+    falls back to the word-count heuristic path the message walk uses.
+    """
+    per_model: dict[str, SessionCostBreakdown] = {}
+    for row in model_usage:
+        model_name = row.model_name or None
+        norm_model = _normalize_model(model_name) if model_name else None
+        key = norm_model or "unknown"
+        existing = per_model.get(key)
+        base_input = existing.input_tokens if existing else 0
+        base_output = existing.output_tokens if existing else 0
+        base_cache_read = existing.cache_read_tokens if existing else 0
+        base_cache_write = existing.cache_write_tokens if existing else 0
+        base_total = existing.total_tokens if existing else 0
+        per_model[key] = SessionCostBreakdown(
+            normalized_model=norm_model,
+            provider_model_name=model_name or (existing.provider_model_name if existing else None),
+            input_tokens=base_input + row.input_tokens,
+            output_tokens=base_output + row.output_tokens,
+            cache_read_tokens=base_cache_read + row.cache_read_tokens,
+            cache_write_tokens=base_cache_write + row.cache_write_tokens,
+            total_tokens=(
+                base_total + row.input_tokens + row.output_tokens + row.cache_read_tokens + row.cache_write_tokens
+            ),
+            confidence="reported",
+            provenance="provider_reported",
+        )
+    return per_model
+
+
+def _per_model_from_messages(session: Session) -> dict[str, SessionCostBreakdown]:
+    """Fallback: estimate per-model tokens by walking ``session.messages``.
+
+    Only used when no ``session_model_usage`` rows are supplied (e.g. an ad
+    hoc profile built without a materialized cost/usage rollup to read). Real
+    per-message ``input_tokens``/``output_tokens`` fields are sparse-to-absent
+    for Codex, which is why this path historically undercounted Codex sessions
+    by ~1000x when it was the only source (polylogue-r7p6).
+    """
+    per_model: dict[str, SessionCostBreakdown] = {}
+
+    for message in session.messages:
+        model_name = _get_message_model_name(message)
+        norm_model = _normalize_model(model_name) if model_name else None
+        key = norm_model or "unknown"
+
+        if key not in per_model:
+            per_model[key] = SessionCostBreakdown(
+                normalized_model=norm_model,
+                provider_model_name=model_name,
+            )
+
+        tokens = _get_message_token_counts(message)
+        word_count: int = getattr(message, "word_count", 0) or 0
+
+        if tokens is not None and getattr(tokens, "billable_tokens", 0) > 0:
+            per_model[key] = _add_provider_reported_tokens(per_model[key], tokens, model_name)
+        elif word_count > 0:
+            est = estimate_tokens_from_words(word_count)
+            per_model[key] = SessionCostBreakdown(
+                normalized_model=per_model[key].normalized_model,
+                provider_model_name=per_model[key].provider_model_name,
+                input_tokens=per_model[key].input_tokens + est.input_tokens,
+                total_tokens=per_model[key].total_tokens + est.input_tokens,
+                confidence="estimated",
+                provenance="heuristic_estimated",
+            )
+    return per_model
 
 
 def _get_message_model_name(message: object) -> str | None:

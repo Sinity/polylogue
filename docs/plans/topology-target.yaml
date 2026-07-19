@@ -537,12 +537,12 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/cost_compute.py
-    loc: 233
+    loc: 298
     target: polylogue/archive/semantic/cost_compute.py
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/cost_records.py
-    loc: 54
+    loc: 75
     target: polylogue/archive/semantic/cost_records.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -655,7 +655,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/runtime.py
-    loc: 587
+    loc: 588
     target: polylogue/archive/session/runtime.py
     owner: archive-session
     reason: archive-domain semantics
@@ -1484,7 +1484,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2403
+    loc: 2413
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1629,7 +1629,7 @@ files:
     target: polylogue/daemon/otlp_receiver.py
     owner: stable
   - path: polylogue/daemon/parse_prefetch.py
-    loc: 179
+    loc: 240
     target: polylogue/daemon/parse_prefetch.py
     owner: stable
   - path: polylogue/daemon/process_start.py
@@ -3613,7 +3613,7 @@ files:
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
-    loc: 1759
+    loc: 1860
     target: polylogue/storage/insights/session/rebuild.py
     owner: stable
   - path: polylogue/storage/insights/session/records.py
@@ -3621,7 +3621,7 @@ files:
     target: polylogue/storage/insights/session/records.py
     owner: stable
   - path: polylogue/storage/insights/session/refresh.py
-    loc: 688
+    loc: 709
     target: polylogue/storage/insights/session/refresh.py
     owner: stable
   - path: polylogue/storage/insights/session/repair_assessment.py
@@ -4168,6 +4168,10 @@ files:
   - path: polylogue/storage/sqlite/queries/messages.py
     loc: 29
     target: polylogue/storage/sqlite/queries/messages.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/model_usage.py
+    loc: 85
+    target: polylogue/storage/sqlite/queries/model_usage.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/project_refs.py
     loc: 44

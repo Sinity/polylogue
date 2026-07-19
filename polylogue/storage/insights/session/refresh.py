@@ -312,6 +312,7 @@ async def _apply_session_insight_session_update_async(
         hydrated[0],
         compaction_count=batch.compaction_counts_by_session.get(session_id),
         logical_session_id=thread_root_id,
+        model_usage=batch.model_usage_by_session.get(session_id),
     )
     await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
     await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
@@ -577,6 +578,7 @@ async def _apply_session_insight_session_updates_async(
                 hydrated_by_id[session_id],
                 compaction_count=batch.compaction_counts_by_session.get(session_id) if batch is not None else None,
                 logical_session_id=root_ids_by_session.get(session_id),
+                model_usage=batch.model_usage_by_session.get(session_id) if batch is not None else None,
             )
             for session_id in present_full_ids
         ]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json as _json
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
@@ -21,7 +21,7 @@ from polylogue.core.enums import Origin
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
-    from polylogue.archive.semantic.cost_records import SessionCostBreakdown, SessionCostSummary
+    from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostBreakdown, SessionCostSummary
     from polylogue.archive.semantic.facts import SessionSemanticFacts
 
 
@@ -448,6 +448,7 @@ def build_session_profile(
     *,
     analysis: SessionAnalysis | None = None,
     compaction_count: int | None = None,
+    model_usage: Sequence[ModelUsageTotals] | None = None,
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionProfile:
     from polylogue.archive.semantic.cost_compute import compute_session_cost
@@ -462,7 +463,7 @@ def build_session_profile(
     facts = session_analysis.facts
     attribution = session_analysis.attribution
     t0 = time.perf_counter()
-    cost_summary = compute_session_cost(session, estimate_if_missing=False)
+    cost_summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
     add_timing("profile.cost_summary", t0)
     cost_usd = cost_summary.total_api_cost_usd
     cost_is_estimated = cost_summary.cost_confidence != "reported"
