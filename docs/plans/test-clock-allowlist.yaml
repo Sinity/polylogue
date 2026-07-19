@@ -81,6 +81,8 @@ files:
     reason: "Ingest pipeline correctness tests (#1736) use time.monotonic for real process wait/retry timing that cannot be satisfied by a frozen clock."
   - path: tests/benchmarks/test_daemon_uds.py
     reason: "polylogue-20d.1 daemon UDS benchmark fixture polls a real background-thread HTTP server's readiness with a bounded wall-clock deadline; frozen_clock cannot substitute for waiting on real socket/thread startup."
+  - path: tests/benchmarks/perf_floors.py
+    reason: "polylogue-196x nightly perf-floors runner stamps its measurement report with the real wall-clock generation time (machine fingerprint metadata for the committed floors artifact); a frozen clock would misdate every real nightly run."
   - path: tests/unit/cli/test_daemon_golden_parity.py
     reason: "polylogue-20d.1 golden-parity test starts a real UDS daemon server in a background thread and polls its readiness with a bounded wall-clock deadline before comparing direct vs daemon-proxied CLI output; frozen_clock cannot substitute for waiting on real socket/thread startup."
   - path: tests/unit/archive/query/test_execution_control.py
