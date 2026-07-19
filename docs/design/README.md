@@ -22,6 +22,7 @@ domain models rather than plans:
 | [Project memory](project-memory.md) · [Second brain](second-brain.md) · [Time machine](time-machine.md) · [Archive storytelling](archive-storytelling.md) · [Whole product](whole-product.md) | Vision statements feeding horizon beads |
 | [Query-action workflows](query-action-workflows.md) | Moved pointer to the generated `docs/product/workflows.md` |
 | [Prefix-blob reclamation](prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes; consent-gated durable-tier reclamation (polylogue-vzn6) |
+| [Convergence simplification inventory](convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign — what phases (b)-(d) remove and why (polylogue-m6tp) |
 
 If a doc here stops matching its owning beads, the beads win — update or
 purge the doc.

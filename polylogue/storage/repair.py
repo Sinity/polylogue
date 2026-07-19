@@ -14,7 +14,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason
 from polylogue.archive.revision_authority import (
@@ -73,6 +73,17 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+
+if TYPE_CHECKING:
+    # ``revision_backfill`` imports ``ArchiveStore``, which (via
+    # ``polylogue.insights.archive``) imports this module -- a real,
+    # not merely lint-flagged, circular import at module load time. This
+    # type is only ever passed through here (constructed and populated by
+    # ``polylogue.daemon.parse_prefetch``), never constructed, so a
+    # ``TYPE_CHECKING``-only import plus ``from __future__ import
+    # annotations`` (already active above) keeps mypy strict resolved
+    # without ever evaluating the import at runtime.
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
@@ -3872,6 +3883,93 @@ def _raw_materialization_candidate_ids(
     )
 
 
+def raw_materialization_pending_census_raw_ids(
+    config: Config,
+    *,
+    limit: int,
+    max_payload_bytes: int,
+    raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
+) -> tuple[str, ...]:
+    """Read-only preview of raw ids the next census pass would parse.
+
+    polylogue-m6tp phase (a): the daemon's parse-stage warmer calls this
+    BEFORE taking the writer hold, to know which raws to pre-parse. Reuses
+    the exact same candidate + uncensused-receipt filters as
+    ``repair_raw_materialization``'s own census phase, and (like
+    ``_raw_materialization_candidate_ids``) opens only ``mode=ro``
+    connections -- no write connection, and thus no writer hold, is ever
+    required or taken here.
+
+    Order matches ``_raw_materialization_candidate_ids``'s row order. The
+    real pass additionally narrows by component grouping (only
+    ``census_component_limit`` components' worth of raws are actually
+    censused per pass), so this is a superset preview suitable for warming a
+    bounded pre-parse cache ahead of time, not an exact replica of one
+    pass's selection -- some warmed raws may go unused this pass (harmless:
+    they simply remain cached for a later one) and some raws a pass selects
+    may not have been warmed (harmless: ``_parse_retained_raws`` falls back
+    to its normal parse on a cache miss).
+    """
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    archive_root = _raw_materialization_archive_root(config)
+    candidates = _raw_materialization_candidate_ids(
+        config,
+        raw_artifact_id=raw_artifact_id,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+    )
+    relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
+    if not relevant_raw_ids:
+        return ()
+    from polylogue.sources.revision_backfill import uncensused_historical_revision_raw_ids
+
+    uncensused = uncensused_historical_revision_raw_ids(
+        archive_root, relevant_raw_ids, max_payload_bytes=max_payload_bytes
+    )
+    return uncensused[:limit]
+
+
+def raw_materialization_readonly_descriptors(
+    archive_root: Path, raw_ids: Sequence[str]
+) -> dict[str, tuple[Provider, str, str, RawRevisionKind, int]]:
+    """Read-only descriptor lookup for pre-parse dispatch (no writer needed).
+
+    Mirrors ``ArchiveStore.raw_revision_descriptor`` (same columns, same
+    ``provider_from_origin`` projection) but over a plain ``mode=ro``
+    connection: that method requires a writable blob publisher and is not
+    usable before the writer hold is taken, while this preview only needs
+    identity columns already durable in ``raw_sessions``.
+    """
+    raw_ids = list(raw_ids)
+    if not raw_ids:
+        return {}
+    archive_root = Path(archive_root)
+    placeholders = ",".join("?" for _ in raw_ids)
+    result: dict[str, tuple[Provider, str, str, RawRevisionKind, int]] = {}
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
+            FROM raw_sessions WHERE raw_id IN ({placeholders})
+            """,
+            raw_ids,
+        ).fetchall()
+    for row in rows:
+        result[str(row[0])] = (
+            provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2]),
+            str(row[3]),
+            str(row[4]),
+            RawRevisionKind(str(row[5])),
+            int(row[6]),
+        )
+    return result
+
+
 def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, raw_id: str) -> bool:
     from polylogue.sources.dispatch import is_stream_record_provider
 
@@ -5607,6 +5705,7 @@ def repair_raw_materialization(
     ingest_workers: int | None = None,
     commit_batch_size: int | None = None,
     progress_callback: ProgressCallback | None = None,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> RepairResult:
     """Converge retained raws through typed per-session revision authority.
 
@@ -5631,6 +5730,14 @@ def repair_raw_materialization(
     wider ``selected_raw_ids=None`` scope (e.g. the CLI
     ``ops maintenance rebuild-index`` full-archive path), not by this
     per-component daemon loop.
+
+    ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) is
+    threaded only to the CENSUS phase's ``census_historical_revision_evidence``
+    call below -- the parse-dominant stage per the 2026-07-19 perf findings.
+    It is NOT threaded to the REPLAY phase's
+    ``backfill_historical_revision_evidence`` call further down: that call's
+    own parse cost (``_ParsedSessionSpill.for_raw`` over already-typed
+    cohorts) is a different, smaller-scope code path left for a later phase.
     """
     if max_payload_bytes < 1:
         raise ValueError("max_payload_bytes must be positive")
@@ -5714,6 +5821,7 @@ def repair_raw_materialization(
                     max_payload_bytes=max_payload_bytes,
                     ingest_workers=ingest_workers,
                     commit_batch_size=commit_batch_size,
+                    prefetch_cache=prefetch_cache,
                 )
             except RawRevisionReplayResourceBlockedError as exc:
                 logger.warning(

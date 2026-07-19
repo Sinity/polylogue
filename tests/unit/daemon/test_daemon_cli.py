@@ -7,6 +7,7 @@ import inspect
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -550,6 +551,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         dry_run: bool,
         raw_artifact_limit: int,
         max_payload_bytes: int,
+        prefetch_cache: object = None,
     ) -> FakeResult:
         order.append("materialize")
         calls["archive_root"] = config.archive_root
@@ -557,6 +559,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["dry_run"] = dry_run
         calls["raw_artifact_limit"] = raw_artifact_limit
         calls["max_payload_bytes"] = max_payload_bytes
+        calls["prefetch_cache"] = prefetch_cache
         return FakeResult()
 
     def fake_recover(config: Config) -> tuple[str, ...]:
@@ -601,6 +604,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "dry_run": False,
         "raw_artifact_limit": 11,
         "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+        "prefetch_cache": None,
         "recover_archive_root": tmp_path / "archive",
         "frontier_archive_root": tmp_path / "archive",
         "frontier_limit": 8,
@@ -1254,6 +1258,140 @@ def test_periodic_raw_materialization_yields_to_pending_browser_capture_spool(
     monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
     with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
         asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+
+def test_periodic_raw_materialization_flag_off_never_warms_parse_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-m6tp phase (a): flag off (the default) must never construct
+    or call the parse-stage warmer, and the ``prefetch_cache`` kwarg threaded
+    into ``_drain_raw_materialization_once`` must be ``None`` -- reproducing
+    the exact unmodified in-hold parse path."""
+    from polylogue.daemon import cli as daemon_cli
+
+    class FakeResolved:
+        daemon_parse_stage_split = False
+
+    seen_prefetch_cache: list[object] = []
+
+    def fail_daemon_parse_stage() -> object:
+        pytest.fail("parse-stage warmer must not be constructed when the flag is off")
+
+    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
+        partial = cast(functools.partial[object], func)
+        seen_prefetch_cache.append(partial.keywords["prefetch_cache"])
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", fail_daemon_parse_stage)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert seen_prefetch_cache == [None]
+
+
+def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drain(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """polylogue-m6tp phase (a) anti-vacuity: the parse-stage warmer must run
+    BEFORE the writer hold is acquired, and the drain pass must run WHILE the
+    lease IS held -- proven against the REAL ``DaemonWriteCoordinator`` /
+    ``daemon_write_lease_active`` machinery (a mock coordinator would
+    trivially report ``False`` for both, proving nothing). Reverting the
+    warm-before-run_sync ordering, or moving the warm call inside
+    ``run_sync``, would flip one of these two assertions."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, daemon_write_lease_active
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    class FakeResolved:
+        daemon_parse_stage_split = True
+
+    order: list[str] = []
+    lease_during_warm: list[bool] = []
+    lease_during_drain: list[bool] = []
+    _sentinel_cache = object()
+
+    class FakeStage:
+        cache = _sentinel_cache
+
+        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
+            order.append("warm")
+            lease_during_warm.append(daemon_write_lease_active())
+            return 0
+
+    def fake_drain(*, limit: int, recover: bool, prefetch_cache: object = None) -> RawMaterializationCounts:
+        order.append("drain")
+        lease_during_drain.append(daemon_write_lease_active())
+        assert prefetch_cache is _sentinel_cache
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
+    monkeypatch.setattr(daemon_cli, "_drain_raw_materialization_once", fake_drain)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: DaemonWriteCoordinator())
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert order == ["warm", "drain"]
+    assert lease_during_warm == [False]
+    assert lease_during_drain == [True]
+
+
+def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_warm_time(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The writer hold must stay short even when the parse-stage warm step is
+    slow: ``hold_seconds`` (measured by the REAL ``DaemonWriteCoordinator``
+    around the drain call only) must be far smaller than the warm delay,
+    proving the write window genuinely excludes parse time rather than just
+    reordering it."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    class FakeResolved:
+        daemon_parse_stage_split = True
+
+    warm_delay_seconds = 0.2
+    released_hold_seconds: list[float] = []
+
+    class FakeStage:
+        cache = None
+
+        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
+            time.sleep(warm_delay_seconds)
+            return 0
+
+    def fake_drain(*, limit: int, recover: bool, prefetch_cache: object = None) -> RawMaterializationCounts:
+        raise asyncio.CancelledError
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "released" and event.hold_seconds is not None:
+            released_hold_seconds.append(event.hold_seconds)
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
+    monkeypatch.setattr(daemon_cli, "_drain_raw_materialization_once", fake_drain)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: DaemonWriteCoordinator(observer=observe))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert len(released_hold_seconds) == 1
+    assert released_hold_seconds[0] < warm_delay_seconds / 2
 
 
 def test_spool_pending_check_ignores_terminal_cursor_states(
