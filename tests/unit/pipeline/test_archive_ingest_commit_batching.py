@@ -161,7 +161,15 @@ def test_direct_grouped_reingest_reserves_raw_blob_until_source_commit(
         "only this test's harness is affected. Tracked in polylogue-90k1 "
         "for a harness redesign (polylogue-xikl 3.14 migration)."
     ),
-    raises=AssertionError,
+    # The observed failure mode is the AssertionError from `assert not error`
+    # (the observer's own caught AssertionError relayed over the pipe), but
+    # if timing shifts enough that observation.join(timeout=10) expires
+    # while the observer is still alive, this test instead raises via
+    # pytest.fail("process-route observer did not terminate") --
+    # pytest.fail.Exception (an alias for _pytest.outcomes.Failed), not
+    # AssertionError. Cover both so a timing-dependent rerun still xfails
+    # instead of surfacing as an unexpected hard failure.
+    raises=(AssertionError, pytest.fail.Exception),
     strict=True,
 )
 def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_ref(
