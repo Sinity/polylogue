@@ -145,12 +145,18 @@ async def rebuild_index_from_source(
     materialize: bool,
     progress_callback: StageProgressCallback | None,
     owned_inactive_generation: tuple[str, str] | None = None,
+    bulk_fts: bool = False,
 ) -> dict[str, object]:
     """Replay retained bytes through typed revision authority.
 
     ``raw_ids`` is an initial scheduling hint, not an authority boundary: the
     replay expands to complete logical cohorts so a partial selection cannot
     make an older snapshot look newest.
+
+    ``bulk_fts`` (polylogue-crd8, default ``False``) enables the guard-gated
+    bulk FTS mode for whale prefix-sharing lineage cascades encountered during
+    replay; see ``backfill_historical_revision_evidence``. The offline
+    ``rebuild-index`` maintenance command passes ``True``.
     """
     if raw_batch_size <= 0:
         raise ValueError("raw_batch_size must be positive")
@@ -173,6 +179,7 @@ async def rebuild_index_from_source(
         owned_inactive_generation=owned_inactive_generation,
         max_cached_payload_bytes=_REBUILD_CENSUS_SPILL_CACHE_BYTES,
         ingest_workers=resolved_ingest_workers,
+        bulk_fts=bulk_fts,
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")

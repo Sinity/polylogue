@@ -39,19 +39,28 @@ FTS_REBUILD_SQL = """
     DELETE FROM messages_fts
 """
 
+# polylogue-crd8: dedicated guard name gating the messages_fts per-row trigger
+# BODIES (not their existence -- see FTS_BULK_SESSION_WRITE_GUARD docstring
+# below for why this must never be the shared 'session-write' guard name).
+FTS_BULK_SESSION_WRITE_GUARD = "fts-bulk-session-write"
+
+_FTS_BULK_GUARD_NOT_SET = (
+    f"NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{FTS_BULK_SESSION_WRITE_GUARD}')"
+)
+
 # FTS trigger DDL for message/block FTS maintenance.
 BLOCKS_FTS_TRIGGER_DDL = [
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ai
-       AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
+       AFTER INSERT ON blocks WHEN new.search_text != '' AND {_FTS_BULK_GUARD_NOT_SET} BEGIN
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
            VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
        END""",
-    """CREATE TRIGGER IF NOT EXISTS messages_fts_ad
-       AFTER DELETE ON blocks WHEN old.search_text != '' BEGIN
+    f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ad
+       AFTER DELETE ON blocks WHEN old.search_text != '' AND {_FTS_BULK_GUARD_NOT_SET} BEGIN
            DELETE FROM messages_fts WHERE rowid = old.rowid;
        END""",
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_au
-       AFTER UPDATE ON blocks BEGIN
+       AFTER UPDATE ON blocks WHEN {_FTS_BULK_GUARD_NOT_SET} BEGIN
            DELETE FROM messages_fts WHERE rowid = old.rowid;
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
            SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
@@ -196,6 +205,7 @@ def excess_message_rows_sql(limit: int) -> str:
 
 __all__ = [
     "BLOCKS_FTS_TRIGGER_DDL",
+    "FTS_BULK_SESSION_WRITE_GUARD",
     "FTS_INDEXABLE_MESSAGE_COUNT_SQL",
     "FTS_INDEX_DOC_COUNT_SQL",
     "FTS_INDEX_EXISTS_SQL",

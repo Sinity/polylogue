@@ -276,6 +276,13 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 materialize=True,
                 progress_callback=None,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
+                # polylogue-crd8: this is the offline rebuild path (an owned
+                # inactive generation, never the live daemon ingest path), so
+                # the guard-gated bulk FTS mode is safe to enable unconditionally
+                # here -- it collapses whale prefix-sharing lineage cascades'
+                # per-row messages_fts trigger storm into one bulk delete+insert
+                # per affected session.
+                bulk_fts=True,
             )
             if selected_raw_ids:
                 _refresh_generation_planner_statistics(Path(generation.index_path))

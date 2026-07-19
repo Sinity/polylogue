@@ -1550,6 +1550,7 @@ class ArchiveStore:
         manage_transaction: bool,
         preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
         revision_authoritative: bool = False,
+        bulk_fts: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         content_hash = str(session_content_hash(session))
@@ -1580,6 +1581,7 @@ class ArchiveStore:
                 stage_timing_prefix=stage_timing_prefix,
                 preacquired_attachment_blobs=preacquired_attachment_blobs,
                 manage_transaction=manage_transaction,
+                bulk_fts=bulk_fts,
             )
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
@@ -2932,6 +2934,7 @@ class ArchiveStore:
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "revision_replay",
         manage_transaction: bool = True,
+        bulk_fts: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state.
 
@@ -2949,6 +2952,12 @@ class ArchiveStore:
         batched cohort's index writes and terminal markers together), never
         a partial one, and a resume reprocesses every lost cohort from
         scratch with zero duplication.
+
+        ``bulk_fts`` (polylogue-crd8, default ``False``) enables the
+        guard-gated bulk FTS mode described on ``_bulk_fts_session_guard`` for
+        whale prefix-sharing lineage cascades this replay triggers. Only the
+        offline rebuild/backfill path passes ``True``; ordinary daemon replay
+        stays on the unguarded per-row trigger path.
         """
         if not plan.accepted_raw_ids:
             raise ValueError("cannot apply a revision plan without an accepted chain")
@@ -3004,6 +3013,7 @@ class ArchiveStore:
                     preacquired_attachment_blobs=attachments_by_raw_id[raw_id],
                     finalize_raw_parse=False,
                     revision_authoritative=True,
+                    bulk_fts=bulk_fts,
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
@@ -3095,6 +3105,7 @@ class ArchiveStore:
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "membership_replay",
         manage_transaction: bool = True,
+        bulk_fts: bool = False,
     ) -> str | None:
         """Apply one semantic member head and persist every membership decision.
 
@@ -3104,6 +3115,9 @@ class ArchiveStore:
         transaction/pending-state instead of committing them immediately
         (polylogue-oikv) -- see ``apply_raw_revision_replay`` for the shared
         batch-commit invariant this mirrors.
+
+        ``bulk_fts`` mirrors ``apply_raw_revision_replay``'s guard-gated bulk
+        FTS mode (polylogue-crd8); default ``False``.
         """
         conn = self._ensure_source_conn()
         decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
@@ -3174,6 +3188,7 @@ class ArchiveStore:
                     preacquired_attachment_blobs=attachments,
                     finalize_raw_parse=False,
                     revision_authoritative=True,
+                    bulk_fts=bulk_fts,
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
@@ -3323,6 +3338,7 @@ class ArchiveStore:
         preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]],
         finalize_raw_parse: bool,
         revision_authoritative: bool = False,
+        bulk_fts: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         provider = Provider.from_string(session.source_name)
         try:
@@ -3335,6 +3351,7 @@ class ArchiveStore:
                 manage_transaction=manage_transaction,
                 preacquired_attachment_blobs=preacquired_attachment_blobs,
                 revision_authoritative=revision_authoritative,
+                bulk_fts=bulk_fts,
             )
         except Exception as exc:
             self.finalize_raw_parse_state(raw_id, state=self._raw_parse_failure_state(provider, exc))

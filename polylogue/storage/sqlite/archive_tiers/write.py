@@ -15,8 +15,8 @@ import re
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import nullcontext
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
@@ -45,7 +45,11 @@ from polylogue.storage.fts.fts_lifecycle import (
     suspend_message_fts_triggers_sync,
 )
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
-from polylogue.storage.fts.sql import delete_session_rows_sql, insert_session_rows_sql
+from polylogue.storage.fts.sql import (
+    FTS_BULK_SESSION_WRITE_GUARD,
+    delete_session_rows_sql,
+    insert_session_rows_sql,
+)
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
     LINEAGE_TRUNCATION_DEPTH_LIMIT,
@@ -214,6 +218,7 @@ def write_parsed_session_to_archive(
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
     preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
     manage_transaction: bool = True,
+    bulk_fts: bool = False,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
@@ -222,6 +227,13 @@ def write_parsed_session_to_archive(
     transaction — to amortize the per-commit fsync and WAL page churn that
     dominate re-ingest I/O — passes ``manage_transaction=False`` and owns the
     surrounding commit and any rollback-on-error itself.
+
+    ``bulk_fts`` (polylogue-crd8, default ``False`` so ordinary daemon ingest
+    is byte-for-byte unchanged) enables the guard-gated bulk FTS mode for the
+    cascading prefix-tail re-extraction this write can trigger on *other*
+    (child) sessions via ``_resolve_session_graph`` -- see
+    ``_bulk_fts_session_guard``. Only the offline rebuild/backfill replay path
+    turns this on.
     """
     t0 = time.perf_counter()
 
@@ -562,6 +574,7 @@ def write_parsed_session_to_archive(
             origin.value,
             cache=signature_cache,
             add_timing=add_timing,
+            bulk_fts=bulk_fts,
         )
         add_timing("index.graph_resolve", t0)
         t0 = time.perf_counter()
@@ -2143,6 +2156,7 @@ def _resolve_session_graph(
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
     add_timing: Callable[[str, float], None] | None = None,
+    bulk_fts: bool = False,
 ) -> None:
     def record_substage(name: str, started_at: float) -> None:
         if add_timing is not None:
@@ -2207,6 +2221,7 @@ def _resolve_session_graph(
             cache=cache,
             composed_cache=composed_cache,
             add_timing=add_timing,
+            bulk_fts=bulk_fts,
         )
     record_substage("reextract_prefix_tails", t0)
 
@@ -3779,6 +3794,55 @@ def _composed_db_signatures(
     return composed
 
 
+@contextmanager
+def _bulk_fts_session_guard(conn: sqlite3.Connection, session_id: str, *, enabled: bool) -> Iterator[None]:
+    """Suspend per-row ``messages_fts`` trigger maintenance for one session.
+
+    polylogue-crd8: whale prefix-sharing lineage sessions (fork/resume/
+    auto-compaction) can carry 10K+ tool blocks in the inherited prefix that
+    ``_reextract_prefix_tail_db`` deletes wholesale once the parent is known.
+    Deleting those blocks one row at a time fires ``messages_fts_ad`` once per
+    row (contentless-FTS posting-list maintenance), which measured as a
+    25+ minute single-DELETE stall on the live rebuild.
+
+    While ``enabled``, this sets a **dedicated** ``derived_refresh_guard`` row
+    (``fts-bulk-session-write``) that gates only the ``messages_fts_{ai,ad,au}``
+    trigger BODIES (see ``polylogue.storage.fts.sql``); the triggers stay
+    structurally present in ``sqlite_master`` throughout; only their WHEN
+    clause short-circuits. This is deliberately a *different* guard name from
+    the existing ``session-write`` guard: that guard is set unconditionally
+    for every session write (see ``write_parsed_session_to_archive``), so
+    gating FTS maintenance on it would silently stop FTS indexing for
+    ordinary daemon ingest, not just whale bulk replays.
+
+    The caller's block deletion is bracketed by one explicit session-scoped
+    FTS delete (covering both the doomed prefix rows and the surviving tail
+    rows) and, in the ``finally``, one explicit session-scoped FTS re-insert
+    (repopulating whatever blocks remain for ``session_id`` -- the surviving
+    tail after the caller's mutation). This mirrors the same delete-then-
+    insert shape ``_replace_full_session_messages_and_blocks`` already uses
+    for a session's own full replace, just gated by a guard row instead of a
+    raw ``DROP TRIGGER``/``CREATE TRIGGER`` pair, so the trigger-presence half
+    of ``assert_session_fts_exact_sync`` never observes a trigger-less window.
+    """
+    if not enabled:
+        yield
+        return
+    conn.execute(delete_session_rows_sql(1), (session_id,))
+    conn.execute(
+        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+        (FTS_BULK_SESSION_WRITE_GUARD,),
+    )
+    try:
+        yield
+    finally:
+        conn.execute(insert_session_rows_sql(1), (session_id,))
+        conn.execute(
+            "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+            (FTS_BULK_SESSION_WRITE_GUARD,),
+        )
+
+
 def _reextract_prefix_tail_db(
     conn: sqlite3.Connection,
     child_session_id: str,
@@ -3787,6 +3851,7 @@ def _reextract_prefix_tail_db(
     cache: dict[str, list[tuple[str, str]]] | None = None,
     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
     add_timing: Callable[[str, float], None] | None = None,
+    bulk_fts: bool = False,
 ) -> None:
     """Normalize a child that was stored whole because its parent was ingested
     later (#2467). Aligns the child's already-stored messages against the parent's
@@ -3930,19 +3995,20 @@ def _reextract_prefix_tail_db(
     )
     record_substage("provider_usage_tail", t0)
     t0 = time.perf_counter()
-    if k == len(child_composed):
-        _delete_all_session_message_dependents(conn, child_session_id, prefix_message_ids)
-        record_substage("dependent_delete", t0)
-    else:
-        placeholders = ",".join("?" for _ in prefix_message_ids)
-        _delete_prefix_message_dependents(conn, prefix_message_ids)
-        record_substage("dependent_delete", t0)
-        t0 = time.perf_counter()
-        conn.execute(
-            f"DELETE FROM messages WHERE message_id IN ({placeholders})",
-            tuple(prefix_message_ids),
-        )
-        record_substage("message_delete", t0)
+    with _bulk_fts_session_guard(conn, child_session_id, enabled=bulk_fts):
+        if k == len(child_composed):
+            _delete_all_session_message_dependents(conn, child_session_id, prefix_message_ids)
+            record_substage("dependent_delete", t0)
+        else:
+            placeholders = ",".join("?" for _ in prefix_message_ids)
+            _delete_prefix_message_dependents(conn, prefix_message_ids)
+            record_substage("dependent_delete", t0)
+            t0 = time.perf_counter()
+            conn.execute(
+                f"DELETE FROM messages WHERE message_id IN ({placeholders})",
+                tuple(prefix_message_ids),
+            )
+            record_substage("message_delete", t0)
     # The child's own rows just changed (inherited prefix deleted); drop its
     # memoized own-signatures so any later compose in this batch recomputes them.
     t0 = time.perf_counter()

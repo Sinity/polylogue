@@ -476,6 +476,7 @@ def backfill_historical_revision_evidence(
     max_cached_payload_bytes: int | None = None,
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
+    bulk_fts: bool = False,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -512,6 +513,12 @@ def backfill_historical_revision_evidence(
     a batch boundary, and a resume reprocesses every lost cohort from
     scratch with zero duplication (proof:
     ``test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly``).
+
+    ``bulk_fts`` (polylogue-crd8, default ``False``) is threaded to both
+    ``apply_raw_revision_replay`` and ``apply_raw_membership_classification``
+    to enable the guard-gated bulk FTS mode for whale prefix-sharing lineage
+    cascades. Offline rebuild callers (``maintenance/rebuild_index.py`` via
+    ``maintenance/replay.py``) pass ``True``; other callers leave it off.
     """
     adoption_deferred = 0
     quarantined = 0
@@ -608,7 +615,11 @@ def backfill_historical_revision_evidence(
                 adoption_deferred += len(plan.accepted_raw_ids)
                 continue
             archive.apply_raw_revision_replay(
-                plan, parsed_by_raw_id, acquired_at_ms=0, manage_transaction=not replay_batched
+                plan,
+                parsed_by_raw_id,
+                acquired_at_ms=0,
+                manage_transaction=not replay_batched,
+                bulk_fts=bulk_fts,
             )
             replayed += 1
             byte_replayed_keys.add(logical_key)
@@ -656,6 +667,7 @@ def backfill_historical_revision_evidence(
                 projections,
                 acquired_at_ms=0,
                 manage_transaction=not replay_batched,
+                bulk_fts=bulk_fts,
             )
             if classification.accepted_raw_ids:
                 replayed += 1
