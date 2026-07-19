@@ -146,13 +146,17 @@ def _session_hash_payload(
     }
 
 
-def session_content_hash(convo: ParsedSession) -> ContentHash:
-    """Generate the content hash for a session.
+def _session_hash_components(
+    convo: ParsedSession,
+) -> tuple[list[dict[str, JSONValue]], list[dict[str, JSONValue]], list[dict[str, JSONValue]]]:
+    """Build the hash-stable message/attachment/event payloads once.
 
-    Uses sentinel values to distinguish None from empty/missing fields. The
-    hash incorporates the per-message payload (id, role, text, timestamp,
-    content blocks), attachments, and session events, so any change to a
-    message also changes the session hash.
+    ``session_content_hash`` and ``session_revision_projection`` both need
+    these payloads (the former to hash the whole tree, the latter to also
+    hash each item individually); building them once and sharing halves the
+    payload-construction and nested tool_input hashing volume versus each
+    caller re-deriving its own copy. Byte-identical to computing each
+    payload independently -- pure sharing of an already-pure computation.
     """
     messages_payload = [
         _message_hash_payload(msg, msg.provider_message_id or f"msg-{idx}")
@@ -169,40 +173,67 @@ def session_content_hash(convo: ParsedSession) -> ContentHash:
         }
         for event_index, event in enumerate(convo.session_events)
     ]
+    return messages_payload, attachments_payload, session_events_payload
+
+
+def _session_tree_hash(
+    convo: ParsedSession,
+    *,
+    messages_payload: list[dict[str, JSONValue]],
+    attachments_payload: list[dict[str, JSONValue]],
+    session_events_payload: list[dict[str, JSONValue]],
+) -> str:
+    return hash_payload(
+        _session_hash_payload(
+            title=convo.title,
+            created_at=convo.created_at,
+            updated_at=convo.updated_at,
+            messages=messages_payload,
+            attachments=attachments_payload,
+            session_events=session_events_payload,
+        )
+    )
+
+
+def session_content_hash(convo: ParsedSession) -> ContentHash:
+    """Generate the content hash for a session.
+
+    Uses sentinel values to distinguish None from empty/missing fields. The
+    hash incorporates the per-message payload (id, role, text, timestamp,
+    content blocks), attachments, and session events, so any change to a
+    message also changes the session hash.
+    """
+    messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
     return ContentHash(
-        hash_payload(
-            _session_hash_payload(
-                title=convo.title,
-                created_at=convo.created_at,
-                updated_at=convo.updated_at,
-                messages=messages_payload,
-                attachments=attachments_payload,
-                session_events=session_events_payload,
-            )
+        _session_tree_hash(
+            convo,
+            messages_payload=messages_payload,
+            attachments_payload=attachments_payload,
+            session_events_payload=session_events_payload,
         )
     )
 
 
 def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjection:
-    """Project canonical content hashes used to prove append-only session growth."""
-    message_payloads = [
-        _message_hash_payload(message, message.provider_message_id or f"msg-{index}")
-        for index, message in enumerate(convo.messages, start=1)
-    ]
-    attachment_payloads = [_attachment_hash_payload(attachment) for attachment in convo.attachments]
-    event_payloads = [
-        {
-            "event_index": event_index,
-            "event_type": _normalize_for_hash(event.event_type),
-            "timestamp": _normalize_for_hash(event.timestamp),
-            "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-            "payload": hash_payload(event.payload),
-        }
-        for event_index, event in enumerate(convo.session_events)
-    ]
+    """Project canonical content hashes used to prove append-only session growth.
+
+    Builds message/attachment/event payloads once (``_session_hash_components``)
+    and reuses them for both the whole-tree ``session_hash`` and the per-item
+    hashes below, instead of recomputing each payload from scratch a second
+    time. Output is byte-identical to the previous double-computation --
+    this is a pure elimination of redundant work, not an identity-hash
+    change (polylogue-fqp0).
+    """
+    messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
+    session_hash_hex = _session_tree_hash(
+        convo,
+        messages_payload=messages_payload,
+        attachments_payload=attachments_payload,
+        session_events_payload=session_events_payload,
+    )
     return SessionRevisionProjection(
-        session_hash=bytes.fromhex(session_content_hash(convo)),
-        message_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in message_payloads),
-        attachment_hashes=frozenset(bytes.fromhex(hash_payload(payload)) for payload in attachment_payloads),
-        event_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in event_payloads),
+        session_hash=bytes.fromhex(session_hash_hex),
+        message_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in messages_payload),
+        attachment_hashes=frozenset(bytes.fromhex(hash_payload(payload)) for payload in attachments_payload),
+        event_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in session_events_payload),
     )
