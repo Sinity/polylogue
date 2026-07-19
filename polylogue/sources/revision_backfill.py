@@ -24,6 +24,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
+from polylogue.pipeline.services.process_pool import parallel_threads_effective
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
 from polylogue.sources.parsers import hermes_state, hermes_verification
@@ -698,13 +699,22 @@ def _census_parse_worker(
     blob_root_str: str,
     source_db_path_str: str,
 ) -> tuple[str, list[ParsedSession] | None, str | None]:
-    """ProcessPool worker: parse one retained raw's already-published blob bytes.
+    """Parse one retained raw's already-published blob bytes.
 
     Pure read-only blob->ParsedSession decode; the caller already knows this
     raw's payload size and revision kind from its own source-tier descriptor
-    lookup, so only sessions (or a typed error string) cross the process
-    boundary. Errors are returned rather than raised so the writer process can
-    apply the exact same per-raw quarantine handling as the sequential path.
+    lookup, so only primitive strings cross into this function -- no shared
+    ``ArchiveStore`` (and thus no thread-affine sqlite connection, see
+    ``_parse_unique_retained_raws_via_threads``) and no pickled object graph
+    to construct one. Errors are returned rather than raised so the caller
+    can apply the exact same per-raw quarantine handling as the sequential
+    path.
+
+    Dispatched onto BOTH a ``ProcessPoolExecutor`` (GIL-build fallback, see
+    ``_parse_unique_retained_raws``) and a ``ThreadPoolExecutor`` (real
+    free-threading, see ``_parse_unique_retained_raws_via_threads``) -- the
+    function is identical either way; only the executor and the recreated
+    ``ArchiveBlobPublisher``'s process/thread affinity differ.
     """
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
@@ -849,6 +859,83 @@ def _parse_retained_raws(
     return results
 
 
+def _parse_unique_retained_raws_via_threads(
+    archive: ArchiveStore,
+    raw_ids: list[str],
+    *,
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
+    ingest_workers: int,
+) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
+    """Thread-parallel parse, reachable only when ``parallel_threads_effective()``.
+
+    Under a real free-threaded (no-GIL) interpreter, a plain
+    ``ThreadPoolExecutor`` shares parsed ``ParsedSession`` object graphs by
+    reference between threads, so neither of the process pool's two
+    amortization costs applies: no pickle-back of the return value (#3136
+    measured 0.63x/net-loss above 256KiB) and no per-worker spawn+import tax
+    (#3149's ~1.5-2s floor -- threads share the one already-imported
+    interpreter, they never re-pay ``import polylogue``). Both
+    ``_partition_raws_by_dispatch_size`` and ``_pool_dispatch_amortizes``
+    exist solely to protect against those two process-pool-specific costs
+    (#3136/#3149), so this path applies NEITHER: every raw in ``raw_ids``
+    dispatches to the thread pool regardless of payload size or aggregate
+    bytes.
+
+    Dispatches the same ``_census_parse_worker`` function the process-pool
+    path uses, deliberately -- NOT ``_parse_retained_raw(archive, raw_id)``
+    directly. ``ArchiveStore`` lazily opens ``_source_conn`` as a plain
+    ``sqlite3.Connection`` with the default ``check_same_thread=True``
+    (``storage/sqlite/archive_tiers/archive.py:_ensure_source_conn``); the
+    caller of this function (``_parse_unique_retained_raws``) already
+    resolved every raw's descriptor sequentially on the calling thread
+    before dispatch, so calling ``archive.raw_revision_descriptor`` again
+    from a worker thread (as ``_parse_retained_raw`` does) raises
+    ``sqlite3.ProgrammingError: SQLite objects created in a thread can only
+    be used in that same thread`` -- confirmed empirically, not
+    theoretical. ``_census_parse_worker`` sidesteps this entirely: it never
+    touches the shared ``ArchiveStore`` or its connections, only a fresh,
+    stateless ``ArchiveBlobPublisher`` built from primitive strings
+    (blob root + source.db path), whose blob reads are plain filesystem I/O.
+
+    Result assembly is keyed by raw_id exactly like the process-pool path,
+    so completion order never affects the archive state callers build from
+    these results.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
+    blob_root_str = str(archive.archive_root / "blob")
+    source_db_path_str = str(archive.source_db_path)
+    with ThreadPoolExecutor(max_workers=min(ingest_workers, len(raw_ids))) as pool:
+        future_to_raw_id = {}
+        for raw_id in raw_ids:
+            provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
+            future = pool.submit(
+                _census_parse_worker,
+                raw_id,
+                provider.value,
+                blob_hash,
+                source_path,
+                is_stream_record_provider(source_path, str(provider)),
+                blob_root_str,
+                source_db_path_str,
+            )
+            future_to_raw_id[future] = raw_id
+        for future in as_completed(future_to_raw_id):
+            raw_id = future_to_raw_id[future]
+            try:
+                _raw_id, sessions, error = future.result()
+            except Exception as exc:
+                results[raw_id] = exc
+                continue
+            if error is not None:
+                results[raw_id] = RuntimeError(error)
+                continue
+            _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
+            results[raw_id] = (sessions or [], payload_size, kind)
+    return results
+
+
 def _parse_unique_retained_raws(
     archive: ArchiveStore,
     raw_ids: list[str],
@@ -856,13 +943,25 @@ def _parse_unique_retained_raws(
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-    """Parse already-deduplicated raws, optionally across a process pool.
+    """Parse already-deduplicated raws, optionally in parallel.
 
     Read-only blob->ParsedSession decode is authority-neutral and
     embarrassingly parallel; callers apply archive writes afterwards in a
     fixed deterministic order independent of completion order here, so
     parallel and sequential execution produce byte-identical archive state
-    regardless of which raws take the pool path versus the sequential path.
+    regardless of which raws take a parallel path versus the sequential
+    path.
+
+    Two parallel strategies, mutually exclusive per call:
+    ``parallel_threads_effective()`` (real free-threading, e.g. 3.14t) routes
+    to ``_parse_unique_retained_raws_via_threads`` with no size partition or
+    amortization floor. Otherwise (the standard GIL build -- today's default
+    and the only build the daemon deploys) falls through to the
+    ``ProcessPoolExecutor`` path below, unchanged: the polylogue-7mtf
+    control-run measurement proved GIL-build threads give zero parse
+    speedup (0.93x-0.96x) and inflate a concurrent writer thread's commit
+    latency ~5000x, so threads must never engage without a genuinely
+    disabled GIL.
     """
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
     if ingest_workers <= 1 or len(raw_ids) <= 1:
@@ -872,6 +971,11 @@ def _parse_unique_retained_raws(
             except Exception as exc:
                 results[raw_id] = exc
         return results
+
+    if parallel_threads_effective():
+        return _parse_unique_retained_raws_via_threads(
+            archive, raw_ids, descriptors=descriptors, ingest_workers=ingest_workers
+        )
 
     payload_sizes = {raw_id: descriptors[raw_id][4] for raw_id in raw_ids}
     pool_raw_ids, sequential_raw_ids = _partition_raws_by_dispatch_size(

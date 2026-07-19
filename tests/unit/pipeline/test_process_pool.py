@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import sys
 import threading
 from concurrent.futures import as_completed
 
 import pytest
 
-from polylogue.pipeline.services.process_pool import process_pool_context, process_pool_executor
+from polylogue.pipeline.services.process_pool import (
+    parallel_threads_effective,
+    process_pool_context,
+    process_pool_executor,
+)
 
 
 def _worker_wrapper_class_name() -> str:
@@ -72,3 +77,32 @@ def test_process_pool_dispatch_from_worker_thread_completes() -> None:
     if error:
         raise error[0]
     assert outcome == [[i * i for i in range(8)]]
+
+
+def test_parallel_threads_effective_true_when_gil_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``sys._is_gil_enabled() -> False`` (real free-threading) must gate the
+    thread-parallel parse path OPEN. This is the only state under which
+    revision_backfill's ThreadPoolExecutor parse path may engage. Patching
+    the real ``sys`` module (imported here directly, not via the production
+    module's reference to it) affects ``process_pool.py``'s own
+    ``sys._is_gil_enabled`` lookup identically, since both names resolve the
+    same singleton module object at call time."""
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: False, raising=False)
+    assert parallel_threads_effective() is True
+
+
+def test_parallel_threads_effective_false_when_gil_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``sys._is_gil_enabled() -> True`` (GIL build, or a free-threaded build
+    that re-enabled the GIL at runtime) must gate the thread-parallel parse
+    path CLOSED -- the polylogue-7mtf control run measured GIL-build threads
+    give zero parse speedup and starve a concurrent writer thread ~5000x."""
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: True, raising=False)
+    assert parallel_threads_effective() is False
+
+
+def test_parallel_threads_effective_treats_missing_probe_as_gil_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Interpreters without PEP 703/779 support (no ``sys._is_gil_enabled``
+    attribute at all, e.g. every CPython before 3.13) have no free-threaded
+    build to speak of -- the safe default is "GIL enabled", not an error."""
+    monkeypatch.delattr(sys, "_is_gil_enabled", raising=False)
+    assert parallel_threads_effective() is False
