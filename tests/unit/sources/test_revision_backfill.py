@@ -21,7 +21,11 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
+from tests.infra.revision_backfill_benchmark import (
+    REVISION_CHAIN_SHAPE,
+    build_independent_raw_corpus,
+    build_revision_chain_corpus,
+)
 
 
 def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
@@ -722,6 +726,42 @@ def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.Mo
     # census output.
     assert len(parse_calls) == 2
     assert len(set(parse_calls)) == 1
+
+
+def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """polylogue-nh44 regression at the bead's own recorded corpus shape: a
+    growing-file cohort (one re-scanned Codex rollout, 50 superseded captures
+    plus the winner) must census-parse only the winner, never the 50 byte-
+    proven-superseded snapshots. Measured on this exact shape: 52->2 parse
+    calls (1 unique raw parsed instead of 51), ~3.3x wall-time reduction for
+    the cohort (see PR body for the before/after numbers)."""
+    raw_ids = build_revision_chain_corpus(tmp_path, **REVISION_CHAIN_SHAPE)
+    original = revision_backfill._parse_retained_raw
+    parse_calls: list[str] = []
+
+    def counted(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parse_calls.append(raw_id)
+        return original(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+
+    result = backfill_historical_revision_evidence(tmp_path)
+
+    assert result.scanned == len(raw_ids)
+    assert result.classified_full == len(raw_ids)
+    assert result.replayed_logical_sources == 1
+    assert result.quarantined == 0
+    # Only the newest raw (the winner) is ever independently parsed; the 50
+    # older captures are bound to its learned identity by byte-prefix proof.
+    assert set(parse_calls) == {raw_ids[-1]}
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[-1],)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_sessions WHERE revision_kind = 'full' AND logical_source_key IS NOT NULL"
+        ).fetchone()[0] == len(raw_ids)
 
 
 def test_backfill_replay_reuses_spill_cache_when_bound_explicitly(

@@ -27,6 +27,12 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 SMALL_PAYLOAD_SHAPE: dict[str, int] = {"raw_count": 200, "avg_payload_bytes": 50_000}
 LARGE_PAYLOAD_SHAPE: dict[str, int] = {"raw_count": 80, "avg_payload_bytes": 1_700_000}
 
+# polylogue-nh44: one growing-file cohort shaped after the bead's own live
+# evidence (a Codex rollout file re-captured on every scan, each capture a
+# byte-superset of the last). ~1MB final size, 50 superseded snapshots plus
+# the winner -- the "45GB/46% of a restore is stale snapshots" shape.
+REVISION_CHAIN_SHAPE: dict[str, int] = {"superseded_count": 50, "final_payload_bytes": 1_000_000}
+
 # Fixed per-record JSON envelope overhead (quotes, keys, braces) that isn't
 # part of the padded text field -- subtracted from the target size so the
 # generated payload lands close to the requested average.
@@ -91,8 +97,65 @@ def build_independent_raw_corpus(
     return raw_ids
 
 
+def build_revision_chain_corpus(
+    archive_root: Path,
+    *,
+    superseded_count: int,
+    final_payload_bytes: int,
+) -> list[str]:
+    """Write one growing-file cohort: ``superseded_count`` older captures plus
+    a final winner, all at the same ``source_path`` and each a strict byte
+    prefix of the next -- the shape a re-scanned, ever-appended Codex rollout
+    file produces on disk (polylogue-nh44). Returns raw ids oldest-first;
+    the last id is the winner (the only one that should ever be parsed by an
+    optimized census).
+    """
+    initialize_active_archive_root(archive_root)
+    revision_count = superseded_count + 1
+    session_meta = (
+        json.dumps(
+            {"type": "session_meta", "payload": {"id": "nh44-chain-session", "timestamp": "2026-06-01T00:00:00Z"}},
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    per_line_budget = max(1, (final_payload_bytes - len(session_meta)) // revision_count)
+    raw_ids: list[str] = []
+    payload = session_meta.encode()
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for index in range(revision_count):
+            if index > 0:
+                text = f"nh44-append-{index:04d}-" + ("x" * per_line_budget)
+                response_item = (
+                    json.dumps(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "id": f"msg-{index:04d}",
+                                "role": "user" if index % 2 else "assistant",
+                                "content": [{"type": "input_text", "text": text}],
+                            },
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+                payload = payload + response_item.encode()
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="nh44-chain/session.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            raw_ids.append(raw_id)
+    return raw_ids
+
+
 __all__ = [
     "LARGE_PAYLOAD_SHAPE",
+    "REVISION_CHAIN_SHAPE",
     "SMALL_PAYLOAD_SHAPE",
     "build_independent_raw_corpus",
+    "build_revision_chain_corpus",
 ]
