@@ -3,7 +3,9 @@
 
 Output reader-evidence-tour.gif
 
+Set Shell "bash"
 Set FontSize 16
+Set FontFamily "DejaVu Sans Mono"
 Set Width 1320
 Set Height 680
 Set Padding 20

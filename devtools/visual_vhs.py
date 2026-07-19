@@ -21,6 +21,8 @@ class VHSTapeSpec:
     output_height: int = 32
     font_size: int = 16
     padding: int = 20
+    shell: str = "bash"
+    font_family: str = "DejaVu Sans Mono"
 
     @property
     def display_command_text(self) -> str:
@@ -68,6 +70,13 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
             "Set TypingSpeed 0.02",
             "Set CursorBlink false",
             "Hide",
+            # Force a deterministic, minimal prompt so the committed frame
+            # never depends on whichever shell rc/theme happens to be active
+            # on the machine that runs the capture (polylogue-93cp: a prior
+            # render leaked an unexpanded bash prompt-escape sequence,
+            # "\[\]> \[\]", into the committed PNG).
+            "Type \"PS1='> '\"",
+            "Enter",
             "Type \"mkdir -p evidence-receipt && cd evidence-receipt && polylogue demo receipts --compact >/dev/null && printf 'READY\\n'\"",
             "Enter",
             "Wait+Screen /READY/",
@@ -78,7 +87,12 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
             'Type "polylogue demo receipts --compact --no-seed"',
             "Enter",
             "Wait+Screen /verdict: contradicted_at_claim_time_then_repaired/",
-            "Sleep 4s",
+            "Sleep 1s",
+            # Capture the still frame natively instead of extracting a frame
+            # from the lossy, palette-quantized GIF -- this is the actual
+            # README hero image and benefits from full-quality PNG output.
+            "Screenshot evidence-receipt.png",
+            "Sleep 3s",
         ),
         output_width=132,
         output_height=34,
@@ -170,7 +184,9 @@ def generate_tape(
         "",
         f"Output {output_file}",
         "",
+        f'Set Shell "{spec.shell}"',
         f"Set FontSize {resolved_font_size}",
+        f'Set FontFamily "{spec.font_family}"',
         f"Set Width {pixel_width}",
         f"Set Height {pixel_height}",
         f"Set Padding {resolved_padding}",

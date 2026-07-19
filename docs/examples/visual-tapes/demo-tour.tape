@@ -3,7 +3,9 @@
 
 Output demo-tour.gif
 
+Set Shell "bash"
 Set FontSize 18
+Set FontFamily "DejaVu Sans Mono"
 Set Width 1276
 Set Height 792
 Set Padding 18

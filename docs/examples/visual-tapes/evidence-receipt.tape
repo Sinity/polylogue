@@ -3,7 +3,9 @@
 
 Output evidence-receipt.gif
 
+Set Shell "bash"
 Set FontSize 16
+Set FontFamily "DejaVu Sans Mono"
 Set Width 1320
 Set Height 680
 Set Padding 20
@@ -11,6 +13,8 @@ Set Padding 20
 Set TypingSpeed 0.02
 Set CursorBlink false
 Hide
+Type "PS1='> '"
+Enter
 Type "mkdir -p evidence-receipt && cd evidence-receipt && polylogue demo receipts --compact >/dev/null && printf 'READY\n'"
 Enter
 Wait+Screen /READY/
@@ -21,7 +25,9 @@ Show
 Type "polylogue demo receipts --compact --no-seed"
 Enter
 Wait+Screen /verdict: contradicted_at_claim_time_then_repaired/
-Sleep 4s
+Sleep 1s
+Screenshot evidence-receipt.png
+Sleep 3s
 
 # Let output settle
 Sleep 1s
