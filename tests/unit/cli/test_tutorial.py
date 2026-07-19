@@ -60,6 +60,48 @@ def test_non_interactive_runs_to_completion(monkeypatch: pytest.MonkeyPatch, tmp
     assert "Checklist incomplete" in combined
     assert "polylogue find 'hello' then read" in combined
     assert "Done" not in combined
+    assert "polylogue manual" in combined
+
+
+def test_guided_path_shown_on_brand_new_machine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A totally fresh machine (no config, no archive) gets the shared guided path.
+
+    polylogue-jnj.8: the same numbered steps bare `polylogue` prints on an
+    absent archive, so there is one route, not a divergent tutorial-only copy.
+    """
+    from polylogue.cli.onboarding import GUIDED_PATH_STEPS
+
+    _set_xdg(monkeypatch, tmp_path)
+    runner = CliRunner()
+    env = _make_env()
+    result = runner.invoke(tutorial_command, ["--non-interactive"], obj=env)
+    assert result.exit_code == 0, result.output
+    console: Any = env.ui.console
+    combined = " ".join(console.calls)
+    assert "Guided path" in combined
+    for step in GUIDED_PATH_STEPS:
+        assert step.command_text in combined
+
+
+def test_guided_path_hidden_once_config_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Partial setup (a starter config already written) skips the from-scratch banner.
+
+    The per-stage checklist below is the right next action on its own —
+    re-showing "seed the demo" to someone already wiring in real sources
+    would be redundant, not helpful.
+    """
+    _set_xdg(monkeypatch, tmp_path)
+    config_dir = tmp_path / "xdg-config" / "polylogue"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "polylogue.toml").write_text("[sources]\n", encoding="utf-8")
+
+    runner = CliRunner()
+    env = _make_env()
+    result = runner.invoke(tutorial_command, ["--non-interactive"], obj=env)
+    assert result.exit_code == 0, result.output
+    console: Any = env.ui.console
+    combined = " ".join(console.calls)
+    assert "Guided path" not in combined
 
 
 def test_stage_detect_sources_no_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

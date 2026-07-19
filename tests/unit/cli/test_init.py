@@ -76,6 +76,12 @@ def test_init_command_writes_starter_config(isolated_home: Path) -> None:
     body = target.read_text(encoding="utf-8")
     assert "[archive]" in body
     assert ".claude/projects" in body
+    # A first, successful write must say so — not falsely claim the config
+    # "already exists" (the message used to re-check target.exists() *after*
+    # writing it, which is always True; polylogue-jnj.8).
+    assert "Wrote starter config" in result.output
+    assert "already exists" not in result.output.lower()
+    assert "polylogue demo seed" in result.output
 
 
 def test_init_command_dry_run_does_not_write(isolated_home: Path) -> None:

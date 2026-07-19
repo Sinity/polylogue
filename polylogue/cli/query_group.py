@@ -126,7 +126,8 @@ def _bare_root_error_message(group: click.Group, query_terms: tuple[str, ...]) -
         f"    polylogue find {query}",
         "    polylogue 'QUERY' then read",
         "",
-        "Run `polylogue --help` to list commands.",
+        "Run `polylogue --help` to list commands, or `polylogue manual` for the full offline reference.",
+        "No archive yet? Run `polylogue tutorial` for the guided setup path.",
     ]
     return "\n".join(lines)
 

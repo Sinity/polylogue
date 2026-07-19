@@ -165,10 +165,17 @@ def init_command(
     target = starter_config_path()
     body = render_starter_toml(detected)
 
+    # Captured before any write below so both the JSON payload and the plain
+    # "already exists" message describe pre-write state. Re-checking
+    # ``target.exists()`` after writing would always be True — a first,
+    # successful run would then falsely tell a cold user the config already
+    # existed and to pass ``--force``.
+    existed_before = target.exists()
+
     present_families = [d.family for d in detected if d.present]
     payload: dict[str, object] = {
         "config_path": str(target),
-        "exists": target.exists(),
+        "exists": existed_before,
         "force": force,
         "dry_run": dry_run,
         "detected": [
@@ -183,7 +190,7 @@ def init_command(
         "present_families": present_families,
     }
 
-    will_write = not dry_run and (force or not target.exists())
+    will_write = not dry_run and (force or not existed_before)
     payload["written"] = False
     if will_write:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -209,7 +216,7 @@ def init_command(
         console.print(f"\n[dim](dry-run)[/dim] Would write {target}:")
         console.print(body, markup=False, highlight=False)
         return
-    if target.exists() and not force:
+    if existed_before and not force:
         console.print(
             f"\n[yellow]Config already exists at {target}.[/yellow]"
             " Re-run with [bold]--force[/bold] to overwrite, or edit by hand."
@@ -218,9 +225,9 @@ def init_command(
     console.print(f"\n[green]Wrote starter config to {target}[/green]")
     console.print(
         "\nNext steps:\n"
-        "  1. [bold]polylogued run[/bold]   — start the ingest daemon\n"
-        "  2. [bold]polylogue ops status[/bold] — check archive health\n"
-        "  3. [bold]polylogue 'query terms'[/bold] — search\n"
+        "  1. [bold]polylogue demo seed[/bold]   — try it now with a private-data-free demo archive\n"
+        "  2. [bold]polylogued run[/bold]   — start the ingest daemon against the sources above\n"
+        "  3. [bold]polylogue find 'query terms' then read[/bold] — search\n"
     )
 
 

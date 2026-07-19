@@ -138,6 +138,20 @@ STAGES: tuple[TutorialStage, ...] = (
 )
 
 
+def _guided_path_needed() -> bool:
+    """True when nothing has been set up at all — no config, no archive.
+
+    Distinguishes "brand new machine" (show the demo-first guided path
+    shared with bare ``polylogue`` and the strict-floor error hint) from
+    "partially wired up already" (the per-stage checklist below is the
+    right next action on its own).
+    """
+    from polylogue.cli.commands.init import starter_config_path
+    from polylogue.paths import archive_root
+
+    return not starter_config_path().exists() and not (archive_root() / "index.db").exists()
+
+
 def _daemon_http_alive() -> bool:
     """Best-effort daemon liveness probe with a short timeout."""
     import os
@@ -172,6 +186,12 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
     console.print("\n[bold]polylogue tutorial[/bold]")
     console.print("  Setup checklist for a searchable local archive.\n")
 
+    if _guided_path_needed():
+        from polylogue.cli.onboarding import render_guided_path
+
+        console.print(render_guided_path(), markup=False, highlight=False)
+        console.print("\n[dim]Already have chat history installed? The checklist below wires it in directly.[/dim]\n")
+
     satisfied_count = 0
     for stage in STAGES:
         satisfied, message = stage.probe()
@@ -199,12 +219,13 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
     if satisfied_count == total:
         console.print(
             "\n[green]Ready.[/green] Try `polylogue find QUERY then read`, "
-            "or `polylogue dashboard --status` before launching the terminal TUI."
+            "`polylogue dashboard --status` before launching the terminal TUI, "
+            "or `polylogue manual` for the full reference."
         )
     else:
         console.print(
             f"\n[yellow]Checklist incomplete.[/yellow] {satisfied_count}/{total} stages are ready; "
-            "run the listed action(s), then re-run `polylogue tutorial`."
+            "run the listed action(s), then re-run `polylogue tutorial`. `polylogue manual` has the full reference."
         )
 
 

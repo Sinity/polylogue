@@ -23,7 +23,7 @@ Usage: polylogue [OPTIONS] [COMMAND] [ARGS]...
 
   Product roles:
       Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue; facets
-      Setup/demo/evidence:  config, init, import, demo, tutorial
+      Setup/demo/evidence:  config, init, import, demo, tutorial, manual
       Reader/TUI:           dashboard --status, dashboard
       Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
 
@@ -57,13 +57,15 @@ Usage: polylogue [OPTIONS] [COMMAND] [ARGS]...
 
   See also:
       polylogue --help                  # this screen
+      polylogue manual                  # full offline CLI reference (generated)
+      polylogue tutorial                # first-run setup checklist
       polylogue find --help             # query workflow help
       polylogue <subcommand> --help     # per-subcommand help
       polylogue --diagnose <args>       # explain parser decisions
 
 Options:
-  --help-markdown                 Emit the full --help tree (root + every
-                                  subcommand) as Markdown and exit.
+  --help-markdown                 Same content as `polylogue manual`; emit the
+                                  full --help tree as Markdown and exit.
   -i, --id TEXT                   Session ID (exact or prefix match)
   -c, --contains TEXT             FTS term (repeatable = AND)
   --exclude-text TEXT             Exclude FTS term
@@ -174,8 +176,9 @@ Commands:
     import    Import sessions from configured sources.
     demo      Seed and verify the deterministic demo archive.
     tutorial  Inspect first-run setup state.
+    manual    Render the installed CLI manual offline.
     Use these for first-run setup, hook wiring, source import, demo archives,
-    and onboarding checks.
+    and onboarding checks; `manual` renders the full offline CLI reference.
 
   Reader and local UI:
     agents     Inspect agent coordination state.

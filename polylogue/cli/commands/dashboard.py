@@ -75,6 +75,9 @@ def _emit_dashboard_evidence(evidence: dict[str, object], *, output_format: str)
         click.echo("Readiness: daemon API reachable")
     else:
         click.echo(f"Readiness: degraded ({evidence['failure_reason']})")
+        click.echo("Prerequisite: start the daemon with `polylogued run` for live ingestion and API-backed reads.")
+        click.echo("The dashboard below still reads the archive directly, without the daemon.")
+        click.echo("CLI fallback: `polylogue find QUERY then read` needs no daemon and no TUI at all.")
     click.echo("Launching Textual dashboard in this terminal.")
 
 

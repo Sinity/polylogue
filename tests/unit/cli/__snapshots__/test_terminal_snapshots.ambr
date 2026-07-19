@@ -81,7 +81,7 @@
     Product roles:
         Search<PATH>:   find QUERY then read|select|mark|analyze|delete|cont
   inue; facets
-        Setup<PATH>:  config, init, import, demo, tutorial
+        Setup<PATH>:  config, init, import, demo, tutorial, manual
         Reader<PATH>:           dashboard --status, dashboard
         Operations:           status (same as polylogue ops status), ops diagnosti
   cs, ops maintenance, ops backup
@@ -118,12 +118,14 @@
         polylogue find "urgent" then mark --tag-add review
     See also:
         polylogue --help                  # this screen
+        polylogue manual                  # full offline CLI reference (generated)
+        polylogue tutorial                # first-run setup checklist
         polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
   Options:
-    --help-markdown                 Emit the full --help tree (root + every
-                                    subcommand) as Markdown and exit.
+    --help-markdown                 Same content as `polylogue manual`; emit the
+                                    full --help tree as Markdown and exit.
     -i, --id TEXT                   Session ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
@@ -232,8 +234,9 @@
       import    Import sessions from configured sources.
       demo      Seed and verify the deterministic demo archive.
       tutorial  Inspect first-run setup state.
+      manual    Render the installed CLI manual offline.
       Use these for first-run setup, hook wiring, source import, demo archives,
-      and onboarding checks.
+      and onboarding checks; `manual` renders the full offline CLI reference.
     Reader and local UI:
       agents     Inspect agent coordination state.
       dashboard  Launch the terminal dashboard TUI.
@@ -268,7 +271,7 @@
         Search<PATH>:   find QUERY then read|select|mark
   |analyze|delete|continue; facets
         Setup<PATH>:  config, init, import, demo, tuto
-  rial
+  rial, manual
         Reader<PATH>:           dashboard --status, dashboard
         Operations:           status (same as polylogue ops st
   atus), ops diagnostics, ops maintenance, ops backup
@@ -312,6 +315,10 @@
         polylogue find "urgent" then mark --tag-add review
     See also:
         polylogue --help                  # this screen
+        polylogue manual                  # full offline CLI r
+  eference (generated)
+        polylogue tutorial                # first-run setup ch
+  ecklist
         polylogue find --help             # query workflow hel
   p
         polylogue <subcommand> --help     # per-subcommand hel
@@ -319,10 +326,10 @@
         polylogue --diagnose <args>       # explain parser dec
   isions
   Options:
-    --help-markdown                 Emit the full --help
-                                    tree (root + every
-                                    subcommand) as Markdown
-                                    and exit.
+    --help-markdown                 Same content as
+                                    `polylogue manual`; emit
+                                    the full --help tree as
+                                    Markdown and exit.
     -i, --id TEXT                   Session ID (exact or
                                     prefix match)
     -c, --contains TEXT             FTS term (repeatable =
@@ -492,8 +499,10 @@
       demo      Seed and verify the deterministic demo
                 archive.
       tutorial  Inspect first-run setup state.
+      manual    Render the installed CLI manual offline.
       Use these for first-run setup, hook wiring, source
-      import, demo archives, and onboarding checks.
+      import, demo archives, and onboarding checks; `manual`
+      renders the full offline CLI reference.
     Reader and local UI:
       agents     Inspect agent coordination state.
       dashboard  Launch the terminal dashboard TUI.
@@ -522,7 +531,7 @@
         routed your invocation.
     Product roles:
         Search<PATH>:   find QUERY then read|select|mark|analyze|delete|continue; facets
-        Setup<PATH>:  config, init, import, demo, tutorial
+        Setup<PATH>:  config, init, import, demo, tutorial, manual
         Reader<PATH>:           dashboard --status, dashboard
         Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
     Query mode (default):
@@ -553,12 +562,14 @@
         polylogue find "urgent" then mark --tag-add review
     See also:
         polylogue --help                  # this screen
+        polylogue manual                  # full offline CLI reference (generated)
+        polylogue tutorial                # first-run setup checklist
         polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
   Options:
-    --help-markdown                 Emit the full --help tree (root + every
-                                    subcommand) as Markdown and exit.
+    --help-markdown                 Same content as `polylogue manual`; emit the
+                                    full --help tree as Markdown and exit.
     -i, --id TEXT                   Session ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
@@ -667,8 +678,9 @@
       import    Import sessions from configured sources.
       demo      Seed and verify the deterministic demo archive.
       tutorial  Inspect first-run setup state.
+      manual    Render the installed CLI manual offline.
       Use these for first-run setup, hook wiring, source import, demo archives,
-      and onboarding checks.
+      and onboarding checks; `manual` renders the full offline CLI reference.
     Reader and local UI:
       agents     Inspect agent coordination state.
       dashboard  Launch the terminal dashboard TUI.

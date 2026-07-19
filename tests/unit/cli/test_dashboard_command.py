@@ -60,7 +60,51 @@ def test_dashboard_default_prints_evidence_before_launching_tui() -> None:
     assert "Daemon API status probe:" in result.output
     assert "Web reader launch: not attempted by this command" in result.output
     assert "Readiness: degraded" in result.output
+    # polylogue-jnj.8: degraded readiness teaches the prerequisite and a
+    # no-TUI, no-daemon fallback instead of only stating "degraded".
+    assert "Prerequisite: start the daemon with `polylogued run`" in result.output
+    assert "CLI fallback: `polylogue find QUERY then read`" in result.output
     assert "Launching Textual dashboard in this terminal." in result.output
+
+
+class _FakeResponse:
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def read(self, _n: int = -1) -> bytes:
+        return b"{"
+
+
+def test_dashboard_status_degraded_teaches_prerequisite_and_cli_fallback() -> None:
+    """``--status`` (plain text) is the readiness surface without launching the TUI.
+
+    Exercised via ``--status`` rather than the default launch path so this
+    stays independent of ``PolylogueApp`` construction (polylogue-jnj.8 AC4
+    only concerns the printed readiness guidance, not the TUI launch itself).
+    """
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.dashboard.urlopen", side_effect=OSError("offline")):
+        result = runner.invoke(dashboard_command, ["--status"], obj=_make_env())
+
+    assert result.exit_code == 0, result.output
+    assert "Readiness: degraded" in result.output
+    assert "Prerequisite: start the daemon with `polylogued run`" in result.output
+    assert "CLI fallback: `polylogue find QUERY then read`" in result.output
+
+
+def test_dashboard_status_reachable_daemon_skips_degraded_guidance() -> None:
+    """A reachable daemon does not print the degraded-only fallback hints."""
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.dashboard.urlopen", return_value=_FakeResponse()):
+        result = runner.invoke(dashboard_command, ["--status"], obj=_make_env())
+
+    assert result.exit_code == 0, result.output
+    assert "Readiness: daemon API reachable" in result.output
+    assert "Prerequisite:" not in result.output
+    assert "CLI fallback:" not in result.output
 
 
 def test_dashboard_json_requires_status_mode() -> None:
