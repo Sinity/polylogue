@@ -68,6 +68,7 @@ def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
         manage_transaction: bool,
         preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
         revision_authoritative: bool = False,
+        bulk_fts: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         nonlocal attempts
         attempts += 1
@@ -83,6 +84,7 @@ def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
             manage_transaction=manage_transaction,
             preacquired_attachment_blobs=preacquired_attachment_blobs,
             revision_authoritative=revision_authoritative,
+            bulk_fts=bulk_fts,
         )
 
     monkeypatch.setattr(ArchiveStore, "_write_parsed_precedence_result", lock_once)
