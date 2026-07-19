@@ -17,3 +17,21 @@ docs/topology-status.md
 # Fixtures / captured provider payloads (parser witnesses, not first-party code).
 **/representatives/
 tests/data/
+
+# Lockfiles chisel's *.lock pattern misses by extension.
+webui/package-lock.json
+
+# Generated test snapshots (syrupy .ambr).
+**/__snapshots__/
+
+# Generated webui client + reports (`devtools render webui-client`).
+webui/src/api/generated.ts
+webui/src/generated/
+
+# Generated/rendered doc surfaces and demo artifacts.
+docs/cli-reference.md
+docs/examples/demo-tour/report.json
+
+# Rendered byte-identical copy of polylogue/agent_integration/data/deep-reference.md;
+# the source copy stays counted, this duplicate does not.
+docs/agent-integration-reference.md
