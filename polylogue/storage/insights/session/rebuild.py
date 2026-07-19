@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import TypeVar
 
 import aiosqlite
 
@@ -717,6 +718,8 @@ def build_session_insight_records(
     )
 
 
+_InsightComputeResult = TypeVar("_InsightComputeResult")
+
 _INSIGHT_COMPUTE_WORKERS_ENV_VAR = "POLYLOGUE_INSIGHT_COMPUTE_WORKERS"
 
 
@@ -732,9 +735,16 @@ def _insight_compute_workers(job_count: int) -> int:
 
 
 def compute_session_insight_bundles(
-    jobs: Sequence[Callable[[], SessionInsightRecordBundle]],
-) -> list[SessionInsightRecordBundle]:
+    jobs: Sequence[Callable[[], _InsightComputeResult]],
+) -> list[_InsightComputeResult]:
     """Run each independent per-session insight-compute job, in ``jobs`` order.
+
+    Generic in its result type rather than pinned to
+    ``SessionInsightRecordBundle``: this is a plain job-runner with no
+    knowledge of what a job computes, which keeps it directly unit-testable
+    with trivial jobs (see ``tests/unit/storage/
+    test_session_insight_parallel_fanout.py``) without constructing full
+    bundle objects.
 
     Fan-out is gated on ``parallel_threads_effective()`` -- see
     ``polylogue.pipeline.services.process_pool`` for why: a standard GIL
