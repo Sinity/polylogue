@@ -306,6 +306,60 @@ def _task_notification_from_record(
     return None
 
 
+def _task_output_outcome(item: dict[str, object]) -> tuple[int | None, bool] | None:
+    """Read a polled background task's own verdict from ``toolUseResult.task``.
+
+    Claude Code's ``TaskOutput`` tool (used to poll a backgrounded command or
+    agent) reports retrieval success/failure at the Anthropic tool_result
+    envelope level (``content[].is_error``) *separately* from the underlying
+    task's own outcome: a successful *poll* of a *failed* command still
+    surfaces envelope ``is_error=false`` -- the poll itself succeeded -- which
+    would otherwise silently mask the command's real exit code from
+    ``blocks.tool_result_is_error``/``tool_result_exit_code``. The sibling
+    ``<task-notification>`` protocol (``_task_notification_from_record``)
+    only fires as an injected reminder on a *later* turn and is not always
+    present in a transcript that instead polled ``TaskOutput`` directly, so
+    this is an independent structured-evidence path, not a duplicate of it.
+
+    ``toolUseResult.task`` is Claude Code's own structured verdict for this
+    poll: ``exitCode`` for ``local_bash`` tasks, else ``status`` for
+    ``local_agent`` tasks that never carry a process exit code. Only trusted
+    when ``retrieval_status == "success"`` -- i.e. the poll actually returned
+    a terminal result, as opposed to ``not_ready``/``timeout`` (task still
+    running, no verdict yet).
+    """
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict) or tool_result.get("retrieval_status") != "success":
+        return None
+    task = tool_result.get("task")
+    if not isinstance(task, dict):
+        return None
+    exit_code = task.get("exitCode")
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+        return exit_code, exit_code != 0
+    status = task.get("status")
+    if status == "completed":
+        return None, False
+    if status in ("failed", "killed"):
+        return None, True
+    return None
+
+
+def _mark_task_output_outcome(
+    content_blocks: list[ParsedContentBlock], outcome: tuple[int | None, bool] | None
+) -> list[ParsedContentBlock]:
+    """Project a polled background task's real verdict onto its TaskOutput result block."""
+    if outcome is None:
+        return content_blocks
+    exit_code, is_error = outcome
+    return [
+        block.model_copy(update={"is_error": is_error, "exit_code": exit_code})
+        if block.type is BlockType.TOOL_RESULT
+        else block
+        for block in content_blocks
+    ]
+
+
 def _mark_background_task_start(
     content_blocks: list[ParsedContentBlock], task_id: str | None
 ) -> list[ParsedContentBlock]:
@@ -548,6 +602,7 @@ def _parse_code_records(
         envelope_role = _record_role(item, message)
         content_blocks = _content_blocks_from_record(message, text)
         content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
+        content_blocks = _mark_task_output_outcome(content_blocks, _task_output_outcome(item))
         message_type = _message_type_from_code_record(item, text)
         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
             message_type = MessageType.CONTEXT
