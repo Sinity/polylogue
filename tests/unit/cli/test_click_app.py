@@ -871,6 +871,19 @@ class TestStrictCommandFloor:
         assert "find" in result.output
         mock_exec.assert_not_called()
 
+    def test_bare_root_error_links_to_manual_and_tutorial(self, cli_runner: CliRunner) -> None:
+        """polylogue-jnj.8: the strict-floor error is one of the four converged
+        onboarding entry points — it must point at the same manual/tutorial
+        commands bare `polylogue` and `polylogue tutorial` teach."""
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
+            result = cli_runner.invoke(cli, ["foo", "--plain"])
+        assert result.exit_code == 2
+        assert "polylogue manual" in result.output
+        assert "polylogue tutorial" in result.output
+        mock_exec.assert_not_called()
+
     def test_field_expression_root_still_searches(self, cli_runner: CliRunner) -> None:
         """A bare token with field syntax (`repo:x`) is unambiguously a query."""
         from polylogue.cli.click_app import cli

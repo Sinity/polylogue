@@ -800,11 +800,11 @@ files:
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 598
+    loc: 606
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 205
+    loc: 207
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -812,7 +812,7 @@ files:
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
-    loc: 91
+    loc: 94
     target: polylogue/cli/command_inventory.py
     owner: stable
   - path: polylogue/cli/commands/__init__.py
@@ -852,7 +852,7 @@ files:
     target: polylogue/cli/commands/config.py
     owner: stable
   - path: polylogue/cli/commands/dashboard.py
-    loc: 81
+    loc: 84
     target: polylogue/cli/commands/dashboard.py
     owner: stable
   - path: polylogue/cli/commands/debt.py
@@ -888,7 +888,7 @@ files:
     target: polylogue/cli/commands/import_command.py
     owner: stable
   - path: polylogue/cli/commands/init.py
-    loc: 233
+    loc: 240
     target: polylogue/cli/commands/init.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
@@ -975,6 +975,10 @@ files:
     loc: 114
     target: polylogue/cli/commands/maintenance/_verify_archive.py
     owner: stable
+  - path: polylogue/cli/commands/manual.py
+    loc: 68
+    target: polylogue/cli/commands/manual.py
+    owner: stable
   - path: polylogue/cli/commands/note.py
     loc: 96
     target: polylogue/cli/commands/note.py
@@ -1004,7 +1008,7 @@ files:
     target: polylogue/cli/commands/status_diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/tutorial.py
-    loc: 211
+    loc: 232
     target: polylogue/cli/commands/tutorial.py
     owner: stable
   - path: polylogue/cli/convergence_feedback.py
@@ -1026,6 +1030,10 @@ files:
   - path: polylogue/cli/messages.py
     loc: 180
     target: polylogue/cli/messages.py
+    owner: stable
+  - path: polylogue/cli/onboarding.py
+    loc: 110
+    target: polylogue/cli/onboarding.py
     owner: stable
   - path: polylogue/cli/parser_diagnostics.py
     loc: 123
@@ -1052,7 +1060,7 @@ files:
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_group.py
-    loc: 334
+    loc: 335
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
@@ -3969,7 +3977,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 1649
+    loc: 1633
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
@@ -3989,7 +3997,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/ops_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
-    loc: 159
+    loc: 143
     target: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_application.py
@@ -4037,7 +4045,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 4908
+    loc: 4907
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py

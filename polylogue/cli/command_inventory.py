@@ -43,8 +43,11 @@ ROOT_COMMAND_ROLE_SECTIONS: tuple[RootCommandRoleSection, ...] = (
     ),
     RootCommandRoleSection(
         title="Setup, import, and evidence",
-        commands=("config", "init", "hooks", "import", "demo", "tutorial"),
-        footer="Use these for first-run setup, hook wiring, source import, demo archives, and onboarding checks.",
+        commands=("config", "init", "hooks", "import", "demo", "tutorial", "manual"),
+        footer=(
+            "Use these for first-run setup, hook wiring, source import, demo archives, and onboarding checks; "
+            "`manual` renders the full offline CLI reference."
+        ),
     ),
     RootCommandRoleSection(
         title="Reader and local UI",

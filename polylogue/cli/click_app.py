@@ -226,11 +226,17 @@ def _handle_query_mode(ctx: click.Context) -> None:
 def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     """Render the interactive no-argument landing surface.
 
-    Returns ``False`` only when no archive exists, letting the caller render
-    ordinary Click help instead of presenting an empty archive as usable.
+    State-aware (polylogue-jnj.8): an absent archive gets the one-screen
+    numbered guided path (``polylogue.cli.onboarding``) instead of an empty
+    archive dressed up as usable, or a generic Click help dump that doesn't
+    teach a cold reader what to type first. A configured archive gets a
+    compact recent-sessions summary and a pointer to the next action, never
+    a re-run of setup. Always returns ``True``: this function fully owns the
+    bare-invocation screen once it decides to render one.
     """
 
     from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.onboarding import render_guided_path
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import select_session_rows
     from polylogue.cli.shared.helpers import load_effective_config
@@ -239,7 +245,7 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     config = load_effective_config(env)
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     if not (archive_root / "index.db").exists():
-        click.echo(ctx.get_help())
+        click.echo(render_guided_path())
         return True
 
     rows = None if bool(ctx.params.get("no_daemon")) else _bare_tty_daemon_rows(config)
@@ -258,7 +264,7 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
             click.echo(f"  {row.label}")
     else:
         click.echo("  No sessions yet.")
-    click.echo("Next: polylogue find …  |  polylogue read <id>  |  polylogue continue <id>")
+    click.echo("Next: polylogue find …  |  polylogue read <id>  |  polylogue continue <id>  |  polylogue manual")
     return True
 
 
@@ -343,7 +349,7 @@ def _emit_help_markdown(ctx: click.Context, _param: click.Parameter, value: bool
     is_eager=True,
     expose_value=False,
     callback=_emit_help_markdown,
-    help="Emit the full --help tree (root + every subcommand) as Markdown and exit.",
+    help="Same content as `polylogue manual`; emit the full --help tree as Markdown and exit.",
 )
 @apply_query_mode_options
 @click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogue")
@@ -421,7 +427,7 @@ def cli(
     \b
     Product roles:
         Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue; facets
-        Setup/demo/evidence:  config, init, import, demo, tutorial
+        Setup/demo/evidence:  config, init, import, demo, tutorial, manual
         Reader/TUI:           dashboard --status, dashboard
         Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
 
@@ -460,6 +466,8 @@ def cli(
     \b
     See also:
         polylogue --help                  # this screen
+        polylogue manual                  # full offline CLI reference (generated)
+        polylogue tutorial                # first-run setup checklist
         polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
