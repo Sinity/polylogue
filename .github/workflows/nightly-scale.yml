@@ -3,6 +3,11 @@ name: Nightly Scale
 # Runs the large-tier scale fixtures (issue #1183) outside the normal
 # CI critical path, captures benchmark results as structured JSON, and
 # compares against the committed baseline to detect regressions (#1220).
+#
+# The perf-floors job (polylogue-196x) is a separate, smaller curated lane:
+# it runs tests/benchmarks/perf_floors.py against the committed
+# tests/benchmarks/floors.json and posts a visible warning annotation on
+# regression without ever failing the workflow (fail-soft by design).
 
 on:
   schedule:
@@ -11,6 +16,10 @@ on:
     inputs:
       update-baseline:
         description: "Update the committed benchmark baseline after a successful run"
+        type: boolean
+        default: false
+      update-perf-floors:
+        description: "Regenerate tests/benchmarks/floors.json from this run's measurements"
         type: boolean
         default: false
 
@@ -77,4 +86,50 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add tests/benchmarks/baselines/nightly-baseline.json
           git commit -m "chore(benchmarks): update nightly baseline" || true
+          git push
+
+  perf-floors:
+    name: perf-floors (curated war-room regression lane, polylogue-196x)
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    # Fail-soft by design: a regression here must never block this workflow
+    # or any other job. It posts a visible ::warning:: annotation instead.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.14"
+      - run: uv sync --extra dev --frozen
+
+      - name: Run curated perf-floor set
+        id: perf_floors
+        continue-on-error: true
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+        run: |
+          uv run python tests/benchmarks/perf_floors.py --out perf-floors-results.json
+
+      - name: Upload perf-floors results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-floors-${{ github.run_id }}
+          path: perf-floors-results.json
+          retention-days: 30
+
+      - name: Report regression
+        if: steps.perf_floors.outcome == 'failure'
+        run: |
+          echo "::warning::Nightly perf floors regressed beyond tolerance — see the perf-floors-${{ github.run_id }} artifact for the delta table (polylogue-196x)."
+
+      - name: Update floors
+        if: inputs.update-perf-floors
+        run: |
+          uv run python tests/benchmarks/perf_floors.py --update-floors \
+            --note "Updated via workflow_dispatch on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/benchmarks/floors.json
+          git commit -m "chore(benchmarks): update perf floors" || true
           git push

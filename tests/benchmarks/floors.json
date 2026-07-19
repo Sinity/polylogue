@@ -1,0 +1,75 @@
+{
+  "default_tolerance_pct": 50.0,
+  "generated_at": "2026-07-19T14:14:47.730474+00:00",
+  "git_sha": "c9784b648717",
+  "machine": {
+    "cpu_count": 24,
+    "hostname": "sinnix-prime",
+    "platform": "Linux-6.18.38-x86_64-with-glibc2.42",
+    "python_version": "3.14.4"
+  },
+  "measured_under_load": true,
+  "metrics": {
+    "action_pairs_refresh_mean_ms": {
+      "baseline": 3.3244214973819908,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
+    "action_pairs_refresh_p95_ms": {
+      "baseline": 7.476726997992955,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
+    "census_chain_revisions_per_s": {
+      "baseline": 1844.2279717443803,
+      "direction": "higher_is_better",
+      "tolerance_pct": 50.0,
+      "unit": "revisions/s"
+    },
+    "census_large_raws_per_s": {
+      "baseline": 68.12016096009881,
+      "direction": "higher_is_better",
+      "tolerance_pct": 50.0,
+      "unit": "raws/s"
+    },
+    "census_small_raws_per_s": {
+      "baseline": 1692.1938766054334,
+      "direction": "higher_is_better",
+      "tolerance_pct": 50.0,
+      "unit": "raws/s"
+    },
+    "query_list_summaries_p50_ms": {
+      "baseline": 20.0,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
+    "query_list_summaries_p95_ms": {
+      "baseline": 31.95,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
+    "query_search_summaries_p50_ms": {
+      "baseline": 18.5,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
+    "query_search_summaries_p95_ms": {
+      "baseline": 20.700000000000003,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
+    "replay_sessions_per_min": {
+      "baseline": 5647.120545909368,
+      "direction": "higher_is_better",
+      "tolerance_pct": 50.0,
+      "unit": "sessions/min"
+    }
+  },
+  "note": "Initial floors recorded 2026-07-19 on sinnix-prime under active shared load (load avg ~7, concurrent live index rebuild + nix build + parallel agent pytest run). Tolerances are intentionally generous; tighten after a quiet-machine re-run (see polylogue-196x)."
+}
