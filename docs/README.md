@@ -17,6 +17,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
 | [Hooks](hooks.md) | Hook-event capture, configuration, and event catalog. |
 | [Cloud Agents](cloud-agents.md) | Privacy and setup boundaries for cloud-agent work. |
+| [Hermes Operator Guide](hermes-operators.md) | What Polylogue watches, imports, and cannot claim from a Hermes runtime, with fidelity and privacy evidence. |
 | [Standing Agent Manual](agent-manual.md) | Generated six-tool invocation, continuity, query-language, and role guidance for MCP agents. |
 | [Generate](generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
 | [Maintenance](maintenance.md) | Operator guide for preview, plan, run, resume, and incident recovery. |

@@ -75,6 +75,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("Hooks", "hooks.md", "Hook-event capture, configuration, and event catalog.", "guide"),
     _entry("Cloud Agents", "cloud-agents.md", "Privacy and setup boundaries for cloud-agent work.", "guide"),
     _entry(
+        "Hermes Operator Guide",
+        "hermes-operators.md",
+        "What Polylogue watches, imports, and cannot claim from a Hermes runtime, with fidelity and privacy evidence.",
+        "guide",
+    ),
+    _entry(
         "Standing Agent Manual",
         "agent-manual.md",
         "Generated six-tool invocation, continuity, query-language, and role guidance for MCP agents.",
