@@ -8,14 +8,19 @@ import pickle
 import sqlite3
 import tempfile
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
+from polylogue.archive.ingest_flags import (
+    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
+    DOM_FALLBACK_INGEST_FLAG,
+    NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+)
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
     RawRevisionAuthority,
@@ -32,6 +37,24 @@ from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "native"] | None:
+    """Derive membership-classification browser fidelity from parser ingest flags.
+
+    ``session_revision_membership.classify_membership_revisions`` special-cases
+    dom-fallback vs. native browser captures (and, since polylogue-z1c6, a
+    genuine non-browser-capture revision outranking any browser capture) --
+    but only when ``MembershipRevision.browser_snapshot_fidelity`` is actually
+    populated. A plain provider export carries neither flag and is
+    ``None`` (not a browser capture at all).
+    """
+    flags = set(ingest_flags)
+    if NATIVE_BROWSER_CAPTURE_INGEST_FLAG in flags or COMPACT_BROWSER_CAPTURE_INGEST_FLAG in flags:
+        return "native"
+    if DOM_FALLBACK_INGEST_FLAG in flags:
+        return "dom"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,7 +773,18 @@ def backfill_historical_revision_evidence(
                     projection = session_revision_projection(session)
                     member_sessions[raw_id] = session
                     projections[raw_id] = projection
-                    revisions.append(MembershipRevision(raw_id, projection, session.updated_at))
+                    revisions.append(
+                        MembershipRevision(
+                            raw_id,
+                            projection,
+                            session.updated_at,
+                            browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                            provider_message_ids=frozenset(message.provider_message_id for message in session.messages),
+                            provider_attachment_ids=frozenset(
+                                attachment.provider_attachment_id for attachment in session.attachments
+                            ),
+                        )
+                    )
                     retained_bytes += payload_bytes
             if retention_observer is not None:
                 retention_observer(len(member_sessions), retained_bytes)

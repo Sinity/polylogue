@@ -8,6 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.ingest_flags import (
+    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
+    DOM_FALLBACK_INGEST_FLAG,
+    NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+)
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources import revision_backfill
@@ -16,6 +21,7 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     RawParsePrefetchCache,
+    _browser_snapshot_fidelity,
     _parse_one,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
@@ -64,6 +70,22 @@ def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
 
 def _bundle(*sessions: dict[str, object]) -> bytes:
     return json.dumps(list(sessions), sort_keys=True).encode()
+
+
+def test_browser_snapshot_fidelity_derives_from_parser_ingest_flags() -> None:
+    """``MembershipRevision.browser_snapshot_fidelity`` must reflect the parser's
+    own ingest flags -- until this was wired up, every ``MembershipRevision``
+    built during census carried ``browser_snapshot_fidelity=None``
+    regardless of content, making ``classify_membership_revisions``'s entire
+    dom/native/direct-export precedence dead code in production
+    (polylogue-z1c6)."""
+    assert _browser_snapshot_fidelity([]) is None
+    assert _browser_snapshot_fidelity(["capture:temporary-chat"]) is None
+    assert _browser_snapshot_fidelity([DOM_FALLBACK_INGEST_FLAG]) == "dom"
+    assert _browser_snapshot_fidelity([NATIVE_BROWSER_CAPTURE_INGEST_FLAG]) == "native"
+    assert _browser_snapshot_fidelity([COMPACT_BROWSER_CAPTURE_INGEST_FLAG]) == "native"
+    # Native takes precedence if a parser somehow reports both.
+    assert _browser_snapshot_fidelity([DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG]) == "native"
 
 
 def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> None:
