@@ -76,6 +76,11 @@ DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID = "claude-code-session:demo-lineag
 # cross-material duplicate / occurrence-identity anchor (#polylogue-212.11).
 DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID = "chatgpt-export:cross-material-duplicate-01"
 DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID = "chatgpt-export:cross-material-duplicate-02"
+# The three local-agent origins whose parsers were previously verified only by
+# unit fixtures, not by the public demo archive (polylogue-b036).
+DEMO_GEMINI_CLI_SESSION_ID = "gemini-cli-session:demo-00"
+DEMO_ANTIGRAVITY_SESSION_ID = "antigravity-session:demo-00"
+DEMO_HERMES_SESSION_ID = "hermes-session:demo-00"
 DEMO_EMBEDDING_PROSE_SESSION_ID = DEMO_CLAUDE_CODE_SESSION_ID
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
@@ -83,6 +88,9 @@ DEMO_SESSION_IDS = (
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
     DEMO_GEMINI_SESSION_ID,
+    DEMO_GEMINI_CLI_SESSION_ID,
+    DEMO_ANTIGRAVITY_SESSION_ID,
+    DEMO_HERMES_SESSION_ID,
     DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
     DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
     DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
@@ -274,6 +282,45 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         messages_max=4,
         seed_offset=3,
         style="demo-attachments",
+    ),
+    DemoCorpusFamily(
+        family_id="gemini-cli-session",
+        label="Gemini CLI local-agent session",
+        provider="gemini-cli",
+        construct_ids=("gemini_cli_origin_rows",),
+        description=(
+            "A gemini-cli local-agent JSON document with a tool call, a recorded thought, and message "
+            "usage, proving the gemini-cli-session origin resolves through the real local-agent parser "
+            "instead of only unit fixtures."
+        ),
+        source_paths=("gemini-cli/demo-00.json",),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="antigravity-session",
+        label="Antigravity language-server export",
+        provider="antigravity",
+        construct_ids=("antigravity_origin_rows",),
+        description=(
+            "An Antigravity markdown-export document (the language-server export shape), proving the "
+            "antigravity-session origin resolves through the real markdown-export parser instead of "
+            "only unit fixtures."
+        ),
+        source_paths=("antigravity/demo-00.json",),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="hermes-session",
+        label="Hermes exported-snapshot session",
+        provider="hermes",
+        construct_ids=("hermes_origin_rows",),
+        description=(
+            "A Hermes JSON document (the exported-snapshot shape) with a system prompt, a tool call, and "
+            "a tool result, proving the hermes-session origin resolves through the real local-agent "
+            "parser instead of only unit fixtures."
+        ),
+        source_paths=("hermes/demo-00.json",),
+        synthetic=False,
     ),
     DemoCorpusFamily(
         family_id="agent-lineage-matrix",

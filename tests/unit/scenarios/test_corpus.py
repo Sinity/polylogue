@@ -7,6 +7,7 @@ import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
+    DEMO_ANTIGRAVITY_SESSION_ID,
     DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
     DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
     DEMO_CHATGPT_SESSION_ID,
@@ -23,7 +24,9 @@ from polylogue.scenarios import (
     DEMO_CODEX_SESSION_ID,
     DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_CORPUS_FAMILIES,
+    DEMO_GEMINI_CLI_SESSION_ID,
     DEMO_GEMINI_SESSION_ID,
+    DEMO_HERMES_SESSION_ID,
     DEMO_SESSION_IDS,
     CorpusProfile,
     CorpusRequest,
@@ -199,6 +202,9 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
         DEMO_CODEX_SESSION_ID,
         DEMO_GEMINI_SESSION_ID,
+        DEMO_GEMINI_CLI_SESSION_ID,
+        DEMO_ANTIGRAVITY_SESSION_ID,
+        DEMO_HERMES_SESSION_ID,
         DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
         DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
         DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
@@ -220,6 +226,9 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "codex-tools",
         "evidence-lab-receipts",
         "gemini-attachments",
+        "gemini-cli-session",
+        "antigravity-session",
+        "hermes-session",
         "agent-lineage-matrix",
         "embedding-lane-prose",
     )

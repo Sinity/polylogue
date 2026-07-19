@@ -225,6 +225,24 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         """,
     ),
     DemoConstruct(
+        construct_id="gemini_cli_origin_rows",
+        label="Gemini CLI origin rows",
+        description="At least one session resolves through the real gemini-cli-session parser, not a fixture only.",
+        sql="SELECT COUNT(*) FROM sessions WHERE origin = 'gemini-cli-session'",
+    ),
+    DemoConstruct(
+        construct_id="antigravity_origin_rows",
+        label="Antigravity origin rows",
+        description="At least one session resolves through the real antigravity-session parser, not a fixture only.",
+        sql="SELECT COUNT(*) FROM sessions WHERE origin = 'antigravity-session'",
+    ),
+    DemoConstruct(
+        construct_id="hermes_origin_rows",
+        label="Hermes origin rows",
+        description="At least one session resolves through the real hermes-session parser, not a fixture only.",
+        sql="SELECT COUNT(*) FROM sessions WHERE origin = 'hermes-session'",
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",

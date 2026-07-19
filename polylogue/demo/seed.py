@@ -14,6 +14,7 @@ from pathlib import Path
 from polylogue.config import Source, load_polylogue_config
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import (
+    DEMO_ANTIGRAVITY_SESSION_ID,
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_PARENT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
@@ -22,6 +23,8 @@ from polylogue.scenarios import (
     DEMO_CODEX_RECEIPTS_SESSION_ID,
     DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_EMBEDDING_PROSE_SESSION_ID,
+    DEMO_GEMINI_CLI_SESSION_ID,
+    DEMO_HERMES_SESSION_ID,
     build_demo_corpus_specs,
     seed_demo_user_overlays,
 )
@@ -76,6 +79,9 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
     _write_demo_cross_material_duplicate_sources(source_root)
     _write_demo_lineage_sources(source_root)
     _write_demo_receipts_sources(source_root)
+    _write_demo_gemini_cli_sources(source_root)
+    _write_demo_antigravity_sources(source_root)
+    _write_demo_hermes_sources(source_root)
     return source_root
 
 
@@ -791,6 +797,158 @@ def _write_demo_receipts_sources(source_root: Path) -> None:
     )
 
 
+def _write_demo_gemini_cli_sources(source_root: Path) -> None:
+    """Write a gemini-cli local-agent JSON document through the real parser path.
+
+    ``gemini-cli-session`` was previously verified only by unit fixtures
+    (``polylogue.sources.parsers.local_agent.parse_gemini_cli``), never by the
+    public demo archive. This exercises the actual dispatch/parse path with a
+    tool call, a recorded thought, and per-message usage (#polylogue-b036).
+    """
+
+    native_id = DEMO_GEMINI_CLI_SESSION_ID.removeprefix("gemini-cli-session:")
+    _write_json(
+        source_root / "gemini-cli" / "demo-00.json",
+        {
+            "sessionId": native_id,
+            "kind": "chat",
+            "startTime": "2026-07-04T09:58:00Z",
+            "lastUpdated": "2026-07-04T09:58:04Z",
+            "summary": "Trace the demo fixture through parse_gemini_cli",
+            "projectHash": "demo-gemini-cli-project",
+            "directories": ["/workspace/demo-gemini-cli"],
+            "messages": [
+                {
+                    "id": "gemini-cli-u0",
+                    "type": "user",
+                    "timestamp": "2026-07-04T09:58:01Z",
+                    "content": "Check whether the gemini-cli parser still records tool calls and thoughts for the demo archive.",
+                },
+                {
+                    "id": "gemini-cli-a1",
+                    "type": "gemini",
+                    "timestamp": "2026-07-04T09:58:03Z",
+                    "model": "gemini-2.5-demo",
+                    "content": (
+                        "Confirmed: the demo fixture round-trips through the real gemini-cli parser, "
+                        "including a tool call and a recorded thought."
+                    ),
+                    "thoughts": [
+                        {
+                            "subject": "Plan",
+                            "description": "Read the fixture, invoke the tool, and report back with the result.",
+                            "timestamp": "2026-07-04T09:58:02Z",
+                        }
+                    ],
+                    "toolCalls": [
+                        {
+                            "name": "read_file",
+                            "id": "gemini-cli-tool-0",
+                            "args": {"path": "demo/gemini_cli_fixture.py"},
+                            "status": "success",
+                            "result": [
+                                {
+                                    "functionResponse": {
+                                        "id": "gemini-cli-tool-0",
+                                        "name": "read_file",
+                                        "response": {"output": "demo/gemini_cli_fixture.py: 42 lines, no TODOs."},
+                                    }
+                                }
+                            ],
+                        }
+                    ],
+                    "usage": {"input": 180, "output": 64, "cached": 20},
+                },
+            ],
+        },
+    )
+
+
+def _write_demo_antigravity_sources(source_root: Path) -> None:
+    """Write an Antigravity markdown-export document through the real parser path.
+
+    ``antigravity-session`` was previously verified only by unit fixtures
+    (``polylogue.sources.parsers.antigravity.parse_markdown_export``). This
+    reproduces the language-server export shape (``source: antigravity_language_server``
+    + a ``### User Input`` / ``### Planner Response`` markdown transcript), the
+    same shape real Antigravity exports produce (#polylogue-b036).
+    """
+
+    native_id = DEMO_ANTIGRAVITY_SESSION_ID.removeprefix("antigravity-session:")
+    markdown = (
+        "### User Input\n"
+        "Confirm the antigravity markdown-export parser still resolves for the demo archive.\n\n"
+        "### Planner Response\n"
+        "Confirmed: the cascade transcript round-trips through the real antigravity markdown parser, "
+        "recovering both turns from the exported markdown."
+    )
+    _write_json(
+        source_root / "antigravity" / "demo-00.json",
+        {
+            "source": "antigravity_language_server",
+            "cascadeId": native_id,
+            "title": "Antigravity demo cascade",
+            "workspaceName": "demo-antigravity-workspace",
+            "snippet": "Confirm the antigravity markdown-export parser still resolves for the demo archive.",
+            "lastModifiedTime": "2026-07-04T09:59:00Z",
+            "markdown": markdown,
+        },
+    )
+
+
+def _write_demo_hermes_sources(source_root: Path) -> None:
+    """Write a Hermes exported-snapshot JSON document through the real parser path.
+
+    ``hermes-session`` was previously verified only by unit fixtures. This
+    reproduces the exported-snapshot shape
+    (``polylogue.sources.parsers.local_agent.parse_hermes``, distinct from the
+    live ``state.db`` acquisition path) with a system prompt, an assistant tool
+    call, and its tool result (#polylogue-b036).
+    """
+
+    native_id = DEMO_HERMES_SESSION_ID.removeprefix("hermes-session:")
+    _write_json(
+        source_root / "hermes" / "demo-00.json",
+        {
+            "session_id": native_id,
+            "platform": "hermes",
+            "model": "nous-hermes-demo",
+            "session_start": "2026-07-04T10:00:00Z",
+            "last_updated": "2026-07-04T10:00:04Z",
+            "system_prompt": "Be precise about receipts before claiming success.",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Run the fixture check and report the tool result honestly.",
+                    "timestamp": "2026-07-04T10:00:01Z",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Invoking the fixture check tool now.",
+                    "timestamp": "2026-07-04T10:00:02Z",
+                    "model": "nous-hermes-demo",
+                    "tool_calls": [
+                        {"name": "run_check", "id": "hermes-tool-0", "arguments": {"target": "demo-hermes-fixture"}}
+                    ],
+                    "usage": {"input_tokens": 96, "output_tokens": 32},
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "hermes-tool-0",
+                    "content": "demo-hermes-fixture check: 1 passed in 0.05s",
+                    "timestamp": "2026-07-04T10:00:03Z",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Verified: the fixture check passed after the tool call resolved.",
+                    "timestamp": "2026-07-04T10:00:04Z",
+                    "model": "nous-hermes-demo",
+                },
+            ],
+        },
+    )
+
+
 def _materialize_session_insights(archive_root: Path, session_ids: list[str]) -> None:
     """Build the session-profile insight read models for *session_ids*.
 
@@ -1054,6 +1212,9 @@ def demo_source_specs(source_root: Path) -> list[Source]:
         Source(name="claude-code", path=Path("claude-code")),
         Source(name="codex", path=Path("codex")),
         Source(name="gemini", path=Path("gemini")),
+        Source(name="gemini-cli", path=Path("gemini-cli")),
+        Source(name="antigravity", path=Path("antigravity")),
+        Source(name="hermes", path=Path("hermes")),
         Source(name="browser-capture", path=Path("browser-capture")),
     ]
 
