@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
@@ -58,6 +59,37 @@ def resolve_parse_worker_count(*, env_var: str = "POLYLOGUE_INGEST_PARSE_WORKERS
         return default
 
 
+def parallel_threads_effective() -> bool:
+    """True iff this interpreter is a genuinely free-threaded (no-GIL) build.
+
+    Gates every ``ThreadPoolExecutor``-based CPU-bound parse dispatch (see
+    ``sources/revision_backfill.py::_parse_unique_retained_raws``). The
+    polylogue-7mtf control-run measurement is the entire reason this check
+    exists: the SAME ``ThreadPoolExecutor`` parse code measured 3.9x-9.6x
+    speedup (w=4..16) on a real free-threaded 3.14t build, but 0.93x-0.96x
+    (i.e. no speedup, pure lock overhead) on a standard GIL build -- and,
+    worse, a concurrent SQLite writer thread's commit latency inflated
+    ~5000x (208ms vs an ~0.04ms/5ms cadence) when CPU-bound parse threads
+    ran alongside it under the GIL. Threads must never take the
+    parse-parallel path unless free-threading is provably active; a mistaken
+    "yes" here would silently reintroduce that writer-starvation hazard in
+    the daemon.
+
+    ``sys._is_gil_enabled`` only exists on interpreters built with PEP 703/779
+    support (CPython 3.13+); its absence means there is no free-threaded
+    build to speak of, so that case is treated as "GIL enabled" (the safe
+    default), not as an error. Resolved via ``getattr`` (not a literal
+    ``sys._is_gil_enabled`` attribute expression) so mypy --strict does not
+    require a per-Python-version type: ignore -- the underlying interpreter
+    either has the attribute or it doesn't, independent of which stub set
+    mypy resolves against.
+    """
+    is_gil_enabled = getattr(sys, "_is_gil_enabled", None)
+    if is_gil_enabled is None:
+        return False
+    return not is_gil_enabled()
+
+
 def process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
     """Create a process pool that avoids bare fork() in multi-threaded parents."""
     return ProcessPoolExecutor(
@@ -87,6 +119,7 @@ def terminate_process_pool(executor: ProcessPoolExecutor, *, timeout: float = 1.
 
 __all__ = [
     "_initialize_worker_logging",
+    "parallel_threads_effective",
     "process_pool_context",
     "process_pool_executor",
     "resolve_parse_worker_count",

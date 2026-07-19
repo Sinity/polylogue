@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -1184,7 +1185,12 @@ def test_pool_dispatch_floor_rejects_small_aggregate_batches(monkeypatch: pytest
 def test_parse_retained_raws_small_batch_never_creates_a_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """End-to-end: a small pool-eligible batch under the aggregate floor must
     not construct a ProcessPoolExecutor at all (the churn measured live: 20
-    workers in 25s, each ~95% importlib)."""
+    workers in 25s, each ~95% importlib). This is a GIL-build-fallback
+    mechanic specifically (the amortization floor exists only to protect
+    process-pool spawn costs, polylogue-xikl) -- pin the probe so this test's
+    claim is exercised deterministically regardless of which interpreter
+    (GIL or genuinely free-threaded) runs the suite."""
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: False)
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index in range(3):
@@ -1217,7 +1223,13 @@ def test_size_aware_dispatch_keeps_large_raws_off_the_process_pool(
 ) -> None:
     """End-to-end proof: with a low dispatch ceiling, only the small raw in a
     mixed corpus is submitted to the process pool; the large one parses
-    in-process, and the archive state matches ingest_workers=1 exactly."""
+    in-process, and the archive state matches ingest_workers=1 exactly.
+    Size-based partitioning is a GIL-build-fallback mechanic specifically
+    (the thread path applies no size partition at all, polylogue-xikl) --
+    pin the probe so this test's claim is exercised deterministically
+    regardless of which interpreter (GIL or genuinely free-threaded) runs
+    the suite."""
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: False)
     monkeypatch.setenv("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES", "5000")
     initialize_active_archive_root(tmp_path)
     small_text = "s" * 200
@@ -1253,3 +1265,249 @@ def test_size_aware_dispatch_keeps_large_raws_off_the_process_pool(
     assert result.quarantined == 0
     # Only the two small raws (well under the 5000-byte ceiling) were pool-eligible.
     assert len(submitted_raw_ids) == 2
+
+
+def test_thread_parse_matches_sequential_archive_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-xikl adoption wave: the ThreadPoolExecutor parse path (forced
+    here by patching ``parallel_threads_effective`` -- these tests run under
+    the GIL, where threads still parse *correctly*, just without a
+    speedup) must produce byte-identical archive state to the sequential
+    path, mirroring the process-pool equivalence proof above
+    (``test_parallel_census_matches_sequential_archive_state``). No size
+    partition or amortization floor applies on this path, so every raw
+    (including tiny ones that a size-based ceiling would otherwise route
+    straight to sequential) is actually dispatched through the thread pool.
+
+    Anti-vacuity (patch-revert, performed live during implementation): making
+    ``_parse_unique_retained_raws_via_threads`` skip one raw_id when building
+    ``future_to_raw_id`` (dropping a raw from the batch) makes this test fail
+    with a KeyError / unequal session counts; duplicating a raw_id's future
+    against a second raw_id's descriptor makes the two archives' session
+    rows diverge. Both mutations were applied and reverted by hand against
+    this exact test to confirm it catches them before this test was
+    finalized.
+    """
+    sequential_root = tmp_path / "sequential"
+    thread_root = tmp_path / "threaded"
+    for root in (sequential_root, thread_root):
+        initialize_active_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            for index in range(6):
+                payload = _bundle(_chatgpt_session(f"session-{index}", f"hello {index}", f"world {index}"))
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=payload,
+                    source_path=f"chat-{index}.json",
+                    acquired_at_ms=index,
+                )
+
+    seq_result = backfill_historical_revision_evidence(sequential_root, ingest_workers=1)
+
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    thread_result = backfill_historical_revision_evidence(thread_root, ingest_workers=4)
+
+    assert seq_result == thread_result
+
+    def _sessions(root: Path) -> list[tuple[object, ...]]:
+        with sqlite3.connect(root / "index.db") as conn:
+            return conn.execute("SELECT native_id, message_count, raw_id FROM sessions ORDER BY native_id").fetchall()
+
+    assert _sessions(sequential_root) == _sessions(thread_root)
+
+
+def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard for the sqlite ``check_same_thread`` hazard this
+    thread path was designed around: ``ArchiveStore._source_conn`` is a
+    plain ``sqlite3.Connection`` created with the default
+    ``check_same_thread=True``, so calling ``archive.raw_revision_descriptor``
+    (as ``_parse_retained_raw`` does) from a worker thread other than the
+    connection's owning thread raises ``sqlite3.ProgrammingError`` --
+    confirmed empirically during implementation. This test uses a fake
+    archive whose only usable attributes are ``archive_root``/
+    ``source_db_path`` (plain ``Path`` values, no live sqlite connection at
+    all); any code path that tried to call a *method* on it (as
+    ``_parse_retained_raw`` would) fails immediately with ``AttributeError``,
+    proving ``_parse_unique_retained_raws_via_threads`` only ever reads two
+    static attributes off the shared archive object, never queries it.
+    """
+
+    class _NoMethodsArchive:
+        archive_root = Path("/fake-root")
+        source_db_path = Path("/fake-root/source.db")
+
+    descriptors = {
+        "raw-a": (Provider.CODEX, "hash-a", "a.jsonl", RawRevisionKind.FULL, 111),
+        "raw-b": (Provider.CODEX, "hash-b", "b.jsonl", RawRevisionKind.FULL, 222),
+    }
+
+    def fake_worker(
+        raw_id: str,
+        provider_token: str,
+        blob_hash: str,
+        source_path: str,
+        is_stream: bool,
+        blob_root_str: str,
+        source_db_path_str: str,
+    ) -> tuple[str, list[ParsedSession] | None, str | None]:
+        return raw_id, [], None
+
+    monkeypatch.setattr(revision_backfill, "_census_parse_worker", fake_worker)
+
+    results = revision_backfill._parse_unique_retained_raws_via_threads(
+        _NoMethodsArchive(),  # type: ignore[arg-type]
+        list(descriptors),
+        descriptors=descriptors,
+        ingest_workers=2,
+    )
+
+    assert results["raw-a"] == ([], 111, RawRevisionKind.FULL)
+    assert results["raw-b"] == ([], 222, RawRevisionKind.FULL)
+
+
+def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One raw's parse failure on the thread path must be isolated to that
+    raw_id's result slot, matching the process-pool path's fan-out contract
+    (``test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows``
+    proves the same isolation on the sequential/dedup layer). Anti-vacuity:
+    if a future's exception were allowed to propagate out of the
+    ``as_completed`` loop uncaught, this whole test (and every other raw's
+    result) would never be reached -- the two surviving successful results
+    are asserted explicitly, not merely "no exception raised"."""
+    descriptors = {
+        "ok-1": (Provider.CODEX, "hash-A", "a.jsonl", RawRevisionKind.FULL, 10),
+        "bad-1": (Provider.CODEX, "hash-B", "b.jsonl", RawRevisionKind.FULL, 20),
+        "ok-2": (Provider.CODEX, "hash-C", "c.jsonl", RawRevisionKind.FULL, 30),
+    }
+
+    class _FakeArchive:
+        archive_root = Path("/fake-root")
+        source_db_path = Path("/fake-root/source.db")
+
+    def fake_worker(
+        raw_id: str,
+        provider_token: str,
+        blob_hash: str,
+        source_path: str,
+        is_stream: bool,
+        blob_root_str: str,
+        source_db_path_str: str,
+    ) -> tuple[str, list[ParsedSession] | None, str | None]:
+        if raw_id == "bad-1":
+            raise RuntimeError(f"boom {raw_id}")
+        return raw_id, [], None
+
+    monkeypatch.setattr(revision_backfill, "_census_parse_worker", fake_worker)
+
+    results = revision_backfill._parse_unique_retained_raws_via_threads(
+        _FakeArchive(),  # type: ignore[arg-type]
+        list(descriptors),
+        descriptors=descriptors,
+        ingest_workers=3,
+    )
+
+    assert isinstance(results["bad-1"], RuntimeError)
+    assert "boom bad-1" in str(results["bad-1"])
+    assert results["ok-1"] == ([], 10, RawRevisionKind.FULL)
+    assert results["ok-2"] == ([], 30, RawRevisionKind.FULL)
+
+
+def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Determinism proof: results must be assembled by looking up each
+    completed future's OWN raw_id (``future_to_raw_id[future]``), never by
+    zipping ``raw_ids`` (submission order) against ``as_completed(futures)``
+    (completion order) -- that zip-based shape is a real historical bug
+    class in concurrent code and would silently pair a fast-finishing raw's
+    result with a different, slower raw_id's descriptor. Delays are
+    inverted here (the raw submitted LAST finishes FIRST) so submission
+    order and completion order actively diverge; each raw_id's own
+    descriptor-derived payload_size must still come back attached to it
+    regardless."""
+    raw_ids = [f"raw-{i}" for i in range(6)]
+    descriptors = {
+        raw_id: (Provider.CODEX, f"hash-{i}", f"path-{i}.jsonl", RawRevisionKind.FULL, 100 + i)
+        for i, raw_id in enumerate(raw_ids)
+    }
+    # raw-0 (submitted first) sleeps longest; raw-5 (submitted last) returns
+    # immediately -- completion order is the exact reverse of submission order.
+    delay_by_raw_id = {raw_id: 0.02 * (len(raw_ids) - index) for index, raw_id in enumerate(raw_ids)}
+
+    class _FakeArchive:
+        archive_root = Path("/fake-root")
+        source_db_path = Path("/fake-root/source.db")
+
+    def fake_worker(
+        raw_id: str,
+        provider_token: str,
+        blob_hash: str,
+        source_path: str,
+        is_stream: bool,
+        blob_root_str: str,
+        source_db_path_str: str,
+    ) -> tuple[str, list[ParsedSession] | None, str | None]:
+        time.sleep(delay_by_raw_id[raw_id])
+        return raw_id, [], None
+
+    monkeypatch.setattr(revision_backfill, "_census_parse_worker", fake_worker)
+
+    results = revision_backfill._parse_unique_retained_raws_via_threads(
+        _FakeArchive(),  # type: ignore[arg-type]
+        raw_ids,
+        descriptors=descriptors,
+        ingest_workers=len(raw_ids),
+    )
+
+    for index, raw_id in enumerate(raw_ids):
+        sessions, size, kind = results[raw_id]  # type: ignore[misc]
+        assert sessions == []
+        assert size == 100 + index
+        assert kind == RawRevisionKind.FULL
+
+
+def test_parse_unique_retained_raws_routes_to_threads_when_probe_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wiring proof for ``_parse_unique_retained_raws`` itself: when
+    ``parallel_threads_effective()`` is true, it must call
+    ``_parse_unique_retained_raws_via_threads`` (no size partition / floor)
+    rather than falling through to the process-pool branch below it."""
+    descriptors = {
+        "raw-a": (Provider.CODEX, "hash-a", "a.jsonl", RawRevisionKind.FULL, 10),
+        "raw-b": (Provider.CODEX, "hash-b", "b.jsonl", RawRevisionKind.FULL, 20),
+    }
+
+    sentinel: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {
+        "raw-a": ([], 10, RawRevisionKind.FULL),
+        "raw-b": ([], 20, RawRevisionKind.FULL),
+    }
+    calls: list[tuple[object, ...]] = []
+
+    def fake_thread_dispatch(
+        archive: object,
+        raw_ids: list[str],
+        *,
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
+        ingest_workers: int,
+    ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
+        calls.append((tuple(raw_ids), ingest_workers))
+        return sentinel
+
+    def forbidden_pool(**kwargs: object) -> object:
+        raise AssertionError("process pool must not be constructed when the thread path is taken")
+
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    monkeypatch.setattr(revision_backfill, "_parse_unique_retained_raws_via_threads", fake_thread_dispatch)
+    import polylogue.pipeline.services.process_pool as process_pool_module
+
+    monkeypatch.setattr(process_pool_module, "process_pool_executor", forbidden_pool)
+
+    results = revision_backfill._parse_unique_retained_raws(
+        object(),  # type: ignore[arg-type]
+        list(descriptors),
+        descriptors=descriptors,
+        ingest_workers=4,
+    )
+
+    assert results == sentinel
+    assert calls == [(("raw-a", "raw-b"), 4)]
