@@ -2,8 +2,9 @@
 
 Design direction lives in the Beads backlog, not in this directory: each
 surface's owning bead carries its spec in the `design` field (`bd show <id>`),
-and the aesthetics/interaction directions live in `.agent/reports/` with
-their decisions recorded on beads. Planning documents are mined into beads
+and the aesthetics/interaction directions live in a gitignored, untracked
+`.agent/reports/` (not shipped in this repo or a fresh clone) with their
+decisions recorded on beads. Planning documents are mined into beads
 and then purged — there is no "historical reference" tier (superseded
 `docs/execution-plan.md`, and the MK2/MK3 packs, were removed under this
 rule; recover from git history if ever needed).

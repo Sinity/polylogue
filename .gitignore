@@ -73,7 +73,14 @@ dist/
 !polylogue/daemon/static/dist/
 !polylogue/daemon/static/dist/**
 
-# Agent workspace: track reusable scaffold, ignore live state/artifacts
+# Agent workspace: track reusable scaffold, ignore live state/artifacts.
+# reports/ and archive/ (top-level and under scratch/) are deliberately NOT
+# un-ignored here (polylogue-ocby): they previously carried `!` negations
+# that forced entropic agent-run output (postmortems, retired
+# devloop/scratch dumps) to be tracked in this PUBLIC repo. That content
+# stays on disk (git rm --cached only, nothing deleted) but is no longer
+# git-managed, and the negation is gone so new files there can't be
+# re-tracked by a plain `git add`.
 .agent/*
 !.agent/README.md
 !.agent/CONVENTIONS.md
@@ -81,17 +88,11 @@ dist/
 !.agent/scripts/**
 !.agent/tools/
 !.agent/tools/**
-!.agent/archive/
-!.agent/archive/**
-!.agent/reports/
-!.agent/reports/**
 !.agent/handoffs/
 !.agent/handoffs/**
 !.agent/scratch/
 .agent/scratch/*
 !.agent/scratch/README.md
-!.agent/scratch/archive/
-!.agent/scratch/archive/**
 
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py

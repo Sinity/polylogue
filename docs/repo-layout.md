@@ -29,7 +29,7 @@ Every top-level entry has a reason.
 | `README.md` | Project readme | repo |
 | `TESTING.md` | Test suite documentation | repo |
 | `browser-extension/` | Chrome MV3 browser capture extension | repo |
-| `contrib/` | Community-contributed integrations | repo |
+| `contrib/` | `polylogue-hook` shell prototype for the agent-hook spool (canonical location referenced by docs/hooks.md and tests/unit/sources/test_hook_spool.py) | repo |
 | `devtools/` | Developer tooling (verify, render, campaigns) | repo |
 | `docs/` | Architecture, internals, plans, design documents | repo |
 | `docs/site/pages.toml` | GitHub Pages site configuration | docs tooling |
@@ -43,6 +43,5 @@ Every top-level entry has a reason.
 | `pyproject.toml` | Python project metadata and tool config | repo |
 | `release-please-config.json` | Release Please configuration | release tooling |
 | `scripts/` | Standalone operator/demo scripts that are useful outside the devtools command registry | repo |
-| `systemd/` | Systemd service units for daemon | repo |
 | `tests/` | Test suite | repo |
 | `uv.lock` | uv dependency lockfile | uv |

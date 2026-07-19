@@ -7,24 +7,27 @@ Kept deliberately parallel to `sinex/.agent/CONVENTIONS.md` — divergences are
 intentional and marked.
 
 **The devloop substrate is Beads.** The former bespoke conductor packet
-(`conductor-devloop/`, `DEVLOOP.md`, `devloop-*` scripts) is archived at
-`.agent/archive/devloop-2026-07/` — see its README for what subsumed each
-piece. Do not resurrect packet files or `devloop-*` script names; the loop is:
-`bd prime` → `bd ready` → claim → work → PR → close with reasons.
+(`conductor-devloop/`, `DEVLOOP.md`, `devloop-*` scripts) is retired. Do not
+resurrect packet files or `devloop-*` script names; the loop is: `bd prime` →
+`bd ready` → claim → work → PR → close with reasons. (Its evidence may still
+sit in a gitignored, untracked `.agent/archive/devloop-2026-07/` in some
+working checkouts — polylogue-ocby — it is not tracked in this repo and a
+fresh clone will not have it.)
 
 ## Directory Shape
 
 ```text
 .agent/
-  README.md          # orientation
-  CONVENTIONS.md     # this file
-  scripts/           # small repo-agent helpers (non-devloop)
-  demos/             # curated demo shelf
-  reports/           # tracked report artifacts
-  task-history/      # historical task notes
+  README.md          # orientation (tracked)
+  CONVENTIONS.md     # this file (tracked)
+  scripts/           # small repo-agent helpers, non-devloop (tracked)
+  demos/             # curated demo shelf (tracked)
+  handoffs/          # external-agent handoff corpora (tracked)
+  reports/           # report artifacts — gitignored, local-only
+  task-history/      # historical task notes — gitignored, local-only
   scratch/           # gitignored thinking space
-  tools/             # helper tooling
-  archive/           # retired scaffolds kept as evidence
+  tools/             # helper tooling (tracked)
+  archive/           # retired scaffolds kept as evidence — gitignored, local-only
 ```
 
 ## Beads Task Substrate
