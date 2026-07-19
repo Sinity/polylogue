@@ -306,7 +306,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                     processed_blob_bytes=transaction.processed_blob_bytes + sum(row[2] for row in page.rows),
                 )
                 if page.has_more or deadline_expired:
-                    return RebuildIndexReceipt(
+                    pass_receipt = RebuildIndexReceipt(
                         archive_root=str(root),
                         raw_session_count=raw_count,
                         selected_raw_count=selected_raw_count,
@@ -319,6 +319,8 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                         replay=replay,
                         transaction=cast(dict[str, object], asdict(transaction)),
                     )
+                    generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
+                    return pass_receipt
             insight_result = repair_session_insights(
                 config,
                 dry_run=False,
@@ -367,7 +369,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 with contextlib.suppress(Exception):
                     generation_store.discard_if_inactive(generation)
             raise
-    return RebuildIndexReceipt(
+    final_receipt = RebuildIndexReceipt(
         archive_root=str(root),
         raw_session_count=raw_count,
         selected_raw_count=selected_raw_count,
@@ -380,6 +382,9 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         replay=replay,
         transaction=cast(dict[str, object], asdict(transaction)) if transaction is not None else None,
     )
+    if transaction is not None:
+        generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())
+    return final_receipt
 
 
 def rebuild_index_from_source_sync(request: RebuildIndexRequest) -> RebuildIndexReceipt:

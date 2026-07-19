@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fcntl
+import logging
 import multiprocessing
+import os
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +17,10 @@ from polylogue.storage.index_generation import (
     RebuildLeaseUnavailableError,
     source_revision_snapshot,
 )
+
+# A pid guaranteed to never correspond to a running process: it exceeds any
+# realistic pid_max (Linux defaults to <= 4194304 even with 64-bit pids).
+_DEFINITELY_DEAD_PID = 2**31 - 1
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -53,6 +60,56 @@ def test_rebuild_lease_refuses_new_active_writer(tmp_path: Path) -> None:
         writer = ActiveWriterLease(tmp_path)
         with pytest.raises(RebuildLeaseUnavailableError):
             writer.acquire()
+
+
+def test_rebuild_lease_reclaims_lock_held_by_dead_pid(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A lock file recorded as held by a pid that no longer exists is stale and reclaimable.
+
+    Simulates the polylogue-k8kj live incident: a genuinely-locked inode
+    (held here by a raw fd we keep open in-process, standing in for a
+    crashed rebuild or an orphaned forked worker) whose lock file records a
+    pid that is not actually running. A fresh ``RebuildLease`` acquisition
+    must reclaim it -- not raise ``RebuildLeaseUnavailableError`` -- and log
+    the reclamation loudly.
+    """
+    lock_path = tmp_path / ".index-rebuild.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    holder_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(holder_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.write(holder_fd, f"pid={_DEFINITELY_DEAD_PID} host=nowhere\n".encode())
+    os.fsync(holder_fd)
+    try:
+        with caplog.at_level(logging.WARNING):
+            with RebuildLease(tmp_path):
+                pass
+        assert "reclaiming stale index rebuild lease" in caplog.text
+        assert str(_DEFINITELY_DEAD_PID) in caplog.text
+    finally:
+        fcntl.flock(holder_fd, fcntl.LOCK_UN)
+        os.close(holder_fd)
+
+
+def test_rebuild_lease_still_refuses_lock_held_by_live_pid(tmp_path: Path) -> None:
+    """A lock recorded as held by a genuinely running process must still block.
+
+    Complements the dead-pid reclaim test: recording *this* test process's
+    own (very much alive) pid in the lock file must never be treated as
+    stale, even though the mechanism for detecting staleness is the same
+    read-the-file-then-check-liveness path.
+    """
+    lock_path = tmp_path / ".index-rebuild.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    holder_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(holder_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.write(holder_fd, f"pid={os.getpid()} host=here\n".encode())
+    os.fsync(holder_fd)
+    try:
+        with pytest.raises(RebuildLeaseUnavailableError):
+            with RebuildLease(tmp_path):
+                pass
+    finally:
+        fcntl.flock(holder_fd, fcntl.LOCK_UN)
+        os.close(holder_fd)
 
 
 def test_generation_is_inactive_until_atomic_promotion(tmp_path: Path) -> None:

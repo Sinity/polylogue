@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -17,6 +19,10 @@ from types import TracebackType
 
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+logger = logging.getLogger(__name__)
+
+_LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +86,79 @@ class RebuildLeaseUnavailableError(RuntimeError):
     """Another process owns the archive-wide rebuild lease."""
 
 
+def _lock_holder_pid(path: Path) -> int | None:
+    """Best-effort recorded pid from an existing lock file; ``None`` if absent/unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _LOCK_PID_PATTERN.search(text)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Whether ``pid`` still names a live process, best-effort via ``kill(pid, 0)``."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Owned by another user but still running.
+        return True
+    return True
+
+
+def _open_lock_fd(path: Path, lock_type: int, *, unavailable_message: str) -> int:
+    """Open ``path`` and acquire ``lock_type`` (``LOCK_EX``/``LOCK_SH``), non-blocking.
+
+    ``flock`` is scoped to the open file description's *inode*, so a holder
+    that died without releasing it -- a crashed rebuild, or a forked worker
+    that inherited the fd and outlived a since-reaped parent -- cannot be
+    un-blocked by simply re-opening the same path; whatever still references
+    the old inode keeps it locked. When the lock file's recorded pid is no
+    longer a running process, the stale lock is reclaimed instead: a fresh
+    file is written at the same path and swapped in atomically, handing out
+    a brand-new, guaranteed-unlocked inode while any surviving reference to
+    the old one is left orphaned (polylogue-k8kj finding: a dead-pid lock
+    was blocking nothing in particular while confusing operators who read
+    its stale content as an active rebuild).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, lock_type | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError as exc:
+        os.close(fd)
+        blocking_error = exc
+
+    holder_pid = _lock_holder_pid(path)
+    if holder_pid is None or _pid_is_alive(holder_pid):
+        suffix = f" (pid={holder_pid})" if holder_pid is not None else ""
+        raise RebuildLeaseUnavailableError(unavailable_message + suffix) from blocking_error
+
+    logger.warning(
+        "reclaiming stale index rebuild lease %s: recorded holder pid=%d is no longer running",
+        path,
+        holder_pid,
+    )
+    temporary = path.with_name(f".{path.name}.reclaim-{uuid.uuid4().hex}")
+    reclaimed_fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        fcntl.flock(reclaimed_fd, lock_type | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(reclaimed_fd)
+        temporary.unlink(missing_ok=True)
+        raise RebuildLeaseUnavailableError(unavailable_message) from blocking_error
+    os.replace(temporary, path)
+    _fsync_directory(path.parent)
+    return reclaimed_fd
+
+
 class RebuildLease:
     """Process-held exclusive lease for an offline index rebuild."""
 
@@ -88,13 +167,11 @@ class RebuildLease:
         self._fd: int | None = None
 
     def __enter__(self) -> RebuildLease:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            os.close(fd)
-            raise RebuildLeaseUnavailableError(f"index rebuild lease is already held: {self.path}") from exc
+        fd = _open_lock_fd(
+            self.path,
+            fcntl.LOCK_EX,
+            unavailable_message=f"index rebuild lease is already held: {self.path}",
+        )
         os.ftruncate(fd, 0)
         os.write(fd, f"pid={os.getpid()} host={socket.gethostname()}\n".encode())
         os.fsync(fd)
@@ -122,14 +199,11 @@ class ActiveWriterLease:
         self._fd: int | None = None
 
     def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            os.close(fd)
-            raise RebuildLeaseUnavailableError(f"offline index rebuild owns archive: {self.path}") from exc
-        self._fd = fd
+        self._fd = _open_lock_fd(
+            self.path,
+            fcntl.LOCK_SH,
+            unavailable_message=f"offline index rebuild owns archive: {self.path}",
+        )
 
     def close(self) -> None:
         if self._fd is not None:
@@ -196,6 +270,28 @@ class IndexGenerationStore:
         """Load a rebuild transaction; corrupt or missing state is never resumed."""
         payload = json.loads(self._transaction_path(operation_id).read_text(encoding="utf-8"))
         return IndexRebuildTransaction(**payload)
+
+    def save_pass_receipt(self, operation_id: str, receipt: dict[str, object]) -> Path:
+        """Durably persist one rebuild pass's receipt for post-hoc recovery.
+
+        The CLI's only other copy of a pass receipt is a JSON blob written to
+        stdout; if the invoking shell's pipe dies (killed shell, SIGPIPE) an
+        orphaned rebuild process keeps working but the receipt is gone
+        (polylogue-k8kj live incident: two page receipts lost this way in one
+        night). Each pass gets its own numbered file under a
+        ``<operation_id>.receipts/`` directory alongside the transaction
+        record, written with the same tmp+os.replace+fsync pattern as
+        ``save_transaction``.
+        """
+        directory = self.transactions_root / f"{operation_id}.receipts"
+        directory.mkdir(parents=True, exist_ok=True)
+        sequence = len(list(directory.glob("pass-*.json")))
+        path = directory / f"pass-{sequence:06d}.json"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        os.replace(temporary, path)
+        _fsync_directory(directory)
+        return path
 
     def save_transaction(self, transaction: IndexRebuildTransaction) -> IndexRebuildTransaction:
         """Atomically checkpoint a transaction after one bounded replay pass."""

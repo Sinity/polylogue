@@ -103,9 +103,38 @@ def archive_snapshot_epoch(archive: ArchiveStore) -> str:
             conn.execute("SELECT epoch FROM user_tier.query_unit_frame_state WHERE singleton = 1").fetchone()[0]
         )
     except (AttributeError, IndexError, sqlite3.Error, TypeError) as exc:
+        if _is_missing_query_unit_frame_state(exc):
+            # A derived tier reporting the current schema version yet missing
+            # this table is schema drift, not a transient read glitch (a
+            # generation built before the epoch-tracking table was added to
+            # the canonical DDL, or an interrupted rebuild that never
+            # promoted a generation carrying it -- polylogue-k8kj finding 2).
+            # Derived tiers have no in-place upgrade chain: reject clearly
+            # with the same rebuild guidance schema-version mismatches give,
+            # instead of letting the bare sqlite3.OperationalError surface as
+            # an opaque crash on every query.
+            logger.error(
+                "query transaction: archive generation is missing query_unit_frame_state "
+                "(derived-tier schema drift, not a transient error)",
+            )
+            raise QueryArchiveEpochUnreadableError(
+                "this archive generation predates the query_unit_frame_state epoch-tracking table (or an "
+                "interrupted rebuild never promoted a generation that has it) and cannot serve query "
+                "continuations; rebuild the index tier from source with "
+                "`polylogue ops reset --index && polylogued run`"
+            ) from exc
         logger.warning("query transaction: could not read archive snapshot epoch", exc_info=True)
         raise QueryArchiveEpochUnreadableError("could not establish archive frame for query continuation") from exc
     return f"archive:v1:index:v{index_version}:{index_epoch}:user:v{user_version}:{user_epoch}"
+
+
+def _is_missing_query_unit_frame_state(exc: Exception) -> bool:
+    """Whether ``exc`` is specifically sqlite reporting the epoch table absent."""
+    return (
+        isinstance(exc, sqlite3.OperationalError)
+        and "no such table" in str(exc)
+        and "query_unit_frame_state" in str(exc)
+    )
 
 
 class QueryContinuationStaleError(ValueError):

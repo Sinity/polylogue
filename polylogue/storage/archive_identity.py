@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Literal
 
 from polylogue.version import VERSION_INFO
+
+logger = logging.getLogger(__name__)
 
 ArchiveTierName = Literal["source", "index", "embeddings", "user", "ops"]
 TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
@@ -22,6 +25,32 @@ TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
 
 class ArchiveLocationError(RuntimeError):
     """A configured archive does not name one coherent active file set."""
+
+
+def resolve_active_index_path(archive_root: Path) -> Path:
+    """Resolve the effective ``index.db`` path for ``archive_root``.
+
+    Pure function of ``archive_root`` alone (no ambient environment/cwd
+    reads): follows ``.index-active-pointer`` when present so ordinary
+    config resolution can never silently diverge from a promoted generation
+    (polylogue-k8kj finding 1). When the plain ``archive_root/index.db``
+    path exists as a stale regular file that diverges from the active
+    pointer target -- the signature of an interrupted rebuild that updated
+    the pointer without ever swapping the conventional path over to a
+    symlink -- that divergence is reported loudly via a warning log line
+    rather than served silently; the correct (pointer) data is still what
+    gets returned.
+    """
+    location = ArchiveLocation.resolve(archive_root)
+    if location.shadow_index is not None:
+        logger.warning(
+            "stale conventional index path %s diverges from the active generation %s "
+            "(likely an interrupted rebuild promotion that never replaced the conventional "
+            "path with a symlink); resolving to the active pointer target instead of the stale file",
+            location.shadow_index.resolved_path,
+            location.active_index.resolved_path,
+        )
+    return location.active_index_path
 
 
 @dataclass(frozen=True)

@@ -1848,6 +1848,76 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
 
 
+def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """Every rebuild pass receipt survives on disk, not only on the CLI's stdout.
+
+    Reproduces the fix for a live incident (polylogue-k8kj): two rebuild page
+    receipts were lost because the CLI writes the receipt JSON only to
+    stdout, and the invoking shell's pipe died while an orphaned rebuild
+    process kept working. Each pass must also be durably persisted under the
+    transaction directory so a lost pipe never means a lost receipt.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = cli_workspace["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for native_id, acquired_at_ms in (("first", 1), ("second", 2)):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\\n'
+                    f'{{"type":"response_item","payload":{{"type":"message","role":"user",'
+                    f'"content":[{{"type":"input_text","text":"{native_id}"}}]}}}}\\n'
+                ).encode(),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=acquired_at_ms,
+            )
+
+    first = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--raw-batch-size", "1", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    assert first.exit_code == 0
+    first_payload = json.loads(first.output)
+    operation_id = first_payload["transaction"]["operation_id"]
+    assert first_payload["status"] == "paused"
+
+    receipts_dir = root / ".index-rebuild-transactions" / f"{operation_id}.receipts"
+    receipt_files = sorted(receipts_dir.glob("pass-*.json"))
+    assert len(receipt_files) == 1
+    persisted = json.loads(receipt_files[0].read_text(encoding="utf-8"))
+    assert persisted["status"] == "paused"
+    assert persisted["transaction"]["operation_id"] == operation_id
+
+    terminal = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--operation-id",
+            operation_id,
+            "--raw-batch-size",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert terminal.exit_code == 0
+    terminal_payload = json.loads(terminal.output)
+    assert terminal_payload["status"] == "replayed"
+
+    receipt_files = sorted(receipts_dir.glob("pass-*.json"))
+    assert len(receipt_files) == 2
+    final_persisted = json.loads(receipt_files[-1].read_text(encoding="utf-8"))
+    assert final_persisted["status"] == "replayed"
+
+
 def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
