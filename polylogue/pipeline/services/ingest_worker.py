@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pickle
 import re
+import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 _SCHEMA_REGISTRY: SchemaRegistry | None = None
+_SCHEMA_REGISTRY_LOCK = threading.Lock()
 
 
 class _TimestampUpdates(TypedDict, total=False):
@@ -151,12 +153,13 @@ def _make_ref_id(
 
 def _runtime_schema_registry() -> SchemaRegistry:
     global _SCHEMA_REGISTRY
-    if _SCHEMA_REGISTRY is None:
-        from polylogue.schemas.runtime_registry import SchemaRegistry
+    with _SCHEMA_REGISTRY_LOCK:
+        if _SCHEMA_REGISTRY is None:
+            from polylogue.schemas.runtime_registry import SchemaRegistry
 
-        _SCHEMA_REGISTRY = SchemaRegistry()
-    assert _SCHEMA_REGISTRY is not None
-    return _SCHEMA_REGISTRY
+            _SCHEMA_REGISTRY = SchemaRegistry()
+        assert _SCHEMA_REGISTRY is not None
+        return _SCHEMA_REGISTRY
 
 
 def _finalize_result(result: IngestRecordResult, *, measure_serialized_size: bool) -> IngestRecordResult:
