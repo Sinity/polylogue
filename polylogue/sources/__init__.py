@@ -26,6 +26,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .drive import download_drive_files
     from .drive.source import DriveSourceAPI, DriveSourceClient, build_drive_source_client
     from .drive.types import DriveAuthError, DriveError, DriveFile, DriveNotFoundError
     from .parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
