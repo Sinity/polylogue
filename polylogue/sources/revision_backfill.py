@@ -801,11 +801,52 @@ def _parse_retained_raws(
     *,
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-    """Parse a batch of retained raws, optionally across a process pool.
+    """Parse a batch of retained raws, deduplicating byte-identical inputs.
 
     Returns each outcome keyed by raw_id: either the parsed
     ``(sessions, payload_bytes, revision_kind)`` tuple or the caught
-    exception. Read-only blob->ParsedSession decode is authority-neutral and
+    exception. Rows sharing the same ``(blob_hash, source_path)`` are parsed
+    exactly once and the outcome fanned out: identical bytes at an identical
+    path decode deterministically identically, so re-parsing them is pure
+    waste (measured live 2026-07-19: 17% of newest-only bytes — e.g. one
+    442MB codex rollout stored under 8 raw rows — were byte-identical
+    duplicates each paying a full parse). ``source_path`` stays in the key
+    because some parsers derive identity from the path (e.g. beads workspace
+    ids), so cross-path duplicates are deliberately NOT deduplicated.
+    Per-row ``revision_kind`` is re-attached from each row's own descriptor.
+    """
+    descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for raw_id in raw_ids:
+        _provider, blob_hash, source_path, _kind, _size = descriptors[raw_id]
+        grouped.setdefault((blob_hash, source_path), []).append(raw_id)
+    representatives = [members[0] for members in grouped.values()]
+    unique = _parse_unique_retained_raws(
+        archive, representatives, descriptors=descriptors, ingest_workers=ingest_workers
+    )
+    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
+    for members in grouped.values():
+        outcome = unique[members[0]]
+        for raw_id in members:
+            if isinstance(outcome, Exception):
+                results[raw_id] = outcome
+            else:
+                sessions, _rep_size, _rep_kind = outcome
+                _provider, _blob_hash, _source_path, kind, size = descriptors[raw_id]
+                results[raw_id] = (sessions, size, kind)
+    return results
+
+
+def _parse_unique_retained_raws(
+    archive: ArchiveStore,
+    raw_ids: list[str],
+    *,
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
+    ingest_workers: int,
+) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
+    """Parse already-deduplicated raws, optionally across a process pool.
+
+    Read-only blob->ParsedSession decode is authority-neutral and
     embarrassingly parallel; callers apply archive writes afterwards in a
     fixed deterministic order independent of completion order here, so
     parallel and sequential execution produce byte-identical archive state
@@ -820,8 +861,7 @@ def _parse_retained_raws(
                 results[raw_id] = exc
         return results
 
-    descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
-    payload_sizes = {raw_id: descriptor[4] for raw_id, descriptor in descriptors.items()}
+    payload_sizes = {raw_id: descriptors[raw_id][4] for raw_id in raw_ids}
     pool_raw_ids, sequential_raw_ids = _partition_raws_by_dispatch_size(
         raw_ids, payload_sizes, dispatch_max_bytes=_parse_dispatch_max_bytes()
     )

@@ -1098,6 +1098,73 @@ def test_partition_raws_by_dispatch_size_routes_small_to_pool_large_sequential()
     assert sequential_ids == ["large-1", "large-2"]
 
 
+def test_parse_retained_raws_dedupes_identical_blob_and_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Byte-identical rows at the same source_path parse once and the outcome
+    fans out with each row's own revision_kind; the same bytes at a DIFFERENT
+    path still parse separately (path participates in some parsers' identity).
+    Live shape (polylogue-869u): one 442MB codex rollout acquired 8x within
+    2.3s during a stampede — 8 raw rows, one blob, 8 full parses."""
+    descriptors = {
+        "dup-1": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.FULL, 10),
+        "dup-2": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.UNKNOWN, 10),
+        "dup-3": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.FULL, 10),
+        "other-path": (Provider.CODEX, "hash-A", "different.jsonl", RawRevisionKind.FULL, 10),
+        "other-bytes": (Provider.CODEX, "hash-B", "same.jsonl", RawRevisionKind.FULL, 20),
+    }
+
+    class FakeArchive:
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            return descriptors[raw_id]
+
+    parsed: list[str] = []
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        descriptor = descriptors[raw_id]
+        return [], descriptor[4], descriptor[3]
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+
+    results = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=1,
+    )
+
+    # one parse per distinct (blob_hash, source_path): dup-2/dup-3 reuse dup-1's
+    assert parsed == ["dup-1", "other-path", "other-bytes"]
+    assert set(results) == set(descriptors)
+    sessions, size, kind = results["dup-2"]  # type: ignore[misc]
+    assert (sessions, size, kind) == ([], 10, RawRevisionKind.UNKNOWN)
+    _sessions, _size, dup3_kind = results["dup-3"]  # type: ignore[misc]
+    assert dup3_kind == RawRevisionKind.FULL
+
+
+def test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    descriptors = {
+        "dup-1": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.FULL, 10),
+        "dup-2": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.FULL, 10),
+    }
+
+    class FakeArchive:
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            return descriptors[raw_id]
+
+    def failing_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        raise ValueError(f"boom {raw_id}")
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", failing_parse)
+
+    results = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=1,
+    )
+
+    assert isinstance(results["dup-1"], ValueError)
+    assert results["dup-2"] is results["dup-1"]
+
+
 def test_pool_dispatch_floor_rejects_small_aggregate_batches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Worker spawn+import (~1.5-2s each, measured live 2026-07-19) dominates
     tiny batches: a per-cohort census batch of a few sub-256KiB raws must parse
