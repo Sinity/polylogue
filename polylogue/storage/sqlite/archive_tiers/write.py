@@ -4097,6 +4097,67 @@ def repair_stale_prefix_branch_points(conn: sqlite3.Connection, *, limit: int | 
     return _repair_stale_prefix_branch_points_db(conn, limit=limit)
 
 
+def clear_messages_parent_sql(placeholders: str) -> str:
+    """Return the prefix-delete ``messages.parent_message_id`` clear statement.
+
+    Shared by :func:`_delete_all_session_message_dependents` and
+    :func:`_delete_prefix_message_dependents` so tests can assert its query
+    plan against the exact production SQL rather than a hand-copied string.
+    Covered by ``idx_messages_parent`` (leading column ``parent_message_id``).
+    """
+    return f"""
+        UPDATE messages
+        SET parent_message_id = NULL
+        WHERE parent_message_id IN ({placeholders})
+        """
+
+
+def clear_session_events_source_message_sql(placeholders: str) -> str:
+    """Return the prefix-delete ``session_events.source_message_id`` clear statement.
+
+    Covered by the partial index ``idx_session_events_source_message ...
+    WHERE source_message_id IS NOT NULL`` (polylogue-crd8) — the planner can
+    use a partial index for an ``IN (<non-null literals>)`` predicate because
+    every value in the list necessarily satisfies ``IS NOT NULL``.
+    """
+    return f"""
+        UPDATE session_events
+        SET source_message_id = NULL
+        WHERE source_message_id IN ({placeholders})
+        """
+
+
+def clear_session_agent_policies_source_message_sql(placeholders: str) -> str:
+    """Return the prefix-delete ``session_agent_policies.source_message_id`` clear statement.
+
+    Covered by the partial index ``idx_session_agent_policies_source_message
+    ... WHERE source_message_id IS NOT NULL`` (polylogue-crd8), same
+    partial-index-usability reasoning as
+    :func:`clear_session_events_source_message_sql`.
+    """
+    return f"""
+        UPDATE session_agent_policies
+        SET source_message_id = NULL
+        WHERE source_message_id IN ({placeholders})
+        """
+
+
+def _clear_prefix_message_id_references(
+    conn: sqlite3.Connection,
+    placeholders: str,
+    params: tuple[str, ...],
+) -> None:
+    """Null out every ``messages(message_id)``-keyed back-reference to a deleted prefix.
+
+    Shared by the two prefix/full dependent-delete helpers below so the three
+    statements (and their index coverage) can't silently drift apart between
+    the partial-tail and whole-session deletion paths.
+    """
+    conn.execute(clear_messages_parent_sql(placeholders), params)
+    conn.execute(clear_session_events_source_message_sql(placeholders), params)
+    conn.execute(clear_session_agent_policies_source_message_sql(placeholders), params)
+
+
 def _delete_all_session_message_dependents(
     conn: sqlite3.Connection,
     session_id: str,
@@ -4112,30 +4173,7 @@ def _delete_all_session_message_dependents(
         return
     placeholders = ",".join("?" for _ in prefix_message_ids)
     params = tuple(prefix_message_ids)
-    conn.execute(
-        f"""
-        UPDATE messages
-        SET parent_message_id = NULL
-        WHERE parent_message_id IN ({placeholders})
-        """,
-        params,
-    )
-    conn.execute(
-        f"""
-        UPDATE session_events
-        SET source_message_id = NULL
-        WHERE source_message_id IN ({placeholders})
-        """,
-        params,
-    )
-    conn.execute(
-        f"""
-        UPDATE session_agent_policies
-        SET source_message_id = NULL
-        WHERE source_message_id IN ({placeholders})
-        """,
-        params,
-    )
+    _clear_prefix_message_id_references(conn, placeholders, params)
     conn.execute("DELETE FROM web_content_constructs WHERE session_id = ?", (session_id,))
     conn.execute(
         """
@@ -4156,30 +4194,7 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
         return
     placeholders = ",".join("?" for _ in prefix_message_ids)
     params = tuple(prefix_message_ids)
-    conn.execute(
-        f"""
-        UPDATE messages
-        SET parent_message_id = NULL
-        WHERE parent_message_id IN ({placeholders})
-        """,
-        params,
-    )
-    conn.execute(
-        f"""
-        UPDATE session_events
-        SET source_message_id = NULL
-        WHERE source_message_id IN ({placeholders})
-        """,
-        params,
-    )
-    conn.execute(
-        f"""
-        UPDATE session_agent_policies
-        SET source_message_id = NULL
-        WHERE source_message_id IN ({placeholders})
-        """,
-        params,
-    )
+    _clear_prefix_message_id_references(conn, placeholders, params)
     conn.execute(
         f"""
         DELETE FROM attachment_native_ids

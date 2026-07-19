@@ -1290,6 +1290,18 @@ class ArchiveStore:
             self._conn.execute(statement)
         if read_only:
             self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
+        else:
+            # Fresh-bootstrap and same-version reopen both skip runtime-index
+            # ensure elsewhere (initialize_archive_tier only replays DDL once,
+            # at current_version==0; the read-only path has its own ensure in
+            # _ensure_read_runtime_indexes). Owned inactive generations (bulk
+            # rebuilds, revision backfill) open exactly this write connection
+            # and nothing else, so without this call a generation could run
+            # its whole lifetime — including prefix-tail dependent rewrites —
+            # against an index.db missing performance indexes such as
+            # idx_session_events_source_message /
+            # idx_session_agent_policies_source_message (polylogue-crd8).
+            ensure_runtime_indexes_sync(self._conn)
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
         self._source_conn: sqlite3.Connection | None = None
