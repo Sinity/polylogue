@@ -70,7 +70,7 @@ _SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
 def _json_bytes(payload: object) -> bytes:
-    return dumps_bytes(payload, option=None)
+    return dumps_bytes(payload)
 
 
 def _origin_allowed(origin: str | None, config: BrowserCaptureReceiverConfig) -> bool:

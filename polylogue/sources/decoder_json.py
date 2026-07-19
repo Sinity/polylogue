@@ -9,8 +9,9 @@ from collections.abc import Iterable
 from typing import IO, Protocol, TypeAlias, TypeGuard
 
 import ijson
-import orjson
 
+from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
@@ -114,8 +115,8 @@ def _yield_jsonl_pending(
     path_name: str,
 ) -> tuple[list[JsonValue], int]:
     try:
-        parsed = orjson.loads(raw_pending)
-    except orjson.JSONDecodeError:
+        parsed = json_loads(raw_pending)
+    except JSONDecodeError:
         parsed = None
     else:
         if _is_json_value(parsed):

@@ -452,9 +452,9 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
 
 
 def _json_bytes(payload: object) -> bytes:
-    import orjson
+    from polylogue.core.json import dumps_bytes
 
-    return orjson.dumps(payload, option=orjson.OPT_APPEND_NEWLINE)
+    return dumps_bytes(payload, append_newline=True)
 
 
 def _web_reader_archive_root() -> Path | None:

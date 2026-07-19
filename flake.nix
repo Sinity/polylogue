@@ -80,6 +80,16 @@
           click
           tenacity
           dateparser
+          # orjson became an OPTIONAL accelerator in pyproject.toml's `speed`
+          # extra (polylogue-xikl): polylogue.core.json falls back to
+          # msgspec/stdlib json when it's absent. This nix build's
+          # `dependencies` list is independently curated (not derived from
+          # pyproject extras), so it deliberately keeps orjson on the
+          # STANDARD (GIL) build for the speed win. A future python314t
+          # package variant should drop `orjson` from this list (it has no
+          # cp314t wheels and refuses to compile free-threaded) and add
+          # `msgspec` instead -- the facade's fallback ordering handles the
+          # rest with no code change.
           orjson
           structlog
           pydantic

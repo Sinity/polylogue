@@ -40,7 +40,6 @@ dependencies = [
   "click>=8.4.2,<9.0",
   "tenacity>=8.0.0",
   "dateparser>=1.4.1",
-  "orjson>=3.11.9",
   "structlog>=26.1.0",
   "pydantic>=2.13.4,<3.0",
   "aiosqlite>=0.19.0",  # Async SQLite support
@@ -56,7 +55,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional fast-JSON accelerators for polylogue.core.json (polylogue-xikl).
+# Neither extra is required: the facade always falls back to stdlib json
+# when its backend is absent. They are split into two extras (rather than
+# one) because orjson has no cp314t (free-threaded Python 3.14) wheels and
+# its build refuses to compile free-threaded -- installing it is simply
+# impossible on a 3.14t interpreter, so a single combined extra would make
+# the whole install fail there. Standard (GIL) builds should install
+# `polylogue[speed]`; a 3.14t build should install `polylogue[speed-msgspec]`
+# instead, since msgspec ships cp314t wheels since 0.20.0 (Nov 2025).
+speed = [
+  "orjson>=3.11.9",
+]
+speed-msgspec = [
+  "msgspec>=0.20.0",
+]
 dev = [
+  "orjson>=3.11.9",  # core.json fast-JSON backend under test (polylogue-xikl)
+  "msgspec>=0.20.0",  # core.json fast-JSON fallback backend under test (polylogue-xikl)
   "pytest>=9.1.1",  # CVE-2025-71176
   "pytest-cov>=4",
   "pytest-asyncio>=1.4.0",  # Async test support

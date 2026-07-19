@@ -10,13 +10,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Protocol, cast
-
-import orjson
+from typing import Protocol
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDecodeError, JSONValue
+from polylogue.core.json import loads as json_loads
 from polylogue.pipeline.services.ingest_batch._core import _select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
 from polylogue.sources.parsers import hermes_state, hermes_verification
@@ -480,8 +479,8 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
             if not raw:
                 continue
             try:
-                records.append(cast(JSONValue, orjson.loads(raw)))
-            except orjson.JSONDecodeError:
+                records.append(json_loads(raw))
+            except JSONDecodeError:
                 continue
     return records
 
@@ -540,8 +539,8 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
             return True
         return _large_non_jsonl_path_can_stream(path, provider=provider)
     try:
-        document = cast(JSONValue, orjson.loads(path.read_bytes()))
-    except orjson.JSONDecodeError:
+        document = json_loads(path.read_bytes())
+    except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
 
@@ -572,14 +571,14 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
             if not raw:
                 continue
             try:
-                records.append(cast(JSONValue, orjson.loads(raw)))
-            except orjson.JSONDecodeError:
+                records.append(json_loads(raw))
+            except JSONDecodeError:
                 continue
         if not records:
             return False
         return classify_artifact(records, provider=provider, source_path=path).parse_as_session
     try:
-        document = cast(JSONValue, orjson.loads(payload))
-    except orjson.JSONDecodeError:
+        document = json_loads(payload)
+    except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session

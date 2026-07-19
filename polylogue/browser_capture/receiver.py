@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import orjson
-
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_API_SCHEMA,
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
@@ -30,6 +28,8 @@ from polylogue.browser_capture.models import (
     BrowserCaptureReceiverStatusPayload,
 )
 from polylogue.core.hashing import hash_text_short
+from polylogue.core.json import JSONDecodeError, dumps_bytes
+from polylogue.core.json import loads as json_loads
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
@@ -246,7 +246,7 @@ def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
         "provider_meta": _semantic_provider_meta(envelope.provider_meta),
         "raw_provider_payload": envelope.raw_provider_payload,
     }
-    return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
+    return hashlib.sha256(dumps_bytes(payload, sort_keys=True)).hexdigest()
 
 
 def _timestamp_ms(value: object) -> int | None:
@@ -527,8 +527,8 @@ def write_capture_envelope(
         replaced = target.exists()
         if replaced:
             try:
-                existing = BrowserCaptureEnvelope.model_validate(orjson.loads(target.read_bytes()))
-            except (OSError, orjson.JSONDecodeError, ValueError):
+                existing = BrowserCaptureEnvelope.model_validate(json_loads(target.read_bytes()))
+            except (OSError, JSONDecodeError, ValueError):
                 existing = None
             if existing is not None and capture_dedup_content_hash(existing) == dedup_content_hash:
                 return BrowserCaptureWriteResult(
@@ -546,7 +546,7 @@ def write_capture_envelope(
             _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = envelope.model_dump(mode="json", exclude_none=True)
-        raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+        raw = dumps_bytes(payload, sort_keys=True, indent=2)
         temp_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -717,7 +717,7 @@ def existing_capture_state(
 
 def _atomic_write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+    raw = dumps_bytes(payload, sort_keys=True, indent=2)
     with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
         temp_path = Path(handle.name)
         handle.write(raw)
