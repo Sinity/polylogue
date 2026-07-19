@@ -7,6 +7,7 @@ import os
 import pickle
 import sqlite3
 import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -59,6 +60,81 @@ class _RevisionCensusState:
     censused: set[str]
     membership_candidates: dict[str, set[str]]
     provisional_full_raw_ids: dict[str, set[str]]
+
+
+@dataclass(slots=True)
+class _PrefetchedParse:
+    sessions: list[ParsedSession]
+    payload_bytes: int
+    revision_kind: RawRevisionKind
+
+
+class RawParsePrefetchCache:
+    """Bounded, thread-safe store of parse results computed off the writer hold.
+
+    polylogue-m6tp phase (a): the daemon's parse-stage warmer
+    (``polylogue.daemon.parse_prefetch.DaemonParseStage``) populates this
+    cache from a bounded ``ThreadPoolExecutor`` BEFORE the raw-materialization
+    conveyor's writer-hold pass runs. ``_parse_retained_raws`` below consults
+    it first and only falls back to its normal (writer-hold-resident) parse
+    on a miss.
+
+    A miss is always safe: it reproduces the exact unmodified parse path, so
+    an empty, absent, or partially-warmed cache degrades to identical
+    behavior -- never incorrect behavior. This is what makes the cache purely
+    additive and lets every existing caller default to ``prefetch_cache=None``
+    with zero change in outcome.
+
+    Admission is capped by ``max_inflight_bytes`` (an explicit whale-memory
+    budget): a payload that would exceed the remaining budget is silently NOT
+    cached and is parsed normally, in the writer hold, when its turn comes.
+    """
+
+    def __init__(self, *, max_inflight_bytes: int) -> None:
+        if max_inflight_bytes < 1:
+            raise ValueError("max_inflight_bytes must be positive")
+        self._max_inflight_bytes = max_inflight_bytes
+        self._lock = threading.Lock()
+        self._entries: dict[str, _PrefetchedParse] = {}
+        self._inflight_bytes = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def contains(self, raw_id: str) -> bool:
+        with self._lock:
+            return raw_id in self._entries
+
+    def try_admit(
+        self,
+        raw_id: str,
+        sessions: list[ParsedSession],
+        *,
+        payload_bytes: int,
+        revision_kind: RawRevisionKind,
+    ) -> bool:
+        """Admit one already-parsed raw's output. False means the cache
+        already held ``raw_id`` or admitting it would exceed the budget --
+        either way the caller's parse output is simply discarded, not an
+        error: the writer-held pass reparses that raw normally."""
+        with self._lock:
+            if raw_id in self._entries:
+                return False
+            if self._inflight_bytes + payload_bytes > self._max_inflight_bytes:
+                return False
+            self._entries[raw_id] = _PrefetchedParse(sessions, payload_bytes, revision_kind)
+            self._inflight_bytes += payload_bytes
+            return True
+
+    def pop(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | None:
+        """Remove and return one cached parse result, releasing its budget share."""
+        with self._lock:
+            entry = self._entries.pop(raw_id, None)
+            if entry is None:
+                return None
+            self._inflight_bytes -= entry.payload_bytes
+            return entry.sessions, entry.payload_bytes, entry.revision_kind
 
 
 class RawRevisionReplayResourceBlockedError(RuntimeError):
@@ -230,8 +306,14 @@ def _census_historical_revision_evidence(
     max_payload_bytes: int | None,
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> _RevisionCensusState:
     """Persist a complete bounded parser census without mutating index.db.
+
+    ``prefetch_cache`` (polylogue-m6tp phase (a)), when supplied, is threaded
+    to ``_parse_retained_raws`` so a raw already parsed off the writer hold
+    is applied directly instead of reparsed here. ``None`` (every existing
+    caller) reproduces the exact unmodified parse path.
 
     ``commit_batch_size`` (polylogue-amg1): when set to a positive integer,
     ``replace_raw_membership_census``/``bind_raw_revision`` writes for up to
@@ -393,7 +475,9 @@ def _census_historical_revision_evidence(
                     for older_raw_id in older_raw_ids
                 }
                 dispatch_raw_ids = [raw_id for raw_id in parseable_raw_ids if raw_id not in head_by_older]
-                parsed_outcomes = _parse_retained_raws(archive, dispatch_raw_ids, ingest_workers=ingest_workers)
+                parsed_outcomes = _parse_retained_raws(
+                    archive, dispatch_raw_ids, ingest_workers=ingest_workers, prefetch_cache=prefetch_cache
+                )
                 for raw_id, source_index in pending_rows:
                     if raw_id in head_by_older:
                         continue
@@ -412,7 +496,11 @@ def _census_historical_revision_evidence(
                     # bundles) -- fall back to parsing every deferred member
                     # individually, exactly as if no chain had been proven.
                     fallback_outcomes = (
-                        _parse_retained_raws(archive, unresolved, ingest_workers=ingest_workers) if unresolved else {}
+                        _parse_retained_raws(
+                            archive, unresolved, ingest_workers=ingest_workers, prefetch_cache=prefetch_cache
+                        )
+                        if unresolved
+                        else {}
                     )
                     for older_raw_id, head_raw_id in head_by_older.items():
                         resolved_key = head_to_key.get(head_raw_id)
@@ -442,8 +530,15 @@ def census_historical_revision_evidence(
     max_payload_bytes: int | None = None,
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> RevisionCensusResult:
-    """Complete the source-tier census stage without applying index changes."""
+    """Complete the source-tier census stage without applying index changes.
+
+    ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) lets a
+    caller (the daemon conveyor) substitute already-parsed output computed
+    off the writer hold for any raw it warmed ahead of time. See
+    ``RawParsePrefetchCache`` for the equivalence guarantee.
+    """
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
         _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
@@ -455,6 +550,7 @@ def census_historical_revision_evidence(
             max_payload_bytes=max_payload_bytes,
             ingest_workers=ingest_workers,
             commit_batch_size=commit_batch_size,
+            prefetch_cache=prefetch_cache,
         )
         expanded, logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
     _record_raw_authority_parser_census(archive_root, tuple(expanded))
@@ -700,7 +796,7 @@ def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[Parsed
     return parse_retained_raw_sessions(archive, raw_id), payload_size, kind
 
 
-def _census_parse_worker(
+def census_parse_worker(
     raw_id: str,
     provider_token: str,
     blob_hash: str,
@@ -720,11 +816,15 @@ def _census_parse_worker(
     can apply the exact same per-raw quarantine handling as the sequential
     path.
 
-    Dispatched onto BOTH a ``ProcessPoolExecutor`` (GIL-build fallback, see
-    ``_parse_unique_retained_raws``) and a ``ThreadPoolExecutor`` (real
-    free-threading, see ``_parse_unique_retained_raws_via_threads``) -- the
-    function is identical either way; only the executor and the recreated
-    ``ArchiveBlobPublisher``'s process/thread affinity differ.
+    Dispatched onto a ``ProcessPoolExecutor`` (GIL-build fallback, see
+    ``_parse_unique_retained_raws``), a ``ThreadPoolExecutor`` (real
+    free-threading, see ``_parse_unique_retained_raws_via_threads``), and the
+    daemon's own off-writer-hold pre-parse ``ThreadPoolExecutor``
+    (``polylogue.daemon.parse_prefetch.DaemonParseStage``, polylogue-m6tp
+    phase (a)) -- the function is identical every time; only the executor
+    and the recreated ``ArchiveBlobPublisher``'s process/thread affinity
+    differ. Public (not module-private) precisely so the daemon's warmer can
+    import and dispatch it without duplicating this parse logic.
     """
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
@@ -832,6 +932,7 @@ def _parse_retained_raws(
     raw_ids: list[str],
     *,
     ingest_workers: int,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
     """Parse a batch of retained raws, deduplicating byte-identical inputs.
 
@@ -846,17 +947,33 @@ def _parse_retained_raws(
     because some parsers derive identity from the path (e.g. beads workspace
     ids), so cross-path duplicates are deliberately NOT deduplicated.
     Per-row ``revision_kind`` is re-attached from each row's own descriptor.
+
+    ``prefetch_cache`` (polylogue-m6tp phase (a)) is consulted BEFORE any of
+    the above: a raw_id already popped from the cache is used directly and
+    excluded from dedup/dispatch entirely, so it costs neither a parse nor a
+    process/thread-pool round trip here. Every raw_id NOT found in the cache
+    (including all of them, when ``prefetch_cache`` is ``None`` -- the
+    default for every existing caller) is parsed exactly as before.
     """
     descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
+    remaining_raw_ids = raw_ids
+    if prefetch_cache is not None and raw_ids:
+        remaining_raw_ids = []
+        for raw_id in raw_ids:
+            cached = prefetch_cache.pop(raw_id)
+            if cached is None:
+                remaining_raw_ids.append(raw_id)
+            else:
+                results[raw_id] = cached
     grouped: dict[tuple[str, str], list[str]] = {}
-    for raw_id in raw_ids:
+    for raw_id in remaining_raw_ids:
         _provider, blob_hash, source_path, _kind, _size = descriptors[raw_id]
         grouped.setdefault((blob_hash, source_path), []).append(raw_id)
     representatives = [members[0] for members in grouped.values()]
     unique = _parse_unique_retained_raws(
         archive, representatives, descriptors=descriptors, ingest_workers=ingest_workers
     )
-    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
     for members in grouped.values():
         outcome = unique[members[0]]
         for raw_id in members:
@@ -891,7 +1008,7 @@ def _parse_unique_retained_raws_via_threads(
     dispatches to the thread pool regardless of payload size or aggregate
     bytes.
 
-    Dispatches the same ``_census_parse_worker`` function the process-pool
+    Dispatches the same ``census_parse_worker`` function the process-pool
     path uses, deliberately -- NOT ``_parse_retained_raw(archive, raw_id)``
     directly. ``ArchiveStore`` lazily opens ``_source_conn`` as a plain
     ``sqlite3.Connection`` with the default ``check_same_thread=True``
@@ -902,7 +1019,7 @@ def _parse_unique_retained_raws_via_threads(
     from a worker thread (as ``_parse_retained_raw`` does) raises
     ``sqlite3.ProgrammingError: SQLite objects created in a thread can only
     be used in that same thread`` -- confirmed empirically, not
-    theoretical. ``_census_parse_worker`` sidesteps this entirely: it never
+    theoretical. ``census_parse_worker`` sidesteps this entirely: it never
     touches the shared ``ArchiveStore`` or its connections, only a fresh,
     stateless ``ArchiveBlobPublisher`` built from primitive strings
     (blob root + source.db path), whose blob reads are plain filesystem I/O.
@@ -921,7 +1038,7 @@ def _parse_unique_retained_raws_via_threads(
         for raw_id in raw_ids:
             provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
             future = pool.submit(
-                _census_parse_worker,
+                census_parse_worker,
                 raw_id,
                 provider.value,
                 blob_hash,
@@ -1017,7 +1134,7 @@ def _parse_unique_retained_raws(
         for raw_id in pool_raw_ids:
             provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
             future = pool.submit(
-                _census_parse_worker,
+                census_parse_worker,
                 raw_id,
                 provider.value,
                 blob_hash,
@@ -1212,11 +1329,13 @@ def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> li
 
 
 __all__ = [
+    "RawParsePrefetchCache",
     "RawRevisionReplayResourceBlockedError",
     "RevisionBackfillResult",
     "RevisionCensusResult",
     "backfill_historical_revision_evidence",
     "census_historical_revision_evidence",
+    "census_parse_worker",
     "record_resource_blocked_revision_census",
     "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",

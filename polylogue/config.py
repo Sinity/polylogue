@@ -553,6 +553,15 @@ class PolylogueConfig:
     def live_full_ingest_workers(self) -> int:
         return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
 
+    @property
+    def daemon_parse_stage_split(self) -> bool:
+        """Opt-in: pre-parse raw-materialization census candidates off the writer hold.
+
+        polylogue-m6tp phase (a). Off by default. See
+        ``polylogue.daemon.parse_prefetch.DaemonParseStage``.
+        """
+        return bool(self._data.get("daemon_parse_stage_split"))
+
     def get(self, key: str, default: object = None) -> object:
         value = self._data.get(key, default)
         return _thaw_config_value(value)
@@ -1125,6 +1134,20 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Subscription plan rows used by cost/outlook reporting.",
         toml_kind="array-table",
     ),
+    ConfigInventoryEntry(
+        "daemon_parse_stage_split",
+        toml_path="daemon.raw_materialization.parse_stage_split",
+        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_SPLIT",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Opt-in (polylogue-m6tp phase (a)): pre-parse raw-materialization "
+            "census candidates in a bounded daemon-owned thread pool BEFORE "
+            "the writer hold, instead of parsing inside the writer-held pass. "
+            "Off by default; proves the parse/apply seam ahead of the "
+            "free-threaded 3.14t daemon deploy."
+        ),
+    ),
 )
 
 _CONFIG_INVENTORY_BY_KEY = {entry.key: entry for entry in _CONFIG_INVENTORY}
@@ -1158,6 +1181,7 @@ _BOOL_CONFIG_KEYS = frozenset(
         "notification_email_use_tls",
         "notification_email_use_starttls",
         "observability_enabled",
+        "daemon_parse_stage_split",
     }
 )
 
@@ -1348,6 +1372,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "ingest_parse_workers": default_parse_workers,
         "live_full_ingest_workers": 1,
         "subscription_plans": (),
+        "daemon_parse_stage_split": False,
     }
 
 

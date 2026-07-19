@@ -15,6 +15,7 @@ from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
+    RawParsePrefetchCache,
     _parse_one,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
@@ -866,7 +867,7 @@ def _state_db_bytes_for_session(tmp_path: Path, *, session_id: str, message_text
 
 def test_parallel_census_threads_hermes_sqlite_payload_path(tmp_path: Path) -> None:
     """Regression for the #3113/polylogue-1zex SQLite-detection branch under
-    parallel dispatch: _census_parse_worker must thread payload_path (the
+    parallel dispatch: census_parse_worker must thread payload_path (the
     real on-disk blob path) and archive_root through to _parse_one the same
     way the sequential parse_retained_raw_sessions does, so a Hermes
     state.db raw parsed by a pool worker still opens via sqlite3 against a
@@ -1166,6 +1167,141 @@ def test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows(monkeypatch: 
     assert results["dup-2"] is results["dup-1"]
 
 
+def test_raw_parse_prefetch_cache_admits_pops_and_enforces_budget() -> None:
+    """polylogue-m6tp phase (a): the daemon's warmed-parse cache is bounded
+    by an explicit inflight-bytes budget (the design's whale-memory guard)
+    and never double-admits or double-serves the same raw_id."""
+    cache = RawParsePrefetchCache(max_inflight_bytes=100)
+    assert len(cache) == 0
+    assert cache.contains("r1") is False
+
+    assert cache.try_admit("r1", [], payload_bytes=60, revision_kind=RawRevisionKind.FULL) is True
+    assert len(cache) == 1
+    assert cache.contains("r1") is True
+
+    # Re-admitting the same raw_id is rejected even though the payload is small.
+    assert cache.try_admit("r1", [], payload_bytes=1, revision_kind=RawRevisionKind.FULL) is False
+    assert len(cache) == 1
+
+    # Budget: 60 already committed, 100 total -- a 50-byte entry would exceed it.
+    assert cache.try_admit("r2", [], payload_bytes=50, revision_kind=RawRevisionKind.FULL) is False
+    assert cache.contains("r2") is False
+
+    # A smaller entry that fits the remaining 40 bytes is admitted.
+    assert cache.try_admit("r2", [], payload_bytes=40, revision_kind=RawRevisionKind.UNKNOWN) is True
+    assert len(cache) == 2
+
+    popped = cache.pop("r1")
+    assert popped is not None
+    sessions, payload_bytes, revision_kind = popped
+    assert sessions == []
+    assert payload_bytes == 60
+    assert revision_kind == RawRevisionKind.FULL
+    assert len(cache) == 1
+    assert cache.contains("r1") is False
+
+    # Popping releases the budget: a raw that didn't fit before now fits.
+    assert cache.try_admit("r3", [], payload_bytes=59, revision_kind=RawRevisionKind.FULL) is True
+
+    # Popping an absent raw_id is a no-op, not an error.
+    assert cache.pop("does-not-exist") is None
+
+
+def test_raw_parse_prefetch_cache_rejects_non_positive_budget() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        RawParsePrefetchCache(max_inflight_bytes=0)
+
+
+def test_parse_retained_raws_prefetch_cache_hit_skips_parse_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raw_id already popped from the prefetch cache must reach the caller's
+    result dict WITHOUT ever calling the parser -- proving the parse-stage
+    extraction actually removes that raw from the writer-hold parse path,
+    not merely duplicates the work. Reverting the cache-check in
+    ``_parse_retained_raws`` would make ``parsed`` include ``"warm-1"`` and
+    fail this test."""
+    descriptors = {
+        "warm-1": (Provider.CODEX, "hash-A", "warm.jsonl", RawRevisionKind.FULL, 10),
+        "cold-1": (Provider.CODEX, "hash-B", "cold.jsonl", RawRevisionKind.FULL, 20),
+    }
+
+    class FakeArchive:
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            return descriptors[raw_id]
+
+    parsed: list[str] = []
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        descriptor = descriptors[raw_id]
+        return [], descriptor[4], descriptor[3]
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+
+    warmed_session = ParsedSession(
+        provider_session_id="warmed",
+        source_name=Provider.CODEX,
+        title=None,
+        created_at=None,
+        updated_at=None,
+        messages=[],
+    )
+    cache = RawParsePrefetchCache(max_inflight_bytes=1_000_000)
+    assert cache.try_admit("warm-1", [warmed_session], payload_bytes=10, revision_kind=RawRevisionKind.FULL) is True
+
+    results = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        ["warm-1", "cold-1"],
+        ingest_workers=1,
+        prefetch_cache=cache,
+    )
+
+    # Only the cold (unwarmed) raw actually went through the parser.
+    assert parsed == ["cold-1"]
+    assert results["warm-1"] == ([warmed_session], 10, RawRevisionKind.FULL)
+    sessions, size, kind = results["cold-1"]  # type: ignore[misc]
+    assert (sessions, size, kind) == ([], 20, RawRevisionKind.FULL)
+    # The cache entry was consumed, not merely peeked.
+    assert cache.contains("warm-1") is False
+
+
+def test_parse_retained_raws_prefetch_cache_miss_is_byte_identical_to_no_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Equivalence guarantee: an empty/absent prefetch cache must produce the
+    exact same result as ``prefetch_cache=None`` for every existing caller
+    (polylogue-m6tp phase (a) is purely additive)."""
+    descriptors = {
+        "dup-1": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.FULL, 10),
+        "dup-2": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.UNKNOWN, 10),
+        "other-bytes": (Provider.CODEX, "hash-B", "same.jsonl", RawRevisionKind.FULL, 20),
+    }
+
+    class FakeArchive:
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            return descriptors[raw_id]
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        descriptor = descriptors[raw_id]
+        return [], descriptor[4], descriptor[3]
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+
+    baseline = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=1,
+        prefetch_cache=None,
+    )
+    with_empty_cache = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=1,
+        prefetch_cache=RawParsePrefetchCache(max_inflight_bytes=1_000_000),
+    )
+
+    assert baseline == with_empty_cache
+
+
 def test_pool_dispatch_floor_rejects_small_aggregate_batches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Worker spawn+import (~1.5-2s each, measured live 2026-07-19) dominates
     tiny batches: a per-cohort census batch of a few sub-256KiB raws must parse
@@ -1351,7 +1487,7 @@ def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytes
     ) -> tuple[str, list[ParsedSession] | None, str | None]:
         return raw_id, [], None
 
-    monkeypatch.setattr(revision_backfill, "_census_parse_worker", fake_worker)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
 
     results = revision_backfill._parse_unique_retained_raws_via_threads(
         _NoMethodsArchive(),  # type: ignore[arg-type]
@@ -1398,7 +1534,7 @@ def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
             raise RuntimeError(f"boom {raw_id}")
         return raw_id, [], None
 
-    monkeypatch.setattr(revision_backfill, "_census_parse_worker", fake_worker)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
 
     results = revision_backfill._parse_unique_retained_raws_via_threads(
         _FakeArchive(),  # type: ignore[arg-type]
@@ -1449,7 +1585,7 @@ def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: 
         time.sleep(delay_by_raw_id[raw_id])
         return raw_id, [], None
 
-    monkeypatch.setattr(revision_backfill, "_census_parse_worker", fake_worker)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
 
     results = revision_backfill._parse_unique_retained_raws_via_threads(
         _FakeArchive(),  # type: ignore[arg-type]

@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument
+
+if TYPE_CHECKING:
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +75,15 @@ def repair_materialization(
     dry_run: bool,
     raw_artifact_limit: int,
     max_payload_bytes: int,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> Any:
+    """Run one bounded raw source->index convergence pass.
+
+    ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) lets a
+    caller substitute parse output already computed off the writer hold for
+    this pass's census phase; see
+    ``polylogue.sources.revision_backfill.RawParsePrefetchCache``.
+    """
     from polylogue.storage.repair import repair_raw_materialization
 
     return repair_raw_materialization(
@@ -80,6 +91,7 @@ def repair_materialization(
         dry_run=dry_run,
         raw_artifact_limit=raw_artifact_limit,
         max_payload_bytes=max_payload_bytes,
+        prefetch_cache=prefetch_cache,
     )
 
 

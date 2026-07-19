@@ -67,7 +67,9 @@ from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
     from polylogue.daemon.lifecycle import DaemonLifecycle
+    from polylogue.daemon.parse_prefetch import DaemonParseStage
     from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -103,6 +105,60 @@ _BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD = 2_000
 _BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GiB
 _BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS = 3600.0  # at most once/hour
 _last_bulk_rebuild_recommendation_monotonic: float | None = None
+
+# polylogue-m6tp phase (a): one parse-stage warmer lives for the daemon
+# process's lifetime, lazily created the first time the
+# ``daemon_parse_stage_split`` config flag is observed on. It is deliberately
+# module-level (not per-pass) so its bounded ``ThreadPoolExecutor`` and
+# ``RawParsePrefetchCache`` persist across ticks -- a raw warmed but not
+# consumed this pass (component-grouping selects a different subset than the
+# flat candidate preview) remains cached for a later one.
+_daemon_parse_stage_singleton: DaemonParseStage | None = None
+
+
+def _daemon_parse_stage() -> DaemonParseStage:
+    global _daemon_parse_stage_singleton
+    if _daemon_parse_stage_singleton is None:
+        from polylogue.daemon.parse_prefetch import DaemonParseStage
+
+        _daemon_parse_stage_singleton = DaemonParseStage()
+    return _daemon_parse_stage_singleton
+
+
+async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> RawParsePrefetchCache | None:
+    """Pre-parse this pass's census candidates outside the writer hold.
+
+    polylogue-m6tp phase (a). Off by default (``daemon_parse_stage_split``
+    config flag); returns ``None`` unless enabled, which makes
+    ``_drain_raw_materialization_once`` parse every candidate inside the
+    writer hold exactly as before -- the unmodified, always-correct
+    behavior. Runs entirely BEFORE the write coordinator is ever asked for
+    the writer hold, so it never competes with an active writer thread for
+    the GIL (see ``polylogue.daemon.parse_prefetch`` for why that sequencing
+    is what makes threads safe here even on a standard GIL build).
+    """
+    from polylogue.config import load_polylogue_config
+
+    if not load_polylogue_config().daemon_parse_stage_split:
+        return None
+    from polylogue.config import Config
+    from polylogue.paths import archive_root, render_root
+
+    stage = _daemon_parse_stage()
+    config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
+    try:
+        warmed = await asyncio.to_thread(
+            stage.warm,
+            config,
+            limit=limit,
+            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+        )
+    except Exception:
+        logger.warning("raw materialization: parse-stage prefetch failed; falling back to in-hold parse", exc_info=True)
+        return stage.cache
+    if warmed:
+        logger.info("raw materialization: parse-stage prefetch warmed %d raw(s) off the writer hold", warmed)
+    return stage.cache
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -625,9 +681,15 @@ async def _periodic_raw_materialization_convergence() -> None:
                     if census_mode
                     else _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT
                 )
+                prefetch_cache = await _maybe_warm_raw_materialization_parse_stage(limit=limit)
                 materialized = await daemon_write_coordinator().run_sync(
                     "maintenance.raw_materialization",
-                    functools.partial(_drain_raw_materialization_once, limit=limit, recover=recover),
+                    functools.partial(
+                        _drain_raw_materialization_once,
+                        limit=limit,
+                        recover=recover,
+                        prefetch_cache=prefetch_cache,
+                    ),
                 )
                 recover = False
                 census_mode = (
@@ -742,12 +804,18 @@ def _drain_raw_materialization_once(
     *,
     limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
     recover: bool = True,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> Any:
     """Run one bounded raw source→index convergence pass.
 
     ``recover`` gates the interrupted-frontier recovery scan: it only has
     work after a crash/restart, so backlog burst continuations within one
     healthy cycle skip it instead of re-scanning per pass.
+
+    ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) is
+    populated by ``_maybe_warm_raw_materialization_parse_stage`` BEFORE this
+    function is ever scheduled onto the writer hold; passing ``None``
+    (the flag-off default) reproduces the exact unmodified in-hold parse.
     """
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
@@ -780,6 +848,7 @@ def _drain_raw_materialization_once(
             dry_run=False,
             raw_artifact_limit=limit,
             max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+            prefetch_cache=prefetch_cache,
         )
     finally:
         _close_raw_materialization_fts(config.archive_root / "index.db")
@@ -1758,6 +1827,16 @@ async def run_daemon_services(
                         await converger.stop()
                 except TimeoutError:
                     logger.warning("daemon: timed out stopping convergence executor")
+            if _daemon_parse_stage_singleton is not None:
+                # polylogue-m6tp phase (a), CodeRabbit PR #3168: the parse-stage
+                # warmer's ThreadPoolExecutor is created lazily only when
+                # daemon_parse_stage_split is enabled, and otherwise never
+                # touched here. shutdown() is non-blocking (wait=False,
+                # cancel_futures=True) so no timeout wrapper is needed -- unlike
+                # converger.stop() above, it cannot itself hang the shutdown
+                # sequence; it just stops the pool from keeping the process
+                # alive at exit.
+                _daemon_parse_stage_singleton.shutdown()
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:
