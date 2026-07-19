@@ -21,11 +21,13 @@ from polylogue.storage.fts.sql import (
     FTS_TRIGGER_DDL,
     SESSION_WORK_EVENT_FTS_TRIGGER_DDL,
     THREAD_FTS_TRIGGER_DDL,
+    TRIGRAM_REBUILD_DELETE_ALL_SQL,
     IndexedMessage,
     chunked,
     delete_session_rows_sql,
     excess_message_rows_sql,
     insert_all_message_rows_sql,
+    insert_all_trigram_rows_sql,
     insert_missing_message_rows_range_sql,
     insert_session_rows_sql,
 )
@@ -328,6 +330,23 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+
+def rebuild_command_trigram_index_sync(conn: sqlite3.Connection) -> None:
+    """Rebuild the full ``blocks_command_trigram`` index from persisted blocks.
+
+    polylogue-v6i3: companion to :func:`rebuild_fts_index_sync` for the
+    bulk-build readiness repopulate. ``blocks_command_trigram`` is an
+    external-content FTS5 table, so it is cleared with the FTS5
+    ``'delete-all'`` command (see :data:`TRIGRAM_REBUILD_DELETE_ALL_SQL`) and
+    repopulated from ``blocks.tool_detail_text`` in one bulk insert -- the
+    same shape as the manual pre-promote recovery script this supersedes.
+    A no-op when either table is absent (pre-trigram-schema archives).
+    """
+    if not _table_exists_sync(conn, "blocks") or not _table_exists_sync(conn, "blocks_command_trigram"):
+        return
+    conn.execute(TRIGRAM_REBUILD_DELETE_ALL_SQL)
+    conn.execute(insert_all_trigram_rows_sql())
 
 
 def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -1016,6 +1035,7 @@ __all__ = [
     "message_fts_triggers_present_sync",
     "delete_excess_message_rows_batched_sync",
     "insert_missing_message_rows_batched_sync",
+    "rebuild_command_trigram_index_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
     "rebuild_session_insight_fts_sync",

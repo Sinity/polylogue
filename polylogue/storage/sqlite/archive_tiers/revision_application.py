@@ -91,14 +91,29 @@ class FullSnapshotFoldAuthorization:
         )
 
 
-def assert_session_fts_exact_sync(conn: sqlite3.Connection, session_id: str) -> None:
-    """Fail unless the current session's indexable blocks have exact FTS rows."""
+def assert_session_fts_exact_sync(conn: sqlite3.Connection, session_id: str, *, bulk_build: bool = False) -> None:
+    """Fail unless the current session's indexable blocks have exact FTS rows.
+
+    ``bulk_build`` (polylogue-v6i3, default ``False``): a bulk-generation-
+    build replay deliberately leaves ``messages_fts`` empty for every session
+    throughout the build (see ``write_parsed_session_to_archive``'s
+    ``bulk_build`` mode) and repopulates it archive-wide exactly once at
+    readiness -- so the per-session row-count parity check below does not
+    apply mid-build; it is *expected* to be out of sync, not a bug. The
+    trigger-presence check still runs unconditionally: the guard row only
+    gates trigger BODIES (see ``_bulk_fts_session_guard``), the triggers
+    themselves remain structurally present in ``sqlite_master`` throughout,
+    so this half of the proof is unaffected by bulk-build mode and stays a
+    real check, not a weakened default.
+    """
     triggers = {
         str(row[0])
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'messages_fts_a%'")
     }
     if not _MESSAGE_FTS_TRIGGERS.issubset(triggers):
         raise RuntimeError("raw revision application requires canonical message FTS triggers")
+    if bulk_build:
+        return
     expected, indexed = conn.execute(
         """
         SELECT

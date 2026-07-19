@@ -39,6 +39,28 @@ def refresh_delegation_facts(conn: sqlite3.Connection, parent_session_id: str) -
         conn.execute("DELETE FROM delegation_refresh_scope")
 
 
+def rebuild_all_delegation_facts_sync(conn: sqlite3.Connection) -> None:
+    """Repopulate ``delegation_facts`` for every session in one bulk pass.
+
+    polylogue-v6i3: ``delegation_facts_source`` (the view backing
+    ``delegation_facts_insert_sql``) is already scoped by the
+    ``delegation_refresh_scope`` allow-list table rather than by an inline
+    predicate -- populating that scope with every session id turns the
+    existing per-cohort insert into an archive-wide one, with no new SQL
+    shape to keep in sync with ``delegation_facts_insert_sql``. The
+    bulk-build readiness repopulate step calls this once after replay
+    instead of relying on ``refresh_delegation_facts_for_session`` per
+    session (skipped during bulk-build writes, see
+    ``write_parsed_session_to_archive``'s ``bulk_build`` mode).
+    """
+    conn.execute("DELETE FROM delegation_facts")
+    conn.execute("INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) SELECT session_id FROM sessions")
+    try:
+        conn.execute(delegation_facts_insert_sql("?"))
+    finally:
+        conn.execute("DELETE FROM delegation_refresh_scope")
+
+
 def refresh_delegation_facts_for_session(conn: sqlite3.Connection, session_id: str) -> None:
     """Refresh the session and every parent cohort affected by its links."""
     parent_ids = {session_id}
@@ -57,4 +79,9 @@ def refresh_delegation_facts_for_session(conn: sqlite3.Connection, session_id: s
         refresh_delegation_facts(conn, parent_id)
 
 
-__all__ = ["delegation_facts_insert_sql", "refresh_delegation_facts", "refresh_delegation_facts_for_session"]
+__all__ = [
+    "delegation_facts_insert_sql",
+    "rebuild_all_delegation_facts_sync",
+    "refresh_delegation_facts",
+    "refresh_delegation_facts_for_session",
+]

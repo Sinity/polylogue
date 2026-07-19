@@ -770,6 +770,7 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
         cache: dict[str, list[tuple[str, str]]] | None = None,
         add_timing: Callable[[str, float], None] | None = None,
         bulk_fts: bool = False,
+        bulk_build: bool = False,
     ) -> None:
         real_resolve(
             conn_inner,
@@ -779,6 +780,7 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
             cache=cache,
             add_timing=add_timing,
             bulk_fts=bulk_fts,
+            bulk_build=bulk_build,
         )
         fired["count"] += 1
         raise RuntimeError("fault after graph resolution")

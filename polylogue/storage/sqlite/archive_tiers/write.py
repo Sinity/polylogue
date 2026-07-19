@@ -219,6 +219,7 @@ def write_parsed_session_to_archive(
     preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
     manage_transaction: bool = True,
     bulk_fts: bool = False,
+    bulk_build: bool = False,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
@@ -234,6 +235,20 @@ def write_parsed_session_to_archive(
     (child) sessions via ``_resolve_session_graph`` -- see
     ``_bulk_fts_session_guard``. Only the offline rebuild/backfill replay path
     turns this on.
+
+    ``bulk_build`` (polylogue-v6i3, default ``False``) is the broader
+    bulk-generation-build lifecycle this session write may be part of: a
+    full source-to-index replay that always finishes with exactly one
+    archive-wide repopulate of ``messages_fts``/``blocks_command_trigram``/
+    ``action_pairs``/``delegation_facts`` before readiness (see
+    ``maintenance/rebuild_index.py``). When ``True``, this write skips every
+    per-session refresh of those four derived surfaces entirely (not just the
+    guard-gated bulk delete+insert ``bulk_fts`` performs) -- the final
+    repopulate covers every session regardless, so per-session work here is
+    pure waste. Only the offline rebuild call passes ``True``; ordinary
+    daemon writes (and ``bulk_fts=True`` used alone, e.g. in
+    ``tests/unit/storage/test_bulk_fts_prefix_reextract.py``) keep those
+    surfaces exactly in sync after every write, unchanged.
     """
     t0 = time.perf_counter()
 
@@ -330,6 +345,17 @@ def write_parsed_session_to_archive(
     transaction = conn if manage_transaction else nullcontext()
     with transaction:
         conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
+        if bulk_build:
+            # polylogue-v6i3: gate messages_fts/blocks_command_trigram trigger
+            # BODIES for this session's *entire* write (block inserts in the
+            # ordinary merge/full-replace paths, not just the prefix-tail
+            # reextract cascade -- see _bulk_fts_session_guard, which detects
+            # this outer guard and becomes a no-op rather than double-managing
+            # the same row). Cleared alongside the 'session-write' guard below.
+            conn.execute(
+                "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+                (FTS_BULK_SESSION_WRITE_GUARD,),
+            )
         t0 = time.perf_counter()
         conn.execute(
             """
@@ -438,6 +464,7 @@ def write_parsed_session_to_archive(
                 duplicate_native_ids=duplicate_message_native_ids,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix=stage_timing_prefix,
+                bulk_build=bulk_build,
             )
             add_timing("index.full_replace", t0)
         if merge_append:
@@ -460,7 +487,8 @@ def write_parsed_session_to_archive(
             )
             add_timing("index.blocks", t0)
             t0 = time.perf_counter()
-            refresh_action_pairs(conn, session_id)
+            if not bulk_build:
+                refresh_action_pairs(conn, session_id)
             add_timing("index.action_pairs", t0)
             t0 = time.perf_counter()
             _write_web_constructs(
@@ -575,12 +603,19 @@ def write_parsed_session_to_archive(
             cache=signature_cache,
             add_timing=add_timing,
             bulk_fts=bulk_fts,
+            bulk_build=bulk_build,
         )
         add_timing("index.graph_resolve", t0)
         t0 = time.perf_counter()
-        refresh_delegation_facts_for_session(conn, session_id)
+        if not bulk_build:
+            refresh_delegation_facts_for_session(conn, session_id)
         add_timing("index.delegation_facts", t0)
         conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+        if bulk_build:
+            conn.execute(
+                "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                (FTS_BULK_SESSION_WRITE_GUARD,),
+            )
         if merge_append and session.ingest_flags:
             t0 = time.perf_counter()
             _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
@@ -1713,7 +1748,19 @@ def _replace_full_session_messages_and_blocks(
     duplicate_native_ids: frozenset[str],
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
+    bulk_build: bool = False,
 ) -> None:
+    """Replace one session's messages/blocks wholesale.
+
+    ``bulk_build`` (polylogue-v6i3, default ``False``) skips this function's
+    own scoped ``messages_fts`` delete/suspend-trigger/insert/restore dance
+    and its ``action_pairs`` refresh entirely -- see
+    ``write_parsed_session_to_archive``'s docstring for why: a bulk-build
+    caller always repopulates both surfaces archive-wide exactly once at
+    readiness, so per-session maintenance here is pure waste. Ordinary
+    (non-bulk-build) full-session replaces are byte-for-byte unchanged.
+    """
+
     def add_timing(name: str, started_at: float) -> None:
         _add_stage_timing(
             stage_timings_s,
@@ -1725,7 +1772,7 @@ def _replace_full_session_messages_and_blocks(
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
     t0 = time.perf_counter()
-    use_scoped_fts_rebuild = message_fts_triggers_present_sync(conn)
+    use_scoped_fts_rebuild = not bulk_build and message_fts_triggers_present_sync(conn)
     add_timing("fts_probe", t0)
     if use_scoped_fts_rebuild:
         t0 = time.perf_counter()
@@ -1758,7 +1805,8 @@ def _replace_full_session_messages_and_blocks(
         )
         add_timing("blocks", t0)
         t0 = time.perf_counter()
-        refresh_action_pairs(conn, session_id)
+        if not bulk_build:
+            refresh_action_pairs(conn, session_id)
         add_timing("action_pairs", t0)
         t0 = time.perf_counter()
         _write_web_constructs(
@@ -2157,6 +2205,7 @@ def _resolve_session_graph(
     cache: dict[str, list[tuple[str, str]]] | None = None,
     add_timing: Callable[[str, float], None] | None = None,
     bulk_fts: bool = False,
+    bulk_build: bool = False,
 ) -> None:
     def record_substage(name: str, started_at: float) -> None:
         if add_timing is not None:
@@ -2222,6 +2271,7 @@ def _resolve_session_graph(
             composed_cache=composed_cache,
             add_timing=add_timing,
             bulk_fts=bulk_fts,
+            bulk_build=bulk_build,
         )
     record_substage("reextract_prefix_tails", t0)
 
@@ -3795,7 +3845,13 @@ def _composed_db_signatures(
 
 
 @contextmanager
-def _bulk_fts_session_guard(conn: sqlite3.Connection, session_id: str, *, enabled: bool) -> Iterator[None]:
+def _bulk_fts_session_guard(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    enabled: bool,
+    bulk_build: bool = False,
+) -> Iterator[None]:
     """Suspend per-row ``messages_fts`` trigger maintenance for one session.
 
     polylogue-crd8: whale prefix-sharing lineage sessions (fork/resume/
@@ -3824,7 +3880,23 @@ def _bulk_fts_session_guard(conn: sqlite3.Connection, session_id: str, *, enable
     for a session's own full replace, just gated by a guard row instead of a
     raw ``DROP TRIGGER``/``CREATE TRIGGER`` pair, so the trigger-presence half
     of ``assert_session_fts_exact_sync`` never observes a trigger-less window.
+
+    ``bulk_build`` (polylogue-v6i3, default ``False``): when the caller is
+    inside a bulk-generation-build session write, ``write_parsed_session_to_
+    archive`` already set the same dedicated guard row for the whole
+    transaction (every block mutation across the entire session write, not
+    just this dependent-delete) and owns clearing it at the end. This
+    context manager becomes a plain no-op in that case -- it must not
+    re-insert/re-delete the same row (that would prematurely clear the
+    guard for the remainder of the outer write) and must not perform the
+    explicit delete-then-reinsert either: the bulk-build lifecycle leaves
+    ``messages_fts``/``blocks_command_trigram`` empty throughout replay and
+    repopulates both archive-wide exactly once at readiness, so any
+    per-session insert here would just be redone work.
     """
+    if bulk_build:
+        yield
+        return
     if not enabled:
         yield
         return
@@ -3852,6 +3924,7 @@ def _reextract_prefix_tail_db(
     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
     add_timing: Callable[[str, float], None] | None = None,
     bulk_fts: bool = False,
+    bulk_build: bool = False,
 ) -> None:
     """Normalize a child that was stored whole because its parent was ingested
     later (#2467). Aligns the child's already-stored messages against the parent's
@@ -3995,7 +4068,7 @@ def _reextract_prefix_tail_db(
     )
     record_substage("provider_usage_tail", t0)
     t0 = time.perf_counter()
-    with _bulk_fts_session_guard(conn, child_session_id, enabled=bulk_fts):
+    with _bulk_fts_session_guard(conn, child_session_id, enabled=bulk_fts, bulk_build=bulk_build):
         if k == len(child_composed):
             _delete_all_session_message_dependents(conn, child_session_id, prefix_message_ids)
             record_substage("dependent_delete", t0)

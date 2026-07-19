@@ -203,6 +203,31 @@ def excess_message_rows_sql(limit: int) -> str:
     """
 
 
+# polylogue-v6i3: ``blocks_command_trigram`` is an EXTERNAL-CONTENT FTS5 table
+# (content='blocks'), unlike contentless ``messages_fts``. A bare
+# ``DELETE FROM blocks_command_trigram`` does not fully release its shadow
+# postings for an external-content table -- the sanctioned bulk-empty
+# operation is the special ``'delete-all'`` command (verified against the
+# manual pre-promote recovery script this constant supersedes,
+# ``/realm/tmp/trigram-restore-pre-promote.py``).
+TRIGRAM_REBUILD_DELETE_ALL_SQL = "INSERT INTO blocks_command_trigram(blocks_command_trigram) VALUES ('delete-all')"
+
+
+def insert_all_trigram_rows_sql() -> str:
+    """Bulk repopulate ``blocks_command_trigram`` from ``blocks``.
+
+    Mirrors the ``blocks_command_trigram_ai`` trigger body's insert shape
+    (see ``BLOCKS_FTS_TRIGGER_DDL``'s sibling trigram DDL in
+    ``archive_tiers/index.py``), applied archive-wide instead of per-row.
+    """
+    return """
+        INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
+        SELECT rowid, tool_detail_text
+        FROM blocks
+        WHERE block_type = 'tool_use' AND tool_detail_text != ' '
+    """
+
+
 __all__ = [
     "BLOCKS_FTS_TRIGGER_DDL",
     "FTS_BULK_SESSION_WRITE_GUARD",
@@ -215,10 +240,12 @@ __all__ = [
     "IndexedMessage",
     "SESSION_WORK_EVENT_FTS_TRIGGER_DDL",
     "THREAD_FTS_TRIGGER_DDL",
+    "TRIGRAM_REBUILD_DELETE_ALL_SQL",
     "chunked",
     "delete_session_rows_sql",
     "excess_message_rows_sql",
     "insert_all_message_rows_sql",
+    "insert_all_trigram_rows_sql",
     "insert_missing_message_rows_range_sql",
     "insert_missing_message_rows_sql",
     "insert_session_rows_sql",

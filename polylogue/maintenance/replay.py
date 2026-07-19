@@ -146,6 +146,7 @@ async def rebuild_index_from_source(
     progress_callback: StageProgressCallback | None,
     owned_inactive_generation: tuple[str, str] | None = None,
     bulk_fts: bool = False,
+    bulk_build: bool = False,
 ) -> dict[str, object]:
     """Replay retained bytes through typed revision authority.
 
@@ -157,6 +158,13 @@ async def rebuild_index_from_source(
     bulk FTS mode for whale prefix-sharing lineage cascades encountered during
     replay; see ``backfill_historical_revision_evidence``. The offline
     ``rebuild-index`` maintenance command passes ``True``.
+
+    ``bulk_build`` (polylogue-v6i3, default ``False``) enables the broader
+    bulk-generation-build lifecycle -- skip every per-session
+    messages_fts/blocks_command_trigram/action_pairs/delegation_facts
+    refresh during replay, deferred to one archive-wide repopulate at
+    readiness. The offline ``rebuild-index`` maintenance command passes
+    ``True``.
     """
     if raw_batch_size <= 0:
         raise ValueError("raw_batch_size must be positive")
@@ -180,6 +188,7 @@ async def rebuild_index_from_source(
         max_cached_payload_bytes=_REBUILD_CENSUS_SPILL_CACHE_BYTES,
         ingest_workers=resolved_ingest_workers,
         bulk_fts=bulk_fts,
+        bulk_build=bulk_build,
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")
