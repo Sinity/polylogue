@@ -40,7 +40,6 @@ from polylogue.maintenance.targets import (
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.sources.dispatch import detect_provider, is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
@@ -1344,6 +1343,8 @@ def _verify_browser_origin_copy_forward_source_stage(
     if len(payload) != item.blob_size or hashlib.sha256(payload).hexdigest() != item.blob_hash:
         raise RuntimeError(f"retained blob changed before copy-forward stage for {item.raw_id}")
     try:
+        from polylogue.sources.dispatch import detect_provider
+
         provider = detect_provider(json.loads(payload))
         if provider is None or provider.value != item.canonical_provider:
             raise ValueError("provider identity changed")
@@ -1478,6 +1479,8 @@ def _canonical_browser_origin_head_is_exact(
         if not blob_path.is_file() or blob_path.stat().st_size != frontier:
             return False
         payload = store.read_all(source_revision)
+        from polylogue.sources.dispatch import detect_provider
+
         provider = detect_provider(json.loads(payload))
         if provider is None or origin_from_provider(provider) is not canonical_origin:
             return False
@@ -1590,6 +1593,8 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
     The caller deliberately creates a new byte-proven canonical raw instead of
     repointing at this old head.  That keeps semantic and byte evidence distinct.
     """
+    from polylogue.sources.dispatch import detect_provider
+
     head_snapshot = _semantic_head_snapshot(canonical_head)
     raw_id = str(head_snapshot["accepted_raw_id"])
     native_id = session_id.split(":", 1)[1]
@@ -1937,6 +1942,8 @@ def _inspect_browser_capture_origin_mismatch(
     if hashlib.sha256(payload).digest() != blob_hash:
         return _browser_origin_ineligible(raw_id, "retained raw blob digest does not match durable source evidence")
     try:
+        from polylogue.sources.dispatch import detect_provider
+
         decoded = json.loads(payload)
         provider = detect_provider(decoded)
         if provider is None or provider is Provider.UNKNOWN:
@@ -2918,6 +2925,8 @@ def _browser_canonical_authority_conflict_witness(
     blob_hash = _bytes_value(raw["blob_hash"])
     blob_size = int(raw["blob_size"])
     try:
+        from polylogue.sources.dispatch import detect_provider
+
         store = BlobStore(archive_root / "blob")
         payload = store.read_all(blob_hash.hex())
         if len(payload) != blob_size or hashlib.sha256(payload).digest() != blob_hash:
@@ -3864,6 +3873,8 @@ def _raw_materialization_candidate_ids(
 
 
 def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, raw_id: str) -> bool:
+    from polylogue.sources.dispatch import is_stream_record_provider
+
     origin = Origin.from_string(candidates.raw_origins.get(raw_id))
     provider = provider_from_origin(origin)
     return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)

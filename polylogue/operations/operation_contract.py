@@ -13,9 +13,14 @@ already be imminent).
 
 What remains here is genuinely reusable, not speculative:
 
-* :class:`OperationStatus` — the scheduling status enum. Every member has a
-  real consumer (:mod:`polylogue.readiness.capability` maps
-  ``RUNNING``/``COMPLETED``/``FAILED`` to capability readiness states).
+* :class:`OperationStatus` — the scheduling status enum, now defined in
+  :mod:`polylogue.operations.operation_status` (polylogue-8s70) and re-exported
+  here for backward compatibility. Every member has a real consumer
+  (:mod:`polylogue.readiness.capability` maps ``RUNNING``/``COMPLETED``/
+  ``FAILED`` to capability readiness states) -- that consumer is on the hot
+  path of every ``polylogue status`` invocation and imports the enum from its
+  new zero-dependency home directly, to avoid paying for
+  :class:`OperationFollowUp`'s pydantic base.
 * :class:`OperationFollowUp` — the polling-hint shape returned by every
   accepted/pending operation. A plain data shape, not a polymorphic base —
   keeping it costs nothing and any second operation would want the same
@@ -28,38 +33,9 @@ abstract layer above it was removed.
 
 from __future__ import annotations
 
-from enum import Enum
-
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.operations.operation_status import OperationStatus
 from polylogue.surfaces.payloads import SurfacePayloadModel
-
-
-class OperationStatus(str, Enum):
-    """Scheduling status carried by every Operation ack.
-
-    Terminal vs in-flight semantics are intentionally simple:
-
-    * ``ACCEPTED`` — the operation passed validation and was admitted into
-      the registry. A follow-up hint is populated so clients can poll for
-      completion.
-    * ``REJECTED`` — the request failed validation, lacked permissions,
-      collided with an existing idempotency key, or otherwise could not be
-      admitted. ``error`` is populated; ``follow_up`` is omitted.
-    * ``PENDING`` — admitted but not yet started. Distinguishes the brief
-      window where an ack has been issued before the worker picks up the
-      work; useful for queued operations.
-    * ``RUNNING`` / ``COMPLETED`` / ``FAILED`` are re-emitted by status
-      surfaces after the work has begun or finished (see
-      :mod:`polylogue.readiness.capability`). The initial scheduling
-      response is always one of ``ACCEPTED``, ``REJECTED``, or ``PENDING``.
-    """
-
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
 
 
 class OperationFollowUp(SurfacePayloadModel):

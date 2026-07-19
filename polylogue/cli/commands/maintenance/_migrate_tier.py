@@ -1,15 +1,16 @@
 """``maintenance migrate-tier``: apply additive migrations for one durable archive tier.
 
-Unlike its sibling maintenance commands, this one's own ``--help`` cannot
-avoid the ``polylogue.storage.sqlite.archive_tiers`` package's import cost:
-``click.Choice(...)`` on the ``tier`` argument needs the real
-``DURABLE_MIGRATION_TIERS`` value at decoration time to render the valid
-choices, and that constant is only derived from ``ArchiveTier``
-(``archive_tiers.types``), which -- via the package's own ``__init__.py`` --
-eagerly imports every tier's DDL module. This is the same root cause
-tracked as a separate, deeper follow-up (the ``archive_tiers`` package-init
-import-weight audit); polylogue-sod7's own scope stops at this module
-boundary rather than attempting that larger fix here.
+Unlike its sibling maintenance commands, this one's own ``--help`` still
+imports ``polylogue.storage.sqlite.archive_tiers.types``: ``click.Choice(...)``
+on the ``tier`` argument needs the real ``DURABLE_MIGRATION_TIERS`` value at
+decoration time to render the valid choices, and that constant is derived
+from ``ArchiveTier``. Historically that single import forced the whole
+``archive_tiers`` package's eager DDL chain (every tier's DDL module) plus the
+parent ``polylogue.storage.sqlite`` package's eager ``SQLiteBackend`` import
+-- ~1s of pure import tax for one enum. polylogue-h1wt made both of those
+parent/package inits lazy (PEP 562 ``__getattr__``), so this command's
+``--help`` now pays only ``ArchiveTier``'s own weight (~100ms, in the same
+required-gate budget as every sibling command).
 """
 
 from __future__ import annotations
