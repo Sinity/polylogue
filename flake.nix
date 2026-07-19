@@ -114,6 +114,19 @@
         ];
         dontCheckRuntimeDeps = true;
 
+        # _PYTHON_SYSCONFIGDATA_NAME/_PYTHON_HOST_PLATFORM: a caller devshell
+        # for a DIFFERENT interpreter (e.g. the repo's own 3.13 devshell)
+        # commonly exports these. If either leaks through into this program's
+        # env, sysconfig._get_sysconfigdata_name() trusts the inherited value
+        # instead of computing its own -- and the free-threaded build's real
+        # module is named with a `t` abiflag segment
+        # (`_sysconfigdata_t_linux_x86_64-linux-gnu`) that a 3.13-derived name
+        # (`_sysconfigdata__linux_x86_64-linux-gnu`, no `t`) does not match,
+        # so any command doing real work (not just --version/--help) fails
+        # with `ModuleNotFoundError: No module named
+        # '_sysconfigdata__linux_x86_64-linux-gnu'` (polylogue-xikl, reproduced
+        # 2026-07-19: PYTHONPATH alone was NOT the trigger -- isolated to this
+        # one env var via `env -i` bisection).
         postFixup = ''
           test -f "$out/${python'.sitePackages}/polylogue/daemon/static/dist/manifest.json"
           for program in polylogue polylogued polylogue-mcp; do
@@ -122,7 +135,9 @@
               --unset PYTHONHOME \
               --unset PYTHONBREAKPOINT \
               --unset PYTHONUSERBASE \
-              --unset VIRTUAL_ENV
+              --unset VIRTUAL_ENV \
+              --unset _PYTHON_SYSCONFIGDATA_NAME \
+              --unset _PYTHON_HOST_PLATFORM
           done
         '';
 
@@ -312,12 +327,18 @@
             name=$(basename "$f")
             case "$name" in
               python|python3|python3.*)
+                # Same sanitization as `mkPolylogue`'s postFixup above,
+                # including the _PYTHON_SYSCONFIGDATA_NAME/_PYTHON_HOST_PLATFORM
+                # scrub (polylogue-xikl) -- a caller devshell for a different
+                # interpreter version can leak these in just as easily here.
                 makeWrapper "$f" "$out/bin/$name" \
                   --unset PYTHONPATH \
                   --unset PYTHONHOME \
                   --unset PYTHONBREAKPOINT \
                   --unset PYTHONUSERBASE \
-                  --unset VIRTUAL_ENV
+                  --unset VIRTUAL_ENV \
+                  --unset _PYTHON_SYSCONFIGDATA_NAME \
+                  --unset _PYTHON_HOST_PLATFORM
                 ;;
               *)
                 ln -s "$f" "$out/bin/$name"
