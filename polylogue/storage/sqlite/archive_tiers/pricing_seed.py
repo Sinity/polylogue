@@ -1,15 +1,18 @@
 """Idempotent price-catalog seed for the archive index tier.
 
 Loads the in-memory curated PRICING dict (polylogue.archive.semantic.pricing)
-into the ``price_catalogs`` / ``model_prices`` SQLite tables so that cost
-computations written to ``session_model_usage`` have a durable FK target and
-the DB-backed rates match the in-memory estimates exactly.
+into the ``price_catalogs`` SQLite table so that cost computations written to
+``session_model_usage`` have a durable ``priced_with`` FK target identifying
+which catalog version priced them.
 
 Design constraints:
-- The in-memory PRICING dict is the authoritative source.  This seeder
-  populates the DB FROM it; rates are never duplicated by hand here.
+- The in-memory PRICING dict is the authoritative source of rates. Cost
+  computation (``write.py._aggregate_message_tokens_into_model_usage``) reads
+  rates directly from it, never from a DB-backed mirror (polylogue-v2mg
+  dropped the former ``model_prices`` mirror table as a zero-consumer write).
 - A changed catalog hash creates a versioned catalog row, so existing usage
-  records retain the rates under which they were priced.
+  records retain the ``priced_with`` identity of the catalog version under
+  which they were priced.
 - Re-seeding an unchanged catalog is idempotent.
 
 Writer module: index.
@@ -105,14 +108,16 @@ def active_price_catalog_id(conn: sqlite3.Connection) -> str | None:
 
 
 def seed_price_catalog(conn: sqlite3.Connection) -> str:
-    """Seed price_catalogs + model_prices from the curated PRICING dict.
+    """Seed price_catalogs from the curated PRICING dict's identity/hash.
 
-    A changed hash gets a new catalog ID and its own immutable price rows;
-    an unchanged hash reuses its existing catalog ID.
+    A changed hash gets a new catalog ID; an unchanged hash reuses its
+    existing catalog ID. Rates themselves are never persisted to a DB-backed
+    mirror -- only the catalog identity is, so ``session_model_usage.
+    priced_with`` can record which catalog version priced a row.
 
     Returns the catalog_id that was (or already was) seeded.
     """
-    from polylogue.archive.semantic.pricing import CATALOG_PROVENANCE, PRICING
+    from polylogue.archive.semantic.pricing import CATALOG_PROVENANCE
 
     catalog_hash = _catalog_hash()
     catalog_id = _catalog_id_for_hash(conn, catalog_hash)
@@ -128,27 +133,6 @@ def seed_price_catalog(conn: sqlite3.Connection) -> str:
         """,
         (catalog_id, catalog_hash, CATALOG_PROVENANCE, effective_at, loaded_at),
     )
-
-    for model_name, pricing in PRICING.items():
-        conn.execute(
-            """
-            INSERT INTO model_prices (
-                catalog_id, model_name, price_unit,
-                input_cost_per_million, output_cost_per_million,
-                cache_read_cost_per_million, cache_write_cost_per_million,
-                effective_from_ms
-            ) VALUES (?, ?, 'tokens', ?, ?, ?, ?, 0)
-            ON CONFLICT(catalog_id, model_name, price_unit, effective_from_ms) DO NOTHING
-            """,
-            (
-                catalog_id,
-                model_name,
-                pricing.input_usd_per_1m,
-                pricing.output_usd_per_1m,
-                pricing.cache_read_usd_per_1m,
-                pricing.cache_write_usd_per_1m,
-            ),
-        )
 
     return catalog_id
 

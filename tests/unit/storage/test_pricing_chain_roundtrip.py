@@ -1,7 +1,9 @@
 """Round-trip tests: pricing chain from messages → session_model_usage.
 
 Verifies that:
-1. price_catalogs / model_prices are seeded during archive-init.
+1. price_catalogs is seeded during archive-init (identity/versioning only --
+   polylogue-v2mg dropped the model_prices DB-backed rate mirror as a
+   zero-consumer table; rates are read from the in-process PRICING dict).
 2. After writing a session with token-bearing messages, session_model_usage
    carries the correct per-model token sums.
 3. cost_usd is computed correctly for known models (rate × tokens).
@@ -95,34 +97,8 @@ class TestPriceCatalogSeed:
         assert row["source_name"] == CATALOG_PROVENANCE
         conn.close()
 
-    def test_model_prices_seeded_from_pricing_dict(self, tmp_path: Path) -> None:
-        conn = _make_archive(tmp_path)
-        catalog_id = _catalog_id()
-        rows = conn.execute("SELECT model_name FROM model_prices WHERE catalog_id = ?", (catalog_id,)).fetchall()
-        seeded_models = {row["model_name"] for row in rows}
-        assert seeded_models == set(PRICING.keys()), f"seeded {len(seeded_models)} models, expected {len(PRICING)}"
-        conn.close()
-
-    def test_model_prices_rates_match_in_memory_dict(self, tmp_path: Path) -> None:
-        conn = _make_archive(tmp_path)
-        catalog_id = _catalog_id()
-        for model_name, pricing in PRICING.items():
-            row = conn.execute(
-                """
-                SELECT input_cost_per_million, output_cost_per_million,
-                       cache_read_cost_per_million, cache_write_cost_per_million
-                FROM model_prices
-                WHERE catalog_id = ? AND model_name = ?
-                """,
-                (catalog_id, model_name),
-            ).fetchone()
-            assert row is not None, f"missing price row for {model_name}"
-            assert row["input_cost_per_million"] == pricing.input_usd_per_1m
-            assert row["output_cost_per_million"] == pricing.output_usd_per_1m
-        conn.close()
-
     def test_seed_is_idempotent(self, tmp_path: Path) -> None:
-        """Re-seeding does not duplicate rows."""
+        """Re-seeding does not duplicate the catalog identity row."""
         conn = _make_archive(tmp_path)
         from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
 
@@ -131,9 +107,7 @@ class TestPriceCatalogSeed:
             seed_price_catalog(conn)
 
         catalog_count = conn.execute("SELECT COUNT(*) FROM price_catalogs").fetchone()[0]
-        price_count = conn.execute("SELECT COUNT(*) FROM model_prices").fetchone()[0]
         assert catalog_count == 1
-        assert price_count == len(PRICING)
         conn.close()
 
     def test_seed_versions_changed_pricing_and_writer_uses_new_catalog(
@@ -169,26 +143,19 @@ class TestPriceCatalogSeed:
             ).fetchone()[0]
             == _catalog_hash()
         )
-        assert (
-            conn.execute(
-                "SELECT input_cost_per_million FROM model_prices WHERE catalog_id = ? AND model_name = ?",
-                (original_catalog_id, model_name),
-            ).fetchone()[0]
-            == original_pricing.input_usd_per_1m
-        )
-        assert (
-            conn.execute(
-                "SELECT input_cost_per_million FROM model_prices WHERE catalog_id = ? AND model_name = ?",
-                (revised_catalog_id, model_name),
-            ).fetchone()[0]
-            == PRICING[model_name].input_usd_per_1m
-        )
-        assert (
-            conn.execute(
-                "SELECT priced_with FROM session_model_usage WHERE session_id = 'claude-code-session:revised-pricing'"
-            ).fetchone()[0]
-            == revised_catalog_id
-        )
+        # No DB-backed model_prices mirror exists to round-trip through
+        # (polylogue-v2mg dropped it as a zero-consumer table); the proof that
+        # the revised rate actually took effect is that the written
+        # session_model_usage.cost_usd matches estimate_cost() against the
+        # *revised* in-memory PRICING dict, not the original rate.
+        row = conn.execute(
+            "SELECT priced_with, cost_usd FROM session_model_usage "
+            "WHERE session_id = 'claude-code-session:revised-pricing'"
+        ).fetchone()
+        original_cost = (original_pricing.input_usd_per_1m * 100) / 1_000_000
+        assert row["priced_with"] == revised_catalog_id
+        assert row["cost_usd"] == pytest.approx(estimate_cost(100, 0, model_name), rel=1e-9)
+        assert row["cost_usd"] != pytest.approx(original_cost, rel=1e-9)
         conn.close()
 
 

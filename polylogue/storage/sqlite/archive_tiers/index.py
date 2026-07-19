@@ -794,28 +794,12 @@ CREATE TABLE IF NOT EXISTS price_catalogs (
     loaded_at_ms     INTEGER NOT NULL
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS model_prices (
-    catalog_id                   TEXT NOT NULL REFERENCES price_catalogs(catalog_id) ON DELETE CASCADE,
-    model_name                   TEXT NOT NULL,
-    price_unit                   TEXT NOT NULL CHECK(price_unit IN ('tokens', 'credits', 'flat')),
-    input_cost_per_million       REAL,
-    output_cost_per_million      REAL,
-    cache_read_cost_per_million  REAL,
-    cache_write_cost_per_million REAL,
-    credit_cost_per_unit         REAL,
-    effective_from_ms            INTEGER NOT NULL DEFAULT 0,
-    effective_to_ms              INTEGER,
-    PRIMARY KEY(catalog_id, model_name, price_unit, effective_from_ms)
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS session_reported_costs (
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    cost_kind       TEXT NOT NULL CHECK(cost_kind IN ('usd', 'credits')),
-    amount          REAL NOT NULL,
-    source          TEXT NOT NULL CHECK(source IN ('origin_reported', 'priced', 'estimated')),
-    observed_at_ms  INTEGER,
-    PRIMARY KEY(session_id, cost_kind, source)
-) STRICT;
+-- model_prices and session_reported_costs were dropped (polylogue-v2mg):
+-- zero-consumer tables converged away by the index-tier same-version
+-- benign-DDL registry (archive_tiers/index_convergence.py) rather than kept
+-- in canonical DDL. Cost computation resolves per-model rates from the
+-- in-process pricing catalog; price_catalogs (below) remains the genuinely
+-- read catalog-identity table.
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id              TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,

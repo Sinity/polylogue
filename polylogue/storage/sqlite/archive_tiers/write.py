@@ -568,14 +568,14 @@ def write_parsed_session_to_archive(
         _write_repo_edges(conn, session_id, session)
         add_timing("index.repo_edges", t0)
         t0 = time.perf_counter()
-        _write_reported_costs(
+        _seed_session_model_usage_rows(
             conn,
             session_id,
             session,
             replace_existing_model_rows=not merge_append,
             aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
         )
-        add_timing("index.reported_costs", t0)
+        add_timing("index.model_usage_seed", t0)
         if merge_append and session_event_result.wrote_provider_usage_events:
             t0 = time.perf_counter()
             _aggregate_appended_provider_usage_into_model_usage(
@@ -706,7 +706,6 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "session_working_dirs",
         "session_repos",
         "session_commits",
-        "session_reported_costs",
         "session_model_usage",
     ):
         conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
@@ -3331,7 +3330,7 @@ def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_direc
         )
 
 
-def _write_reported_costs(
+def _seed_session_model_usage_rows(
     conn: sqlite3.Connection,
     session_id: str,
     session: ParsedSession,
@@ -3339,16 +3338,15 @@ def _write_reported_costs(
     replace_existing_model_rows: bool = True,
     aggregate_message_tokens: bool = True,
 ) -> None:
-    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
-    if session.reported_cost_usd is not None:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO session_reported_costs (
-                session_id, cost_kind, amount, source, observed_at_ms
-            ) VALUES (?, 'usd', ?, 'origin_reported', ?)
-            """,
-            (session_id, session.reported_cost_usd, observed_at_ms),
-        )
+    """Seed skeleton ``session_model_usage`` rows for a session's known models.
+
+    Formerly also wrote ``session.reported_cost_usd`` into a
+    ``session_reported_costs`` table; that write path was removed
+    (polylogue-v2mg) as a zero-consumer table -- nothing ever read it back.
+    ``session.reported_cost_usd`` itself remains a legitimate parsed-domain
+    field (see e.g. ``sinex/material_adapter.py``); only the dead DB mirror
+    was dropped.
+    """
     model_names = {model_name.strip() for model_name in session.models_used if model_name.strip()}
     model_names.update(message.model_name.strip() for message in session.messages if message.model_name)
     model_usage_sql = (
@@ -3427,9 +3425,10 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         msg_count: int = int(row[5] or 0)
 
         # Compute cost_usd from the curated catalog when a price entry exists.
-        # estimate_cost() reads the in-memory PRICING dict so the result always
-        # matches the DB-backed model_prices rows selected by the same catalog
-        # hash as the active in-memory source.
+        # estimate_cost() reads the in-memory PRICING dict directly (there is
+        # no DB-backed rate mirror to keep in sync -- polylogue-v2mg dropped
+        # model_prices as a zero-consumer table); active_catalog_id above only
+        # identifies *which* catalog version priced this row.
         normalized = _normalize_model(model_name)
         billable = sum_input + sum_output + sum_cache_read + sum_cache_write
         if normalized in PRICING and billable > 0:
@@ -3441,7 +3440,7 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
             priced_with = None
             row_priced_at = None
 
-        # UPSERT: the skeleton row was created by _write_reported_costs above.
+        # UPSERT: the skeleton row was created by _seed_session_model_usage_rows above.
         # For models that somehow landed in messages but not in models_used/
         # session.messages (edge case with merge_append + partial data), we
         # INSERT a fresh row.  For normal cases this is an UPDATE on the

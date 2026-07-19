@@ -25,6 +25,16 @@ What this lint checks
    must live under ``polylogue/storage/sqlite/migrations/{source,user}/`` as
    numbered SQL resources.
 
+3. Validate every entry in the index-tier benign-DDL convergence registry
+   (``polylogue.storage.sqlite.archive_tiers.index_convergence.
+   INDEX_BENIGN_DDL_REGISTRY``, polylogue-jc1b): each entry's SQL must be
+   exactly one of ``CREATE TABLE IF NOT EXISTS``, ``CREATE INDEX IF NOT
+   EXISTS``, or ``DROP TABLE IF EXISTS`` -- idempotent and data-non-
+   transforming by construction. Anything else (a bare ``CREATE``/``DROP``
+   missing its guard clause, ``ALTER TABLE``, or a data-mutating statement)
+   is the sanctioned same-version-open path being asked to do something a
+   version bump should gate instead, and is rejected here.
+
 The lint is intentionally narrow. It detects helper names associated
 with in-place upgrades; it does not try to infer arbitrary SQL patches.
 
@@ -40,11 +50,16 @@ import ast
 import json
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root as _get_root
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.index_convergence import (
+    INDEX_BENIGN_DDL_REGISTRY,
+    BenignDDLEntry,
+)
 from polylogue.storage.sqlite.lifecycle import IndexDeltaDeclarationReport, index_delta_declaration_report
 
 ROOT = _get_root()
@@ -99,6 +114,63 @@ def _collect_upgrade_helpers() -> list[HelperHit]:
     return hits
 
 
+# Index-tier benign-DDL registry entries (polylogue-jc1b) must be exactly one
+# of these idempotent shapes -- the whole point is that re-applying an entry
+# on every same-version open is always a no-op past the first time.
+_ALLOWED_BENIGN_DDL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?is)^\s*CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s"),
+    re.compile(r"(?is)^\s*CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s"),
+    re.compile(r"(?is)^\s*DROP\s+TABLE\s+IF\s+EXISTS\s"),
+)
+
+# Any of these appearing anywhere in an entry's SQL means it mutates row data
+# (not merely schema) or alters an existing object in place -- both outside
+# the "idempotent, data-non-transforming" class a same-version-open hook may
+# apply without an INDEX_SCHEMA_VERSION bump.
+_FORBIDDEN_BENIGN_DDL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?is)\bALTER\s+TABLE\b"),
+    re.compile(r"(?is)\bINSERT\s+INTO\b"),
+    re.compile(r"(?is)\bUPDATE\s+\S"),
+    re.compile(r"(?is)\bDELETE\s+FROM\b"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BenignDDLViolation:
+    entry_name: str
+    reason: str
+
+
+def _invalid_benign_ddl_entries(
+    entries: Iterable[BenignDDLEntry] = INDEX_BENIGN_DDL_REGISTRY,
+) -> list[BenignDDLViolation]:
+    """Return every registry entry whose SQL is not an allowed idempotent shape."""
+    violations: list[BenignDDLViolation] = []
+    for entry in entries:
+        sql = entry.sql.strip()
+        # Reject multi-statement smuggling -- a registry entry is exactly one
+        # DDL statement (an optional single trailing semicolon is fine).
+        body = sql[:-1] if sql.endswith(";") else sql
+        if ";" in body:
+            violations.append(BenignDDLViolation(entry.name, "registry entry must be exactly one statement"))
+            continue
+        if not any(pattern.match(sql) for pattern in _ALLOWED_BENIGN_DDL_PATTERNS):
+            violations.append(
+                BenignDDLViolation(
+                    entry.name,
+                    "must be CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / DROP TABLE IF EXISTS",
+                )
+            )
+            continue
+        for forbidden in _FORBIDDEN_BENIGN_DDL_PATTERNS:
+            if forbidden.search(sql):
+                violations.append(
+                    BenignDDLViolation(entry.name, f"data-transforming or non-idempotent clause: {forbidden.pattern}")
+                )
+                break
+    return violations
+
+
 def _invalid_migration_paths() -> list[Path]:
     if not MIGRATIONS_DIR.exists():
         return []
@@ -117,12 +189,17 @@ def _invalid_migration_paths() -> list[Path]:
 
 
 def _format_report(
-    *, helpers: list[HelperHit], invalid_migrations: list[Path], delta_report: IndexDeltaDeclarationReport
+    *,
+    helpers: list[HelperHit],
+    invalid_migrations: list[Path],
+    delta_report: IndexDeltaDeclarationReport,
+    benign_ddl_violations: list[BenignDDLViolation],
 ) -> str:
     lines = [
         f"derived-tier upgrade helpers found: {len(helpers)}",
         f"invalid durable migration resources found: {len(invalid_migrations)}",
         f"undeclared index schema deltas found: {len(delta_report['missing_versions'])}",
+        f"invalid index benign-DDL registry entries found: {len(benign_ddl_violations)}",
     ]
     if helpers:
         lines.append("")
@@ -146,7 +223,18 @@ def _format_report(
         lines.append(f"  invalid: {list(delta_report['invalid_versions'])}")
         lines.append("")
         lines.append("Policy violation: each index schema bump needs a declared delta class.")
-    if not helpers and not invalid_migrations and bool(delta_report["ok"]):
+    if benign_ddl_violations:
+        lines.append("")
+        lines.append("Invalid index benign-DDL registry entries:")
+        for violation in benign_ddl_violations:
+            lines.append(f"  {violation.entry_name}: {violation.reason}")
+        lines.append("")
+        lines.append(
+            "Policy violation: index-tier same-version convergence entries must be idempotent, "
+            "data-non-transforming CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / "
+            "DROP TABLE IF EXISTS statements."
+        )
+    if not helpers and not invalid_migrations and bool(delta_report["ok"]) and not benign_ddl_violations:
         lines.append("")
         lines.append("Schema evolution policy intact.")
     return "\n".join(lines)
@@ -163,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
     helpers = _collect_upgrade_helpers()
     invalid_migrations = _invalid_migration_paths()
     delta_report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
+    benign_ddl_violations = _invalid_benign_ddl_entries()
+
+    ok = not helpers and not invalid_migrations and bool(delta_report["ok"]) and not benign_ddl_violations
 
     if args.json:
         payload = {
@@ -171,13 +262,23 @@ def main(argv: list[str] | None = None) -> int:
             ],
             "invalid_migration_resources": [str(path.relative_to(ROOT)) for path in invalid_migrations],
             "index_delta_declarations": delta_report,
-            "ok": not helpers and not invalid_migrations and bool(delta_report["ok"]),
+            "invalid_benign_ddl_entries": [
+                {"name": violation.entry_name, "reason": violation.reason} for violation in benign_ddl_violations
+            ],
+            "ok": ok,
         }
         print(json.dumps(payload, indent=2))
     else:
-        print(_format_report(helpers=helpers, invalid_migrations=invalid_migrations, delta_report=delta_report))
+        print(
+            _format_report(
+                helpers=helpers,
+                invalid_migrations=invalid_migrations,
+                delta_report=delta_report,
+                benign_ddl_violations=benign_ddl_violations,
+            )
+        )
 
-    return 0 if not helpers and not invalid_migrations and bool(delta_report["ok"]) else 1
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

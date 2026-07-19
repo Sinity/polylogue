@@ -1484,7 +1484,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2413
+    loc: 2404
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1492,7 +1492,7 @@ files:
     target: polylogue/daemon/compare.py
     owner: stable
   - path: polylogue/daemon/convergence.py
-    loc: 679
+    loc: 637
     target: polylogue/daemon/convergence.py
     owner: stable
   - path: polylogue/daemon/convergence_debt_alert.py
@@ -1504,11 +1504,11 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 2007
+    loc: 2002
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/convergence_standing_queries.py
-    loc: 336
+    loc: 335
     target: polylogue/daemon/convergence_standing_queries.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_alert.py
@@ -3945,7 +3945,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/bootstrap.py
-    loc: 216
+    loc: 231
     target: polylogue/storage/sqlite/archive_tiers/bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/column_spec.py
@@ -3971,6 +3971,10 @@ files:
   - path: polylogue/storage/sqlite/archive_tiers/index.py
     loc: 1649
     target: polylogue/storage/sqlite/archive_tiers/index.py
+    owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
+    loc: 114
+    target: polylogue/storage/sqlite/archive_tiers/index_convergence.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
     loc: 188
@@ -4320,7 +4324,7 @@ files:
     target: polylogue/storage/sqlite/runtime_indexes.py
     owner: stable
   - path: polylogue/storage/sqlite/schema.py
-    loc: 122
+    loc: 130
     target: polylogue/storage/sqlite/schema.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_bootstrap.py

@@ -63,8 +63,8 @@ Core tables: `sessions`, `messages`, `blocks`, plus the `actions` **view**
 (not a table — see below), `session_links` (typed cross-session edges),
 `threads` / `thread_sessions`, attachment tables (`attachments`,
 `attachment_refs`, `attachment_native_ids`), `paste_spans`, cost tables
-(`price_catalogs`, `model_prices`, `session_reported_costs`,
-`session_model_usage`), the auto-tag side of `session_tags`, and the insight
+(`price_catalogs`, `session_model_usage`), the auto-tag side of
+`session_tags`, and the insight
 read models (`session_profiles`, `session_work_events`, `session_phases`,
 `session_latency_profiles`, `session_tag_rollups`, `threads`) plus
 `insight_materialization` for cache invalidation.
