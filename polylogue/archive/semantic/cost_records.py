@@ -45,9 +45,30 @@ class SessionCostSummary(BaseModel):
     per_model: tuple[SessionCostBreakdown, ...] = ()
 
 
+class ModelUsageTotals(BaseModel):
+    """One canonical per-model usage tally read back from ``session_model_usage``.
+
+    ``session_model_usage`` is the single substrate table the cost/usage
+    rollups are built from, populated provider-neutrally from whichever
+    evidence a given origin actually reports -- Codex-style cumulative
+    ``token_count`` events (disjoint-lane mapped) or per-message token sums.
+    ``compute_session_cost`` aggregates these rows directly when supplied,
+    instead of recomputing an independent (and, for Codex, ~1000x smaller)
+    estimate from per-message fields Codex rarely populates (polylogue-r7p6).
+    """
+
+    model_config = ConfigDict(frozen=True)
+    model_name: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
 __all__ = [
     "CostBasis",
     "CostConfidence",
+    "ModelUsageTotals",
     "SessionCostBreakdown",
     "SessionCostSummary",
     "TokenProvenance",

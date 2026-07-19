@@ -94,6 +94,28 @@ convergence-debt retry — a manual `polylogue ops reset --index` is no longer
 required to pick up a provider-usage materializer fix or a zero-token bug fix
 for existing sessions; it remains available as a fallback for a full rebuild.
 
+### Single authority for per-session token totals
+
+`session_model_usage` is the single authority for a session's per-model token
+totals (`input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`).
+`session_profiles.total_input_tokens` and its sibling columns are an
+aggregation *over* those rows (`build_session_profile` /
+`compute_session_cost` in `polylogue/archive/semantic/cost_compute.py` accept
+a `model_usage` parameter of canonical `ModelUsageTotals` rows, read back via
+`polylogue/storage/sqlite/queries/model_usage.py`), not an independent
+recomputation. Before polylogue-r7p6 the profile columns were computed by
+walking `session.messages` per-message token fields instead — a split-brain
+that undercounted Codex sessions by roughly 1000x, because Codex's real usage
+arrives as periodic cumulative `token_count` session events (folded into
+`session_model_usage` by `_aggregate_provider_usage_into_model_usage`) rather
+than a per-message `usage` block, while `session_events` deliberately excludes
+`token_count`/`message_usage` rows as redundant with that same rollup (see
+`_SESSION_EVENTS_REDUNDANT_TYPES`). Consistency between `session_profiles` and
+`session_model_usage` per session is the acceptance bar for any change to
+either read model; the message-walk path survives only as a fallback for
+callers that build an ad hoc profile without a materialized rollup to hand
+(no persisted `session_profiles` row yet).
+
 ### Dual cost view on the usage ledger
 
 `polylogue analyze usage` / the `provider_usage` MCP tool / `ProviderUsageReport`

@@ -15,6 +15,7 @@ from typing import TypeVar
 
 import aiosqlite
 
+from polylogue.archive.semantic.cost_records import ModelUsageTotals
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
@@ -91,6 +92,7 @@ from polylogue.storage.sqlite.queries.mappers import (
     _row_to_message,
     _row_to_session_profile_record,
 )
+from polylogue.storage.sqlite.queries.model_usage import get_model_usage_batch, sync_model_usage_batch
 from polylogue.storage.sqlite.queries.session_events import (
     get_session_event_compaction_counts,
     get_session_events_batch,
@@ -238,6 +240,11 @@ class SessionInsightArchiveBatch:
     session_events_by_session: dict[str, list[SessionEventRecord]]
     compaction_counts_by_session: dict[str, int]
     blocks: list[BlockRecord]
+    # Canonical per-model usage tally from ``session_model_usage`` -- the same
+    # substrate table the archive's cost/usage rollups are built from.
+    # Session-profile building prefers this over per-message fields so profile
+    # token/cost columns stay in lockstep with that rollup (polylogue-r7p6).
+    model_usage_by_session: dict[str, list[ModelUsageTotals]]
 
 
 @dataclass(slots=True)
@@ -558,6 +565,7 @@ def load_sync_batch(
         session_events_by_session=sync_session_events_batch(conn, session_ids),
         compaction_counts_by_session=sync_session_event_compaction_counts(conn, session_ids),
         blocks=blocks,
+        model_usage_by_session=sync_model_usage_batch(conn, session_ids),
     )
 
 
@@ -596,6 +604,7 @@ async def load_async_batch(
     attachments = await get_attachments_batch(conn, list(session_ids))
     session_events = await get_session_events_batch(conn, list(session_ids))
     compaction_counts = await get_session_event_compaction_counts(conn, list(session_ids))
+    model_usage = await get_model_usage_batch(conn, list(session_ids))
     return SessionInsightArchiveBatch(
         sessions=sessions,
         messages=messages,
@@ -603,6 +612,7 @@ async def load_async_batch(
         session_events_by_session=session_events,
         compaction_counts_by_session=compaction_counts,
         blocks=blocks,
+        model_usage_by_session=model_usage,
     )
 
 
@@ -639,6 +649,7 @@ def build_session_insight_records(
     *,
     compaction_count: int | None = None,
     logical_session_id: str | None = None,
+    model_usage: Sequence[ModelUsageTotals] | None = None,
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionInsightRecordBundle:
     from polylogue.storage.insights.session.repo_observations import attribution_to_observations
@@ -655,6 +666,7 @@ def build_session_insight_records(
         session,
         analysis=analysis,
         compaction_count=compaction_count,
+        model_usage=model_usage,
         stage_timing_add=stage_timing_add,
     )
     add_timing("build_records.profile", t0)
@@ -785,16 +797,19 @@ def build_session_insight_record_bundles(
     *,
     compaction_counts_by_session: dict[str, int] | None = None,
     logical_session_ids_by_session: dict[str, str] | None = None,
+    model_usage_by_session: dict[str, list[ModelUsageTotals]] | None = None,
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> list[SessionInsightRecordBundle]:
     compaction_counts = compaction_counts_by_session or {}
     logical_ids = logical_session_ids_by_session or {}
+    model_usage = model_usage_by_session or {}
     jobs = [
         functools.partial(
             build_session_insight_records,
             session,
             compaction_count=compaction_counts.get(str(session.id)),
             logical_session_id=logical_ids.get(str(session.id)),
+            model_usage=model_usage.get(str(session.id)),
             stage_timing_add=stage_timing_add,
         )
         for session in sessions
@@ -1547,6 +1562,7 @@ def rebuild_session_insights_sync(
                         hydrated_sessions,
                         compaction_counts_by_session=batch.compaction_counts_by_session,
                         logical_session_ids_by_session=root_ids_by_session,
+                        model_usage_by_session=batch.model_usage_by_session,
                         stage_timing_add=add_timing,
                     )
                 )
@@ -1765,6 +1781,7 @@ async def rebuild_session_insights_async(
                     hydrate_sessions(batch),
                     compaction_counts_by_session=batch.compaction_counts_by_session,
                     logical_session_ids_by_session=root_ids_by_session,
+                    model_usage_by_session=batch.model_usage_by_session,
                 )
             )
 
