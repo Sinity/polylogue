@@ -761,6 +761,40 @@ def _partition_raws_by_dispatch_size(
     return pool_raw_ids, sequential_raw_ids
 
 
+_DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES = 48 * 1024 * 1024  # 48 MiB
+
+
+def _parse_pool_min_aggregate_bytes() -> int:
+    """Aggregate-payload floor below which pool dispatch cannot amortize.
+
+    Each spawned worker pays the full interpreter + polylogue import before
+    its first task (~1.5-2.0s measured live 2026-07-19: a 25s py-spy capture
+    of the bulk rebuild census showed 20 short-lived workers spending ~95%
+    of their lifetime inside importlib, because per-cohort census batches
+    dispatch 1-2 sub-256KiB raws at a time and the executor is created per
+    call). Sequential small-payload parse runs at roughly 20MB/s, so with 8
+    workers the pool only beats sequential once the pool-eligible aggregate
+    exceeds ~45MB; below that, worker spawn dominates and "parallel" is
+    strictly slower. Override with
+    ``POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES`` (polylogue-crd8 follow-up).
+    """
+    raw = os.environ.get("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES")
+    if raw is None:
+        return _DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES
+
+
+def _pool_dispatch_amortizes(pool_raw_ids: list[str], payload_sizes: dict[str, int]) -> bool:
+    """Decide whether a pool-eligible batch is worth spawning workers for."""
+    if len(pool_raw_ids) <= 1:
+        return False
+    total = sum(payload_sizes[raw_id] for raw_id in pool_raw_ids)
+    return total >= _parse_pool_min_aggregate_bytes()
+
+
 def _parse_retained_raws(
     archive: ArchiveStore,
     raw_ids: list[str],
@@ -798,7 +832,7 @@ def _parse_retained_raws(
         except Exception as exc:
             results[raw_id] = exc
 
-    if len(pool_raw_ids) <= 1:
+    if not _pool_dispatch_amortizes(pool_raw_ids, payload_sizes):
         for raw_id in pool_raw_ids:
             try:
                 results[raw_id] = _parse_retained_raw(archive, raw_id)
