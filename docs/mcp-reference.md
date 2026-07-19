@@ -6,25 +6,20 @@ CLI or Python API for agent-facing recall, corrections, and context assembly.
 
 ## Tools
 
-~100 tools registered across `polylogue/mcp/server_*.py`, gated by capability role (see
-Configuration below). A representative sample by category:
+10 top-level tools are registered across `polylogue/mcp/server_*.py`, each a parser-owned
+dispatcher over a bounded operation grammar rather than a single fixed call — gated by
+capability role (see Configuration below):
 
-- **Search / list / get**: `search`, `list_sessions`, `get_messages`,
-  `get_session_tree`, `get_session_summary`, `get_logical_session`, `facets`.
-- **Insights**: `get_stats_by`, `session_costs`, `cost_rollups`, `usage_timeline`,
-  `tool_usage`, `workflow_shape_distribution`, `session_latency_profile`.
-- **Continuity / recall**: `compile_context`, `build_context_image`,
-  `compose_context_preamble`, `get_resume_brief`, `find_resume_candidates`,
-  `find_abandoned_sessions`, `find_stuck_sessions`.
-- **Correlation / topology**: `correlate_session`, `correlate_sessions`,
-  `get_session_topology`, `neighbor_candidates`, `find_similar_sessions`,
-  `compare_sessions`.
-- **Postmortem / pathology**: `get_postmortem_bundle`, `get_pathologies`,
-  `insight_rigor_audit`.
-- **Corrections / assertions** (write role): `add_tag`, `bulk_tag_sessions`,
-  `blackboard_post`.
-- **Maintenance** (admin role): `maintenance_preview`, `maintenance_execute`,
-  `rebuild_index`, `update_index`, `rebuild_session_insights`.
+- `status` — compact archive authority and readiness status.
+- `read` — read a stable archive URI or public ref through a declared view.
+- `get` — resolve one exact stable object or evidence identity.
+- `query` — execute a parser-owned terminal query page, or resume its continuation.
+- `explain` — explain parser grammar, capabilities, refs, result semantics, or recovery.
+- `context` — compile a policy-gated bounded context image with receipts.
+- `write` (write role) — apply a declared mutation operation after shared authorization.
+- `run` (write role) — execute a saved query or governed recipe ref.
+- `judge` (review role) — accept, reject, defer, or supersede assertion candidates.
+- `maintenance` (admin role) — preview, execute, list, and inspect maintenance operations.
 
 The exhaustive, currently-registered tool name set is a test-enforced contract, not hand
 duplicated here: `tests/infra/mcp.py:EXPECTED_TOOL_NAMES`. Adding a tool requires updating
@@ -44,8 +39,10 @@ that set plus its tool contract (see `CLAUDE.md` § MCP gotchas).
 ## Configuration
 
 The MCP server is a standalone console script (`polylogue.mcp.cli:main`), not a `polylogue`
-subcommand. `--role` gates capability: `read` (default, omits mutation/maintenance tools),
-`write` (adds corrections/tagging), or `admin` (adds maintenance/rebuild tools).
+subcommand. It is read-only by default; write access to mutating tools is an explicit
+config opt-in. `--role` gates capability along a ladder: `read` (default — `status`, `read`,
+`get`, `query`, `explain`, `context`; 6 tools), `write` (adds `write`, `run`; 8 tools),
+`review` (adds `judge`; 9 tools), or `admin` (adds `maintenance`; 10 tools).
 
 Add to your Claude Code `.mcp.json`:
 

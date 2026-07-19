@@ -103,12 +103,17 @@ polylogue-mcp --help
 ```
 
 The Homebrew tap installs the published PyPI release into a formula-owned
-virtual environment:
+virtual environment via `virtualenv_install_with_resources`, which links every
+packaged console script — `polylogue`, `polylogued`, and `polylogue-mcp` — the
+same way `pipx`/`uv tool` do; the formula's own `test do` block asserts all
+three answer `--version`/`--help`:
 
 ```bash
 brew tap sinity/polylogue
 brew install polylogue
 brew test polylogue
+polylogued --help
+polylogue-mcp --help
 ```
 
 ## Containers
