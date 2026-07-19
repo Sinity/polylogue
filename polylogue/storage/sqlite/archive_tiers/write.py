@@ -2620,6 +2620,31 @@ def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> i
     return int(row[0] or 0) if row is not None else 0
 
 
+# Event types whose full evidence already lives durably in a sibling typed
+# table -- materializing a second copy into ``session_events`` is a pure,
+# zero-evidence-loss duplication (polylogue-bo9n consumer audit, 2026-07-19):
+#
+# - ``token_count`` / ``message_usage``: fully re-derivable from
+#   ``session_provider_usage_events`` (the cost model's sole read path,
+#   ``storage/usage.py``); every field the writer would otherwise copy into
+#   ``session_events.payload_json`` is already unpacked into that table's
+#   typed columns.
+# - ``agent_policy``: fully re-derivable from ``session_agent_policies``
+#   (dedicated typed table, identical fields, sole confirmed reader
+#   ``read_session_agent_policies``).
+# - ``agent_message``: the payload never carries text (Codex never populates
+#   it there); the real text is guaranteed to exist as a ``ParsedMessage``
+#   via ``_codex_event_message`` -- this is a pure existence marker with a
+#   message-shaped twin already present.
+#
+# ``reasoning``/``agent_reasoning``/``turn_context`` are deliberately excluded
+# (need an operator evidence-doctrine call per the audit); ``function_call``/
+# ``function_call_output`` payload-slimming is a separate, not-yet-decided
+# change. Parsers keep emitting all of these events unchanged -- only this
+# writer materialization step filters them.
+_SESSION_EVENTS_REDUNDANT_TYPES = frozenset({"token_count", "message_usage", "agent_policy", "agent_message"})
+
+
 def _write_session_events(
     conn: sqlite3.Connection,
     session_id: str,
@@ -2656,18 +2681,19 @@ def _write_session_events(
         source_message_id = by_native_id.get(source_message_provider_id or "")
         if source_message_id is None and inherited_source_message_ids is not None:
             source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
-        session_event_rows.append(
-            (
-                session_id,
-                source_message_id,
-                _sqlite_text(source_message_provider_id),
-                position,
-                _sqlite_text(event.event_type),
-                _sqlite_text(_event_summary(event) or ""),
-                _json_dumps(event.payload),
-                _timestamp_ms(event.timestamp),
-            ),
-        )
+        if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
+            session_event_rows.append(
+                (
+                    session_id,
+                    source_message_id,
+                    _sqlite_text(source_message_provider_id),
+                    position,
+                    _sqlite_text(event.event_type),
+                    _sqlite_text(_event_summary(event) or ""),
+                    _json_dumps(event.payload),
+                    _timestamp_ms(event.timestamp),
+                ),
+            )
         if event.event_type == "agent_policy":
             agent_policy_rows.append(
                 (

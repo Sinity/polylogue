@@ -24,7 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-INDEX_SCHEMA_VERSION = 41
+INDEX_SCHEMA_VERSION = 42
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
