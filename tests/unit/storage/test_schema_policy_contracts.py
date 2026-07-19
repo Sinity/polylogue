@@ -349,15 +349,39 @@ def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
 
 
 def test_fresh_init_creates_canonical_fts_trigger_set(tmp_path: Path) -> None:
-    """Fresh index initialization creates the current message FTS triggers."""
+    """Fresh index initialization creates exactly the current FTS-backing triggers.
+
+    Fresh init also creates a larger family of *non*-FTS triggers —
+    ``query_unit_frame_*`` (cache-invalidation epoch bump on
+    ``query_unit_frame_state``) and the ``blocks_action_pairs_*`` /
+    ``session_links_delegation_facts_*`` / ``session_profiles_delegation_facts_*``
+    family (materializing the plain ``action_pairs``/``delegation_facts``
+    tables). Neither writes into an FTS5 virtual table, so per the ohbx
+    precedent above (a trigger belongs in this set only if it is genuinely
+    *FTS-backing*, not merely "any trigger fresh init happens to create"),
+    they are excluded here by construction rather than by an ever-growing
+    name list.
+    """
     db_path = tmp_path / "fts.db"
     conn = sqlite3.connect(db_path)
     _ensure_schema(conn)
 
-    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()
+    fts5_tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE '%USING fts5%'"
+        ).fetchall()
+    }
+    assert fts5_tables, "expected at least one FTS5 virtual table in fresh init"
+
+    trigger_rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'").fetchall()
     conn.close()
 
-    triggers = {row[0] for row in rows}
+    triggers = {
+        name
+        for name, sql in trigger_rows
+        if any(f"INSERT INTO {fts_table}" in sql or f"DELETE FROM {fts_table}" in sql for fts_table in fts5_tables)
+    }
     missing = _CANONICAL_FTS_TRIGGERS - triggers
     assert not missing, f"Fresh init is missing canonical FTS triggers: {sorted(missing)}"
     assert triggers == _CANONICAL_FTS_TRIGGERS
