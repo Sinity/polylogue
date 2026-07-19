@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 import json as _json
 import sqlite3
+import threading
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import aiosqlite
@@ -25,6 +28,7 @@ from polylogue.insights.archive_models import (
     SessionInferencePayload,
 )
 from polylogue.insights.fallback import FallbackReason
+from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.insights.session.aggregates import (
     list_async_provider_day_groups,
@@ -713,6 +717,59 @@ def build_session_insight_records(
     )
 
 
+_INSIGHT_COMPUTE_WORKERS_ENV_VAR = "POLYLOGUE_INSIGHT_COMPUTE_WORKERS"
+
+
+def _insight_compute_workers(job_count: int) -> int:
+    """Bounded worker count for per-session insight compute fan-out.
+
+    Reuses the same CPU-count-clamped default as parse-pool dispatch
+    (``resolve_parse_worker_count``) under a distinct env var, since the
+    underlying question -- "how many CPU-bound workers is reasonable here"
+    -- is identical.
+    """
+    return min(job_count, resolve_parse_worker_count(env_var=_INSIGHT_COMPUTE_WORKERS_ENV_VAR))
+
+
+def compute_session_insight_bundles(
+    jobs: Sequence[Callable[[], SessionInsightRecordBundle]],
+) -> list[SessionInsightRecordBundle]:
+    """Run each independent per-session insight-compute job, in ``jobs`` order.
+
+    Fan-out is gated on ``parallel_threads_effective()`` -- see
+    ``polylogue.pipeline.services.process_pool`` for why: a standard GIL
+    build gets zero speedup from CPU-bound threads and risks starving a
+    concurrent SQLite writer thread, so a ``ThreadPoolExecutor`` only
+    engages under a genuinely free-threaded interpreter (3.14t). Below that,
+    or for zero/one jobs, every job runs sequentially on the calling thread
+    -- byte-identical to the pre-fan-out behavior.
+
+    Each job is expected to be pure Python compute over an already-hydrated
+    ``Session`` (see ``build_session_insight_record_bundles`` and
+    ``storage/insights/session/refresh.py``): no SQLite connection, no
+    shared mutable state, so results are safe to compute concurrently. A
+    caller-supplied ``stage_timing_add`` sink is the one shared piece of
+    mutable state jobs may still touch; callers that pass one MUST make its
+    write path thread-safe (``rebuild_session_insights_sync`` does this with
+    a lock) since it is invoked from worker threads whenever fan-out is
+    active.
+
+    Results are returned in ``jobs`` order regardless of completion order,
+    so callers can zip them back onto per-session bookkeeping
+    deterministically, and the single writer always applies per-session
+    writes in a fixed, reproducible order independent of which path (or how
+    many workers) computed them.
+    """
+    if len(jobs) <= 1 or not parallel_threads_effective():
+        return [job() for job in jobs]
+    with ThreadPoolExecutor(
+        max_workers=_insight_compute_workers(len(jobs)),
+        thread_name_prefix="insight-compute",
+    ) as pool:
+        futures = [pool.submit(job) for job in jobs]
+        return [future.result() for future in futures]
+
+
 def build_session_insight_record_bundles(
     sessions: Iterable[Session],
     *,
@@ -722,8 +779,9 @@ def build_session_insight_record_bundles(
 ) -> list[SessionInsightRecordBundle]:
     compaction_counts = compaction_counts_by_session or {}
     logical_ids = logical_session_ids_by_session or {}
-    return [
-        build_session_insight_records(
+    jobs = [
+        functools.partial(
+            build_session_insight_records,
             session,
             compaction_count=compaction_counts.get(str(session.id)),
             logical_session_id=logical_ids.get(str(session.id)),
@@ -731,6 +789,7 @@ def build_session_insight_record_bundles(
         )
         for session in sessions
     ]
+    return compute_session_insight_bundles(jobs)
 
 
 def _session_count_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
@@ -1333,11 +1392,25 @@ def rebuild_session_insights_sync(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "insights",
 ) -> SessionInsightCounts:
+    # ``add_timing`` is handed to ``build_session_insight_record_bundles`` as
+    # ``stage_timing_add`` and invoked from every per-session compute job
+    # (build_session_insight_records fires it ~8x per session). When
+    # ``compute_session_insight_bundles`` fans those jobs out across a
+    # ThreadPoolExecutor (parallel_threads_effective()), multiple worker
+    # threads race on the exact same read-modify-write of
+    # ``stage_timings_s[key]``; without a lock that race silently drops
+    # increments (undercounting stage timings, not a crash). The lock is
+    # cheap enough to hold unconditionally rather than branch on whether
+    # fan-out is actually active this call.
+    timing_lock = threading.Lock()
+
     def add_timing(name: str, started_at: float) -> None:
         if stage_timings_s is None:
             return
         key = f"{stage_timing_prefix}.{name}"
-        stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
+        elapsed = time.perf_counter() - started_at
+        with timing_lock:
+            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + elapsed
 
     session_chunks: Iterable[_SessionInsightRebuildChunk]
     previous_profile_groups: set[tuple[str, str]] = set()
@@ -1746,6 +1819,7 @@ __all__ = [
     "SessionInsightRecordBundle",
     "build_session_insight_record_bundles",
     "build_session_insight_records",
+    "compute_session_insight_bundles",
     "hydrate_sessions",
     "iter_session_id_pages_async",
     "iter_session_id_pages_sync",

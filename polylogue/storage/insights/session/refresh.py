@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -551,20 +552,38 @@ async def _apply_session_insight_session_updates_async(
             root_id = root_ids_by_session.get(session_id)
             if root_id is not None:
                 thread_root_ids.add(root_id)
+        # Sessions with no hydrated content (deleted concurrently, or an
+        # empty tree) never reach compute -- only their old provider-day
+        # group needs tracking. Everything else is independent, read-only
+        # compute over an already-hydrated Session, so it fans out across
+        # compute_session_insight_bundles's bounded thread pool exactly like
+        # the full-rebuild path (rebuild_session_insights_sync/_async), gated
+        # the same way on parallel_threads_effective(). Building the job list
+        # first (rather than computing inline) keeps this chunk's write order
+        # identical to the pre-fan-out sequential loop regardless of which
+        # jobs actually ran in parallel.
+        present_full_ids: list[str] = []
         for session_id in chunk_full_ids:
-            old_profile_record = old_profile_records.get(session_id)
-            hydrated_session = hydrated_by_id.get(session_id)
-            if hydrated_session is None:
-                old_group = profile_provider_day(old_profile_record)
+            if hydrated_by_id.get(session_id) is None:
+                old_group = profile_provider_day(old_profile_records.get(session_id))
                 if old_group is not None:
                     affected_groups.add(old_group)
                 continue
+            present_full_ids.append(session_id)
 
-            record_bundle = build_session_insight_records(
-                hydrated_session,
+        full_jobs = [
+            functools.partial(
+                build_session_insight_records,
+                hydrated_by_id[session_id],
                 compaction_count=batch.compaction_counts_by_session.get(session_id) if batch is not None else None,
                 logical_session_id=root_ids_by_session.get(session_id),
             )
+            for session_id in present_full_ids
+        ]
+        full_bundles = _rebuild.compute_session_insight_bundles(full_jobs)
+
+        for session_id, record_bundle in zip(present_full_ids, full_bundles, strict=True):
+            old_profile_record = old_profile_records.get(session_id)
             record_bundles.append(record_bundle)
 
             counts.add(
