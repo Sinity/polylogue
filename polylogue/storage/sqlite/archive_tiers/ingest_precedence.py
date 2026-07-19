@@ -26,6 +26,27 @@ def browser_capture_precedence(
     incoming_message_count: int,
 ) -> BrowserCapturePrecedence:
     """Resolve browser-source ownership before provider timestamp freshness."""
+    existing_is_browser_capture = existing_is_dom_fallback or existing_has_native_payload
+    incoming_is_browser_capture = incoming_is_dom_fallback or incoming_has_native_payload
+
+    # A genuine, non-browser-capture arrival (a direct/native provider export,
+    # or any other real re-ingest) always outranks content that was only ever
+    # established by a browser capture (dom-fallback or native-payload). A
+    # browser capture exists to backfill a session before its paired direct
+    # export shows up, never to shadow the export once it arrives. Falling
+    # through to provider-timestamp freshness for this combination is order
+    # dependent: whichever material is ingested first sets the session's
+    # ``updated_at_ms``, and a capture's own capture timestamp is frequently
+    # *later* than the underlying conversation's real ``updated_at`` (the
+    # capture can happen well after the last message was sent). A
+    # single-writer replay that always processes the direct export first
+    # never observes this; a live daemon ingesting a batch of newly staged
+    # files with no ordering guarantee across them can process the capture
+    # first and then permanently skip the real export as "stale"
+    # (polylogue-z1c6).
+    if existing_is_browser_capture and not incoming_is_browser_capture:
+        return "replace"
+
     lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
     lower_precedence_export = (
         existing_has_native_payload
