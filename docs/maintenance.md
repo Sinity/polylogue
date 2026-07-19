@@ -192,6 +192,33 @@ Exit code is non-zero when any check reports `error` (or, with `--strict`,
 temporarily busy under a concurrent rebuild — never aborts the rest; each
 check independently reports its own outcome.
 
+### `polylogue ops maintenance embeddings-rescue` — retired-tier vector rescue
+
+Break-glass, offline-only migration for a retired `embeddings.db.v2-retired-*`
+tier left behind by an index rebuild/incident. `--plan` (default) is a
+read-only census of vectors rescuable by exact `(message_id, content_hash,
+model)` match against the live index; `--yes` copies vectors for every
+*fully rescuable session* directly into `embeddings.db`, skipping a live
+provider re-embed for those sessions. Rescue is session-, not message-,
+granular: the live embed path always re-embeds every eligible message of a
+session it selects in one atomic write, so a session only avoids a real API
+call when *all* of its eligible messages have an exact retired match — a
+partial match saves nothing and is left for the real embed pass.
+
+```bash
+polylogue ops maintenance embeddings-rescue --source /path/to/embeddings.db.v2-retired-20260718
+polylogue ops maintenance embeddings-rescue --source /path/to/retired.db --yes --limit 500
+polylogue ops maintenance embeddings-rescue --source /path/to/retired.db --output-format json | jq .
+```
+
+Refuses `--yes` while `polylogued` is running for this archive (offline-only
+in this version). Publication goes through the same generation-guarded
+primitives the live embed path uses, so a rescued session reads as
+already-embedded to the daemon's own freshness check — a second invocation
+is a no-op over already-rescued sessions (idempotent, resumable via
+`--limit`). Apply mode always reports a byte-identity sample check
+(`--sample-verify-count`) against the source vectors.
+
 ### `--operation-id` and `--resume`: worked example
 
 Replay execution writes a small JSON state file under

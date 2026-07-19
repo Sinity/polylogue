@@ -900,7 +900,7 @@ files:
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/__init__.py
-    loc: 152
+    loc: 158
     target: polylogue/cli/commands/maintenance/__init__.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_archive_plan.py
@@ -934,6 +934,10 @@ files:
   - path: polylogue/cli/commands/maintenance/_embeddings.py
     loc: 164
     target: polylogue/cli/commands/maintenance/_embeddings.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_embeddings_rescue.py
+    loc: 172
+    target: polylogue/cli/commands/maintenance/_embeddings_rescue.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_migrate_tier.py
     loc: 90
@@ -3504,6 +3508,10 @@ files:
   - path: polylogue/storage/embeddings/reconcile.py
     loc: 558
     target: polylogue/storage/embeddings/reconcile.py
+    owner: stable
+  - path: polylogue/storage/embeddings/rescue.py
+    loc: 606
+    target: polylogue/storage/embeddings/rescue.py
     owner: stable
   - path: polylogue/storage/embeddings/sql.py
     loc: 102
