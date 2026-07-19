@@ -688,6 +688,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-authority-daemon-health-proof",
+        "workspace",
+        "Prove daemon status/health HTTP responsiveness during a real raw-authority drain.",
+        "devtools.raw_authority_daemon_health_proof",
+        use_when=(
+            "Prove polylogue-hjpx.2 AC2's daemon-health responsiveness clause: unlike "
+            "raw-authority-scale-proof and raw-authority-restart-proof (which call "
+            "repair_raw_materialization in-process with no HTTP surface), this starts a real "
+            "polylogued subprocess, lets its own periodic convergence loop drain a synthetic "
+            "backlog, and concurrently probes /healthz/live, /healthz/ready, and /api/status "
+            "on a fixed interval to record p50/p95/p99/max latency and any unresponsive span."
+        ),
+        examples=(
+            "devtools workspace raw-authority-daemon-health-proof --json",
+            "devtools workspace raw-authority-daemon-health-proof --components 200 --raws 200 --keep --json",
+        ),
+    ),
+    CommandSpec(
         "workspace temporal-read-profile",
         "workspace",
         "Measure read --view temporal phase timings on the active archive.",
