@@ -20,10 +20,22 @@ def _initialize_worker_logging() -> None:
 
 
 def process_pool_context() -> multiprocessing.context.BaseContext:
-    """Return a start method safe for multi-threaded callers."""
-    start_methods = multiprocessing.get_all_start_methods()
-    if "forkserver" in start_methods:
-        return multiprocessing.get_context("forkserver")
+    """Return a start method safe for multi-threaded callers.
+
+    ``forkserver`` preloads ``__main__`` (via ``runpy.run_path`` on
+    ``sys.argv[0]``) once, at forkserver-process boot, then forks each worker
+    from that single preloaded process. For the real CLI entry point, that
+    preload executes polylogue's entire import graph inside the forkserver
+    process. Any thread or lock created as a side effect of that import is
+    inherited — already running or held — by every subsequently forked
+    worker, which can deadlock workers before they ever service a task
+    (observed in production: forkserver alive in its serve loop, zero workers
+    ever spawned, parent parked forever in ``as_completed``). ``spawn`` reruns
+    the same ``__main__`` import once per worker instead of forking a shared
+    preloaded process, so no inherited thread/lock state crosses into a
+    worker. That per-worker import cost (~1-2s) is acceptable here because
+    pool workers are long-lived and reused across many parse tasks.
+    """
     return multiprocessing.get_context("spawn")
 
 
