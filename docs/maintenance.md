@@ -159,6 +159,39 @@ polylogue ops maintenance run --dry-run
 polylogue ops maintenance run --target session_insights --output-format json
 ```
 
+### `polylogue ops maintenance verify-archive` — coherence gate
+
+Read-only. Runs a fixed registry of independent checks over the whole
+archive and reports each as `ok`/`warning`/`error`/`skip` plus evidence
+numbers, never just a boolean. This is the repeatable substitute for the
+manual checklist an operator used to run by hand after a blue-green index
+rebuild or a full restore — "does the archive prove its own restore?"
+
+```bash
+polylogue ops maintenance verify-archive
+polylogue ops maintenance verify-archive --output-format json | jq .
+polylogue ops maintenance verify-archive --check tier-schema --check pointer-coherence
+polylogue ops maintenance verify-archive --strict   # also fail on warnings, not only errors
+```
+
+Checks (see `polylogue/maintenance/archive_verification.py` for the
+extensible registry):
+
+| Check | Proves |
+| --- | --- |
+| `tier-schema` | Every tier file (source/index/embeddings/user/ops) exists at its current `PRAGMA user_version`. |
+| `pointer-coherence` | The conventional `index.db` path and the active `.index-active-pointer` generation agree (an interrupted blue-green promotion leaves these diverged — polylogue-k8kj class). |
+| `source-index-coverage` | Every raw session with a complete census has a materialized index session (missing work), and every index session's `raw_id` still resolves to a real raw row (orphans) — reported as counts and id samples, not booleans. |
+| `fts-parity` | `messages_fts`/`blocks_command_trigram` exactly cover their source `blocks` rows, archive-wide, with the worst-offending sessions surfaced by name. |
+| `lineage-sanity` | `session_links.resolved_dst_session_id` and `branch_point_message_id` resolve to real sessions/messages (the latter is deliberately not a foreign key — see the data-model docs). |
+| `planner-stats` | `sqlite_stat1` covers `blocks`/`messages`/`action_pairs` (warn-level: a fresh generation without `ANALYZE` picks pathological query plans — polylogue-l3tk class). |
+| `counts-summary` | Archive-wide session/message/block counts and an origin breakdown — the numbers-freeze starting point for an operator handoff. |
+
+Exit code is non-zero when any check reports `error` (or, with `--strict`,
+`warning`). A single check's failure — including a tier database being
+temporarily busy under a concurrent rebuild — never aborts the rest; each
+check independently reports its own outcome.
+
 ### `--operation-id` and `--resume`: worked example
 
 Replay execution writes a small JSON state file under
@@ -498,6 +531,40 @@ symlinked tiers are rejected because they do not survive mutation of the live
 database. If release notes provide neither an additive durable migration
 nor a derived-tier rebuild plan, keep the daemon stopped and roll back the
 binary.
+
+### Proving an archive is coherent after a rebuild or restore
+
+**Symptoms.** None yet — this is the proactive check to run *before* symptoms
+appear, immediately after any operation that replaces or promotes a whole
+tier: a derived-tier rebuild (`polylogue ops reset --index && polylogued run`),
+a durable-tier migration (previous runbook), or a full restore from backup.
+
+**Why this matters.** A blue-green index rebuild can leave the conventional
+`index.db` path stale while `.index-active-pointer` already points at the
+promoted generation (polylogue-k8kj: an interrupted rebuild left a fresh
+process silently reading a near-empty 4-session file instead of the real
+18,796-session archive). A restore can silently drop rows a backup profile
+never covered. `verify-archive` turns the manual "does this look right?"
+inspection into one repeatable, extensible command instead of an ad hoc
+sequence of `sqlite3` queries re-derived by hand each time.
+
+**Recovery / verification.**
+
+```bash
+# Run every check; --strict also fails on warnings (e.g. missing sqlite_stat1).
+polylogue ops maintenance verify-archive --output-format json | jq .
+
+# Or narrow to the checks most relevant to the operation just performed:
+polylogue ops maintenance verify-archive --check tier-schema --check pointer-coherence
+```
+
+A clean run (`"blocking": false`) is the proof the archive is coherent: every
+tier is present at its current schema version, the active pointer and
+conventional path agree, source-vs-index materialization has no gaps or
+orphans, FTS parity holds archive-wide, and lineage references resolve. A
+non-zero exit means read the failing check's `evidence` payload (id samples,
+worst-offending sessions, tier paths) before deciding whether the drift is
+expected mid-rebuild noise or a real regression — do not silently retry.
 
 ### Investigating a stuck source
 
