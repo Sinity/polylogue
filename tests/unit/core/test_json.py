@@ -262,11 +262,85 @@ def test_dumps_sort_keys_byte_identical_across_backends(
     This is the property `material_protocol/v1/canonical.py` depends on for
     content-hash stability (polylogue-xikl): canonical hashing must not
     silently change bytes merely because the active JSON backend changed.
+
+    This corpus deliberately stays within the range where all three backends
+    already agree (see `test_dumps_sort_keys_exponent_floats_orjson_msgspec_parity`
+    below for the exponent-notation float corpus, where stdlib's float
+    formatter is a documented, accepted exception to this guarantee).
     """
     monkeypatch.setattr(core_json, "_BACKEND", backend)
     payload = {"b": 1, "a": Decimal("2.5"), "big": 2**65, "nested": {"z": 1, "y": [3, 1, 2]}}
     output = core_json.dumps_bytes(payload, sort_keys=True)
     assert output == b'{"a":2.5,"b":1,"big":36893488147419103232,"nested":{"y":[3,1,2],"z":1}}'
+
+
+# Backends the exponent-float byte-identity guarantee actually covers.
+# Coordinator repro (PR #3155 review): dumps_bytes({"exp": 1e30, "big": ...,
+# "tiny": 5e-324}, sort_keys=True) -- orjson and msgspec agree on every float
+# formatting decision except one: orjson always writes a `+` for a positive
+# exponent (`1e+30`) while msgspec omits it (`1e30`); `core.json` normalizes
+# msgspec's output to close that seam (`_normalize_msgspec_float_exponents`).
+# stdlib json is a *larger*, unreconciled departure (different decimal-vs-
+# exponent threshold entirely -- see `test_stdlib_diverges_from_orjson_for_small_exponents`
+# below) and is therefore NOT part of this guarantee.
+_CANONICAL_FLOAT_PARITY_BACKENDS: tuple[core_json.JSONBackend, ...] = ("orjson", "msgspec")
+
+
+@pytest.mark.parametrize("backend", _CANONICAL_FLOAT_PARITY_BACKENDS)
+def test_dumps_sort_keys_exponent_floats_orjson_msgspec_parity(
+    monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
+) -> None:
+    """Exponent-notation floats (the coordinator's PR #3155 repro corpus, plus
+    a realistic tiny cost_usd shape and non-ASCII text) round-trip to
+    byte-identical canonical output on orjson and msgspec -- proving the
+    facade's msgspec exponent-sign normalization actually fires, rather than
+    merely not-crashing."""
+    monkeypatch.setattr(core_json, "_BACKEND", backend)
+    payload = {
+        "exp": 1e30,
+        "big": 1.7976931348623157e308,
+        "tiny": 5e-324,
+        "small_cost": 2e-06,
+        "neg_zero": -0.0,
+        "unicode": "żółć🚀",
+    }
+    output = core_json.dumps_bytes(payload, sort_keys=True)
+    assert output == (
+        b'{"big":1.7976931348623157e+308,"exp":1e+30,"neg_zero":-0.0,'
+        b'"small_cost":2e-6,"tiny":5e-324,"unicode":"\xc5\xbc\xc3\xb3\xc5\x82\xc4\x87\xf0\x9f\x9a\x80"}'
+    )
+
+
+def test_stdlib_diverges_from_orjson_for_small_exponents() -> None:
+    """Documents the accepted limit of the byte-stability guarantee: stdlib
+    json picks a different decimal-vs-exponent threshold than orjson/msgspec
+    (`1e-05` vs `0.00001`) and zero-pads short exponents (`2e-06` vs `2e-6`).
+    This is deliberately NOT reconciled (would mean reimplementing orjson's
+    float formatter) -- canonical byte-stability is guaranteed between orjson
+    and msgspec only, per the facade's module docstring. This test exists so
+    a future "fix" attempt doesn't get silently reverted without realizing
+    the gap is documented, known, and accepted."""
+    original = core_json._BACKEND
+    core_json._BACKEND = "stdlib"
+    try:
+        stdlib_output = core_json.dumps_bytes({"v": 2e-06}, sort_keys=True)
+    finally:
+        core_json._BACKEND = original
+    assert stdlib_output == b'{"v":2e-06}'  # not b'{"v":2e-6}' -- the orjson/msgspec form
+
+
+def test_msgspec_exponent_normalizer_does_not_corrupt_string_content() -> None:
+    """The exponent-sign normalizer operates on raw encoded bytes via a regex
+    that must skip over string literals -- a string containing an "e5"-shaped
+    substring must survive untouched, not have a `+` spliced into it."""
+    original = core_json._BACKEND
+    core_json._BACKEND = "msgspec"
+    try:
+        output = core_json.dumps_bytes({"note": "batch e5 vs cafe10, cost 2e-06"}, sort_keys=True)
+    finally:
+        core_json._BACKEND = original
+    assert core_json.loads(output) == {"note": "batch e5 vs cafe10, cost 2e-06"}
+    assert output == b'{"note":"batch e5 vs cafe10, cost 2e-06"}'
 
 
 @pytest.mark.parametrize("backend", ALL_BACKENDS)

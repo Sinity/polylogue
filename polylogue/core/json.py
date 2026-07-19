@@ -21,12 +21,25 @@ anything beyond what this module's parameters guarantee (compact vs.
 2-space-indent, sorted vs. insertion dict-key order, ASCII-safe UTF-8
 encoding). Within one process the active backend is fixed at import time,
 so output is self-consistent for hashing/idempotency purposes.
+
+**Float exponent formatting** (byte-stability guarantee, and its limit): the
+facade normalizes msgspec's float-exponent output to match orjson's exactly
+(msgspec omits the ``+`` sign on positive exponents -- ``1e30`` vs orjson's
+``1e+30`` -- everything else already agrees), so canonical/content-hash
+dumps (`material_protocol/v1/canonical.py`) stay byte-identical whether the
+active backend is orjson or msgspec. stdlib json's float formatter is a
+*larger* departure (a different decimal-vs-exponent threshold entirely, e.g.
+``1e-05`` where orjson/msgspec write ``0.00001``) that this facade does not
+reconcile -- stdlib is a best-effort last resort used only when neither
+accelerator is installed; canonical byte-stability is guaranteed between
+orjson and msgspec, not into the stdlib-only tier.
 """
 
 from __future__ import annotations
 
 import importlib
 import json as _stdlib_json
+import re
 from collections.abc import Callable
 from decimal import Decimal
 from types import ModuleType
@@ -192,6 +205,52 @@ def _msgspec_enc_hook(encoder: JSONEncoder) -> Callable[[object], object]:
     return _hook
 
 
+# Matches EITHER a complete JSON string literal (left untouched -- alternative
+# tried first so an "e5"-shaped substring inside a string is never mistaken for
+# a number) OR a bare JSON number with an exponent (rewritten). Safe over raw
+# UTF-8 bytes: `"`/`\`/digits/`e`/`-`/`.` are all single-byte ASCII, and UTF-8
+# continuation bytes are always >= 0x80, so they can never masquerade as JSON
+# structural characters.
+_MSGSPEC_EXPONENT_TOKEN_RE = re.compile(rb'"(?:[^"\\]|\\.)*"' rb"|(-?(?:0|[1-9]\d*)(?:\.\d+)?)e(-?\d+)")
+
+
+def _msgspec_exponent_plus_sign(exponent: bytes) -> bytes:
+    return exponent if exponent.startswith(b"-") else b"+" + exponent
+
+
+def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
+    """Make msgspec's exponent-notation floats byte-identical to orjson's.
+
+    msgspec and orjson agree on every float-formatting decision checked
+    empirically (decimal-vs-exponent threshold, digit count, no zero-padding)
+    *except* one: orjson always writes an explicit ``+`` for a positive
+    exponent (``1e+30``), while msgspec omits it (``1e30``). Negative
+    exponents already match byte-for-byte (both write ``1e-6``, never
+    ``1e-06``). This is the one seam that matters for
+    `material_protocol/v1/canonical.py`'s content-hash stability across
+    backends -- without it, canonical bytes would differ purely because the
+    active JSON backend changed (found via a coordinator repro on
+    ``dumps_bytes({"tiny": 5e-324}, sort_keys=True)``, PR #3155 review).
+
+    stdlib json is a different, larger departure from orjson (it picks
+    decimal vs. exponent notation at a different magnitude threshold, e.g.
+    ``1e-05`` for ``0.00001`` where orjson/msgspec write ``0.00001``, and
+    zero-pads short exponents to 2 digits) -- reconciling that would mean
+    reimplementing orjson's float formatter from scratch, not a one-line fix.
+    stdlib therefore stays a best-effort *last-resort* fallback (used only
+    when neither orjson nor msgspec is installed at all); canonical/hash byte
+    stability is only a hard guarantee between orjson and msgspec.
+    """
+
+    def _repl(match: re.Match[bytes]) -> bytes:
+        mantissa, exponent = match.group(1), match.group(2)
+        if mantissa is None:
+            return match.group(0)  # matched a string literal -- leave untouched
+        return mantissa + b"e" + _msgspec_exponent_plus_sign(exponent)
+
+    return _MSGSPEC_EXPONENT_TOKEN_RE.sub(_repl, data)
+
+
 def _raw_loads(data: str | bytes | bytearray) -> object:
     result: object
     if _BACKEND == "orjson":
@@ -249,6 +308,7 @@ def _raw_dumps_bytes(obj: object, *, encoder: JSONEncoder, sort_keys: bool, inde
             )
         except (TypeError, NotImplementedError):
             return None
+        raw = _normalize_msgspec_float_exponents(raw)
         if indent == 2:
             raw = _msgspec_json.format(raw, indent=2)
         # cast: same widening as the orjson branch above; msgspec.json.encode
