@@ -23,12 +23,21 @@ class RawMaterializationCounts:
     paused replay plan: no sessions were repaired yet, but the pass moved
     the backlog and the caller's backlog burst must continue instead of
     treating the census phase as quiescence.
+
+    ``candidate_count`` and ``pending_blob_bytes`` describe the *whole*
+    unbounded backlog the pass measured (not the bounded per-pass batch):
+    ``repair_materialization`` enumerates every matching raw before
+    applying ``raw_artifact_limit``, so these two fields are how a caller
+    detects a bulk-scale backlog the trickle conveyor is not designed for
+    (polylogue-m6tp) without re-querying storage itself.
     """
 
     repaired_sessions: int = 0
     executed_plans: int = 0
     remaining_candidates: int = 0
     censused_components: int = 0
+    candidate_count: int = 0
+    pending_blob_bytes: int = 0
 
     @property
     def made_progress(self) -> bool:

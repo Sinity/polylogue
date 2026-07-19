@@ -67,6 +67,7 @@ from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
     from polylogue.daemon.lifecycle import DaemonLifecycle
+    from polylogue.product.raw_authority import RawMaterializationCounts
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -88,6 +89,20 @@ _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
+# Lesson from the 2026-07-18/19 restore (polylogue-m6tp, polylogue-5jak): the
+# trickle conveyor's bounded per-pass passes are sized for steady-state
+# drift, not a bulk-scale backlog. Above this many pending raws or this many
+# pending bytes, grinding through bounded passes turns ~1h of parse work into
+# a weeks-scale projection; `polylogue ops maintenance rebuild-index` (a
+# resumable blue-green generation rebuild) does the same work in one sweep.
+# The daemon does not switch to that path itself (open questions: pausing
+# the watcher, a frozen source-snapshot requirement, and the restart story —
+# tracked as a polylogue-m6tp follow-up); it only recommends it, loudly and
+# rate-limited so a long-lived backlog doesn't spam the journal every pass.
+_BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD = 2_000
+_BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GiB
+_BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS = 3600.0  # at most once/hour
+_last_bulk_rebuild_recommendation_monotonic: float | None = None
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -543,6 +558,42 @@ async def _retry_convergence_debt_once(db: Path) -> None:
         logger.warning("convergence: check failed", exc_info=True)
 
 
+def _bulk_scale_raw_materialization_backlog(counts: RawMaterializationCounts) -> bool:
+    """Whether a pass's measured backlog is bulk-scale, not steady-state drift."""
+    return (
+        counts.candidate_count > _BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD
+        or counts.pending_blob_bytes > _BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD
+    )
+
+
+def _maybe_recommend_bulk_rebuild(counts: RawMaterializationCounts) -> None:
+    """Loudly recommend the bulk rebuild path once a backlog is bulk-scale.
+
+    This only journals a recommendation; it does not run the bulk path
+    itself (see the module-level constants' comment and polylogue-m6tp for
+    why: watcher-pause, frozen source-snapshot, and restart semantics are
+    still open questions for a daemon-driven bulk path). Rate-limited to at
+    most once per hour per daemon process so a long-lived backlog doesn't
+    re-log every burst pass.
+    """
+    global _last_bulk_rebuild_recommendation_monotonic
+    if not _bulk_scale_raw_materialization_backlog(counts):
+        return
+    now = time.monotonic()
+    last = _last_bulk_rebuild_recommendation_monotonic
+    if last is not None and (now - last) < _BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS:
+        return
+    _last_bulk_rebuild_recommendation_monotonic = now
+    logger.warning(
+        "raw materialization: backlog is bulk-scale (%d candidate(s), %.2f GiB pending) -- "
+        "the trickle conveyor is sized for steady-state drift and can take weeks on a backlog "
+        "this size; run `polylogue ops maintenance rebuild-index` for a resumable blue-green "
+        "bulk rebuild instead of waiting on this conveyor",
+        counts.candidate_count,
+        counts.pending_blob_bytes / (1024**3),
+    )
+
+
 async def _periodic_raw_materialization_convergence() -> None:
     """Continuously converge durable raw source rows into the index tier.
 
@@ -584,6 +635,7 @@ async def _periodic_raw_materialization_convergence() -> None:
                     and materialized.repaired_sessions == 0
                     and materialized.executed_plans == 0
                 )
+                _maybe_recommend_bulk_rebuild(materialized)
                 if materialized.made_progress:
                     logger.info(
                         "raw materialization: repaired %d session(s), executed %d frontier plan(s), %d candidate(s) remaining",
@@ -744,6 +796,8 @@ def _drain_raw_materialization_once(
         executed_plans=frontier_repaired,
         remaining_candidates=remaining,
         censused_components=int(metrics.get("raw_materialization_census_components_attempted", 0)),
+        candidate_count=int(metrics.get("raw_materialization_candidate_count", 0)),
+        pending_blob_bytes=int(metrics.get("raw_materialization_total_blob_bytes", 0)),
     )
 
 

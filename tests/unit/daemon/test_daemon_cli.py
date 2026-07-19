@@ -607,6 +607,141 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     }
 
 
+def test_maybe_recommend_bulk_rebuild_silent_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backlog under both thresholds must not trigger the bulk-rebuild
+    recommendation: this exercises the real threshold predicate
+    (`_bulk_scale_raw_materialization_backlog`), not a stub -- removing the
+    predicate's comparisons (e.g. hardcoding it to always return True) makes
+    this test fail because the journal would then log unconditionally."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
+    counts = RawMaterializationCounts(
+        repaired_sessions=1,
+        candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD,
+        pending_blob_bytes=daemon_cli._BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD,
+    )
+    with patch.object(daemon_cli.logger, "warning") as warning:
+        daemon_cli._maybe_recommend_bulk_rebuild(counts)
+
+    warning.assert_not_called()
+
+
+def test_maybe_recommend_bulk_rebuild_fires_on_candidate_count_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exceeding the candidate-count threshold alone (bytes below threshold)
+    must trigger the loud journal recommendation naming the bulk rebuild
+    command. This exercises `_maybe_recommend_bulk_rebuild` ->
+    `_bulk_scale_raw_materialization_backlog` against production constants;
+    deleting either comparison in the predicate makes this test fail."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
+    monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: 1_000.0)
+    counts = RawMaterializationCounts(
+        candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1,
+        pending_blob_bytes=0,
+    )
+    with patch.object(daemon_cli.logger, "warning") as warning:
+        daemon_cli._maybe_recommend_bulk_rebuild(counts)
+
+    warning.assert_called_once()
+    message, *args = warning.call_args.args
+    assert "rebuild-index" in message
+    assert "polylogue ops maintenance rebuild-index" in message
+    assert args[0] == counts.candidate_count
+
+
+def test_maybe_recommend_bulk_rebuild_fires_on_byte_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exceeding the pending-bytes threshold alone (candidate count below
+    threshold) must also trigger the recommendation -- the two thresholds
+    are independent tripwires, not a combined one."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
+    monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: 1_000.0)
+    counts = RawMaterializationCounts(
+        candidate_count=0,
+        pending_blob_bytes=daemon_cli._BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD + 1,
+    )
+    with patch.object(daemon_cli.logger, "warning") as warning:
+        daemon_cli._maybe_recommend_bulk_rebuild(counts)
+
+    warning.assert_called_once()
+
+
+def test_maybe_recommend_bulk_rebuild_is_rate_limited_to_once_per_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated passes over a still bulk-scale backlog must not re-log the
+    recommendation more than once per hour; the third call, past the
+    interval, must log again."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
+    clock = iter(
+        [
+            1_000.0,  # first call: logs, records last=1000.0
+            1_000.0 + daemon_cli._BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS - 1,  # within interval: silent
+            1_000.0 + daemon_cli._BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS + 1,  # past interval: logs again
+        ]
+    )
+    monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: next(clock))
+    counts = RawMaterializationCounts(
+        candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1,
+        pending_blob_bytes=0,
+    )
+    with patch.object(daemon_cli.logger, "warning") as warning:
+        daemon_cli._maybe_recommend_bulk_rebuild(counts)
+        daemon_cli._maybe_recommend_bulk_rebuild(counts)
+        daemon_cli._maybe_recommend_bulk_rebuild(counts)
+
+    assert warning.call_count == 2
+
+
+def test_periodic_raw_materialization_convergence_recommends_bulk_rebuild_for_bulk_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The periodic conveyor loop must actually invoke the bulk-rebuild
+    recommendation check per pass, not merely define it unreachably."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        return RawMaterializationCounts(
+            repaired_sessions=0,
+            executed_plans=0,
+            remaining_candidates=0,
+            candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1,
+            pending_blob_bytes=0,
+        )
+
+    async def fake_sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync=fake_run_sync),
+    )
+    recommended: list[int] = []
+    monkeypatch.setattr(
+        daemon_cli,
+        "_maybe_recommend_bulk_rebuild",
+        lambda counts: recommended.append(counts.candidate_count),
+    )
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert recommended == [daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1]
+
+
 def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.daemon import cli as daemon_cli
 
