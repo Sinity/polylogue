@@ -231,6 +231,31 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # source evidence its nodes and edges cite.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=41,
+        # action_pairs stops materializing tool_input/output_text text
+        # copies (polylogue-2i2w) -- every tool interaction existed ~3x on
+        # disk (blocks + action_pairs + FTS), and the copy turned a
+        # per-session delete into scattered overflow-page random IO. The
+        # surviving join/rank/outcome columns are copy-forward safe (no
+        # parser semantics involved): a clone drops the two columns from
+        # action_pairs and the actions VIEW is replaced to re-join blocks
+        # for the dropped text at read time, so every reader keeps
+        # byte-identical payloads without any reparse of raw evidence.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL, DerivedDeltaClass.VIEW_ONLY),
+        operations=(
+            FastForwardOperation(
+                name="v41-action-pairs-text-copy-removal",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "action_pairs"),),
+            ),
+            FastForwardOperation(
+                name="v41-action-pairs-text-copy-removal",
+                kind=FastForwardOperationKind.REPLACE_VIEW,
+                objects=(("view", "actions"),),
+            ),
+        ),
+    ),
 )
 
 

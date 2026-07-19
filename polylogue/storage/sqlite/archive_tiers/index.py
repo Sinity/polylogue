@@ -24,7 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-INDEX_SCHEMA_VERSION = 40
+INDEX_SCHEMA_VERSION = 41
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -459,6 +459,14 @@ END;
 
 {FTS_FRESHNESS_STATE_DDL}
 
+-- polylogue-2i2w: deliberately NO tool_input/output_text columns here. This
+-- table is a join/rank/outcome index over paired tool_use/tool_result
+-- blocks -- the text itself already lives once in blocks.tool_input /
+-- blocks.text. Storing it again (index schema <= v40) made every tool
+-- interaction exist ~3x on disk (868K rows, ~4.7KB/row overflow-chained,
+-- ~4.1GB) and turned per-session DELETE into scattered random IO (measured:
+-- hours on a whale session replace). The actions VIEW below re-joins blocks
+-- by block_id to serve tool_input/output_text to readers at query time.
 CREATE TABLE IF NOT EXISTS action_pairs (
     tool_use_block_id      TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE,
     session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -469,9 +477,7 @@ CREATE TABLE IF NOT EXISTS action_pairs (
     semantic_type          TEXT,
     tool_command           TEXT,
     tool_path              TEXT,
-    tool_input             TEXT,
     tool_result_block_id   TEXT REFERENCES blocks(block_id) ON DELETE SET NULL,
-    output_text            TEXT,
     is_error               INTEGER CHECK(is_error IN (0, 1) OR is_error IS NULL),
     exit_code              INTEGER,
     FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE
@@ -508,12 +514,22 @@ WHERE is_error IS NOT NULL OR exit_code IS NOT NULL;
 -- preserves that (still surfaced, just with NULL result columns) while the
 -- empty-string guard stops '' specifically from cross-joining as if it
 -- were a real shared id (parsers currently only ever emit NULL, not '').
+-- polylogue-2i2w: tool_input/output_text are no longer materialized on
+-- action_pairs itself -- they are re-joined from blocks (by
+-- tool_use_block_id / tool_result_block_id) here, at read time, so every
+-- consumer of this view keeps byte-identical payloads without any caller
+-- change. tu is an INNER JOIN because tool_use_block_id is a NOT NULL FK
+-- ON DELETE CASCADE (the action_pairs row cannot outlive its use block); tr
+-- is a LEFT JOIN because tool_result_block_id is nullable (unpaired uses)
+-- and ON DELETE SET NULL.
 CREATE VIEW IF NOT EXISTS actions AS
 SELECT
-    session_id, message_id, tool_use_block_id, tool_name, semantic_type,
-    tool_command, tool_path, tool_input, output_text, is_error, exit_code,
-    tool_result_block_id
-FROM action_pairs;
+    ap.session_id, ap.message_id, ap.tool_use_block_id, ap.tool_name, ap.semantic_type,
+    ap.tool_command, ap.tool_path, tu.tool_input AS tool_input, tr.text AS output_text,
+    ap.is_error, ap.exit_code, ap.tool_result_block_id
+FROM action_pairs ap
+JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
+LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id;
 
 CREATE TABLE IF NOT EXISTS session_events (
     event_id                   TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
