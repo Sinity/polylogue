@@ -11,11 +11,7 @@ from __future__ import annotations
 
 import unicodedata
 
-import orjson
-
-from polylogue.core.json import JSONValue, loads
-
-_ORJSON_CANONICAL_OPTIONS = orjson.OPT_SORT_KEYS
+from polylogue.core.json import JSONValue, dumps_bytes, loads
 
 
 def nfc_normalize(value: JSONValue) -> JSONValue:
@@ -36,7 +32,7 @@ def canonical_bytes(value: JSONValue) -> bytes:
     ``b"\\n"`` themselves so the digest/line-length story stays explicit.
     """
     normalized = nfc_normalize(value)
-    return orjson.dumps(normalized, option=_ORJSON_CANONICAL_OPTIONS)
+    return dumps_bytes(normalized, sort_keys=True)
 
 
 def canonical_line(value: JSONValue) -> bytes:

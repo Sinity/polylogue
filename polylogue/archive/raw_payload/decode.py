@@ -6,15 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias, cast
 
-import orjson
-
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
     classify_artifact,
 )
 from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDocument, JSONValue, is_json_value, loads
+from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
 
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
@@ -28,7 +26,7 @@ def _decode_provider_utf8(raw: bytes) -> str:
 
     Some historical exports contain a lone UTF-16 surrogate encoded directly
     as its three-byte UTF-8 sequence. This is invalid Unicode scalar UTF-8,
-    so ``orjson`` correctly rejects it, but Python can preserve the original
+    so the active JSON backend correctly rejects it, but Python can preserve the original
     code unit with ``surrogatepass``. Arbitrary malformed byte sequences still
     raise and retain the ordinary malformed-JSONL behavior.
     """
@@ -44,9 +42,9 @@ def _decode_provider_utf8(raw: bytes) -> str:
 def _load_json_record(line: str) -> JSONValue:
     try:
         return loads(line)
-    except orjson.JSONDecodeError:
+    except JSONDecodeError:
         # Retry with stdlib json — tolerant of raw control characters
-        # (ANSI escape codes in bash output, etc.) that orjson rejects.
+        # (ANSI escape codes in bash output, etc.) that the active JSON backend rejects.
         import json
 
         return cast("JSONValue", json.loads(line))
@@ -56,12 +54,12 @@ def _load_raw_json(raw: bytes | str) -> JSONValue:
     """Parse a JSON document, retaining recoverable provider surrogates."""
     try:
         return loads(raw)
-    except (orjson.JSONDecodeError, ValueError) as error:
+    except (JSONDecodeError, ValueError) as error:
         if not isinstance(raw, bytes):
             raise
         try:
             return _load_json_record(_decode_provider_utf8(raw))
-        except (orjson.JSONDecodeError, ValueError, UnicodeDecodeError):
+        except (JSONDecodeError, ValueError, UnicodeDecodeError):
             raise error from None
 
 
@@ -111,7 +109,7 @@ def _decode_jsonl_payload(
                 continue
             try:
                 parsed = _load_json_record(line)
-            except (orjson.JSONDecodeError, ValueError) as exc:
+            except (JSONDecodeError, ValueError) as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
                     malformed_detail = f"line {line_number}: {exc}"
@@ -163,7 +161,7 @@ def _sample_jsonl_payload_with_detail(
                 continue
             try:
                 parsed = _load_json_record(line)
-            except (orjson.JSONDecodeError, ValueError) as exc:
+            except (JSONDecodeError, ValueError) as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
                     malformed_detail = f"line {line_number}: {exc}"
@@ -205,7 +203,7 @@ def _decode_raw_payload(
 
     When *raw_content* is a :class:`~pathlib.Path`, JSONL files are
     streamed line-by-line from disk (never fully loaded into memory).
-    For JSON files the path is read in one shot via ``orjson.loads``.
+    For JSON files the path is read in one shot via the active JSON backend's decode.
     """
     if isinstance(raw_content, Path):
         if prefer_jsonl:
@@ -220,7 +218,7 @@ def _decode_raw_payload(
         raw_bytes = raw_content.read_bytes()
         try:
             return _load_raw_json(raw_bytes), "json", 0, None
-        except (orjson.JSONDecodeError, ValueError) as exc:
+        except (JSONDecodeError, ValueError) as exc:
             try:
                 payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
                     raw_bytes,
@@ -245,7 +243,7 @@ def _decode_raw_payload(
             pass
     try:
         return _load_raw_json(raw), "json", 0, None
-    except (orjson.JSONDecodeError, ValueError) as exc:
+    except (JSONDecodeError, ValueError) as exc:
         try:
             payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
                 raw,

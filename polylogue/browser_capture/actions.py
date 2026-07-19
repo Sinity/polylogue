@@ -20,8 +20,6 @@ from typing import Any, TypeVar, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
-import orjson
-
 from polylogue.browser_capture.models import (
     BrowserActionAttachment,
     BrowserActionEvent,
@@ -31,6 +29,7 @@ from polylogue.browser_capture.models import (
     BrowserActionRequest,
     BrowserActionUpdateRequest,
 )
+from polylogue.core.json import dumps_bytes
 from polylogue.paths import browser_capture_spool_root
 
 ACTION_DIRNAME = "browser-actions"
@@ -97,9 +96,10 @@ def _atomic_write(path: Path, content: bytes) -> None:
 
 
 def _write_action(root: Path, action: BrowserActionIntent) -> None:
-    payload = orjson.dumps(
+    payload = dumps_bytes(
         action.model_dump(mode="json", exclude_none=True),
-        option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS,
+        sort_keys=True,
+        indent=2,
     )
     _atomic_write(_action_path(root, action.action_id), payload + b"\n")
 
@@ -242,7 +242,7 @@ def _validate_capability(request: BrowserActionRequest) -> None:
 
 def _request_sha256(request: BrowserActionRequest) -> str:
     payload = request.model_dump(mode="json", exclude={"action_id", "idempotency_key"})
-    return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
+    return hashlib.sha256(dumps_bytes(payload, sort_keys=True)).hexdigest()
 
 
 def list_actions(*, spool_path: Path | None = None) -> list[BrowserActionIntent]:

@@ -161,11 +161,11 @@ def _write_sse_comment(handler: DaemonAPIHandler, comment: bytes) -> None:
 
 
 def _write_sse_event(handler: DaemonAPIHandler, event: dict[str, object]) -> None:
-    import orjson
+    from polylogue.core.json import dumps_bytes
 
     event_id = event.get("id")
     kind = event.get("kind") or "message"
-    payload = orjson.dumps(event)
+    payload = dumps_bytes(event)
     data_lines = payload.split(b"\n")
     chunks = [
         b"id: " + str(event_id).encode() + b"\n",
