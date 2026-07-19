@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -182,3 +183,42 @@ def test_warm_returns_zero_when_no_candidates_pending(tmp_path: Path) -> None:
 
     assert warmed == 0
     assert len(stage.cache) == 0
+
+
+def test_warm_times_out_on_a_hung_worker_and_leaves_it_uncached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CodeRabbit (PR #3168): a worker that never returns (e.g. an
+    unresponsive filesystem read) must not block ``warm()`` forever -- since
+    ``warm()`` is awaited directly ahead of ``run_sync`` in the periodic
+    conveyor loop, an unbounded wait here would stall every subsequent drain
+    pass indefinitely. The hung raw is simply left uncached; a real
+    writer-held pass would reparse it normally, identical to any other
+    prefetch miss."""
+    _seed_raws(tmp_path, {"a.jsonl": _codex_payload("session-a", "hello")})
+
+    from polylogue.sources import revision_backfill
+
+    dispatched = threading.Event()
+
+    def hanging_worker(*args: object, **kwargs: object) -> object:
+        dispatched.set()
+        time.sleep(0.3)  # far longer than the test's tiny warm timeout below
+        pytest.fail("hung worker must not be awaited past the warm() timeout")
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", hanging_worker)
+
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000, warm_timeout_seconds=0.02)
+    try:
+        started = time.monotonic()
+        warmed = stage.warm(_config(tmp_path), limit=10, max_payload_bytes=10_000_000)
+        elapsed = time.monotonic() - started
+    finally:
+        stage.shutdown()
+
+    assert dispatched.wait(timeout=1.0)
+    assert warmed == 0
+    assert len(stage.cache) == 0
+    # warm() returned close to its own timeout, not after the hung worker's
+    # sleep -- proving the wait is genuinely bounded, not merely reordered.
+    assert elapsed < 0.3

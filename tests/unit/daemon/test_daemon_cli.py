@@ -1346,6 +1346,52 @@ def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drai
     assert lease_during_drain == [True]
 
 
+def test_periodic_raw_materialization_flag_on_warm_exception_still_hands_back_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """CodeRabbit test-gap (PR #3168): ``_maybe_warm_raw_materialization_parse_stage``
+    catches any exception ``stage.warm`` raises and falls back to returning
+    ``stage.cache`` -- whatever partial progress the warmer made before
+    failing -- rather than crashing the pass or discarding the cache back to
+    ``None``. A warm failure must degrade to "parse fewer raws off the
+    writer hold than usual", never "the drain pass never runs" or "every
+    cache-warmed raw this tick is silently lost"."""
+    from polylogue.daemon import cli as daemon_cli
+
+    class FakeResolved:
+        daemon_parse_stage_split = True
+
+    _sentinel_cache = object()
+    seen_prefetch_cache: list[object] = []
+
+    class FakeStage:
+        cache = _sentinel_cache
+
+        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
+            raise RuntimeError("simulated parse-stage prefetch failure")
+
+    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
+        partial = cast(functools.partial[object], func)
+        seen_prefetch_cache.append(partial.keywords["prefetch_cache"])
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    # The exception from warm() never propagated (it would have surfaced as
+    # something other than CancelledError above), and the drain pass still
+    # received the stage's cache object -- not None, not a fresh cache.
+    assert seen_prefetch_cache == [_sentinel_cache]
+
+
 def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_warm_time(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

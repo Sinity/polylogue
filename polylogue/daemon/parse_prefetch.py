@@ -49,6 +49,22 @@ logger = get_logger(__name__)
 
 _DEFAULT_MAX_INFLIGHT_BYTES = 64 * 1024 * 1024  # 64 MiB
 
+# CodeRabbit (PR #3168): as_completed()/future.result() had no timeout, so one
+# hung worker (e.g. an unresponsive filesystem read) would block warm()
+# forever -- and warm() is awaited directly ahead of run_sync in the periodic
+# raw-materialization loop, so a stuck warm pass would stall every subsequent
+# drain pass indefinitely, not just this one. 300s (5 min) is generous for
+# the happy path (a bounded batch of already-published local blob reads) and
+# only ever matters on a genuine hang. On timeout, still-pending raws are
+# simply left uncached -- the writer-held pass reparses them normally, the
+# same graceful-degradation guarantee as any other prefetch miss. A
+# ThreadPoolExecutor cannot forcibly kill a running worker thread, so a truly
+# wedged worker keeps occupying one pool slot until it (eventually) returns;
+# that is an inherent limitation of thread-based cancellation, not something
+# this bound can fix -- the bound's job is only to stop the CONVEYOR LOOP
+# from waiting on it forever, which it does.
+_DEFAULT_WARM_TIMEOUT_SECONDS = 300.0
+
 
 def daemon_parse_stage_worker_count() -> int:
     """Bounded worker cap for the daemon-owned pre-parse thread pool.
@@ -85,6 +101,24 @@ def daemon_parse_stage_max_inflight_bytes() -> int:
     return _DEFAULT_MAX_INFLIGHT_BYTES
 
 
+def daemon_parse_stage_warm_timeout_seconds() -> float:
+    """Bound on how long ``warm()`` waits for its dispatched workers.
+
+    Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS``. See
+    ``_DEFAULT_WARM_TIMEOUT_SECONDS`` for why this exists and what it does
+    (and does not) guarantee.
+    """
+    raw = os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS")
+    if raw is not None:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    return _DEFAULT_WARM_TIMEOUT_SECONDS
+
+
 class DaemonParseStage:
     """Owns the daemon's bounded pre-parse ``ThreadPoolExecutor`` and cache.
 
@@ -97,7 +131,13 @@ class DaemonParseStage:
     writer hold held.
     """
 
-    def __init__(self, *, max_workers: int | None = None, max_inflight_bytes: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_workers: int | None = None,
+        max_inflight_bytes: int | None = None,
+        warm_timeout_seconds: float | None = None,
+    ) -> None:
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers if max_workers is not None else daemon_parse_stage_worker_count(),
             thread_name_prefix="polylogue-parse-stage",
@@ -106,6 +146,9 @@ class DaemonParseStage:
             max_inflight_bytes=(
                 max_inflight_bytes if max_inflight_bytes is not None else daemon_parse_stage_max_inflight_bytes()
             )
+        )
+        self._warm_timeout_seconds = (
+            warm_timeout_seconds if warm_timeout_seconds is not None else daemon_parse_stage_warm_timeout_seconds()
         )
 
     def warm(self, config: Config, *, limit: int, max_payload_bytes: int) -> int:
@@ -150,22 +193,40 @@ class DaemonParseStage:
             futures[future] = raw_id
 
         warmed = 0
-        for future in as_completed(futures):
-            raw_id = futures[future]
-            try:
-                _raw_id, sessions, error = future.result()
-            except Exception:
-                logger.warning("parse-stage prefetch: worker failed for raw_id=%s", raw_id, exc_info=True)
-                continue
-            if error is not None or sessions is None:
-                # Parse failures are intentionally NOT cached: the writer-held
-                # pass reparses (and correctly quarantines/records) this raw
-                # exactly as it would with the flag off. Prefetch only ever
-                # shortcuts the happy path.
-                continue
-            _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
-            if self.cache.try_admit(raw_id, sessions, payload_bytes=payload_size, revision_kind=kind):
-                warmed += 1
+        completed = 0
+        try:
+            for future in as_completed(futures, timeout=self._warm_timeout_seconds):
+                completed += 1
+                raw_id = futures[future]
+                try:
+                    _raw_id, sessions, error = future.result()
+                except Exception:
+                    logger.warning("parse-stage prefetch: worker failed for raw_id=%s", raw_id, exc_info=True)
+                    continue
+                if error is not None or sessions is None:
+                    # Parse failures are intentionally NOT cached: the writer-held
+                    # pass reparses (and correctly quarantines/records) this raw
+                    # exactly as it would with the flag off. Prefetch only ever
+                    # shortcuts the happy path.
+                    continue
+                _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
+                if self.cache.try_admit(raw_id, sessions, payload_bytes=payload_size, revision_kind=kind):
+                    warmed += 1
+        except TimeoutError:
+            # Bounds the CONVEYOR LOOP's wait, not the worker itself -- a
+            # ThreadPoolExecutor cannot forcibly kill a running thread, so a
+            # genuinely wedged worker keeps occupying one pool slot until it
+            # eventually returns (see _DEFAULT_WARM_TIMEOUT_SECONDS). Every raw
+            # not yet completed is simply left uncached: the writer-held pass
+            # reparses it normally, identical to any other prefetch miss.
+            pending = len(futures) - completed
+            logger.warning(
+                "parse-stage prefetch: warm() timed out after %.0fs waiting on %d of %d worker(s); "
+                "leaving unfinished raw(s) uncached for the writer-held pass to reparse normally",
+                self._warm_timeout_seconds,
+                pending,
+                len(futures),
+            )
         return warmed
 
     def shutdown(self) -> None:

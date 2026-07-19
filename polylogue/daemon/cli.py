@@ -1827,6 +1827,16 @@ async def run_daemon_services(
                         await converger.stop()
                 except TimeoutError:
                     logger.warning("daemon: timed out stopping convergence executor")
+            if _daemon_parse_stage_singleton is not None:
+                # polylogue-m6tp phase (a), CodeRabbit PR #3168: the parse-stage
+                # warmer's ThreadPoolExecutor is created lazily only when
+                # daemon_parse_stage_split is enabled, and otherwise never
+                # touched here. shutdown() is non-blocking (wait=False,
+                # cancel_futures=True) so no timeout wrapper is needed -- unlike
+                # converger.stop() above, it cannot itself hang the shutdown
+                # sequence; it just stops the pool from keeping the process
+                # alive at exit.
+                _daemon_parse_stage_singleton.shutdown()
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:
