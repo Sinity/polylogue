@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import ContentHash, MessageId, SessionEventId, SessionId
-from polylogue.sources import ParsedMessage, ParsedSession
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock
+
+# ParsedMessage/ParsedSession/ParsedAttachment/ParsedContentBlock are used only
+# as parameter/return type annotations below (never constructed or
+# isinstance-checked here). Importing them eagerly forces the whole
+# `polylogue.sources` package init -- including the Drive download subsystem
+# -- onto every caller of this pure hashing/id module (polylogue-8s70: this
+# was ~395ms of `polylogue.storage.repair`'s ~670ms import cost, the single
+# largest contributor). TYPE_CHECKING-only keeps static typing intact while
+# deferring the real import to whichever caller actually needs `sources`.
+if TYPE_CHECKING:
+    from polylogue.sources import ParsedMessage, ParsedSession
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"

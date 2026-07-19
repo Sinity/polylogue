@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
-from polylogue.operations.operation_contract import OperationStatus
+from polylogue.operations.operation_status import OperationStatus
 from polylogue.storage.repair import ArchiveDebtStatus
 
 if TYPE_CHECKING:

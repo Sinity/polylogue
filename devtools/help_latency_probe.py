@@ -18,12 +18,12 @@ here IS a CI gate for "required" targets (unlike the wall-clock-only probes),
 because import cost is deterministic given the source tree, not host load.
 
 Targets marked ``gate="informational"`` are measured and reported but never
-fail the check — they document a known-slow path with an open follow-up
-(currently: ``ops maintenance migrate-tier``, whose own ``--help`` needs
-``DURABLE_MIGRATION_TIERS`` at Click-decoration time to render its argument
-choices, forcing the ``polylogue.storage.sqlite.archive_tiers`` package's
-eager DDL-import chain even for `--help`; see
-``polylogue/cli/commands/maintenance/_migrate_tier.py``'s module docstring).
+fail the check — they document a known-slow path with an open follow-up.
+(No target currently uses this gate: the last one, ``ops maintenance
+migrate-tier``, was promoted to ``required`` once polylogue-h1wt made the
+``archive_tiers`` and parent ``polylogue.storage.sqlite`` package inits lazy;
+see ``polylogue/cli/commands/maintenance/_migrate_tier.py``'s module
+docstring.)
 """
 
 from __future__ import annotations
@@ -78,15 +78,17 @@ TARGETS: tuple[HelpLatencyTarget, ...] = (
         _DEFAULT_BUDGET_MS,
         "required",
     ),
-    # migrate-tier is the one documented exception: its --help needs
-    # DURABLE_MIGRATION_TIERS at Click-decoration time (to render the `tier`
-    # argument's valid choices), which forces the archive_tiers package's
-    # eager DDL-import chain even for --help. See _migrate_tier.py.
+    # migrate-tier's --help still needs DURABLE_MIGRATION_TIERS at
+    # Click-decoration time (to render the `tier` argument's valid choices),
+    # but polylogue-h1wt made both the archive_tiers package init and its
+    # parent polylogue.storage.sqlite package init lazy, so this now costs
+    # only ArchiveTier's own weight -- comfortably inside the same required
+    # budget as every sibling command. See _migrate_tier.py.
     HelpLatencyTarget(
         "ops-maintenance-migrate-tier",
         ("ops", "maintenance", "migrate-tier", "--help"),
         _DEFAULT_BUDGET_MS,
-        "informational",
+        "required",
     ),
 )
 
