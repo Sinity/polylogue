@@ -60,6 +60,16 @@ class IndexRebuildTransaction:
     pass_byte_budget: int | None = None
     pass_deadline_ms: int | None = None
     error: str | None = None
+    # polylogue-v6i3: set once a RESUMED pass has explicitly emptied this
+    # generation's messages_fts/blocks_command_trigram (defensive idempotent
+    # bookkeeping -- a fresh generation starts empty by construction and never
+    # needs this, but a resumed pass makes "derived stores are empty" an
+    # explicit, code-verified invariant instead of an assumption inherited
+    # from generation creation). Missing on older persisted transaction JSON
+    # defaults to ``False`` via the dataclass default, so an in-flight
+    # transaction created before this field existed is treated as not yet
+    # cleared and clears exactly once on its next resume.
+    derived_stores_cleared: bool = False
 
     @property
     def cursor(self) -> str | None:
@@ -314,6 +324,7 @@ class IndexGenerationStore:
         processed_raw_count: int | None = None,
         processed_blob_bytes: int | None = None,
         error: str | None = None,
+        derived_stores_cleared: bool | None = None,
     ) -> IndexRebuildTransaction:
         """Persist one state transition without changing candidate ownership."""
         return self.save_transaction(
@@ -332,6 +343,9 @@ class IndexGenerationStore:
                     if processed_blob_bytes is not None
                     else transaction.processed_blob_bytes,
                     "error": error,
+                    "derived_stores_cleared": derived_stores_cleared
+                    if derived_stores_cleared is not None
+                    else transaction.derived_stores_cleared,
                 }
             )
         )

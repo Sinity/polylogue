@@ -14,7 +14,7 @@ from polylogue.core.enums import (
     SessionKind,
     WebConstructType,
 )
-from polylogue.storage.fts.sql import FTS_TRIGGER_DDL
+from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD, FTS_TRIGGER_DDL
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -25,6 +25,17 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
 INDEX_SCHEMA_VERSION = 41
+
+# polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
+# trigger BODIES on the same dedicated bulk-build guard row messages_fts's
+# triggers already use (see storage/fts/sql.py's _FTS_BULK_GUARD_NOT_SET).
+# Additive/inert on existing archives -- CREATE TRIGGER IF NOT EXISTS keeps
+# the prior (ungated) trigram trigger body on an archive until its next
+# rebuild, matching the messages_fts precedent from #3152 (no
+# INDEX_SCHEMA_VERSION bump needed for an additive, inert trigger-body change).
+_TRIGRAM_BULK_GUARD_NOT_SET = (
+    f"NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{FTS_BULK_SESSION_WRITE_GUARD}')"
+)
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -428,7 +439,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_command_trigram USING fts5(
 );
 
 CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_ai
-AFTER INSERT ON blocks WHEN new.block_type = 'tool_use' AND new.tool_detail_text != ' ' BEGIN
+AFTER INSERT ON blocks
+WHEN new.block_type = 'tool_use' AND new.tool_detail_text != ' ' AND {_TRIGRAM_BULK_GUARD_NOT_SET} BEGIN
     INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
     VALUES (new.rowid, new.tool_detail_text);
 END;
@@ -442,13 +454,14 @@ END;
 -- to remove rather than re-reading it from the (already-deleted) content
 -- row.
 CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_ad
-AFTER DELETE ON blocks WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' ' BEGIN
+AFTER DELETE ON blocks
+WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' ' AND {_TRIGRAM_BULK_GUARD_NOT_SET} BEGIN
     INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
     VALUES ('delete', old.rowid, old.tool_detail_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_au
-AFTER UPDATE ON blocks BEGIN
+AFTER UPDATE ON blocks WHEN {_TRIGRAM_BULK_GUARD_NOT_SET} BEGIN
     INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
     SELECT 'delete', old.rowid, old.tool_detail_text
     WHERE old.block_type = 'tool_use' AND old.tool_detail_text != ' ';

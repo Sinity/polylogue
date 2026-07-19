@@ -20,8 +20,62 @@ from polylogue.config import Config
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
+from polylogue.storage.fts.sql import FTS_REBUILD_SQL, TRIGRAM_REBUILD_DELETE_ALL_SQL
+from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
+from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
+from polylogue.storage.table_existence import table_exists
 
 _PLANNER_STATS_ANALYSIS_LIMIT = 1000
+
+
+def _clear_bulk_build_derived_stores(index_path: Path) -> None:
+    """Idempotently empty ``messages_fts``/``blocks_command_trigram``.
+
+    polylogue-v6i3: a fresh generation already starts with both derived
+    stores empty by construction (bootstrap creates empty schema), so the
+    very first pass of a brand-new bulk-build transaction never has
+    meaningful work to do here -- but calling this unconditionally on every
+    resumed pass (guarded by the transaction's own ``derived_stores_cleared``
+    marker so it fires at most once per operation) converts "derived stores
+    are empty throughout bulk-build replay" from an assumption inherited from
+    generation creation into an explicit, verified invariant. This mirrors
+    the manual pre-promote recovery script's clearing action
+    (``/realm/tmp/trigram-restore-pre-promote.py``, the live incident this
+    bead productizes), now automatic. Delete-all on an already-empty table is
+    near-instant (28.7s was measured against a *populated* table during the
+    live incident this bead responds to; an empty one is orders of magnitude
+    faster), so this is cheap even when it turns out to be a no-op.
+    """
+    with contextlib.closing(sqlite3.connect(index_path, timeout=60)) as conn:
+        conn.execute("PRAGMA busy_timeout = 60000")
+        if table_exists(conn, "messages_fts"):
+            conn.execute(FTS_REBUILD_SQL)
+        if table_exists(conn, "blocks_command_trigram"):
+            conn.execute(TRIGRAM_REBUILD_DELETE_ALL_SQL)
+        conn.commit()
+
+
+def _repopulate_bulk_build_derived_state(index_path: Path) -> None:
+    """One archive-wide repopulate of every surface bulk-build replay skipped.
+
+    polylogue-v6i3: ``write_parsed_session_to_archive``'s ``bulk_build`` mode
+    leaves ``messages_fts``, ``blocks_command_trigram``, ``action_pairs``, and
+    ``delegation_facts`` empty (or stale from a prior page) throughout replay
+    -- this runs exactly once, right before readiness, to bring all four back
+    into exact sync from ``blocks``/``messages``/``session_links`` in one bulk
+    delete+insert per surface instead of the per-session maintenance replay
+    skipped. Order matters: ``action_pairs`` must be repopulated before
+    ``delegation_facts`` (the latter's ``delegation_facts_source`` view joins
+    through the ``actions`` view, which reads ``action_pairs``).
+    """
+    with contextlib.closing(sqlite3.connect(index_path, timeout=600)) as conn:
+        conn.execute("PRAGMA busy_timeout = 600000")
+        rebuild_fts_index_sync(conn)
+        rebuild_command_trigram_index_sync(conn)
+        rebuild_all_action_pairs_sync(conn)
+        rebuild_all_delegation_facts_sync(conn)
+        conn.commit()
 
 
 def _refresh_generation_planner_statistics(index_path: Path) -> None:
@@ -184,6 +238,7 @@ def select_rebuild_raw_ids(request: RebuildIndexRequest) -> tuple[int, list[str]
 async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildIndexReceipt:
     """Replay one source snapshot into an owned generation and optionally promote it."""
     from polylogue.cli.commands.status import _archive_readiness_status
+    from polylogue.maintenance.archive_verification import verify_archive
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
     from polylogue.storage.repair import repair_session_insights
@@ -251,6 +306,13 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             generation = generation_store.load(transaction.generation_id)
             if generation.owner_id != transaction.generation_owner_id or generation.state != "inactive":
                 raise RuntimeError(f"rebuild operation {transaction.operation_id} lost its inactive candidate")
+            if not transaction.derived_stores_cleared:
+                _clear_bulk_build_derived_stores(Path(generation.index_path))
+                transaction = generation_store.checkpoint_transaction(
+                    transaction,
+                    status=transaction.status,
+                    derived_stores_cleared=True,
+                )
             page = generation_store.next_raw_page(transaction, limit=request.raw_batch_size)
             selected_raw_ids = [raw_id for raw_id, _acquired_at_ms, _blob_size in page.rows]
             selected_raw_count = len(selected_raw_ids)
@@ -283,6 +345,15 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 # per-row messages_fts trigger storm into one bulk delete+insert
                 # per affected session.
                 bulk_fts=True,
+                # polylogue-v6i3: the broader bulk-generation-build lifecycle --
+                # every per-session messages_fts/blocks_command_trigram/
+                # action_pairs/delegation_facts refresh is skipped during this
+                # replay (safe for a full OR partial/diagnostic selection: a
+                # repopulate from `blocks` always matches whatever sessions
+                # actually got replayed into this generation); see
+                # _repopulate_bulk_build_derived_state, called below right
+                # before readiness.
+                bulk_build=True,
             )
             if selected_raw_ids:
                 _refresh_generation_planner_statistics(Path(generation.index_path))
@@ -345,6 +416,18 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                     )
                     source_drifted = True
                 raise RuntimeError(f"source evidence changed while rebuilding {generation.generation_id}")
+            # polylogue-v6i3: bulk-build replay (bulk_build=True above) left
+            # messages_fts/blocks_command_trigram/action_pairs/delegation_facts
+            # empty or stale for every session -- repopulate all four
+            # archive-wide exactly once here, then prove exact parity before
+            # readiness can observe (and silently accept) a mismatch.
+            _repopulate_bulk_build_derived_state(Path(generation.index_path))
+            parity_report = verify_archive(generation_root, checks=["fts-parity"])
+            if parity_report.blocking:
+                failing = "; ".join(check.summary for check in parity_report.checks if check.status.value == "error")
+                raise RuntimeError(
+                    f"bulk-build FTS/trigram parity failed for generation {generation.generation_id}: {failing}"
+                )
             readiness = _archive_readiness_status(generation_root)
             if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
                 blocked = [

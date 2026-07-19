@@ -1551,6 +1551,7 @@ class ArchiveStore:
         preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
+        bulk_build: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         content_hash = str(session_content_hash(session))
@@ -1582,6 +1583,7 @@ class ArchiveStore:
                 preacquired_attachment_blobs=preacquired_attachment_blobs,
                 manage_transaction=manage_transaction,
                 bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
             )
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
@@ -2935,6 +2937,7 @@ class ArchiveStore:
         stage_timing_prefix: str = "revision_replay",
         manage_transaction: bool = True,
         bulk_fts: bool = False,
+        bulk_build: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state.
 
@@ -2958,6 +2961,13 @@ class ArchiveStore:
         whale prefix-sharing lineage cascades this replay triggers. Only the
         offline rebuild/backfill path passes ``True``; ordinary daemon replay
         stays on the unguarded per-row trigger path.
+
+        ``bulk_build`` (polylogue-v6i3, default ``False``) is the broader
+        bulk-generation-build lifecycle -- when ``True`` this skips the
+        trailing ``repair_message_fts_index_sync`` per-session repopulate and
+        relaxes ``assert_session_fts_exact_sync`` to its trigger-presence-only
+        check, since the bulk-build caller repopulates ``messages_fts``
+        archive-wide exactly once at readiness instead.
         """
         if not plan.accepted_raw_ids:
             raise ValueError("cannot apply a revision plan without an accepted chain")
@@ -3014,6 +3024,7 @@ class ArchiveStore:
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                     bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
@@ -3026,8 +3037,9 @@ class ArchiveStore:
                 "UPDATE sessions SET content_hash = ? WHERE session_id = ?",
                 (aggregate_content_hash, session_id),
             )
-            repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
-            assert_session_fts_exact_sync(self._conn, session_id)
+            if not bulk_build:
+                repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
+            assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
             stored = self._conn.execute(
                 "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
@@ -3106,6 +3118,7 @@ class ArchiveStore:
         stage_timing_prefix: str = "membership_replay",
         manage_transaction: bool = True,
         bulk_fts: bool = False,
+        bulk_build: bool = False,
     ) -> str | None:
         """Apply one semantic member head and persist every membership decision.
 
@@ -3117,7 +3130,9 @@ class ArchiveStore:
         batch-commit invariant this mirrors.
 
         ``bulk_fts`` mirrors ``apply_raw_revision_replay``'s guard-gated bulk
-        FTS mode (polylogue-crd8); default ``False``.
+        FTS mode (polylogue-crd8); default ``False``. ``bulk_build`` mirrors
+        its broader bulk-generation-build lifecycle (polylogue-v6i3); default
+        ``False``.
         """
         conn = self._ensure_source_conn()
         decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
@@ -3189,13 +3204,15 @@ class ArchiveStore:
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                     bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
                     stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_id = result.session_id
-                repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
-                assert_session_fts_exact_sync(self._conn, session_id)
+                if not bulk_build:
+                    repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
+                assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
                 stored = self._conn.execute(
                     "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
                 ).fetchone()
@@ -3339,6 +3356,7 @@ class ArchiveStore:
         finalize_raw_parse: bool,
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
+        bulk_build: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         provider = Provider.from_string(session.source_name)
         try:
@@ -3352,6 +3370,7 @@ class ArchiveStore:
                 preacquired_attachment_blobs=preacquired_attachment_blobs,
                 revision_authoritative=revision_authoritative,
                 bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
             )
         except Exception as exc:
             self.finalize_raw_parse_state(raw_id, state=self._raw_parse_failure_state(provider, exc))

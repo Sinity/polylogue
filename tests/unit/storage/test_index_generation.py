@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 import multiprocessing
 import os
@@ -314,3 +315,41 @@ def test_source_snapshot_changes_when_retained_blob_identity_changes(tmp_path: P
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("UPDATE raw_sessions SET blob_hash = randomblob(32), blob_size = 2 WHERE raw_id = 'raw-a'")
     assert source_revision_snapshot(tmp_path) != before
+
+
+def test_derived_stores_cleared_defaults_false_and_round_trips_through_checkpoint(tmp_path: Path) -> None:
+    """polylogue-v6i3: ``derived_stores_cleared`` is the transaction marker
+    guarding the bulk-build "empty derived stores at resume" clear from
+    re-firing on every subsequent page of the same operation. It must
+    default False for a fresh transaction, persist True once checkpointed,
+    and survive a reload via ``load_transaction``."""
+    _archive(tmp_path)
+    store = IndexGenerationStore(tmp_path)
+    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="bulk-build-op")
+    assert transaction.derived_stores_cleared is False
+
+    transaction = store.checkpoint_transaction(transaction, status="running", derived_stores_cleared=True)
+    assert transaction.derived_stores_cleared is True
+    assert store.load_transaction("bulk-build-op").derived_stores_cleared is True
+
+    # A later checkpoint that doesn't mention the field must not reset it.
+    transaction = store.checkpoint_transaction(transaction, status="paused")
+    assert transaction.derived_stores_cleared is True
+
+
+def test_derived_stores_cleared_missing_from_persisted_json_defaults_false(tmp_path: Path) -> None:
+    """A transaction persisted before this field existed (no key in its JSON)
+    must load as ``False`` via the dataclass default, not raise or silently
+    invent a different value."""
+    _archive(tmp_path)
+    store = IndexGenerationStore(tmp_path)
+    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="pre-existing-op")
+    path = store._transaction_path("pre-existing-op")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "derived_stores_cleared" in payload
+    del payload["derived_stores_cleared"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reloaded = store.load_transaction("pre-existing-op")
+    assert reloaded.derived_stores_cleared is False
+    assert reloaded.operation_id == transaction.operation_id

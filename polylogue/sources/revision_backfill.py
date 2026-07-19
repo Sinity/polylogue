@@ -478,6 +478,7 @@ def backfill_historical_revision_evidence(
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
     bulk_fts: bool = False,
+    bulk_build: bool = False,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -520,6 +521,13 @@ def backfill_historical_revision_evidence(
     to enable the guard-gated bulk FTS mode for whale prefix-sharing lineage
     cascades. Offline rebuild callers (``maintenance/rebuild_index.py`` via
     ``maintenance/replay.py``) pass ``True``; other callers leave it off.
+
+    ``bulk_build`` (polylogue-v6i3, default ``False``) mirrors ``bulk_fts``'s
+    threading to the same two apply calls, enabling the broader
+    bulk-generation-build lifecycle: every per-session
+    messages_fts/blocks_command_trigram/action_pairs/delegation_facts refresh
+    is skipped during replay, deferred to one archive-wide repopulate at
+    readiness. Only the offline rebuild caller passes ``True``.
     """
     adoption_deferred = 0
     quarantined = 0
@@ -621,6 +629,7 @@ def backfill_historical_revision_evidence(
                 acquired_at_ms=0,
                 manage_transaction=not replay_batched,
                 bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
             )
             replayed += 1
             byte_replayed_keys.add(logical_key)
@@ -669,6 +678,7 @@ def backfill_historical_revision_evidence(
                 acquired_at_ms=0,
                 manage_transaction=not replay_batched,
                 bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
             )
             if classification.accepted_raw_ids:
                 replayed += 1
