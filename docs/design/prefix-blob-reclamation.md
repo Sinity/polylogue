@@ -421,7 +421,8 @@ append path is attempted before falling back to a full capture.
 lane (which is measurement + reference-blob design only). Filing as a
 follow-up bead is appropriate scope — it's a distinct, independently
 shippable perf/correctness fix to the *forward* accumulation rate, orthogonal
-to reclaiming the *existing* backlog this design addresses.
+to reclaiming the *existing* backlog this design addresses. Tracked as
+polylogue-aex0.
 
 ## Anti-goals
 
