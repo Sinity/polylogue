@@ -266,20 +266,30 @@ class WritePathStateMachine(RuleBasedStateMachine):
         assert parent_id is not None
         parent_messages = read_archive_session_envelope(self._conn, parent_id).messages
         branch_point = parent_messages[child.prefix_length - 1].message_id
-        parent_message_positions = {message.message_id: index for index, message in enumerate(parent_messages)}
         self._conn.execute("DELETE FROM messages WHERE message_id = ?", (branch_point,))
         self._conn.commit()
         self._deletion_done = True
         deleted_position = child.prefix_length - 1
         self._models[parent_id].own_texts.pop(deleted_position)
-        for candidate_id, candidate in self._models.items():
-            link = self._conn.execute(
-                "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
-                (candidate_id,),
-            ).fetchone()
-            linked_position = parent_message_positions.get(link[0]) if link is not None else None
-            if linked_position is not None and linked_position > deleted_position:
-                candidate.prefix_length -= 1
+        # Compute every descendant's shift against a pre-mutation snapshot
+        # first, then apply: a grandchild's branch point may live inside an
+        # intermediate session's own tail rather than the deleted-from
+        # session, so its shift must cascade through the intermediate
+        # session's own (not-yet-adjusted) prefix_length rather than being
+        # looked up directly against the deleted session's positions (#866e).
+        shifts = {
+            candidate_id: self._cascaded_prefix_shift(
+                candidate.parent_id,
+                candidate.prefix_length - 1,
+                cut_session_id=parent_id,
+                cut_index=deleted_position,
+            )
+            for candidate_id, candidate in self._models.items()
+            if candidate.parent_id is not None and candidate.prefix_length > 0
+        }
+        for candidate_id, shift in shifts.items():
+            if shift:
+                self._models[candidate_id].prefix_length -= shift
         self._models[parent_id].can_be_parent = False
         for candidate_id, candidate in self._models.items():
             if self._has_ancestor(candidate_id, parent_id):
@@ -356,6 +366,36 @@ class WritePathStateMachine(RuleBasedStateMachine):
                 return True
             cursor = self._models[cursor].parent_id
         return False
+
+    def _cascaded_prefix_shift(self, session_id: str, index: int, *, cut_session_id: str, cut_index: int) -> int:
+        """How much a pre-mutation 0-based logical index into ``session_id``'s
+        composed transcript should decrement after a single message is
+        removed at ``cut_index`` within ``cut_session_id``'s own texts.
+
+        A branch point may be recorded several hops away from the deleted
+        session: walk the prefix-sharing chain toward the cut root. An index
+        inside the borrowed prefix segment refers to the very same logical
+        slot in the parent's own composed transcript, so it recurses there
+        unchanged; an index inside the session's own tail is unaffected
+        physically but shifts by exactly however much that borrowed segment
+        shrank (i.e. the shift already computed for its last inherited
+        index), because the whole tail slides down by that same amount.
+        """
+        if session_id == cut_session_id:
+            return 1 if index > cut_index else 0
+        model = self._models[session_id]
+        if model.parent_id is None:
+            return 0
+        prefix_length = model.prefix_length
+        if index < prefix_length:
+            return self._cascaded_prefix_shift(
+                model.parent_id, index, cut_session_id=cut_session_id, cut_index=cut_index
+            )
+        if prefix_length == 0:
+            return 0
+        return self._cascaded_prefix_shift(
+            model.parent_id, prefix_length - 1, cut_session_id=cut_session_id, cut_index=cut_index
+        )
 
     def _new_native_id(self, kind: str) -> str:
         native_id = f"{kind}-{self._next_session}"
@@ -493,6 +533,86 @@ def test_repository_get_messages_composes_prefix_sharing_child() -> None:
             return [str(block.text) for message in messages for block in message.blocks if block.text is not None]
 
         assert asyncio.run(read_texts()) == ["parent prompt", "parent reply", "child tail"]
+
+
+def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_deletion() -> None:
+    """A grandchild's branch point may live in an intermediate child's own
+    physical row rather than the root parent's; deleting a root-parent
+    message upstream of both must still recompose the grandchild's transcript
+    from live positions, never a stale cached offset (#866e: the property
+    state machine's own model bookkeeping, not this production read path,
+    was found to mis-cascade the shift for exactly this multi-hop shape)."""
+    with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
+        archive_root = Path(root_text)
+        initialize_active_archive_root(archive_root)
+        db_path = archive_root / "index.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            parent = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="cascade-parent",
+                messages=[
+                    ParsedMessage(provider_message_id="parent-0", role=Role.USER, text="parent prompt", position=0),
+                    ParsedMessage(provider_message_id="parent-1", role=Role.ASSISTANT, text="parent reply", position=1),
+                ],
+            )
+            child = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="cascade-child",
+                parent_session_provider_id="cascade-parent",
+                branch_type=BranchType.FORK,
+                messages=[
+                    ParsedMessage(provider_message_id="child-0", role=Role.USER, text="parent prompt", position=0),
+                    ParsedMessage(provider_message_id="child-1", role=Role.ASSISTANT, text="parent reply", position=1),
+                    ParsedMessage(provider_message_id="child-2", role=Role.USER, text="child tail", position=2),
+                ],
+            )
+            # The grandchild replays the CHILD's full composed transcript
+            # (parent's two messages plus the child's own tail), so its
+            # branch point resolves to a message physically stored in the
+            # child session, not the parent.
+            grandchild = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="cascade-grandchild",
+                parent_session_provider_id="cascade-child",
+                branch_type=BranchType.FORK,
+                messages=[
+                    ParsedMessage(provider_message_id="gc-0", role=Role.USER, text="parent prompt", position=0),
+                    ParsedMessage(provider_message_id="gc-1", role=Role.ASSISTANT, text="parent reply", position=1),
+                    ParsedMessage(provider_message_id="gc-2", role=Role.USER, text="child tail", position=2),
+                    ParsedMessage(provider_message_id="gc-3", role=Role.ASSISTANT, text="grandchild tail", position=3),
+                ],
+            )
+            write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
+            write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
+            grandchild_id = write_parsed_session_to_archive(
+                conn, grandchild, content_hash=session_content_hash(grandchild)
+            )
+
+            branch_row = conn.execute(
+                "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
+                (grandchild_id,),
+            ).fetchone()
+            assert branch_row is not None
+            assert branch_row[0] == "claude-code-session:cascade-child:child-2"
+
+            # Two hops upstream of the grandchild: delete the root parent's
+            # first message, an ancestor edit that precedes every downstream
+            # branch point.
+            conn.execute(
+                "DELETE FROM messages WHERE message_id = ?",
+                ("claude-code-session:cascade-parent:parent-0",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        async def read_texts(session_id: str) -> list[str]:
+            async with SessionRepository(db_path=db_path) as repository:
+                messages = await repository.get_messages(session_id)
+            return [str(block.text) for message in messages for block in message.blocks if block.text is not None]
+
+        assert asyncio.run(read_texts(grandchild_id)) == ["parent reply", "child tail", "grandchild tail"]
 
 
 def test_session_link_resolver_quarantines_cycle() -> None:
