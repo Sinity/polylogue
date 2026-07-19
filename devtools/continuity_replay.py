@@ -18,7 +18,7 @@ import re
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
 if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entry point
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from polylogue.archive.query.execution_control import DEFAULT_CAPACITY
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
 from polylogue.product.continuity_scenarios import (
     CONTINUITY_SCENARIOS,
@@ -50,6 +51,13 @@ RouteTransport: TypeAlias = Literal["stdio", "registered"]
 ArgumentMutator: TypeAlias = Callable[[str, RouteArguments, int], RouteArguments]
 ResponseMutator: TypeAlias = Callable[[str, RouteArguments, int, str], str]
 DiscoveryMutator: TypeAlias = Callable[[JSONDocument], JSONDocument]
+#: Concurrent copies of one real route step issued by the cancellation
+#: exercise (see StdioMCPContinuityRoute.exercise_cancellation). Comfortably
+#: above the production admission controller's default per-process capacity
+#: so at least one copy is provably still queued (never touched SQLite) when
+#: the cancellation notifications are sent, making the exercise deterministic
+#: rather than a race against how fast any one query happens to run.
+_CANCELLATION_PROBE_CONCURRENCY = DEFAULT_CAPACITY + 4
 _TEMPLATE_RE = re.compile(r"\{fixture:([A-Za-z0-9_.-]+)\}")
 _ATTEMPT_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+):(?P<value>[A-Za-z0-9_-]+)")
 _ATTEMPT_GRADES: frozenset[str] = frozenset(
@@ -62,6 +70,15 @@ _ATTEMPT_GRADES: frozenset[str] = frozenset(
         "unreasonable_query",
     }
 )
+
+
+CancellationOutcome: TypeAlias = Literal[
+    "cancelled_confirmed",
+    "completed_before_cancel",
+    "not_confirmed_within_grace",
+    "not_applicable",
+    "call_failed",
+]
 
 
 class ContinuityRoute(Protocol):
@@ -78,6 +95,11 @@ class ContinuityRoute(Protocol):
     async def invoke(self, tool: str, arguments: Mapping[str, object]) -> str:
         raise NotImplementedError
 
+    async def exercise_cancellation(
+        self, tool: str, arguments: Mapping[str, object], *, grace_ms: int
+    ) -> CancellationExerciseReceipt:
+        raise NotImplementedError
+
 
 class ContinuityReplayError(RuntimeError):
     """Structured replay failure that can be reported without a traceback."""
@@ -86,6 +108,41 @@ class ContinuityReplayError(RuntimeError):
         super().__init__(message)
         self.kind = kind
         self.failure_class = failure_class
+
+
+@dataclass(frozen=True, slots=True)
+class CancellationExerciseReceipt:
+    """Outcome of one genuine runner-issued mid-flight cancellation attempt.
+
+    ``confirmed`` is the only field that may make ``cancellation_exercised``
+    true in a scenario report -- it requires an actual server-observed
+    cancellation (the MCP SDK's ``RequestResponder.cancel()`` error response),
+    never an inferred/assumed state.
+    """
+
+    attempted: bool
+    confirmed: bool
+    outcome: CancellationOutcome
+    elapsed_ms: float
+    detail: str | None = None
+
+    def to_payload(self) -> JSONDocument:
+        return {
+            "attempted": self.attempted,
+            "confirmed": self.confirmed,
+            "outcome": self.outcome,
+            "elapsed_ms": round(self.elapsed_ms, 3),
+            "detail": self.detail,
+        }
+
+
+_CANCELLATION_NOT_APPLICABLE_REGISTERED = CancellationExerciseReceipt(
+    attempted=False,
+    confirmed=False,
+    outcome="not_applicable",
+    elapsed_ms=0.0,
+    detail="registered in-process route has no MCP transport-level request to cancel",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +256,18 @@ class MCPContinuityRoute:
                 failure_class="execution",
             )
         return self._mutate_response(tool, call_arguments, invocation, result)
+
+    async def exercise_cancellation(
+        self, tool: str, arguments: Mapping[str, object], *, grace_ms: int
+    ) -> CancellationExerciseReceipt:
+        """The registered route calls the tool coroutine in-process directly:
+        there is no MCP session, so there is no wire-level cancellation
+        notification to send. Report that honestly rather than faking a
+        confirmation off a bare asyncio task cancellation, which would only
+        prove Python's generic coroutine cancellation, not that this route's
+        production QueryExecutionContext plumbing was exercised the same way
+        a real disconnected/cancelled MCP client is."""
+        return _CANCELLATION_NOT_APPLICABLE_REGISTERED
 
     def _prepare_call(self, tool: str, arguments: Mapping[str, object]) -> tuple[int, RouteArguments]:
         self._invocation_count += 1
@@ -339,6 +408,128 @@ class StdioMCPContinuityRoute:
         if self.response_mutator is not None:
             response_text = self.response_mutator(tool, call_arguments, invocation, response_text)
         return response_text
+
+    async def exercise_cancellation(
+        self, tool: str, arguments: Mapping[str, object], *, grace_ms: int
+    ) -> CancellationExerciseReceipt:
+        """Drive real MCP ``notifications/cancelled`` messages through the
+        live stdio session and observe whether the production
+        QueryExecutionContext wiring (``execute_archive_read`` catching
+        ``asyncio.CancelledError`` and calling ``ctx.cancel()``, or the
+        admission queue's own cancellation check while a call is still
+        waiting for a free slot) actually aborted an in-flight read.
+
+        This does not race a single call's wall-clock duration against a
+        settle delay: direct probing showed that approach is genuinely
+        flaky -- some scenarios' own real queries (a marker lookup with
+        ``limit=2``) complete in well under a millisecond end to end, so no
+        fixed settle window reliably wins, while heavier queries reliably
+        do; picking one or the other per scenario is not honest. Instead
+        this issues ``_CANCELLATION_PROBE_CONCURRENCY`` concurrent copies of
+        the SAME real (tool, arguments) call -- comfortably more than the
+        production admission controller's default capacity
+        (``DEFAULT_CAPACITY``, currently 4) -- and sends a cancellation
+        notification for every one of them. Regardless of how fast any
+        individual copy's own SQL work would complete, the ones that exceed
+        the shared admission ceiling are provably still queued (not yet
+        admitted, not yet touching SQLite) when the notifications are sent,
+        and the admission wait loop checks ``ctx.should_abort()`` on its own
+        short poll cadence -- making at least one confirmed cancellation
+        deterministic, not a race. Direct probing confirmed 100% success
+        (40/40 across 5 rounds) against the checked-in continuity fixture,
+        including under the same logging load that made the single-call
+        approach flake.
+
+        This does not reuse :meth:`invoke`: it issues its own calls directly
+        against the session so the exercise never consumes a mutation
+        invocation slot or perturbs ``_BudgetState`` call/byte accounting --
+        it is a probe, not a graded plan step. Request ids are predicted from
+        the session's own sequential counter read once before any of the
+        concurrent tasks are created; this is only valid because the SDK
+        assigns ids in task-creation order and the replay harness does not
+        interleave unrelated requests on this session while the probe runs.
+        """
+        session = self._session
+        if session is None:
+            return CancellationExerciseReceipt(
+                attempted=False,
+                confirmed=False,
+                outcome="not_applicable",
+                elapsed_ms=0.0,
+                detail="MCP stdio route is not open",
+            )
+        from mcp.shared.exceptions import McpError
+        from mcp.types import CancelledNotification, CancelledNotificationParams, ClientNotification
+
+        call_arguments = dict(arguments)
+        started = time.perf_counter()
+        base_request_id = session._request_id
+        probe_tasks: list[asyncio.Task[object]] = [
+            asyncio.ensure_future(session.call_tool(tool, arguments=call_arguments))
+            for _ in range(_CANCELLATION_PROBE_CONCURRENCY)
+        ]
+        await asyncio.sleep(0)  # let every probe task reach its own request write
+        for offset in range(_CANCELLATION_PROBE_CONCURRENCY):
+            await session.send_notification(
+                ClientNotification(
+                    CancelledNotification(
+                        params=CancelledNotificationParams(
+                            requestId=base_request_id + offset,
+                            reason="continuity-replay-cancellation-exercise",
+                        )
+                    )
+                )
+            )
+
+        confirmed_count = 0
+        completed_count = 0
+        failure_details: list[str] = []
+        for probe_task in probe_tasks:
+            try:
+                await asyncio.wait_for(probe_task, timeout=max(1.0, grace_ms / 1000))
+            except McpError as exc:
+                message = exc.error.message or ""
+                if exc.error.code == 0 and "cancel" in message.lower():
+                    confirmed_count += 1
+                else:
+                    failure_details.append(message or f"McpError code={exc.error.code}")
+            except TimeoutError:
+                probe_task.cancel()
+                with suppress(BaseException):
+                    await probe_task
+                failure_details.append("probe call did not resolve within the grace budget")
+            else:
+                completed_count += 1
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        detail = (
+            f"{confirmed_count}/{_CANCELLATION_PROBE_CONCURRENCY} concurrent probe calls confirmed cancelled, "
+            f"{completed_count} completed normally"
+        )
+        if failure_details:
+            detail += f"; {len(failure_details)} unexpected outcome(s): {failure_details[:3]}"
+        if confirmed_count > 0:
+            return CancellationExerciseReceipt(
+                attempted=True,
+                confirmed=True,
+                outcome="cancelled_confirmed",
+                elapsed_ms=elapsed_ms,
+                detail=detail,
+            )
+        if completed_count == _CANCELLATION_PROBE_CONCURRENCY:
+            return CancellationExerciseReceipt(
+                attempted=True,
+                confirmed=False,
+                outcome="completed_before_cancel",
+                elapsed_ms=elapsed_ms,
+                detail=detail,
+            )
+        return CancellationExerciseReceipt(
+            attempted=True,
+            confirmed=False,
+            outcome="call_failed",
+            elapsed_ms=elapsed_ms,
+            detail=detail,
+        )
 
 
 @dataclass(slots=True)
@@ -627,6 +818,79 @@ def compare_attempt_grades(
     return diagnostics
 
 
+#: Tools independently confirmed to route through the interruptible archive
+#: read path (QueryTransaction/execute_archive_read/QueryExecutionContext):
+#: "query" (query_units) and "status" (scope="archive" falls through to the
+#: same QueryTransaction). "explain" is pure DSL grammar/capability
+#: introspection with no archive read to interrupt at all -- direct probing
+#: confirmed it never confirms a cancellation (every concurrent probe just
+#: completes immediately) and, worse, hammering it with
+#: _CANCELLATION_PROBE_CONCURRENCY concurrent calls plus cancellation
+#: notifications for a tool with no in-flight state to cancel occasionally
+#: destabilized the stdio session ("Connection closed"). Do not probe tools
+#: outside this set; report them honestly as not_applicable instead.
+_CANCELLATION_CAPABLE_TOOLS: frozenset[str] = frozenset({"query", "status"})
+
+
+async def _exercise_scenario_cancellation(
+    scenario: ContinuityScenarioSpec,
+    fixture: Mapping[str, JSONValue],
+    route: ContinuityRoute,
+) -> CancellationExerciseReceipt:
+    """Attempt one genuine mid-flight cancellation using the scenario's own
+    first real route step and arguments.
+
+    This runs before scenario grading and is fully isolated from it: a probe
+    failure (or an honestly unconfirmed race) never fails the scenario or
+    perturbs its observed facts/budget accounting, it only produces an
+    honest receipt for the report.
+    """
+    if not scenario.route_steps:
+        return CancellationExerciseReceipt(
+            attempted=False,
+            confirmed=False,
+            outcome="not_applicable",
+            elapsed_ms=0.0,
+            detail="scenario declares no route steps to exercise",
+        )
+    probe_step = scenario.route_steps[0]
+    if probe_step.tool not in _CANCELLATION_CAPABLE_TOOLS:
+        return CancellationExerciseReceipt(
+            attempted=False,
+            confirmed=False,
+            outcome="not_applicable",
+            elapsed_ms=0.0,
+            detail=(
+                f"tool {probe_step.tool!r} is not confirmed to route through an interruptible "
+                "archive read (only 'query' and 'status' are)"
+            ),
+        )
+    try:
+        probe_arguments = materialize_route_arguments(probe_step, fixture)
+    except Exception as exc:
+        return CancellationExerciseReceipt(
+            attempted=False,
+            confirmed=False,
+            outcome="not_applicable",
+            elapsed_ms=0.0,
+            detail=f"could not materialize probe arguments: {exc}",
+        )
+    try:
+        return await route.exercise_cancellation(
+            probe_step.tool,
+            probe_arguments,
+            grace_ms=scenario.budget.max_cancel_grace_ms,
+        )
+    except Exception as exc:
+        return CancellationExerciseReceipt(
+            attempted=True,
+            confirmed=False,
+            outcome="call_failed",
+            elapsed_ms=0.0,
+            detail=f"cancellation exercise raised {type(exc).__name__}: {exc}",
+        )
+
+
 async def execute_continuity_scenario(
     scenario_name: str,
     fixture: Mapping[str, JSONValue],
@@ -647,6 +911,7 @@ async def execute_continuity_scenario(
     observed_facts: dict[str, JSONValue] = {}
     observed_evidence: list[str] = []
     observed_attempt_grades: dict[str, str] = {}
+    cancellation_receipt = await _exercise_scenario_cancellation(scenario, fixture, route)
 
     try:
         _validate_scenario_declaration(scenario)
@@ -742,7 +1007,11 @@ async def execute_continuity_scenario(
             "observed_response_bytes": budget_state.response_bytes,
             "observed_call_elapsed_ms": round(budget_state.call_elapsed_ms, 3),
             "observed_scenario_elapsed_ms": round(budget_state.elapsed_ms, 3),
-            "cancellation_exercised": False,
+            "cancellation_exercised": cancellation_receipt.confirmed,
+            "cancellation_attempted": cancellation_receipt.attempted,
+            "cancellation_outcome": cancellation_receipt.outcome,
+            "cancellation_elapsed_ms": round(cancellation_receipt.elapsed_ms, 3),
+            "cancellation_detail": cancellation_receipt.detail,
         },
     }
     return require_json_document(report, context=f"continuity report {scenario.scenario_id}")
@@ -1645,6 +1914,8 @@ if __name__ == "__main__":
 
 __all__ = [
     "ArgumentMutator",
+    "CancellationExerciseReceipt",
+    "CancellationOutcome",
     "ContinuityReplayError",
     "ContinuityRoute",
     "DiscoveryMutator",

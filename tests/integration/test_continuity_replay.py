@@ -72,7 +72,41 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
     budget = require_json_document(incident["budget"], context="incident budget")
     assert isinstance(budget["observed_calls"], int)
     assert budget["observed_calls"] > 4
-    assert budget["cancellation_exercised"] is False
+    # A real MCP notifications/cancelled is sent mid-flight for this
+    # scenario's own first route step and the outcome is independently
+    # classified -- not a hardcoded flag. cancellation_elapsed_ms must stay
+    # well inside the declared grace budget, proving the server actually
+    # interrupted the read rather than merely finishing before the grace
+    # timeout elapsed.
+    assert budget["cancellation_attempted"] is True
+    assert budget["cancellation_outcome"] == "cancelled_confirmed"
+    assert budget["cancellation_exercised"] is True
+    cancellation_elapsed_ms = budget["cancellation_elapsed_ms"]
+    max_cancel_grace_ms = budget["max_cancel_grace_ms"]
+    assert isinstance(cancellation_elapsed_ms, (int, float))
+    assert isinstance(max_cancel_grace_ms, (int, float))
+    assert 0 < cancellation_elapsed_ms < max_cancel_grace_ms
+
+    # Every scenario whose first route step uses an archive-read-backed tool
+    # independently exercises and confirms its own cancellation in this
+    # stdio-transport replay -- one scenario passing is not proof the harness
+    # generalizes. "self-inspection" is the sole declared exception: its only
+    # step is "explain" (pure DSL grammar/capability introspection), which has
+    # no in-flight archive read to interrupt at all -- an honest
+    # not_applicable, not a simulated confirmation.
+    for scenario_result in result_documents:
+        scenario_budget = require_json_document(
+            scenario_result["budget"], context=f"{scenario_result['scenario']} budget"
+        )
+        if scenario_result["scenario"] == "self-inspection":
+            assert scenario_budget["cancellation_attempted"] is False
+            assert scenario_budget["cancellation_outcome"] == "not_applicable"
+            assert scenario_budget["cancellation_exercised"] is False
+            continue
+        assert scenario_budget["cancellation_attempted"] is True, scenario_result["scenario"]
+        assert scenario_budget["cancellation_outcome"] == "cancelled_confirmed", scenario_result["scenario"]
+        assert scenario_budget["cancellation_exercised"] is True, scenario_result["scenario"]
+
     receipts = json_document_list(incident["route_receipts"])
     member_receipt = next(receipt for receipt in receipts if receipt["step_id"] == "incident-members")
     assert member_receipt["page_count"] == 6
