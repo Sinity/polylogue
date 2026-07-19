@@ -14,6 +14,10 @@ import sqlite3
 import aiosqlite
 
 from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.storage.sqlite.archive_tiers.index_convergence import (
+    apply_index_benign_ddl_convergence,
+    apply_index_benign_ddl_convergence_async,
+)
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_async, ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.schema_bootstrap import (
     PLANNER_STAT1_SEED_SQL,
@@ -63,6 +67,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA_DDL)
         ensure_vec0_table(conn)
         ensure_runtime_indexes_sync(conn)
+        apply_index_benign_ddl_convergence(conn)
         conn.executescript(PLANNER_STAT1_SEED_SQL)
         conn.execute("PRAGMA optimize")
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -81,6 +86,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # extension may have been newly loaded since fresh init.
     ensure_vec0_table(conn)
     ensure_runtime_indexes_sync(conn)
+    apply_index_benign_ddl_convergence(conn)
 
 
 async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
@@ -93,6 +99,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         await conn.executescript(SCHEMA_DDL)
         await ensure_vec0_table_async(conn)
         await ensure_runtime_indexes_async(conn)
+        await apply_index_benign_ddl_convergence_async(conn)
         await conn.executescript(PLANNER_STAT1_SEED_SQL)
         await conn.execute("PRAGMA optimize")
         await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -109,6 +116,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
 
     await ensure_vec0_table_async(conn)
     await ensure_runtime_indexes_async(conn)
+    await apply_index_benign_ddl_convergence_async(conn)
 
 
 __all__ = [

@@ -121,6 +121,21 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   affected derived tier from source, preserving durable tiers.
 - **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
   helpers for daemon telemetry because the tier is disposable.
+- **Index-tier benign-DDL convergence** (polylogue-jc1b): a registered set of
+  idempotent, data-non-transforming DDL statements (`CREATE TABLE IF NOT
+  EXISTS` / `CREATE INDEX IF NOT EXISTS` / `DROP TABLE IF EXISTS` only —
+  `storage/sqlite/archive_tiers/index_convergence.py`) is applied on every
+  same-version `index.db` open, fresh init and existing archives alike. This
+  is for changes with **zero consumers** under any current-version contract
+  (e.g. dropping a zero-consumer table, adding an index/table nothing reads
+  yet) — not a general escape hatch. `INDEX_SCHEMA_VERSION` stays reserved for
+  semantic changes: consumer-visible column/behavior changes or
+  reparse-required content. `devtools lab policy schema-versioning` validates
+  every registry entry against the allowed idempotent-DDL shapes and rejects
+  anything else (ALTER/INSERT/UPDATE/DELETE, or a `CREATE`/`DROP` missing its
+  `IF NOT EXISTS`/`IF EXISTS` guard). First application: dropped the
+  zero-consumer `model_prices` and `session_reported_costs` tables
+  (polylogue-v2mg).
 - On startup the on-disk `PRAGMA user_version` is compared against the tier
   constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.

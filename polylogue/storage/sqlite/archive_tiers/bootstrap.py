@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, migrate_archive_tier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -89,6 +90,11 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
 
         seed_price_catalog(conn)
+        # Fresh init never had a registered drop's target table, and any
+        # additive registry entry lands identically to canonical DDL -- this
+        # is a no-op today, kept for fresh-init/converged-live parity (see
+        # index_convergence.py module docstring).
+        apply_index_benign_ddl_convergence(conn)
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
     conn.execute(f"PRAGMA user_version = {spec.version}")
@@ -173,6 +179,15 @@ def initialize_archive_database(
                 initialize_archive_tier(conn, tier)
             elif tier is ArchiveTier.USER:
                 _ensure_user_annotation_schemas(conn)
+                conn.commit()
+            elif tier is ArchiveTier.INDEX:
+                # index.db is rebuildable, but a *benign* registered DDL delta
+                # (idempotent, data-non-transforming, zero-consumer at this
+                # exact version -- see index_convergence.py) does not need the
+                # full rebuild a schema-version bump would force. Re-apply the
+                # registry on every same-version open so an already-populated
+                # archive converges without touching INDEX_SCHEMA_VERSION.
+                apply_index_benign_ddl_convergence(conn)
                 conn.commit()
             return
         if (
