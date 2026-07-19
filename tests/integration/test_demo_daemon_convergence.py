@@ -273,25 +273,16 @@ async def test_import_demo_converges_through_live_daemon_path(
             # daemon's OWN insight-materialization convergence can race a
             # one-shot CLI augmentation pass (it may recompute
             # ``session_profiles`` from token columns that were not yet
-            # injected at that moment) -- idempotent re-application self
-            # heals, so poll rather than asserting on the first read.
-            from polylogue.demo import apply_demo_post_ingest_augmentation
-
-            deadline = asyncio.get_running_loop().time() + 20.0
-            total_cost_usd: float | None = None
-            while asyncio.get_running_loop().time() < deadline:
-                with sqlite3.connect(archive_root / "index.db") as conn:
-                    row = conn.execute(
-                        "SELECT total_cost_usd FROM session_profiles WHERE session_id = ?",
-                        (DEMO_CLAUDE_CODE_SESSION_ID,),
-                    ).fetchone()
-                total_cost_usd = float(row[0]) if row is not None and row[0] is not None else None
-                if total_cost_usd:
-                    break
-                apply_demo_post_ingest_augmentation(archive_root)
-                await asyncio.sleep(0.25)
-            assert total_cost_usd is not None
-            assert total_cost_usd > 0, total_cost_usd
+            # injected at that moment) -- apply_demo_post_ingest_augmentation
+            # itself now self-heals against this (bounded re-apply loop), so
+            # a single read-back after --wait already returned is sufficient.
+            with sqlite3.connect(archive_root / "index.db") as conn:
+                total_cost_row = conn.execute(
+                    "SELECT total_cost_usd FROM session_profiles WHERE session_id = ?",
+                    (DEMO_CLAUDE_CODE_SESSION_ID,),
+                ).fetchone()
+            assert total_cost_row is not None
+            assert total_cost_row[0], total_cost_row
 
             with sqlite3.connect(archive_root / "index.db") as conn:
                 chatgpt_message_count = conn.execute(

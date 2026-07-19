@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from hashlib import sha256
@@ -1230,6 +1231,34 @@ def _all_demo_session_ids(archive_root: Path) -> list[str]:
     return sorted(str(row[0]) for row in rows)
 
 
+# A live daemon keeps materializing session_profiles in the background
+# (its own insights-convergence stage) concurrently with a one-shot CLI
+# augmentation call. If that stage recomputes session_profiles from a
+# pre-injection snapshot *after* this function's own
+# ``_materialize_session_insights`` call, the injected usage/cost is
+# silently overwritten with zeros even though the injection itself
+# succeeded. Bounded self-heal: re-run the whole idempotent sequence a few
+# times, a short beat apart, until the read-back proves the injected cost
+# survived (polylogue-z1c6 review follow-up). A no-daemon caller (the
+# direct seeder) always settles on the first attempt.
+_AUGMENTATION_SETTLE_ATTEMPTS = 4
+_AUGMENTATION_SETTLE_INTERVAL_S = 0.5
+
+
+def _demo_usage_has_settled(archive_root: Path) -> bool:
+    """Return whether the injected Claude Code usage survived materialization."""
+
+    conn = sqlite3.connect(archive_root / "index.db")
+    try:
+        row = conn.execute(
+            "SELECT total_cost_usd FROM session_profiles WHERE session_id = ?",
+            (DEMO_CLAUDE_CODE_SESSION_ID,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None and bool(row[0])
+
+
 def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
     """Apply deterministic demo-only enrichments after any ingest path.
 
@@ -1245,14 +1274,20 @@ def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
     semantic contract as a directly seeded one (polylogue-z1c6). Every step is
     idempotent (``UPDATE`` / ``INSERT ... ON CONFLICT``), so calling this more
     than once against the same archive (a repeated ``--wait``, a demo reseed)
-    is safe.
+    is safe. Self-heals against the live daemon's own insight-convergence
+    stage racing this call (see ``_AUGMENTATION_SETTLE_ATTEMPTS`` above).
     """
 
-    session_ids = _all_demo_session_ids(archive_root)
-    _inject_demo_session_usage(archive_root)
-    _materialize_session_insights(archive_root, session_ids)
-    _inject_demo_session_repos(archive_root)
-    _seed_demo_embeddings(archive_root)
+    for attempt in range(_AUGMENTATION_SETTLE_ATTEMPTS):
+        session_ids = _all_demo_session_ids(archive_root)
+        _inject_demo_session_usage(archive_root)
+        _materialize_session_insights(archive_root, session_ids)
+        _inject_demo_session_repos(archive_root)
+        _seed_demo_embeddings(archive_root)
+        if _demo_usage_has_settled(archive_root):
+            return
+        if attempt < _AUGMENTATION_SETTLE_ATTEMPTS - 1:
+            time.sleep(_AUGMENTATION_SETTLE_INTERVAL_S)
 
 
 async def seed_demo_archive(
