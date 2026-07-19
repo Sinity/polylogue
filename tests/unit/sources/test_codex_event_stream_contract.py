@@ -687,9 +687,7 @@ class TestFunctionsExecLowering:
                 semantic_type TEXT,
                 tool_command TEXT,
                 tool_path TEXT,
-                tool_input TEXT,
                 tool_result_block_id TEXT,
-                output_text TEXT,
                 is_error INTEGER,
                 exit_code INTEGER
             );
@@ -728,12 +726,16 @@ class TestFunctionsExecLowering:
                     ),
                 )
         refresh_action_pairs(conn, "session")
+        # output_text is no longer materialized on action_pairs itself
+        # (polylogue-2i2w) -- it is re-joined from the paired tool_result
+        # block, mirroring the production `actions` VIEW.
         rows = conn.execute(
             """
-            SELECT use_rank, tool_command, output_text, is_error, exit_code
-            FROM action_pairs
-            WHERE tool_id = 'repeated-exec::polylogue-child::0'
-            ORDER BY use_rank
+            SELECT ap.use_rank, ap.tool_command, tr.text AS output_text, ap.is_error, ap.exit_code
+            FROM action_pairs ap
+            LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id
+            WHERE ap.tool_id = 'repeated-exec::polylogue-child::0'
+            ORDER BY ap.use_rank
             """
         ).fetchall()
         assert [dict(row) for row in rows] == [

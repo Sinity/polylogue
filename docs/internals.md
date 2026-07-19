@@ -173,6 +173,25 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 41 stops materializing `tool_input`/`output_text` text
+  copies on `action_pairs` (polylogue-2i2w). `action_pairs` keeps only
+  join/rank/outcome columns for a paired `tool_use`/`tool_result` block
+  (`tool_use_block_id`, `tool_result_block_id`, `session_id`, `message_id`,
+  `tool_id`, `use_rank`, `tool_name`, `semantic_type`, `tool_command`,
+  `tool_path`, `is_error`, `exit_code`); the text itself already lives once in
+  `blocks.tool_input`/`blocks.text`. On a live generation this table stored
+  868,522 rows at ~4.7KB/row (~4.1GB) — every tool interaction existed ~3x on
+  disk (blocks, action_pairs, FTS) — and the ~4.7KB rows lived in SQLite
+  overflow-page chains, so a per-session `DELETE FROM action_pairs WHERE
+  session_id=?` paid dozens of scattered page reads per row, turning a whale
+  session replace into hours of random IO. The `actions` VIEW is rewritten to
+  re-join `blocks` by `tool_use_block_id`/`tool_result_block_id` at read time,
+  so every reader (CLI, API, MCP, insights, `delegation_facts_source`) keeps
+  byte-identical `tool_input`/`output_text` payloads with no caller change.
+  Existing index tiers must be rebuilt from source evidence (`polylogue ops
+  reset --index && polylogued run`), though the transition itself needs no raw
+  reparse (see `polylogue/storage/sqlite/lifecycle.py`'s `IndexDeltaDeclaration`
+  for v41).
 - Index schema version 37 drops the three run-projection materialized cache
   tables — `session_runs`, `session_observed_events`,
   `session_context_snapshots` — added by v11 (polylogue-dab). Their write

@@ -246,6 +246,36 @@ def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Pat
     assert "WITH" not in view_sql["delegations"].upper()
 
 
+def test_action_pairs_does_not_materialize_text_copies(tmp_path: Path) -> None:
+    """polylogue-2i2w: action_pairs is a join/rank/outcome index over paired
+    tool_use/tool_result blocks, not a second copy of their text. Storing
+    tool_input/output_text again here made every tool interaction exist ~3x
+    on disk and turned per-session deletes into scattered overflow-page
+    random IO on large archives. This locks the storage shape in place --
+    the `actions` view (tested below) is responsible for re-joining blocks
+    to serve that text to readers, not this table."""
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(action_pairs)").fetchall()}
+    assert "tool_input" not in columns
+    assert "output_text" not in columns
+    assert columns == {
+        "tool_use_block_id",
+        "session_id",
+        "message_id",
+        "tool_id",
+        "use_rank",
+        "tool_name",
+        "semantic_type",
+        "tool_command",
+        "tool_path",
+        "tool_result_block_id",
+        "is_error",
+        "exit_code",
+    }
+
+
 def test_actions_view_pairs_reemitted_tool_id_by_transcript_rank_not_cross_product(tmp_path: Path) -> None:
     """xnkf: a provider can re-emit the same tool_id on distinct messages (verified
     live, not a variant). A plain equality join on tool_id fans out N uses x M
