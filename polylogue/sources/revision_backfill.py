@@ -246,11 +246,119 @@ def _census_historical_revision_evidence(
     returns or propagates; a crash further downstream (replay phase) cannot
     observe a partially-committed census. Default ``None`` preserves the
     original per-raw-commit behavior for every existing caller.
+
+    Untyped raws sharing one ``source_path`` are first checked for a proven
+    byte-growth chain (``ArchiveStore.classify_untyped_full_revision_groups``,
+    polylogue-nh44) before any of them is parsed. Only the newest member of a
+    proven chain is actually parsed; every older member is bound to the same
+    learned identity without independently parsing bytes that byte comparison
+    already proved are a strict prefix of the newest capture. This is a
+    census-time parse-cost optimization only: it never grants authority --
+    ``classify_raw_revision_cohort`` (called later, during replay) still
+    independently re-derives byte-provenness from raw bytes for every raw.
     """
     state = _RevisionCensusState(0, 0, 0, set(), {}, {})
     batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
     batched = batch_size is not None
     pending_commits = 0
+
+    def commit_unit() -> None:
+        nonlocal pending_commits
+        pending_commits += 1
+        if batch_size is not None and pending_commits >= batch_size:
+            archive.commit()
+            pending_commits = 0
+
+    def apply_outcome(
+        raw_id: str,
+        source_index: int,
+        outcomes: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
+    ) -> None:
+        state.scanned += 1
+        state.censused.add(raw_id)
+        if source_index < 0:
+            archive.replace_raw_membership_census(
+                raw_id,
+                None,
+                parser_fingerprint="revision-membership-v1",
+                censused_at_ms=0,
+                detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                manage_transaction=not batched,
+            )
+            state.quarantined += 1
+            commit_unit()
+            return
+        outcome = outcomes[raw_id]
+        if isinstance(outcome, Exception):
+            archive.replace_raw_membership_census(
+                raw_id,
+                None,
+                parser_fingerprint="revision-membership-v1",
+                censused_at_ms=0,
+                detail=str(outcome),
+                manage_transaction=not batched,
+            )
+            state.quarantined += 1
+            commit_unit()
+            return
+        sessions, payload_bytes, revision_kind = outcome
+        state.classified += int(len(sessions) == 1)
+        spill.add(raw_id, sessions, payload_bytes=payload_bytes)
+        if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
+            session = sessions[0]
+            logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    logical_source_key=logical_key,
+                    kind=RawRevisionKind.FULL,
+                    source_revision=raw_id,
+                    acquisition_generation=0,
+                    authority=RawRevisionAuthority.QUARANTINED,
+                ),
+                manage_transaction=not batched,
+            )
+            state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+            commit_unit()
+        elif revision_kind is RawRevisionKind.UNKNOWN:
+            archive.replace_raw_membership_census(
+                raw_id,
+                sessions,
+                parser_fingerprint="revision-membership-v1",
+                censused_at_ms=0,
+                manage_transaction=not batched,
+            )
+            for session in sessions:
+                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+            commit_unit()
+        # else: raw_id was already typed by an earlier run; this parse was a
+        # wasted (but harmless, no-op) reparse -- existing retry behavior.
+
+    def bind_byte_proven_older_member(raw_id: str, logical_key: str) -> None:
+        """Bind an older chain member to the head's learned key without parsing it.
+
+        Its own bytes were never independently opened here; identity is
+        established by construction (byte-prefix of the parsed head), not by
+        inspecting this raw's content.
+        """
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key=logical_key,
+                kind=RawRevisionKind.FULL,
+                source_revision=raw_id,
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+            manage_transaction=not batched,
+        )
+        state.scanned += 1
+        state.censused.add(raw_id)
+        state.classified += 1
+        state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+        commit_unit()
+
     census_selections: tuple[tuple[str, ...] | None, ...]
     if selected_raw_ids is None:
         census_selections = (None,)
@@ -277,69 +385,40 @@ def _census_historical_revision_evidence(
                 # regardless of worker completion order, so parallel and sequential
                 # runs remain byte-identical.
                 parseable_raw_ids = [raw_id for raw_id, source_index in pending_rows if source_index >= 0]
-                parsed_outcomes = _parse_retained_raws(archive, parseable_raw_ids, ingest_workers=ingest_workers)
+                chain_older_by_head = archive.classify_untyped_full_revision_groups(parseable_raw_ids)
+                head_by_older = {
+                    older_raw_id: head_raw_id
+                    for head_raw_id, older_raw_ids in chain_older_by_head.items()
+                    for older_raw_id in older_raw_ids
+                }
+                dispatch_raw_ids = [raw_id for raw_id in parseable_raw_ids if raw_id not in head_by_older]
+                parsed_outcomes = _parse_retained_raws(archive, dispatch_raw_ids, ingest_workers=ingest_workers)
                 for raw_id, source_index in pending_rows:
-                    state.scanned += 1
-                    state.censused.add(raw_id)
-                    if source_index < 0:
-                        archive.replace_raw_membership_census(
-                            raw_id,
-                            None,
-                            parser_fingerprint="revision-membership-v1",
-                            censused_at_ms=0,
-                            detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-                            manage_transaction=not batched,
-                        )
-                        state.quarantined += 1
-                        pending_commits += 1
-                    else:
-                        outcome = parsed_outcomes[raw_id]
-                        if isinstance(outcome, Exception):
-                            archive.replace_raw_membership_census(
-                                raw_id,
-                                None,
-                                parser_fingerprint="revision-membership-v1",
-                                censused_at_ms=0,
-                                detail=str(outcome),
-                                manage_transaction=not batched,
-                            )
-                            state.quarantined += 1
-                            pending_commits += 1
+                    if raw_id in head_by_older:
+                        continue
+                    apply_outcome(raw_id, source_index, parsed_outcomes)
+                if head_by_older:
+                    head_to_key = {
+                        raw_id: key for key, raw_ids in state.provisional_full_raw_ids.items() for raw_id in raw_ids
+                    }
+                    unresolved = [
+                        older_raw_id
+                        for older_raw_id, head_raw_id in head_by_older.items()
+                        if head_raw_id not in head_to_key
+                    ]
+                    # The head's parse did not yield a clean single-session bind
+                    # (e.g. a coincidental byte-prefix among multi-session
+                    # bundles) -- fall back to parsing every deferred member
+                    # individually, exactly as if no chain had been proven.
+                    fallback_outcomes = (
+                        _parse_retained_raws(archive, unresolved, ingest_workers=ingest_workers) if unresolved else {}
+                    )
+                    for older_raw_id, head_raw_id in head_by_older.items():
+                        resolved_key = head_to_key.get(head_raw_id)
+                        if resolved_key is not None:
+                            bind_byte_proven_older_member(older_raw_id, resolved_key)
                         else:
-                            sessions, payload_bytes, revision_kind = outcome
-                            state.classified += int(len(sessions) == 1)
-                            spill.add(raw_id, sessions, payload_bytes=payload_bytes)
-                            if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
-                                session = sessions[0]
-                                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
-                                archive.bind_raw_revision(
-                                    raw_id,
-                                    RawRevisionEnvelope(
-                                        logical_source_key=logical_key,
-                                        kind=RawRevisionKind.FULL,
-                                        source_revision=raw_id,
-                                        acquisition_generation=0,
-                                        authority=RawRevisionAuthority.QUARANTINED,
-                                    ),
-                                    manage_transaction=not batched,
-                                )
-                                state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
-                                pending_commits += 1
-                            elif revision_kind is RawRevisionKind.UNKNOWN:
-                                archive.replace_raw_membership_census(
-                                    raw_id,
-                                    sessions,
-                                    parser_fingerprint="revision-membership-v1",
-                                    censused_at_ms=0,
-                                    manage_transaction=not batched,
-                                )
-                                for session in sessions:
-                                    logical_key = f"{session.source_name.value}:{session.provider_session_id}"
-                                    state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
-                                pending_commits += 1
-                    if batch_size is not None and pending_commits >= batch_size:
-                        archive.commit()
-                        pending_commits = 0
+                            apply_outcome(older_raw_id, 0, fallback_outcomes)
                 if census_selection is None:
                     break
                 expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))

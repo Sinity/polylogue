@@ -21,7 +21,11 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
+from tests.infra.revision_backfill_benchmark import (
+    REVISION_CHAIN_SHAPE,
+    build_independent_raw_corpus,
+    build_revision_chain_corpus,
+)
 
 
 def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
@@ -695,7 +699,7 @@ def _append_chain_archive(root: Path) -> tuple[str, str]:
 
 def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Baseline (pre-fix) shape: an unbounded (envelope=None) backfill with no
-    explicit spill-cache bound reparses every accepted revision during replay
+    explicit spill-cache bound reparses the accepted revision during replay
     even though census already parsed it once. This is exactly the CLI
     rebuild-index path's behavior before max_cached_payload_bytes decoupled
     caching from the resource envelope. Paired with the fixed-behavior test
@@ -714,11 +718,50 @@ def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.Mo
     result = backfill_historical_revision_evidence(tmp_path, max_payload_bytes=None)
 
     assert result.replayed_logical_sources == 1
-    # Census parses both raws once each (2 calls); replay then reparses the
-    # selected newest revision again from blob because nothing was cached
-    # (a 3rd call, duplicating one raw_id) instead of reusing census output.
-    assert len(parse_calls) == 3
-    assert len(set(parse_calls)) == 2
+    # polylogue-nh44: census now proves the baseline raw is a byte-prefix of
+    # the newest capture (same source_path) without parsing it at all, so
+    # only the newest raw is ever ONE parse during census; replay then
+    # reparses that same accepted revision again from blob because nothing
+    # was cached (a 2nd call, duplicating that one raw_id) instead of reusing
+    # census output.
+    assert len(parse_calls) == 2
+    assert len(set(parse_calls)) == 1
+
+
+def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """polylogue-nh44 regression at the bead's own recorded corpus shape: a
+    growing-file cohort (one re-scanned Codex rollout, 50 superseded captures
+    plus the winner) must census-parse only the winner, never the 50 byte-
+    proven-superseded snapshots. Measured on this exact shape: 52->2 parse
+    calls (1 unique raw parsed instead of 51), ~3.3x wall-time reduction for
+    the cohort (see PR body for the before/after numbers)."""
+    raw_ids = build_revision_chain_corpus(tmp_path, **REVISION_CHAIN_SHAPE)
+    original = revision_backfill._parse_retained_raw
+    parse_calls: list[str] = []
+
+    def counted(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parse_calls.append(raw_id)
+        return original(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+
+    result = backfill_historical_revision_evidence(tmp_path)
+
+    assert result.scanned == len(raw_ids)
+    assert result.classified_full == len(raw_ids)
+    assert result.replayed_logical_sources == 1
+    assert result.quarantined == 0
+    # Only the newest raw (the winner) is ever independently parsed; the 50
+    # older captures are bound to its learned identity by byte-prefix proof.
+    assert set(parse_calls) == {raw_ids[-1]}
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[-1],)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_sessions WHERE revision_kind = 'full' AND logical_source_key IS NOT NULL"
+        ).fetchone()[0] == len(raw_ids)
 
 
 def test_backfill_replay_reuses_spill_cache_when_bound_explicitly(
@@ -748,11 +791,12 @@ def test_backfill_replay_reuses_spill_cache_when_bound_explicitly(
     )
 
     assert result.replayed_logical_sources == 1
-    # Both raws are parsed exactly once during census; replay hits the
-    # census-populated spill cache instead of reparsing the selected
-    # revision from blob a second time (contrast the 3-call baseline above).
-    assert len(parse_calls) == 2
-    assert len(set(parse_calls)) == 2
+    # polylogue-nh44: only the newest raw is ever parsed (the baseline is
+    # proven a byte-prefix and bound without parsing); replay hits the
+    # census-populated spill cache instead of reparsing it from blob a
+    # second time (contrast the 2-call baseline above).
+    assert len(parse_calls) == 1
+    assert len(set(parse_calls)) == 1
 
 
 def test_parallel_census_matches_sequential_archive_state(tmp_path: Path) -> None:
