@@ -123,6 +123,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
     ),
     ("gc-history", "_blob_gc", "gc_history_command", "Show recent blob-GC passes recorded in ``gc_generations``."),
     ("status", "_status", "status_command", "Inspect persisted maintenance operations (#1197)."),
+    (
+        "verify-archive",
+        "_verify_archive",
+        "verify_archive_command",
+        "Prove the archive is coherent after a rebuild, restore, or promotion. Read-only.",
+    ),
 )
 
 
