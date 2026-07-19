@@ -27,7 +27,7 @@ The human transcript is deliberately evidence-first rather than audit-first:
 5. read a fork as one composed chronicle while preserving parent refs;
 6. only then zoom out to archive facets.
 
-The full fixture audit remains machine-readable in `report.json`, so the public story stays compact without weakening verification. The current fixture world covers five origins, structured tool outcomes, attachment bytes, browser-capture coalescing, lineage, a subagent, a compaction boundary, context snapshots, user overlays, and deterministic synthetic embeddings. See the [construct audit](plans/demo-corpus-construct-audit.md) and [proof map](proof-artifacts.md).
+The full fixture audit remains machine-readable in `report.json`, so the public story stays compact without weakening verification. The current fixture world covers every wired origin (ChatGPT, Claude.ai, Claude Code, Codex, AI Studio/Gemini, Gemini CLI, Antigravity, and Hermes), structured tool outcomes, attachment bytes, browser-capture coalescing, lineage, a subagent, a compaction boundary, context snapshots, user overlays, and deterministic synthetic embeddings. See the [construct audit](plans/demo-corpus-construct-audit.md) and [proof map](proof-artifacts.md).
 
 ## Current public proofs
 

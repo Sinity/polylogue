@@ -1,5 +1,5 @@
 Facets (global) — matched result set:
-  sessions: 15  messages: 62
+  sessions: 19  messages: 71
   Family states:
     total_counts: Total counts — complete
     origins: Provider origins — complete
@@ -12,18 +12,24 @@ Facets (global) — matched result set:
     has_flags: Content flags — deferred (deferred_by_default; use --include-deferred)
   Provider origins:
     codex-session: 7
+    claude-code-session: 4
     chatgpt-export: 3
-    claude-code-session: 3
     aistudio-drive: 1
+    antigravity-session: 1
     claude-ai-export: 1
+    gemini-cli-session: 1
+    hermes-session: 1
   User tags:
     pytest-triage: 1
   IDF (higher = rarer, partitions more strongly):
     [origins]
-      aistudio-drive: 2.708
-      claude-ai-export: 2.708
-      chatgpt-export: 1.609
-      claude-code-session: 1.609
-      codex-session: 0.762
+      aistudio-drive: 2.944
+      antigravity-session: 2.944
+      claude-ai-export: 2.944
+      gemini-cli-session: 2.944
+      hermes-session: 2.944
+      chatgpt-export: 1.846
+      claude-code-session: 1.558
+      codex-session: 0.999
     [tags]
-      pytest-triage: 2.708
+      pytest-triage: 2.944

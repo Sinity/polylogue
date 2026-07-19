@@ -81,6 +81,7 @@ def run_demo_tour(
     steps: list[DemoTourStep] = []
     first_result_s = 0.0
     env = _tour_env(resolved_archive)
+    origin_count = len({session_id.split(":", 1)[0] for session_id in seed.session_ids})
     command_specs = (
         (
             "claim versus receipt",
@@ -111,8 +112,8 @@ def run_demo_tour(
             "archive facets",
             ("analyze", "--facets"),
             (
-                "Only after inspecting evidence, zoom out to the archive across five origins, with deferred "
-                "families labeled rather than silently guessed."
+                f"Only after inspecting evidence, zoom out to the archive across {origin_count} origins, with "
+                "deferred families labeled rather than silently guessed."
             ),
         ),
     )

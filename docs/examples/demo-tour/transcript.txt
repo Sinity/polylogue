@@ -1,12 +1,12 @@
 # prepare deterministic proof archive
-Seeded 15 sessions, 62 messages, and 5 user-state assertions in 3.901s. Fixture audit: 37/37 declared constructs satisfied.
+Seeded 19 sessions, 71 messages, and 8 user-state assertions in 13.715s. Fixture audit: 40/40 declared constructs satisfied.
 
 # verify evidence before presenting it
-Verification passed in 0.021s; 0 path leaks and 0 semantic problems. The complete fixture and verification audit remains in report.json.
+Verification passed in 0.014s; 0 path leaks and 0 semantic problems. The complete fixture and verification audit remains in report.json.
 
 $ polylogue demo receipts
 Start with a falsifiable disagreement: assistant prose claims the tests pass, while the provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only 'error' control demonstrates why keyword matching is not the oracle.
-exit=0 duration=1.661s bytes=1399
+exit=0 duration=1.751s bytes=1399
 Polylogue evidence receipt
 archive: <demo-archive>
 verdict: contradicted_at_claim_time_then_repaired
@@ -38,7 +38,7 @@ source material:
   blob_sha256: 9fd0dbdb080058070935924534a903cc63a8dcba571f6b2734f92a96576b59d7
 
 completion-claim experiment:
-  sample manifest: 238eeeabdcb413a36ff031f62c5bff95a02160db2488e432fdd106014947d783
+  sample manifest: 322c190a11bbc78170b1e9adebfdc7a2bf3de5179a5f7f39f8ebaf0ee593547b
   denominator: 2
 unsupported by structural evidence: 0 (0.0%)
 neutral prior outcome: 0 (0.0%)
@@ -47,14 +47,14 @@ contradicted without recorded repair: 1 (50.0%)
 
 $ polylogue 'actions where is_error:true | group by tool | count'
 Now aggregate the same structural field across providers. This query counts normalized failed actions; it does not search prose for the word 'error'.
-exit=0 duration=1.938s bytes=62
+exit=0 duration=1.891s bytes=62
 tool=Bash count=4
 tool=exec_command count=2
 tool=Edit count=1
 
 $ polylogue --id codex-session:demo-lineage-fork read --view chronicle
 Read a fork as one logical chronicle: inherited parent messages remain attributable to their origin while the fork contributes only its divergent tail.
-exit=0 duration=1.985s bytes=936
+exit=0 duration=1.969s bytes=936
 # Session Chronicle
 
 - Sessions: 1
@@ -100,10 +100,10 @@ The fork diverges into demo corpus construct checks.
 _No distinct matching prose in the last edge._
 
 $ polylogue analyze --facets
-Only after inspecting evidence, zoom out to the archive across five origins, with deferred families labeled rather than silently guessed.
-exit=0 duration=1.909s bytes=1426
+Only after inspecting evidence, zoom out to the archive across 8 origins, with deferred families labeled rather than silently guessed.
+exit=0 duration=1.877s bytes=1594
 Facets (global) — matched result set:
-  sessions: 15  messages: 62
+  sessions: 19  messages: 71
   Family states:
     total_counts: Total counts — complete
     origins: Provider origins — complete
@@ -116,18 +116,24 @@ Facets (global) — matched result set:
     has_flags: Content flags — deferred (deferred_by_default; use --include-deferred)
   Provider origins:
     codex-session: 7
+    claude-code-session: 4
     chatgpt-export: 3
-    claude-code-session: 3
     aistudio-drive: 1
+    antigravity-session: 1
     claude-ai-export: 1
+    gemini-cli-session: 1
+    hermes-session: 1
   User tags:
     pytest-triage: 1
   IDF (higher = rarer, partitions more strongly):
     [origins]
-      aistudio-drive: 2.708
-      claude-ai-export: 2.708
-      chatgpt-export: 1.609
-      claude-code-session: 1.609
-      codex-session: 0.762
+      aistudio-drive: 2.944
+      antigravity-session: 2.944
+      claude-ai-export: 2.944
+      gemini-cli-session: 2.944
+      hermes-session: 2.944
+      chatgpt-export: 1.846
+      claude-code-session: 1.558
+      codex-session: 0.999
     [tags]
-      pytest-triage: 2.708
+      pytest-triage: 2.944

@@ -28,7 +28,7 @@
     "result": "pass",
     "triggered": false
   },
-  "first_result_s": 5.583,
+  "first_result_s": 15.481,
   "non_claims": [
     "The deterministic tour does not establish field prevalence, production scale, or provider completeness.",
     "The deterministic tour does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.",
@@ -67,34 +67,34 @@
   "report_markdown_path": "report.md",
   "seed": {
     "archive_root": "archive",
-    "assertion_count": 5,
+    "assertion_count": 8,
     "construct_coverage": [
       {
         "construct_id": "multi_origin_sessions",
         "label": "Multi-origin sessions",
         "minimum": 3,
-        "observed": 5,
+        "observed": 8,
         "ok": true
       },
       {
         "construct_id": "session_profiles",
         "label": "Session profiles",
         "minimum": 3,
-        "observed": 15,
+        "observed": 19,
         "ok": true
       },
       {
         "construct_id": "tool_use_blocks",
         "label": "Tool-use blocks",
         "minimum": 1,
-        "observed": 24,
+        "observed": 26,
         "ok": true
       },
       {
         "construct_id": "tool_result_blocks",
         "label": "Tool-result blocks",
         "minimum": 1,
-        "observed": 26,
+        "observed": 28,
         "ok": true
       },
       {
@@ -108,7 +108,7 @@
         "construct_id": "provider_usage_messages",
         "label": "Provider usage messages",
         "minimum": 1,
-        "observed": 7,
+        "observed": 9,
         "ok": true
       },
       {
@@ -182,6 +182,27 @@
         "ok": true
       },
       {
+        "construct_id": "gemini_cli_origin_rows",
+        "label": "Gemini CLI origin rows",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
+        "construct_id": "antigravity_origin_rows",
+        "label": "Antigravity origin rows",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
+        "construct_id": "hermes_origin_rows",
+        "label": "Hermes origin rows",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
         "construct_id": "session_link_rows",
         "label": "Session-link rows",
         "minimum": 1,
@@ -199,7 +220,7 @@
         "construct_id": "prefix_sharing_links",
         "label": "Prefix-sharing lineage links",
         "minimum": 1,
-        "observed": 1,
+        "observed": 2,
         "ok": true
       },
       {
@@ -234,21 +255,21 @@
         "construct_id": "run_projection_rows",
         "label": "Run projection rows",
         "minimum": 1,
-        "observed": 15,
+        "observed": 19,
         "ok": true
       },
       {
         "construct_id": "observed_event_rows",
         "label": "Observed-event rows",
         "minimum": 1,
-        "observed": 37,
+        "observed": 43,
         "ok": true
       },
       {
         "construct_id": "context_snapshot_rows",
         "label": "Context snapshot rows",
         "minimum": 1,
-        "observed": 15,
+        "observed": 19,
         "ok": true
       },
       {
@@ -276,7 +297,7 @@
         "construct_id": "error_terminal_state_rows",
         "label": "Error terminal-state rows",
         "minimum": 1,
-        "observed": 1,
+        "observed": 2,
         "ok": true
       },
       {
@@ -311,7 +332,7 @@
         "construct_id": "embedding_candidate_prose_messages",
         "label": "Embedding candidate prose messages",
         "minimum": 1,
-        "observed": 36,
+        "observed": 38,
         "ok": true
       },
       {
@@ -329,17 +350,19 @@
         "ok": true
       }
     ],
-    "message_count": 62,
+    "message_count": 71,
     "overlays_seeded": true,
-    "session_count": 15,
+    "session_count": 19,
     "session_ids": [
       "aistudio-drive:demo-00",
+      "antigravity-session:demo-00",
       "chatgpt-export:cross-material-duplicate-01",
       "chatgpt-export:cross-material-duplicate-02",
       "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5",
       "claude-ai-export:demo-temporary-claude-ai",
       "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
-      "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo",
+      "claude-code-session:demo-lineage-compaction-parent",
+      "claude-code-session:demo-lineage-compaction-parent:agent-acompact-demo",
       "claude-code-session:demo-lineage-sidechain",
       "codex-session:demo-00",
       "codex-session:demo-anti-grep",
@@ -347,7 +370,9 @@
       "codex-session:demo-lineage-parent",
       "codex-session:demo-lineage-subagent",
       "codex-session:demo-receipts",
-      "codex-session:demo-terminal-error"
+      "codex-session:demo-terminal-error",
+      "gemini-cli-session:demo-00",
+      "hermes-session:demo-00"
     ],
     "source_root": "archive/demo-fixture-world-source"
   },
@@ -359,7 +384,7 @@
         "demo",
         "receipts"
       ],
-      "duration_s": 1.661,
+      "duration_s": 1.751,
       "exit_code": 0,
       "name": "claim versus receipt",
       "output_path": "command-output/01-claim-versus-receipt.txt"
@@ -370,7 +395,7 @@
         "polylogue",
         "actions where is_error:true | group by tool | count"
       ],
-      "duration_s": 1.938,
+      "duration_s": 1.891,
       "exit_code": 0,
       "name": "failed actions aggregate",
       "output_path": "command-output/02-failed-actions-aggregate.txt"
@@ -385,25 +410,25 @@
         "--view",
         "chronicle"
       ],
-      "duration_s": 1.985,
+      "duration_s": 1.969,
       "exit_code": 0,
       "name": "composed lineage",
       "output_path": "command-output/03-composed-lineage.txt"
     },
     {
-      "bytes_written": 1426,
+      "bytes_written": 1594,
       "command": [
         "polylogue",
         "analyze",
         "--facets"
       ],
-      "duration_s": 1.909,
+      "duration_s": 1.877,
       "exit_code": 0,
       "name": "archive facets",
       "output_path": "command-output/04-archive-facets.txt"
     }
   ],
-  "total_duration_s": 11.414,
+  "total_duration_s": 21.218,
   "transcript_path": "transcript.txt",
   "verify": {
     "absolute_path_leaks": [],
@@ -413,28 +438,28 @@
         "construct_id": "multi_origin_sessions",
         "label": "Multi-origin sessions",
         "minimum": 3,
-        "observed": 5,
+        "observed": 8,
         "ok": true
       },
       {
         "construct_id": "session_profiles",
         "label": "Session profiles",
         "minimum": 3,
-        "observed": 15,
+        "observed": 19,
         "ok": true
       },
       {
         "construct_id": "tool_use_blocks",
         "label": "Tool-use blocks",
         "minimum": 1,
-        "observed": 24,
+        "observed": 26,
         "ok": true
       },
       {
         "construct_id": "tool_result_blocks",
         "label": "Tool-result blocks",
         "minimum": 1,
-        "observed": 26,
+        "observed": 28,
         "ok": true
       },
       {
@@ -448,7 +473,7 @@
         "construct_id": "provider_usage_messages",
         "label": "Provider usage messages",
         "minimum": 1,
-        "observed": 7,
+        "observed": 9,
         "ok": true
       },
       {
@@ -522,6 +547,27 @@
         "ok": true
       },
       {
+        "construct_id": "gemini_cli_origin_rows",
+        "label": "Gemini CLI origin rows",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
+        "construct_id": "antigravity_origin_rows",
+        "label": "Antigravity origin rows",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
+        "construct_id": "hermes_origin_rows",
+        "label": "Hermes origin rows",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
         "construct_id": "session_link_rows",
         "label": "Session-link rows",
         "minimum": 1,
@@ -539,7 +585,7 @@
         "construct_id": "prefix_sharing_links",
         "label": "Prefix-sharing lineage links",
         "minimum": 1,
-        "observed": 1,
+        "observed": 2,
         "ok": true
       },
       {
@@ -574,21 +620,21 @@
         "construct_id": "run_projection_rows",
         "label": "Run projection rows",
         "minimum": 1,
-        "observed": 15,
+        "observed": 19,
         "ok": true
       },
       {
         "construct_id": "observed_event_rows",
         "label": "Observed-event rows",
         "minimum": 1,
-        "observed": 37,
+        "observed": 43,
         "ok": true
       },
       {
         "construct_id": "context_snapshot_rows",
         "label": "Context snapshot rows",
         "minimum": 1,
-        "observed": 15,
+        "observed": 19,
         "ok": true
       },
       {
@@ -616,7 +662,7 @@
         "construct_id": "error_terminal_state_rows",
         "label": "Error terminal-state rows",
         "minimum": 1,
-        "observed": 1,
+        "observed": 2,
         "ok": true
       },
       {
@@ -651,7 +697,7 @@
         "construct_id": "embedding_candidate_prose_messages",
         "label": "Embedding candidate prose messages",
         "minimum": 1,
-        "observed": 36,
+        "observed": 38,
         "ok": true
       },
       {
@@ -669,7 +715,7 @@
         "ok": true
       }
     ],
-    "message_count": 62,
+    "message_count": 71,
     "ok": true,
     "overlays_present": true,
     "problems": [],
@@ -679,6 +725,6 @@
       "codex-session:demo-receipts",
       "codex-session:demo-terminal-error"
     ],
-    "session_count": 15
+    "session_count": 19
   }
 }

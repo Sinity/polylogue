@@ -8,7 +8,7 @@ capability under construction instead of as a proven result.
 
 | Claim | Status | Artifact | What It Proves | Caveat |
 | --- | --- | --- | --- | --- |
-| A deterministic private-data-free corpus exercises the advertised demo constructs. | Fact | [Demo Corpus Construct Audit](plans/demo-corpus-construct-audit.md) | A fresh no-daemon seed/verify run produces non-empty coverage for declared source families: five origins, acquired attachments, browser-capture coalescing, lineage, subagent runs, terminal states, synthetic embeddings, and user overlays. | The corpus proves product behavior and construct coverage, not private archive scale. |
+| A deterministic private-data-free corpus exercises the advertised demo constructs. | Fact | [Demo Corpus Construct Audit](plans/demo-corpus-construct-audit.md) | A fresh no-daemon seed/verify run produces non-empty coverage for declared source families: every wired origin, acquired attachments, browser-capture coalescing, lineage, subagent runs, terminal states, synthetic embeddings, and user overlays. | The corpus proves product behavior and construct coverage, not private archive scale. |
 | Polylogue reads tool outcomes from structure, not assistant prose. | Fact | [Claim-vs-Evidence summary](#claim-vs-evidence-failure-follow-up) and `devtools workspace claim-vs-evidence` | The failure predicate is normalized tool-result evidence: `is_error=1` or non-zero `exit_code`. Assistant prose is only a follow-up acknowledgment signal. | The live aggregate is private-archive evidence; reproduce the method on the demo archive. |
 | Codex token accounting bills disjoint lanes instead of double-counting cached input. | Fact | [Cost accounting example](examples/cost-accounting-demo.txt) and [Cost Model](cost-model.md#codex-disjoint-billing-lanes) | The synthetic run uses the real writer and pricing logic to show `fresh_input + cache_read = provider input`, avoiding the old cached-token double bill. | Provider prices and subscription equivalence are curated estimates, not billing authority. |
 | Polylogue can analyze agent affordance usage across MCP and tool-call spellings. | Fact | [Agent affordance usage summary](#agent-affordance-usage) and `devtools workspace affordance-usage` | Family-normalized counts group tool aliases such as Serena, Lynchpin, Polylogue MCP, Context7, and codebase tools across captured action evidence. | Counts measure captured usage and failure signals, not independent utility or user benefit. |
@@ -25,15 +25,16 @@ devtools render all --check
 
 The current tracked datasheet reports:
 
-- 13 sessions
-- 55 indexed messages
-- 99 blocks
-- 13 session profiles
-- 14 run rows
-- 45 observed-event rows
-- 14 context-snapshot rows
-- five origins: `aistudio-drive`, `chatgpt-export`, `claude-ai-export`,
-  `claude-code-session`, `codex-session`
+- 19 sessions
+- 71 indexed messages
+- 119 blocks
+- 19 session profiles
+- 19 run rows
+- 43 observed-event rows
+- 19 context-snapshot rows
+- eight origins: `aistudio-drive`, `antigravity-session`, `chatgpt-export`,
+  `claude-ai-export`, `claude-code-session`, `codex-session`,
+  `gemini-cli-session`, `hermes-session`
 - no residual declared-construct gaps
 
 ## Claim-vs-Evidence Failure Follow-Up
