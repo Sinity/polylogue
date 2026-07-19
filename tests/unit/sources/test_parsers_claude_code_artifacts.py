@@ -718,6 +718,206 @@ def test_parse_code_degrades_changed_background_completion_template_to_unknown()
     assert foreground.is_error is False
 
 
+def _task_output_poll_record(
+    *,
+    uuid: str,
+    tool_use_id: str,
+    retrieval_status: str,
+    task: dict[str, object],
+    content: str = "polled output",
+    session_id: str = "task-output-polls",
+) -> dict[str, object]:
+    """Real ``TaskOutput`` poll shape, reduced from persisted JSONL evidence.
+
+    The Anthropic tool_result envelope (``message.content[].is_error``) only
+    ever reports whether the *poll itself* succeeded; the polled task's own
+    verdict lives in the sibling record-level ``toolUseResult.task`` dict.
+    """
+    return {
+        "type": "user",
+        "uuid": uuid,
+        "sessionId": session_id,
+        "toolUseResult": {"retrieval_status": retrieval_status, "task": task},
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
+                    "is_error": False,
+                }
+            ],
+        },
+    }
+
+
+def test_parse_code_projects_task_output_bash_exit_code_from_tool_use_result() -> None:
+    """A ``TaskOutput`` poll of a failed background *command* carries a real
+    ``exitCode`` in ``toolUseResult.task`` even though the poll's own
+    Anthropic-reported ``is_error`` is false (the poll succeeded).
+
+    This fails if ``_task_output_outcome``/``_mark_task_output_outcome`` stop
+    reading ``toolUseResult.task.exitCode`` and the block falls back to the
+    poll envelope's own (misleading) success flag.
+    """
+    records = [
+        _task_output_poll_record(
+            uuid="poll-fail",
+            tool_use_id="tool-poll-fail",
+            retrieval_status="success",
+            task={
+                "task_id": "bg-1",
+                "task_type": "local_bash",
+                "status": "completed",
+                "description": "run flaky test",
+                "output": "1 failed, 3 passed",
+                "exitCode": 1,
+            },
+        ),
+        _task_output_poll_record(
+            uuid="poll-ok",
+            tool_use_id="tool-poll-ok",
+            retrieval_status="success",
+            task={
+                "task_id": "bg-2",
+                "task_type": "local_bash",
+                "status": "completed",
+                "description": "run clean test",
+                "output": "3 passed",
+                "exitCode": 0,
+            },
+        ),
+    ]
+
+    parsed = parse_code(records, "task-output-bash")
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    assert by_id["poll-fail"].blocks[0].exit_code == 1
+    assert by_id["poll-fail"].blocks[0].is_error is True
+    assert by_id["poll-ok"].blocks[0].exit_code == 0
+    assert by_id["poll-ok"].blocks[0].is_error is False
+
+
+def test_parse_code_projects_task_output_agent_status_without_exit_code() -> None:
+    """``local_agent`` polls never carry a process ``exitCode`` -- only
+    ``status`` -- so the completed/failed verdict must still reach
+    ``is_error`` while ``exit_code`` stays ``None`` (never fabricated).
+    """
+    records = [
+        _task_output_poll_record(
+            uuid="poll-agent-ok",
+            tool_use_id="tool-poll-agent-ok",
+            retrieval_status="success",
+            task={
+                "task_id": "agent-1",
+                "task_type": "local_agent",
+                "status": "completed",
+                "description": "audit CLI surfaces",
+                "output": "{...}",
+                "prompt": "...",
+                "result": "...",
+            },
+        ),
+        _task_output_poll_record(
+            uuid="poll-agent-killed",
+            tool_use_id="tool-poll-agent-killed",
+            retrieval_status="success",
+            task={
+                "task_id": "agent-2",
+                "task_type": "local_agent",
+                "status": "killed",
+                "description": "audit CLI surfaces, interrupted",
+                "output": "",
+            },
+        ),
+    ]
+
+    parsed = parse_code(records, "task-output-agent")
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    assert by_id["poll-agent-ok"].blocks[0].exit_code is None
+    assert by_id["poll-agent-ok"].blocks[0].is_error is False
+    assert by_id["poll-agent-killed"].blocks[0].exit_code is None
+    assert by_id["poll-agent-killed"].blocks[0].is_error is True
+
+
+def test_parse_code_ignores_task_output_poll_that_is_not_yet_terminal() -> None:
+    """A ``not_ready``/``timeout`` poll has no task verdict yet -- the block
+    keeps the poll envelope's own outcome instead of fabricating one.
+    """
+    records = [
+        _task_output_poll_record(
+            uuid="poll-not-ready",
+            tool_use_id="tool-poll-not-ready",
+            retrieval_status="not_ready",
+            task={"task_id": "bg-3", "task_type": "local_bash", "status": "running", "output": "", "exitCode": None},
+        ),
+        _task_output_poll_record(
+            uuid="poll-timeout",
+            tool_use_id="tool-poll-timeout",
+            retrieval_status="timeout",
+            task={"task_id": "bg-4", "task_type": "local_bash", "status": "running", "output": "", "exitCode": None},
+        ),
+    ]
+
+    parsed = parse_code(records, "task-output-pending")
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    assert by_id["poll-not-ready"].blocks[0].exit_code is None
+    assert by_id["poll-not-ready"].blocks[0].is_error is False
+    assert by_id["poll-timeout"].blocks[0].exit_code is None
+    assert by_id["poll-timeout"].blocks[0].is_error is False
+
+
+def test_parse_code_projects_task_output_exit_code_through_actions(tmp_path: Path) -> None:
+    """Production route: ``parse_code`` -> ``ArchiveStore`` -> ``actions``.
+
+    This fails if the ``TaskOutput`` poll outcome never reaches the
+    ``actions`` view's ``is_error``/``exit_code`` columns -- the same
+    keystone surface the ``<task-notification>`` completion path is verified
+    against above.
+    """
+    records: list[object] = [
+        {
+            "type": "assistant",
+            "uuid": "assistant-poll",
+            "sessionId": "task-output-actions",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-poll",
+                        "name": "TaskOutput",
+                        "input": {"task_id": "bg-5", "block": True},
+                    }
+                ],
+            },
+        },
+        _task_output_poll_record(
+            uuid="poll-fail-actions",
+            tool_use_id="tool-poll",
+            retrieval_status="success",
+            task={
+                "task_id": "bg-5",
+                "task_type": "local_bash",
+                "status": "completed",
+                "description": "run migration",
+                "output": "error: constraint violation",
+                "exitCode": 2,
+            },
+            session_id="task-output-actions",
+        ),
+    ]
+
+    parsed = parse_code(records, "task-output-actions")
+    archive_root = tmp_path / "task-output-actions"
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(parsed)
+        actions = archive.query_session_actions([session_id], limit=10)
+
+    outcomes = {action.tool_name: (action.is_error, action.exit_code) for action in actions}
+    assert outcomes == {"TaskOutput": (1, 2)}
+
+
 def test_parse_code_drops_progress_hook_records() -> None:
     """#1617: ``type=progress`` is a hook lifecycle event, not message content."""
     items: list[object] = [
