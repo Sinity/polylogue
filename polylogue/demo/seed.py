@@ -1219,6 +1219,42 @@ def demo_source_specs(source_root: Path) -> list[Source]:
     ]
 
 
+def _all_demo_session_ids(archive_root: Path) -> list[str]:
+    """Return every session id currently present in the demo archive's index tier."""
+
+    conn = sqlite3.connect(archive_root / "index.db")
+    try:
+        rows = conn.execute("SELECT session_id FROM sessions").fetchall()
+    finally:
+        conn.close()
+    return sorted(str(row[0]) for row in rows)
+
+
+def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
+    """Apply deterministic demo-only enrichments after any ingest path.
+
+    Fixture ingest alone -- whether through the direct seeder's
+    ``parse_sources_archive`` call or the live daemon's acquire/parse/
+    materialize/index pipeline behind ``polylogue import --demo --wait`` --
+    produces only the parsed session/message tree. Provider usage injection,
+    insight-table materialization, a canonical repo name, and synthetic
+    message embeddings are demo-only enrichments layered on top of that tree;
+    no real archive should ever receive them automatically, so they live here
+    rather than in the generic ingest path. Both callers must run this exact
+    same sequence so a daemon-ingested demo archive converges to the same
+    semantic contract as a directly seeded one (polylogue-z1c6). Every step is
+    idempotent (``UPDATE`` / ``INSERT ... ON CONFLICT``), so calling this more
+    than once against the same archive (a repeated ``--wait``, a demo reseed)
+    is safe.
+    """
+
+    session_ids = _all_demo_session_ids(archive_root)
+    _inject_demo_session_usage(archive_root)
+    _materialize_session_insights(archive_root, session_ids)
+    _inject_demo_session_repos(archive_root)
+    _seed_demo_embeddings(archive_root)
+
+
 async def seed_demo_archive(
     archive_root: Path,
     *,
@@ -1231,11 +1267,7 @@ async def seed_demo_archive(
     with _pushd(source_root):
         result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
 
-    session_ids = sorted(result.processed_ids)
-    _inject_demo_session_usage(archive_root)
-    _materialize_session_insights(archive_root, session_ids)
-    _inject_demo_session_repos(archive_root)
-    _seed_demo_embeddings(archive_root)
+    apply_demo_post_ingest_augmentation(archive_root)
 
     overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
     construct_coverage = evaluate_demo_constructs(archive_root)
@@ -1251,4 +1283,10 @@ async def seed_demo_archive(
     )
 
 
-__all__ = ["DEMO_SOURCE_DIRNAME", "demo_source_specs", "materialize_demo_source", "seed_demo_archive"]
+__all__ = [
+    "DEMO_SOURCE_DIRNAME",
+    "apply_demo_post_ingest_augmentation",
+    "demo_source_specs",
+    "materialize_demo_source",
+    "seed_demo_archive",
+]

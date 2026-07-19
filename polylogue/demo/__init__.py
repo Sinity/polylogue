@@ -13,7 +13,13 @@ from .receipts import (
     render_demo_receipts,
 )
 from .script import render_demo_script
-from .seed import DEMO_SOURCE_DIRNAME, demo_source_specs, materialize_demo_source, seed_demo_archive
+from .seed import (
+    DEMO_SOURCE_DIRNAME,
+    apply_demo_post_ingest_augmentation,
+    demo_source_specs,
+    materialize_demo_source,
+    seed_demo_archive,
+)
 from .tour import run_demo_tour
 from .verify import verify_demo_archive
 
@@ -30,6 +36,7 @@ __all__ = [
     "DemoTourResult",
     "DemoTourStep",
     "DemoVerifyResult",
+    "apply_demo_post_ingest_augmentation",
     "demo_source_specs",
     "evaluate_demo_constructs",
     "inspect_demo_receipts",

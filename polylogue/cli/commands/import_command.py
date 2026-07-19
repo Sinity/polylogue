@@ -29,6 +29,7 @@ import os
 import shutil
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -37,6 +38,9 @@ import click
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import archive_root
+
+if TYPE_CHECKING:
+    from polylogue.demo import DemoVerifyResult
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
 
@@ -93,8 +97,15 @@ def _materialize_demo_source() -> Path:
     return materialize_demo_source(archive_root(), force=True)
 
 
-def _wait_for_demo_archive_ready(*, timeout_s: float, require_overlays: bool = False) -> None:
-    """Wait until the daemon-ingested demo archive passes semantic verification."""
+def _wait_for_demo_archive_ready(*, timeout_s: float, require_overlays: bool = False) -> DemoVerifyResult:
+    """Wait until the daemon-ingested demo archive reaches base ingest convergence.
+
+    Deliberately skips the declared demo-construct minimums
+    (``check_constructs=False``): several constructs (provider usage,
+    synthetic embeddings, the canonical repo name) are populated by
+    ``apply_demo_post_ingest_augmentation`` after this wait returns, not by
+    ingest itself, so waiting on them here would never converge.
+    """
     from polylogue.demo import verify_demo_archive
 
     deadline = time.monotonic() + timeout_s
@@ -104,9 +115,10 @@ def _wait_for_demo_archive_ready(*, timeout_s: float, require_overlays: bool = F
             archive_root(),
             require_overlays=require_overlays,
             check_source_path_leaks=False,
+            check_constructs=False,
         )
         if result.ok:
-            return
+            return result
         last_problems = result.problems
         time.sleep(_DEMO_WAIT_POLL_INTERVAL_S)
 
@@ -117,7 +129,7 @@ def _wait_for_demo_archive_ready(*, timeout_s: float, require_overlays: bool = F
     )
 
 
-def _verify_demo_now(*, require_overlays: bool = False) -> None:
+def _verify_demo_now(*, require_overlays: bool = False) -> DemoVerifyResult:
     """Run the demo verifier once and surface semantic failures through Click."""
     from polylogue.demo import verify_demo_archive
 
@@ -129,6 +141,7 @@ def _verify_demo_now(*, require_overlays: bool = False) -> None:
     if not result.ok:
         problem_text = "; ".join(result.problems) if result.problems else "semantic checks did not pass"
         fail("import", f"Demo archive verification failed: {problem_text}")
+    return result
 
 
 def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
@@ -320,16 +333,30 @@ def import_command(
     )
 
     if wait:
+        from polylogue.demo import apply_demo_post_ingest_augmentation
+
         env.ui.console.print(f"[bold]Waiting:[/bold] demo archive convergence (timeout {wait_timeout_s:g}s)")
         _wait_for_demo_archive_ready(timeout_s=wait_timeout_s)
+
+        # Ingest alone (whichever path scheduled it) only produces the parsed
+        # session/message tree. Demo-only enrichments -- provider usage,
+        # insight materialization, the canonical repo name, synthetic
+        # embeddings -- are layered on afterward so a daemon-ingested demo
+        # archive matches ``polylogue demo seed``'s semantic contract exactly
+        # (polylogue-z1c6). Idempotent: safe even if a prior --wait already
+        # applied it against this archive root.
+        apply_demo_post_ingest_augmentation(archive_root())
+
         if with_overlays:
             from polylogue.scenarios import seed_demo_user_overlays
 
             seed_demo_user_overlays(archive_root())
-            _verify_demo_now(require_overlays=True)
+
+        result = _verify_demo_now(require_overlays=with_overlays)
         env.ui.console.print(
             "[bold green]Demo archive verified:[/bold green] "
-            f"sessions=3 messages=19 overlays={'yes' if with_overlays else 'no'}"
+            f"sessions={result.session_count} messages={result.message_count} "
+            f"overlays={'yes' if with_overlays else 'no'}"
         )
 
 

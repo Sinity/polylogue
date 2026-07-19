@@ -8,7 +8,9 @@ import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.config import load_polylogue_config
-from polylogue.demo import seed_demo_archive, verify_demo_archive
+from polylogue.demo import apply_demo_post_ingest_augmentation, seed_demo_archive, verify_demo_archive
+from polylogue.demo.seed import demo_source_specs, materialize_demo_source
+from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
@@ -260,6 +262,62 @@ async def test_seed_injects_demo_cost_for_postmortem(tmp_path: Path) -> None:
     assert total_cost_usd > 0
     assert total_input_tokens > 0
     assert total_output_tokens > 0
+
+
+@pytest.mark.asyncio
+async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any ingest path must converge to the same demo-only enrichments once
+    ``apply_demo_post_ingest_augmentation`` runs standalone.
+
+    Simulates the shape of a daemon-driven ingest: materialize the fixture
+    world and ingest it via ``parse_sources_archive`` directly, skipping
+    ``seed_demo_archive``'s inline augmentation calls, then apply the shared
+    post-ingest augmentation function standalone -- exactly what
+    ``polylogue import --demo --wait`` does after daemon convergence. The
+    resulting usage/repo/embedding facts must match what the direct seeder
+    produces inline (polylogue-z1c6)."""
+
+    archive_root = tmp_path / "archive"
+    source_root = materialize_demo_source(archive_root, force=True)
+    monkeypatch.chdir(source_root)
+    result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
+    assert result.counts["sessions"] > 0
+
+    # Base ingest alone (no augmentation yet) never materializes session
+    # profiles at all -- that table is one of the derived insights
+    # ``apply_demo_post_ingest_augmentation`` materializes.
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        pre_row = conn.execute(
+            "SELECT total_cost_usd FROM session_profiles WHERE session_id = ?",
+            (DEMO_CLAUDE_CODE_SESSION_ID,),
+        ).fetchone()
+    assert pre_row is None or not pre_row[0]
+
+    apply_demo_post_ingest_augmentation(archive_root)
+    # Idempotent: a repeated call (e.g. a second ``--wait``) must not error or
+    # change the outcome.
+    apply_demo_post_ingest_augmentation(archive_root)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        cost_row = conn.execute(
+            "SELECT total_cost_usd, total_input_tokens, total_output_tokens, repo_names_json "
+            "FROM session_profiles WHERE session_id = ?",
+            (DEMO_CLAUDE_CODE_SESSION_ID,),
+        ).fetchone()
+    assert cost_row is not None
+    total_cost_usd, total_input_tokens, total_output_tokens, repo_names_json = cost_row
+    assert total_cost_usd > 0
+    assert total_input_tokens > 0
+    assert total_output_tokens > 0
+    assert "polylogue" in repo_names_json
+
+    with sqlite3.connect(archive_root / "embeddings.db") as conn:
+        embedding_rows = conn.execute(
+            "SELECT COUNT(*) FROM message_embeddings_meta WHERE model = 'demo-synthetic-embedding'"
+        ).fetchone()[0]
+    assert embedding_rows >= 1
 
 
 @pytest.mark.asyncio

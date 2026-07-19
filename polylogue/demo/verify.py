@@ -62,8 +62,19 @@ def verify_demo_archive(
     *,
     require_overlays: bool = False,
     check_source_path_leaks: bool = True,
+    check_constructs: bool = True,
 ) -> DemoVerifyResult:
-    """Check semantic demo archive facts without a demo catalog."""
+    """Check semantic demo archive facts without a demo catalog.
+
+    ``check_constructs=False`` skips the declared demo-construct minimums
+    (``evaluate_demo_constructs``). Several constructs (provider usage,
+    synthetic embeddings, the canonical repo name) are populated by the
+    demo-only ``apply_demo_post_ingest_augmentation`` enrichment pass, not by
+    ingest itself -- a caller polling for *base ingest convergence* before
+    running that enrichment pass must not block on those constructs
+    (polylogue-z1c6). ``polylogue demo verify`` and the final post-enrichment
+    check both keep the default ``True``.
+    """
 
     problems: list[str] = []
     leaks: list[str] = []
@@ -114,8 +125,9 @@ def verify_demo_archive(
     if require_overlays and not overlays_present:
         problems.append("expected demo overlays, found none")
 
-    construct_coverage = evaluate_demo_constructs(archive_root)
-    problems.extend(construct_problem_messages(construct_coverage))
+    construct_coverage = evaluate_demo_constructs(archive_root) if check_constructs else ()
+    if check_constructs:
+        problems.extend(construct_problem_messages(construct_coverage))
 
     if check_source_path_leaks:
         for raw_path in _raw_source_paths(archive_root):
