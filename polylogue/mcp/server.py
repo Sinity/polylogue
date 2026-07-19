@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 from polylogue.config import resolve_runtime_config
@@ -91,16 +92,18 @@ def build_server(*, role: MCPRole = "read", services: RuntimeServices | None = N
 
 _server_instance: FastMCP | None = None
 _server_instance_role: MCPRole | None = None
+_server_instance_lock = threading.Lock()
 
 
 def _get_server(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> FastMCP:
     global _server_instance, _server_instance_role
     if services is not None:
         _set_runtime_services(services)
-    if _server_instance is None or _server_instance_role != role:
-        _server_instance = build_server(role=role, services=services)
-        _server_instance_role = role
-    return _server_instance
+    with _server_instance_lock:
+        if _server_instance is None or _server_instance_role != role:
+            _server_instance = build_server(role=role, services=services)
+            _server_instance_role = role
+        return _server_instance
 
 
 def serve_stdio(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> None:

@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
@@ -541,6 +542,7 @@ builtins_open = open
 
 # Module-level singleton, lazily initialized
 _DEFAULT_STORE: BlobStore | None = None
+_DEFAULT_STORE_LOCK = threading.Lock()
 
 
 def get_blob_store() -> BlobStore:
@@ -549,15 +551,17 @@ def get_blob_store() -> BlobStore:
     from polylogue.paths import blob_store_root
 
     root = blob_store_root()
-    if _DEFAULT_STORE is None or _DEFAULT_STORE.root != root:
-        _DEFAULT_STORE = BlobStore(root)
-    return _DEFAULT_STORE
+    with _DEFAULT_STORE_LOCK:
+        if _DEFAULT_STORE is None or _DEFAULT_STORE.root != root:
+            _DEFAULT_STORE = BlobStore(root)
+        return _DEFAULT_STORE
 
 
 def reset_blob_store() -> None:
     """Reset the singleton (for testing)."""
     global _DEFAULT_STORE
-    _DEFAULT_STORE = None
+    with _DEFAULT_STORE_LOCK:
+        _DEFAULT_STORE = None
 
 
 def load_raw_content(raw_id: str) -> bytes:
