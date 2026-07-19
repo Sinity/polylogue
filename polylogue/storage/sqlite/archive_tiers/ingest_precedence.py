@@ -47,6 +47,19 @@ def browser_capture_precedence(
     if existing_is_browser_capture and not incoming_is_browser_capture:
         return "replace"
 
+    # The mirror of the rule above: a genuine, already-established
+    # non-browser-capture session must never be shadowed by an incoming
+    # browser capture either, regardless of message count. Without this,
+    # ``incoming_owns_browser_merge``'s native-payload leg below (message
+    # count alone) would let a native browser capture that happens to carry
+    # at least as many messages as the currently-stored real export replace
+    # that export -- an order-dependent regression symmetric to the one the
+    # first rule fixes: whichever material a live daemon processes first
+    # would win, instead of the direct export always winning
+    # (polylogue-z1c6 review follow-up).
+    if incoming_is_browser_capture and not existing_is_browser_capture:
+        return "skip"
+
     lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
     lower_precedence_export = (
         existing_has_native_payload
@@ -83,18 +96,32 @@ def stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
-def session_has_parser_ingest_flag(conn: sqlite3.Connection, session_id: str, flag: str) -> bool:
+def session_has_parser_ingest_flag(conn: sqlite3.Connection, session_id: str, flag: str | Sequence[str]) -> bool:
+    """Return whether *session_id* carries any of the given parser ingest flag(s).
+
+    Accepts either a single flag or a sequence -- native browser-capture
+    payloads are tagged with either ``NATIVE_BROWSER_CAPTURE_INGEST_FLAG`` or
+    ``COMPACT_BROWSER_CAPTURE_INGEST_FLAG`` depending on capture shape
+    (``polylogue/sources/parsers/browser_capture.py``), and callers checking
+    "is this session native-payload-flagged" must check both or silently
+    misclassify compact captures as plain, non-browser-capture content
+    (polylogue-z1c6 review follow-up).
+    """
+    flags = (flag,) if isinstance(flag, str) else tuple(flag)
+    if not flags:
+        return False
+    placeholders = ",".join("?" for _ in flags)
     row = conn.execute(
-        """
+        f"""
         SELECT 1
         FROM session_tags
         WHERE session_id = ?
-          AND tag = ?
+          AND tag IN ({placeholders})
           AND tag_source = 'auto'
           AND method = 'parser'
         LIMIT 1
         """,
-        (session_id, flag),
+        (session_id, *flags),
     ).fetchone()
     return row is not None
 
