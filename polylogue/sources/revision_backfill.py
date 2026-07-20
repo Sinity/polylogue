@@ -1388,7 +1388,8 @@ class _ParsedSessionSpill:
         if payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
             return
         while self._decoded and self._decoded_payload_bytes + payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
-            _evicted_raw, (_evicted_sessions, evicted_bytes) = self._decoded.popitem()
+            oldest_raw = next(iter(self._decoded))
+            _evicted_sessions, evicted_bytes = self._decoded.pop(oldest_raw)
             self._decoded_payload_bytes -= evicted_bytes
         self._decoded[raw_id] = (sessions, payload_bytes)
         self._decoded_payload_bytes += payload_bytes
