@@ -48,7 +48,17 @@ from polylogue.storage.repair import (
 
 logger = get_logger(__name__)
 
-_DEFAULT_MAX_INFLIGHT_BYTES = 64 * 1024 * 1024  # 64 MiB
+# Floor/ceiling for the adaptive whale-memory budget below. The original
+# fixed 64 MiB default starved bulk-scale warm on whale corpora: measured
+# live 2026-07-20 on the 50K-raw archive, a 2000-raw page warmed 139 raws in
+# 376s (0.37 raws/s, pool stalled on cache admission) under 64 MiB versus
+# 500 raws in 8.8s (56.7 raws/s) with the budget raised — the workers were
+# blocked on `try_admit`, not on parsing. The budget's purpose is bounding
+# transient memory beside a live daemon, so it scales with the machine
+# instead of a one-size constant: 1/16 of physical RAM, clamped to
+# [64 MiB, 2 GiB].
+_MIN_MAX_INFLIGHT_BYTES = 64 * 1024 * 1024  # 64 MiB
+_MAX_MAX_INFLIGHT_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 
 # CodeRabbit (PR #3168): as_completed()/future.result() had no timeout, so one
 # hung worker (e.g. an unresponsive filesystem read) would block warm()
@@ -86,10 +96,23 @@ def daemon_parse_stage_worker_count() -> int:
     return max(1, (os.cpu_count() or 2) - 1)
 
 
+def _physical_memory_bytes() -> int | None:
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):
+        return None
+    if pages <= 0 or page_size <= 0:
+        return None
+    return pages * page_size
+
+
 def daemon_parse_stage_max_inflight_bytes() -> int:
     """Whale-memory budget for parsed sessions held in the prefetch cache.
 
-    Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES``.
+    Adaptive: 1/16 of physical RAM clamped to [64 MiB, 2 GiB] (see the
+    constants above for the measured starvation the old fixed 64 MiB default
+    caused). Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES``.
     """
     raw = os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES")
     if raw is not None:
@@ -99,7 +122,10 @@ def daemon_parse_stage_max_inflight_bytes() -> int:
             value = 0
         if value > 0:
             return value
-    return _DEFAULT_MAX_INFLIGHT_BYTES
+    physical = _physical_memory_bytes()
+    if physical is None:
+        return _MIN_MAX_INFLIGHT_BYTES
+    return max(_MIN_MAX_INFLIGHT_BYTES, min(_MAX_MAX_INFLIGHT_BYTES, physical // 16))
 
 
 def daemon_parse_stage_warm_timeout_seconds() -> float:
