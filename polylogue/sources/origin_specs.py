@@ -677,7 +677,16 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             "provider-package:beads-issue/issue-jsonl@v1",
             "issue-jsonl",
             Provider.BEADS,
-            "accepted",
+            # Kept "proposed" (not "accepted") deliberately: the detector and
+            # parser are real and admitted (OriginSpec.lifecycle="executable"
+            # above), but no schema-discovery harvesting pass has run against
+            # a real Beads repository export sample -- the wire shape is
+            # reconstructed from independent secondary sources (see
+            # polylogue/sources/parsers/beads.py), not a harvested provider-
+            # package catalog. "accepted" would require schema_package evidence
+            # this origin does not yet have, and would fail `devtools provider-
+            # completeness --check`.
+            "proposed",
             detector_paths=("polylogue/sources/parsers/beads.py", "polylogue/sources/dispatch.py"),
             raw_model_paths=("polylogue/sources/parsers/beads.py",),
             parser_paths=("polylogue/sources/parsers/beads.py",),
@@ -685,7 +694,12 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
             schema_paths=(),
             docs_paths=("docs/architecture.md",),
-            caveats=("Beads is a non-chat issue artifact origin.",),
+            caveats=(
+                "No schema-discovery harvesting pass has run against a real Beads repository export; "
+                "the wire shape is reconstructed from independent secondary sources (see "
+                "polylogue/sources/parsers/beads.py), not a harvested provider-package catalog. "
+                "Promote to accepted once real-sample schema evidence exists.",
+            ),
         ),
     ),
     Origin.GROK_EXPORT: (
