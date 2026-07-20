@@ -46,7 +46,7 @@ logger = get_logger(__name__)
 #: Actor identity recorded on every automated judgment/handoff so the
 #: audit trail (``assertions.author_ref``) can distinguish automated
 #: decisions from a human operator's.
-JUDGMENT_AUTOMATION_ACTOR_REF = "automation:judgment-policy"
+JUDGMENT_AUTOMATION_ACTOR_REF = "actor:judgment-automation"
 
 #: Non-``"user"`` author kind for escalation handoff rows -- routes through
 #: the normal ``upsert_assertion`` promotion gate like any other automated
@@ -323,12 +323,13 @@ async def periodic_judgment_automation_sweep(
 ) -> None:
     """Periodically run one bounded judgment-automation sweep.
 
-    The caller (``daemon/cli.py``) is expected to gate scheduling this loop
-    at all on ``judgment_automation_enabled and mcp_judge_enabled`` -- this
-    function re-checks both on every tick too, so a live config edit that
-    turns either flag back off (`polylogue.toml` is re-read from disk each
-    tick, unlike the daemon-startup-bound flags) stops the sweep from judging
-    on the *next* tick without a daemon restart.
+    ``daemon/cli.py`` schedules this loop unconditionally alongside the
+    other periodic maintenance loops (``reload_behavior="daemon-loop"`` for
+    both gating config keys) -- the loop itself re-checks
+    ``judgment_automation_enabled and mcp_judge_enabled`` on every tick and
+    no-ops otherwise, so flipping either flag in ``polylogue.toml`` takes
+    effect on the *next* tick without a daemon restart, the same as
+    ``_periodic_db_optimize``'s self-gating pattern.
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.paths import archive_root
