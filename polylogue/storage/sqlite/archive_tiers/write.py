@@ -205,6 +205,70 @@ class SessionEventWriteResult:
     wrote_provider_usage_events: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedSessionRows:
+    """Pure, off-writer-thread-computable row tuples for one session's
+    full-replace write (polylogue-623q).
+
+    Row PREPARATION -- converting a ``ParsedSession`` tree into the SQL row
+    tuples ``_replace_full_session_messages_and_blocks`` inserts -- was
+    measured happening entirely inside the writer hold (34-40s per 2,000
+    normal raws, 165-287s on whale pages) while parse-side warm workers sat
+    idle. ``prepare_session_rows`` builds this dataclass from nothing but a
+    ``ParsedSession`` (no DB connection, no archive state), so it can run on
+    a parse-prefetch worker thread; the writer then only needs to run
+    ``executemany`` against already-built tuples.
+
+    ``session_content_hash`` is ``pipeline.ids.session_content_hash(session)``
+    hex-decoded -- computed from the ORIGINAL (pre-lineage-slice) session, the
+    same value ordinary callers already pass as ``write_parsed_session_to_
+    archive(content_hash=...)``. The writer compares this against its own
+    ``content_hash`` argument before ever using the prepared rows: a session
+    whose content changed (or whose caller didn't supply a content_hash --
+    identity-only hashes never match) always falls back to preparing inline,
+    which reproduces the exact unmodified write path. A session that turns
+    out to need lineage tail-slicing (prefix-sharing composition against an
+    already-archived parent -- resolved by ``_extract_prefix_tail``, which
+    requires a live DB read the prefetch worker never had) is a SEPARATE
+    rejection condition the writer checks independently, because slicing
+    changes which messages are written without changing the session's own
+    content hash.
+    """
+
+    session_id: str
+    session_content_hash: bytes
+    message_rows: tuple[tuple[object, ...], ...]
+    block_rows: tuple[tuple[object, ...], ...]
+
+
+def prepare_session_rows(session: ParsedSession) -> PreparedSessionRows:
+    """Build ``PreparedSessionRows`` for ``session``'s full-replace write.
+
+    Pure function: normalizes messages exactly as ``write_parsed_session_to_
+    archive`` does for a non-merge-append, non-lineage-sliced write (see
+    ``_normalized_messages``), then reuses the same row-tuple builders the
+    writer itself calls (``_build_message_rows``/``_build_block_rows``) at
+    ``position_offset=0`` -- the offset every full-replace write uses. No
+    SQLite connection, network call, or filesystem access; safe to call from
+    any thread, including a parse-prefetch worker running well before (and
+    concurrently with) any writer hold.
+    """
+    from polylogue.pipeline.ids import session_content_hash as _compute_session_content_hash
+
+    origin = origin_from_provider(session.source_name)
+    session_id = archive_session_id(origin.value, session.provider_session_id)
+    messages = _normalized_messages(session.messages)
+    duplicate_native_ids = _duplicate_message_native_ids(messages)
+    message_rows = _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
+    block_rows = _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
+    return PreparedSessionRows(
+        session_id=session_id,
+        session_content_hash=bytes.fromhex(_compute_session_content_hash(session)),
+        message_rows=tuple(message_rows),
+        block_rows=tuple(block_rows),
+    )
+
+
 def write_parsed_session_to_archive(
     conn: sqlite3.Connection,
     session: ParsedSession,
@@ -220,8 +284,23 @@ def write_parsed_session_to_archive(
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    prepared: PreparedSessionRows | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
+
+    ``prepared`` (polylogue-623q, default ``None``) is an optional
+    ``PreparedSessionRows`` computed off this thread (typically by the daemon
+    parse-prefetch worker via ``prepare_session_rows``). It is used ONLY when
+    ALL of the following hold, checked right before the full-replace write:
+    not ``merge_append`` (prepared rows are built for a full replace's
+    ``position_offset=0``, never an append's positive offset); lineage
+    resolution did not slice ``messages`` (a prefix-sharing composition
+    against an already-archived parent changes which messages get written,
+    and the prefetch worker never had DB access to know about that parent);
+    and ``prepared.session_content_hash`` matches this call's own
+    ``content_hash``. Any other case silently falls back to preparing rows
+    inline -- identical to ``prepared=None`` -- so passing a stale/irrelevant
+    ``prepared`` is always safe, never incorrect.
 
     By default the whole write runs in its own transaction (``with conn:``)
     committed on success. A bulk caller that wants many sessions in one
@@ -337,6 +416,20 @@ def write_parsed_session_to_archive(
     session_content_hash = (
         bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
     )
+    # polylogue-623q: only reuse rows prepared off this thread when NONE of
+    # the conditions that would make them wrong hold -- see ``prepared``'s
+    # docstring above. ``lineage_inheritance == "prefix-sharing"`` is the
+    # single signal that ``_extract_prefix_tail`` sliced ``messages`` away
+    # from what ``prepare_session_rows`` saw (it returns ``messages``
+    # unchanged in every other case, including "spawned-fresh" and no-parent).
+    prepared_rows_to_use: PreparedSessionRows | None = None
+    if (
+        prepared is not None
+        and not merge_append
+        and lineage_inheritance != "prefix-sharing"
+        and prepared.session_content_hash == session_content_hash
+    ):
+        prepared_rows_to_use = prepared
     add_timing("index.prepare", t0)
     session_counts = _session_count_values(messages)
 
@@ -467,6 +560,7 @@ def write_parsed_session_to_archive(
                     stage_timings_s=stage_timings_s,
                     stage_timing_prefix=stage_timing_prefix,
                     bulk_build=bulk_build,
+                    prepared=prepared_rows_to_use,
                 )
                 add_timing("index.full_replace", t0)
             if merge_append:
@@ -1444,33 +1538,29 @@ def rebuild_archive_messages_fts(conn: sqlite3.Connection) -> int:
     return int(row[0] if row is not None else 0)
 
 
-def _write_messages(
-    conn: sqlite3.Connection,
+def _build_message_rows(
     session_id: str,
     messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-) -> None:
-    """Write message rows using table-driven column specification.
+) -> list[tuple[object, ...]]:
+    """Pure row-tuple builder for the ``messages`` table (no DB access).
 
-    The messages table column spec (archive_tiers_specs.MESSAGES_SPEC) defines:
-      - writable_columns: the ordered list of columns to INSERT (29 total)
-      - The column names and placeholders are generated from the spec
-      - The tuple order is derived from the spec's writable_columns order
-
-    This consolidates the three hand-aligned duplicates (column list in INSERT,
-    placeholder string, tuple order) into a single source of truth.
+    Extracted from ``_write_messages`` (polylogue-623q) so the exact same
+    row-construction logic can run off the writer thread (see
+    ``prepare_session_rows``) and be reused verbatim by the writer via
+    ``executemany`` -- byte-identical output either way. This function
+    decides only *what* the rows are, never *whether* to write them.
     """
-    spec = archive_tiers_specs.MESSAGES_SPEC
-
-    def rows() -> Iterable[tuple[object, ...]]:
-        for fallback_position, message in enumerate(messages):
-            position = position_offset + (message.position if message.position is not None else fallback_position)
-            variant_index = message.variant_index if message.variant_index is not None else 0
-            # Build tuple in the order defined by spec.writable_columns, skipping
-            # columns with non-standard placeholders (like parent_message_id=NULL)
-            yield (
+    rows: list[tuple[object, ...]] = []
+    for fallback_position, message in enumerate(messages):
+        position = position_offset + (message.position if message.position is not None else fallback_position)
+        variant_index = message.variant_index if message.variant_index is not None else 0
+        # Build tuple in the order defined by spec.writable_columns, skipping
+        # columns with non-standard placeholders (like parent_message_id=NULL)
+        rows.append(
+            (
                 session_id,
                 _stored_message_native_id(message, duplicate_native_ids),
                 # parent_message_id: skipped (always NULL in VALUES)
@@ -1501,15 +1591,53 @@ def _write_messages(
                 _message_content_hash(session_id, message, position=position, variant_index=variant_index),
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
             )
+        )
+    return rows
 
-    # Generate INSERT statement from spec: column list and placeholders come from single source
-    insert_sql = f"""
+
+def _messages_insert_sql() -> str:
+    spec = archive_tiers_specs.MESSAGES_SPEC
+    return f"""
         INSERT OR REPLACE INTO messages (
             {spec.insert_column_names}
         ) VALUES ({spec.insert_placeholder_string})
         """
 
-    conn.executemany(insert_sql, rows())
+
+def _write_messages(
+    conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
+    rows: list[tuple[object, ...]] | None = None,
+) -> None:
+    """Write message rows using table-driven column specification.
+
+    The messages table column spec (archive_tiers_specs.MESSAGES_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (29 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the three hand-aligned duplicates (column list in INSERT,
+    placeholder string, tuple order) into a single source of truth.
+
+    ``rows`` (polylogue-623q), when provided, is used verbatim instead of
+    rebuilding from ``messages`` -- the caller (``_replace_full_session_
+    messages_and_blocks``) supplies this when it has an already-validated
+    ``PreparedSessionRows`` computed off the writer thread. ``messages`` is
+    still required in that case (every call site passes it regardless) so
+    this function's signature and every other caller stay unchanged.
+    """
+    if rows is None:
+        rows = _build_message_rows(
+            session_id,
+            messages,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+    conn.executemany(_messages_insert_sql(), rows)
 
 
 def _message_content_hash(
@@ -1599,44 +1727,38 @@ def _block_content_hash(
     )
 
 
-def _write_blocks(
-    conn: sqlite3.Connection,
+def _build_block_rows(
     session_id: str,
     messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-) -> None:
-    """Write block rows using table-driven column specification.
+) -> list[tuple[object, ...]]:
+    """Pure row-tuple builder for the ``blocks`` table (no DB access).
 
-    The blocks table column spec (archive_tiers_specs.BLOCKS_SPEC) defines:
-      - writable_columns: the ordered list of columns to INSERT (14 total)
-      - The column names and placeholders are generated from the spec
-      - The tuple order is derived from the spec's writable_columns order
-
-    This consolidates the hand-aligned duplicates into a single source of truth.
+    Extracted from ``_write_blocks`` (polylogue-623q); see
+    ``_build_message_rows`` for why this split exists.
     """
-    spec = archive_tiers_specs.BLOCKS_SPEC
-
-    def rows() -> Iterable[tuple[object, ...]]:
-        for fallback_position, message in enumerate(messages):
-            message_id = _message_id(
-                session_id,
-                message,
-                fallback_position,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_native_ids,
-            )
-            blocks = _message_blocks(message)
-            for position, block in enumerate(blocks):
-                block_type = _block_type(block)
-                tool_input_json = _json_dumps(block.tool_input) if block.tool_input is not None else None
-                semantic_type = _semantic_type(block)
-                language = _block_language(block)
-                is_error = getattr(block, "is_error", None)
-                exit_code = getattr(block, "exit_code", None)
-                # Tuple built in order defined by spec.writable_columns
-                yield (
+    rows: list[tuple[object, ...]] = []
+    for fallback_position, message in enumerate(messages):
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        blocks = _message_blocks(message)
+        for position, block in enumerate(blocks):
+            block_type = _block_type(block)
+            tool_input_json = _json_dumps(block.tool_input) if block.tool_input is not None else None
+            semantic_type = _semantic_type(block)
+            language = _block_language(block)
+            is_error = getattr(block, "is_error", None)
+            exit_code = getattr(block, "exit_code", None)
+            # Tuple built in order defined by spec.writable_columns
+            rows.append(
+                (
                     message_id,
                     session_id,
                     position,
@@ -1662,15 +1784,48 @@ def _write_blocks(
                         exit_code=exit_code,
                     ),
                 )
+            )
+    return rows
 
-    # Generate INSERT statement from spec: column list and placeholders from single source
-    insert_sql = f"""
+
+def _blocks_insert_sql() -> str:
+    spec = archive_tiers_specs.BLOCKS_SPEC
+    return f"""
         INSERT OR REPLACE INTO blocks (
             {spec.insert_column_names}
         ) VALUES ({spec.insert_placeholder_string})
         """
 
-    conn.executemany(insert_sql, rows())
+
+def _write_blocks(
+    conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
+    rows: list[tuple[object, ...]] | None = None,
+) -> None:
+    """Write block rows using table-driven column specification.
+
+    The blocks table column spec (archive_tiers_specs.BLOCKS_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (14 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the hand-aligned duplicates into a single source of truth.
+
+    ``rows`` (polylogue-623q): see ``_write_messages`` for the contract --
+    used verbatim when provided, otherwise built fresh from ``messages``.
+    """
+    if rows is None:
+        rows = _build_block_rows(
+            session_id,
+            messages,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+    conn.executemany(_blocks_insert_sql(), rows)
 
 
 def _write_web_constructs(
@@ -1760,6 +1915,7 @@ def _replace_full_session_messages_and_blocks(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     bulk_build: bool = False,
+    prepared: PreparedSessionRows | None = None,
 ) -> None:
     """Replace one session's messages/blocks wholesale.
 
@@ -1770,6 +1926,16 @@ def _replace_full_session_messages_and_blocks(
     caller always repopulates both surfaces archive-wide exactly once at
     readiness, so per-session maintenance here is pure waste. Ordinary
     (non-bulk-build) full-session replaces are byte-for-byte unchanged.
+
+    ``prepared`` (polylogue-623q), when given, is an already-validated
+    ``PreparedSessionRows`` -- the caller (``write_parsed_session_to_archive``)
+    has already confirmed it was computed from THIS session's content hash
+    and that no lineage tail-slicing changed ``messages`` since. The message/
+    block row-building loops (the CPU-bound part of this function -- per-item
+    hashing, JSON encoding, enum lookups) are then skipped entirely in favor
+    of the precomputed tuples; only the ``executemany`` against SQLite still
+    runs on this (writer) thread. ``None`` (the default) reproduces the exact
+    prior behavior byte-for-byte.
     """
 
     def add_timing(name: str, started_at: float) -> None:
@@ -1806,6 +1972,7 @@ def _replace_full_session_messages_and_blocks(
             session_id,
             messages,
             duplicate_native_ids=duplicate_native_ids,
+            rows=list(prepared.message_rows) if prepared is not None else None,
         )
         add_timing("messages", t0)
         t0 = time.perf_counter()
@@ -1814,6 +1981,7 @@ def _replace_full_session_messages_and_blocks(
             session_id,
             messages,
             duplicate_native_ids=duplicate_native_ids,
+            rows=list(prepared.block_rows) if prepared is not None else None,
         )
         add_timing("blocks", t0)
         t0 = time.perf_counter()
