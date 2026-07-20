@@ -10,7 +10,7 @@ from polylogue.mcp.declarations.adapter import DeclaredToolRegistrar
 from polylogue.mcp.server_prompts import register_prompts
 from polylogue.mcp.server_resources import register_resources
 from polylogue.mcp.server_support import (
-    MCPRole,
+    MCPCapabilities,
     ServerCallbacks,
     _async_safe_call,
     _clamp_limit,
@@ -30,15 +30,18 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
 
-def _instructions_for_role(role: MCPRole) -> str:
+def _instructions_for_capabilities(capabilities: MCPCapabilities) -> str:
     """Return compatibility guidance now and the standing manual after cutover."""
     from polylogue.agent_integration.manifest import target_surface_is_registered
 
+    enabled = [name for name in ("write", "judge", "maintenance") if getattr(capabilities, name)]
+    capability_text = ", ".join(enabled) if enabled else "none (read-only)"
     base = (
         "Polylogue is the local evidence system for prior AI work. "
-        f"This server is running with the {role!r} MCP role; that role is a hard capability boundary."
+        f"This server is read-only by default; enabled privileged capabilities: {capability_text}. "
+        "There is no role ladder -- each capability is an independent config opt-in and a hard boundary."
     )
-    if not target_surface_is_registered(role):
+    if not target_surface_is_registered(capabilities):
         return (
             f"{base} The six-tool manual package is staged but is not active because target tool-name "
             "registration and generated-schema verification have not both completed. Use live discovery "
@@ -49,7 +52,9 @@ def _instructions_for_role(role: MCPRole) -> str:
     return f"{base}\n\n{read_agent_asset('standing-manual.md')}"
 
 
-def build_server(*, role: MCPRole = "read", services: RuntimeServices | None = None) -> FastMCP:
+def build_server(
+    *, capabilities: MCPCapabilities = MCPCapabilities(), services: RuntimeServices | None = None
+) -> FastMCP:
     """Construct an MCP server bound to one resolved runtime authority."""
     if services is None:
         services = build_runtime_services(runtime=resolve_runtime_config())
@@ -58,7 +63,7 @@ def build_server(*, role: MCPRole = "read", services: RuntimeServices | None = N
 
     mcp = FastMCP(
         "polylogue",
-        instructions=_instructions_for_role(role),
+        instructions=_instructions_for_capabilities(capabilities),
     )
     hooks = ServerCallbacks(
         json_payload=_json_payload,
@@ -80,9 +85,9 @@ def build_server(*, role: MCPRole = "read", services: RuntimeServices | None = N
         get_polylogue=lambda: _get_polylogue(),
         extract_fenced_code=_extract_fenced_code,
         response_context=_response_context,
-        role=role,
+        capabilities=capabilities,
     )
-    declared_mcp = DeclaredToolRegistrar(mcp, role=role)
+    declared_mcp = DeclaredToolRegistrar(mcp, capabilities=capabilities)
     register_tools(declared_mcp, hooks)
     declared_mcp.finalize()
     register_resources(mcp, hooks)
@@ -91,27 +96,29 @@ def build_server(*, role: MCPRole = "read", services: RuntimeServices | None = N
 
 
 _server_instance: FastMCP | None = None
-_server_instance_role: MCPRole | None = None
+_server_instance_capabilities: MCPCapabilities | None = None
 _server_instance_lock = threading.Lock()
 
 
-def _get_server(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> FastMCP:
-    global _server_instance, _server_instance_role
+def _get_server(
+    services: RuntimeServices | None = None, *, capabilities: MCPCapabilities = MCPCapabilities()
+) -> FastMCP:
+    global _server_instance, _server_instance_capabilities
     if services is not None:
         _set_runtime_services(services)
     with _server_instance_lock:
-        if _server_instance is None or _server_instance_role != role:
-            _server_instance = build_server(role=role, services=services)
-            _server_instance_role = role
+        if _server_instance is None or _server_instance_capabilities != capabilities:
+            _server_instance = build_server(capabilities=capabilities, services=services)
+            _server_instance_capabilities = capabilities
         return _server_instance
 
 
-def serve_stdio(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> None:
+def serve_stdio(services: RuntimeServices | None = None, *, capabilities: MCPCapabilities = MCPCapabilities()) -> None:
     """Start MCP server with stdio transport."""
     from polylogue.mcp.call_log import start_mcp_call_log
 
     start_mcp_call_log()
-    _get_server(services, role=role).run(transport="stdio")
+    _get_server(services, capabilities=capabilities).run(transport="stdio")
 
 
-__all__ = ["_instructions_for_role", "build_server", "serve_stdio"]
+__all__ = ["_instructions_for_capabilities", "build_server", "serve_stdio"]

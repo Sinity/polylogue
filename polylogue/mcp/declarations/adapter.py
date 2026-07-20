@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol, TypeVar, cast
 
-from polylogue.mcp.declarations.models import MCPRole, MCPToolDeclaration, mcp_role_allows
+from polylogue.mcp.declarations.models import MCPCapabilities, MCPToolDeclaration
 from polylogue.mcp.declarations.registry import declaration_for_tool, declared_tool_names
 
 HandlerT = TypeVar("HandlerT", bound=Callable[..., Any])
@@ -45,7 +45,7 @@ class MCPRegistrationError(RuntimeError):
 
 
 class DeclaredToolRegistrar:
-    """Validate one role-filtered live tool surface against declarations.
+    """Validate one capability-filtered live tool surface against declarations.
 
     Attribute access other than :meth:`tool` is delegated to the wrapped
     FastMCP instance so existing registration helpers remain usable.  The
@@ -54,14 +54,14 @@ class DeclaredToolRegistrar:
     remain owned by the existing production implementation.
     """
 
-    def __init__(self, delegate: ToolRegistrar, *, role: MCPRole) -> None:
+    def __init__(self, delegate: ToolRegistrar, *, capabilities: MCPCapabilities) -> None:
         self._delegate = delegate
-        self._role = role
+        self._capabilities = capabilities
         self._registered: dict[str, Callable[..., Any]] = {}
 
     @property
-    def role(self) -> MCPRole:
-        return self._role
+    def capabilities(self) -> MCPCapabilities:
+        return self._capabilities
 
     @property
     def registered_names(self) -> frozenset[str]:
@@ -75,9 +75,10 @@ class DeclaredToolRegistrar:
                 f"live MCP handler {name!r} has no executable declaration",
                 tool_name=name,
             ) from exc
-        if not mcp_role_allows(self._role, declaration.minimum_role):
+        if not self._capabilities.allows(declaration.required_capability):
             raise MCPRegistrationError(
-                f"MCP role {self._role!r} registered {name!r}, which requires {declaration.minimum_role!r}",
+                f"MCP capabilities {self._capabilities!r} registered {name!r}, "
+                f"which requires {declaration.required_capability!r}",
                 tool_name=name,
             )
         return declaration
@@ -132,15 +133,15 @@ class DeclaredToolRegistrar:
         return register
 
     def finalize(self) -> None:
-        """Require the exact role-visible declaration set after registration."""
+        """Require the exact capability-visible declaration set after registration."""
 
-        expected = declared_tool_names(self._role)
+        expected = declared_tool_names(self._capabilities)
         actual = self.registered_names
         if expected == actual:
             return
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
-        parts: list[str] = [f"MCP {self._role!r} registration does not match executable declarations"]
+        parts: list[str] = [f"MCP {self._capabilities!r} registration does not match executable declarations"]
         if missing:
             parts.append(f"missing={missing}")
         if extra:

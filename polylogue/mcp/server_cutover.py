@@ -2,9 +2,10 @@
 
 The compatibility registrars remain internal implementation substrate. This
 module is the public cutover registration surface: the six default read
-transactions (query/read/get/explain/context/status), plus the role-gated
-privileged transactions (write/judge/run/maintenance) registered only for
-roles whose ladder includes them.
+transactions (query/read/get/explain/context/status), plus the
+capability-gated privileged transactions (write/judge/run/maintenance)
+registered only for capabilities the server was configured to enable
+(polylogue-800m: independent boolean opt-ins, no role ladder).
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.mcp.declarations.adapter import register_declared_handler
-from polylogue.mcp.declarations.models import mcp_role_allows
 from polylogue.mcp.payloads import MCPArchiveStatsPayload, MCPRootPayload, session_topology_payload
 
 if TYPE_CHECKING:
@@ -507,7 +507,7 @@ async def _resume_preamble(
 
 
 def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
-    """Register exactly the six default, role-read transactions."""
+    """Register exactly the six default, always-available read transactions."""
 
     # Deferred import + lazy singleton: every other branch in this module
     # imports its dependencies inside the closure that uses them, to keep
@@ -1707,15 +1707,17 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
 
 
 def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
-    """Register write/judge/run/maintenance for roles whose ladder includes them.
+    """Register write/judge/run/maintenance for capabilities the server has enabled.
 
     Thin adapters over the same typed owners the retired per-operation MCP
     tools used (write, run, maintenance) or already used (judge). No new
-    mutation policy is invented here -- that is polylogue-t46.9's job.
+    mutation policy is invented here -- that is polylogue-t46.9's job. Each
+    dispatcher is gated by its own independent capability flag
+    (polylogue-800m); there is no ladder between them.
     """
-    role = mcp.role  # type: ignore[attr-defined]
+    capabilities = mcp.capabilities  # type: ignore[attr-defined]
 
-    if mcp_role_allows(role, "write"):
+    if capabilities.write:
 
         async def write(
             operation: Literal[
@@ -1794,7 +1796,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
 
         register_declared_handler(mcp, run, name="run")
 
-    if mcp_role_allows(role, "review"):
+    if capabilities.judge:
 
         async def judge(
             items: list[dict[str, object]] | None = None,
@@ -1872,7 +1874,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
 
         register_declared_handler(mcp, judge, name="judge")
 
-    if mcp_role_allows(role, "admin"):
+    if capabilities.maintenance:
 
         async def maintenance(
             operation: Literal[

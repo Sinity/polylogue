@@ -39,9 +39,11 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.core.json import JSONValue
-from polylogue.mcp.server_support import MCPRole, _safe_call
+from polylogue.mcp.declarations.models import MCPCapabilities
+from polylogue.mcp.server_support import _safe_call
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.mcp import (
+    ALL_CAPABILITIES,
     MCPServerUnderTest,
     invoke_surface,
     invoke_surface_async,
@@ -259,7 +261,7 @@ class TestErrorPrivacyEnvelopes:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         _patch_empty_archive(monkeypatch, tmp_path / "archive")
-        server = cast(MCPServerUnderTest, build_server(role="read"))
+        server = cast(MCPServerUnderTest, build_server())
         secret = "postgresql://admin:hunter2@db.internal/path/to/secret"
 
         # The archive stats resource calls ``ArchiveStore.stats()``; raise the secret
@@ -330,44 +332,44 @@ class TestRegistrationDriftEvidence:
         cast("list[JSONValue]", list(prompts))
 
     @pytest.mark.parametrize(
-        ("role", "must_contain", "must_omit"),
+        ("capabilities", "must_contain", "must_omit"),
         [
-            # Privileged write/judge/run/maintenance transaction tools are
-            # declared (PRIVILEGED_ALGEBRA in mcp/declarations/registry.py)
-            # but not yet registered by any role -- that is polylogue-t46.8.3,
-            # unstarted. Until then every role sees exactly the six read
-            # transactions and never the retired individual tool names.
+            # polylogue-800m: no role ladder -- write/judge/maintenance are
+            # independent config opt-ins. The base six read transactions are
+            # always present; retired individual tool names never appear.
             (
-                "read",
+                MCPCapabilities(),
                 frozenset({"query", "read", "get", "explain", "context", "status"}),
                 frozenset({"search", "add_tag", "rebuild_index", "write", "judge", "run", "maintenance"}),
             ),
             (
-                "write",
-                frozenset({"query", "read", "get", "explain", "context", "status"}),
-                frozenset({"search", "add_tag", "rebuild_index", "rebuild_session_insights"}),
+                MCPCapabilities(write=True),
+                frozenset({"query", "read", "get", "explain", "context", "status", "write", "run"}),
+                frozenset({"search", "add_tag", "rebuild_index", "judge", "maintenance"}),
             ),
             (
-                "admin",
-                frozenset({"query", "read", "get", "explain", "context", "status"}),
+                ALL_CAPABILITIES,
+                frozenset(
+                    {"query", "read", "get", "explain", "context", "status", "write", "run", "judge", "maintenance"}
+                ),
                 frozenset({"search", "add_tag", "rebuild_index", "rebuild_session_insights"}),
             ),
         ],
     )
-    def test_role_capability_envelope_evidence(
+    def test_capability_envelope_evidence(
         self,
-        role: MCPRole,
+        capabilities: MCPCapabilities,
         must_contain: frozenset[str],
         must_omit: frozenset[str],
     ) -> None:
         from polylogue.mcp.server import build_server
 
-        server = cast(MCPServerUnderTest, build_server(role=role))
+        server = cast(MCPServerUnderTest, build_server(capabilities=capabilities))
         tools = set(server._tool_manager._tools.keys())
         missing = must_contain - tools
         leaked = must_omit & tools
-        assert not missing, f"role={role}: required tools missing {sorted(missing)}"
-        assert not leaked, f"role={role}: forbidden tools present {sorted(leaked)}"
+        assert not missing, f"capabilities={capabilities}: required tools missing {sorted(missing)}"
+        assert not leaked, f"capabilities={capabilities}: forbidden tools present {sorted(leaked)}"
         cast("list[JSONValue]", sorted(must_contain))
         cast("list[JSONValue]", sorted(must_omit))
 

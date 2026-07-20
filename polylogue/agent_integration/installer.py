@@ -31,13 +31,16 @@ from polylogue.agent_integration.spec import (
     ASSET_VERSION,
     CLIENTS,
     GUIDANCE_MODES,
-    ROLES,
     AgentClient,
     GuidanceMode,
 )
-from polylogue.mcp.declarations import MCPRole
+from polylogue.mcp.declarations import MCPCapabilities
 
-STATE_SCHEMA_VERSION = 1
+#: v2 (polylogue-800m): per-client record carries "capabilities"
+#: (write/judge/maintenance independent booleans) instead of the retired
+#: "role" field. Older v1 state fails closed via _decode_state's schema-
+#: version gate rather than silently exposing a missing/renamed field.
+STATE_SCHEMA_VERSION = 2
 STATE_FILE_NAME = "agent-integrations.json"
 MCP_SERVER_NAME = "polylogue"
 _MARKER_PREFIX = "polylogue agent integration"
@@ -64,7 +67,7 @@ class InstallOptions:
     """Resolved installation request."""
 
     clients: tuple[AgentClient, ...]
-    role: MCPRole = "read"
+    capabilities: MCPCapabilities = MCPCapabilities()
     guidance: GuidanceMode = "full"
     include_reference: bool = True
     install_mcp: bool = True
@@ -80,8 +83,6 @@ class InstallOptions:
         unknown = sorted(set(self.clients).difference(CLIENTS))
         if unknown:
             raise ValueError(f"unknown clients: {', '.join(unknown)}")
-        if self.role not in ROLES:
-            raise ValueError(f"unknown MCP role: {self.role}")
         if self.guidance not in GUIDANCE_MODES:
             raise ValueError(f"unknown guidance mode: {self.guidance}")
 
@@ -399,14 +400,28 @@ def _toml_string(value: str) -> str:
 
 
 def _mcp_entry(options: InstallOptions) -> dict[str, JSONValue]:
+    """Build the generated MCP client entry.
+
+    polylogue-800m: there is no ``--role`` launch flag. Write/judge/
+    maintenance capability is a server-side config opt-in only; when the
+    operator requests one at install time, it is expressed as an env var in
+    the generated entry (mirroring ``polylogue.toml``'s ``[mcp]`` keys), not
+    a CLI argument.
+    """
     environment: dict[str, JSONValue] = {}
     if options.archive_root is not None:
         environment["POLYLOGUE_ARCHIVE_ROOT"] = str(options.archive_root.expanduser().resolve())
     if options.config_path is not None:
         environment["POLYLOGUE_CONFIG"] = str(options.config_path.expanduser().resolve())
+    if options.capabilities.write:
+        environment["POLYLOGUE_MCP_WRITE_ENABLED"] = "1"
+    if options.capabilities.judge:
+        environment["POLYLOGUE_MCP_JUDGE_ENABLED"] = "1"
+    if options.capabilities.maintenance:
+        environment["POLYLOGUE_MCP_MAINTENANCE_ENABLED"] = "1"
     return {
         "command": options.server_command,
-        "args": ["--role", options.role],
+        "args": [],
         "env": environment,
     }
 
@@ -1099,7 +1114,11 @@ class AgentIntegrationManager:
                         "client": client,
                         "content_version": ASSET_VERSION,
                         "asset_digest": agent_asset_digest(),
-                        "role": options.role,
+                        "capabilities": {
+                            "write": options.capabilities.write,
+                            "judge": options.capabilities.judge,
+                            "maintenance": options.capabilities.maintenance,
+                        },
                         "guidance": options.guidance,
                         "include_reference": options.include_reference,
                         "install_mcp": options.install_mcp,
@@ -1243,7 +1262,7 @@ class AgentIntegrationManager:
             clients_payload.append(
                 {
                     "client": client,
-                    "role": raw_client.get("role"),
+                    "capabilities": raw_client.get("capabilities"),
                     "guidance": raw_client.get("guidance"),
                     "include_reference": raw_client.get("include_reference"),
                     "install_mcp": raw_client.get("install_mcp"),

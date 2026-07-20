@@ -33,7 +33,7 @@ from polylogue.core.errors import (
     SchemaVersionMismatchError,
 )
 from polylogue.logging import get_logger
-from polylogue.mcp.declarations.models import MCPRole, mcp_role_allows
+from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.services import RuntimeServices
 from polylogue.surfaces.payloads import serialize_surface_payload
@@ -120,13 +120,7 @@ class ServerCallbacks:
     get_polylogue: Callable[[], Polylogue]
     extract_fenced_code: FencedCodeExtractor
     response_context: ResponseContextHook
-    role: MCPRole
-
-
-def role_allows(role: MCPRole, required: MCPRole) -> bool:
-    """Return whether an MCP server role allows the required capability."""
-
-    return mcp_role_allows(role, required)
+    capabilities: MCPCapabilities
 
 
 def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlock]:
@@ -681,7 +675,7 @@ def _get_polylogue() -> Polylogue:
 
 
 __all__ = [
-    "MCPRole",
+    "MCPCapabilities",
     "ServerCallbacks",
     "_async_safe_call",
     "_clamp_limit",
@@ -694,5 +688,4 @@ __all__ = [
     "_response_context",
     "_safe_call",
     "_set_runtime_services",
-    "role_allows",
 ]

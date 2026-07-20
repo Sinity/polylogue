@@ -563,6 +563,40 @@ class PolylogueConfig:
         return bool(self._data.get("daemon_parse_stage_split"))
 
     @property
+    def mcp_write_enabled(self) -> bool:
+        """Explicit opt-in for the MCP ``write``/``run`` dispatchers.
+
+        The MCP server is read-only by default (polylogue-800m): there is no
+        role ladder, only independent capability flags. Off by default; set
+        TOML ``[mcp] write_enabled = true`` or
+        ``POLYLOGUE_MCP_WRITE_ENABLED=1`` to register the mutation
+        dispatchers.
+        """
+        return bool(self._data.get("mcp_write_enabled"))
+
+    @property
+    def mcp_judge_enabled(self) -> bool:
+        """Explicit opt-in for the MCP ``judge`` dispatcher.
+
+        Independent of ``mcp_write_enabled`` (polylogue-800m) — judging
+        assertion candidates does not require the write dispatcher. Off by
+        default; set TOML ``[mcp] judge_enabled = true`` or
+        ``POLYLOGUE_MCP_JUDGE_ENABLED=1``.
+        """
+        return bool(self._data.get("mcp_judge_enabled"))
+
+    @property
+    def mcp_maintenance_enabled(self) -> bool:
+        """Explicit opt-in for the MCP ``maintenance`` dispatcher.
+
+        Independent of ``mcp_write_enabled``/``mcp_judge_enabled``
+        (polylogue-800m). Off by default; set TOML
+        ``[mcp] maintenance_enabled = true`` or
+        ``POLYLOGUE_MCP_MAINTENANCE_ENABLED=1``.
+        """
+        return bool(self._data.get("mcp_maintenance_enabled"))
+
+    @property
     def daemon_bulk_rebuild_routing(self) -> bool:
         """Opt-in: route a bulk-scale raw backlog into a daemon-owned blue-green rebuild.
 
@@ -1145,6 +1179,42 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         toml_kind="array-table",
     ),
     ConfigInventoryEntry(
+        "mcp_write_enabled",
+        toml_path="mcp.write_enabled",
+        env_var="POLYLOGUE_MCP_WRITE_ENABLED",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description=(
+            "Explicit opt-in (polylogue-800m) for the MCP server's write/run "
+            "dispatchers. Off by default: the server is read-only unless "
+            "this is set. No role ladder -- independent of judge/maintenance."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "mcp_judge_enabled",
+        toml_path="mcp.judge_enabled",
+        env_var="POLYLOGUE_MCP_JUDGE_ENABLED",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description=(
+            "Explicit opt-in (polylogue-800m) for the MCP server's judge "
+            "dispatcher (assertion-candidate judgment). Off by default; "
+            "independent of write/maintenance."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "mcp_maintenance_enabled",
+        toml_path="mcp.maintenance_enabled",
+        env_var="POLYLOGUE_MCP_MAINTENANCE_ENABLED",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description=(
+            "Explicit opt-in (polylogue-800m) for the MCP server's "
+            "maintenance dispatcher. Off by default; independent of "
+            "write/judge."
+        ),
+    ),
+    ConfigInventoryEntry(
         "daemon_parse_stage_split",
         toml_path="daemon.raw_materialization.parse_stage_split",
         env_var="POLYLOGUE_DAEMON_PARSE_STAGE_SPLIT",
@@ -1209,6 +1279,9 @@ _BOOL_CONFIG_KEYS = frozenset(
         "observability_enabled",
         "daemon_parse_stage_split",
         "daemon_bulk_rebuild_routing",
+        "mcp_write_enabled",
+        "mcp_judge_enabled",
+        "mcp_maintenance_enabled",
     }
 )
 
@@ -1407,6 +1480,9 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "subscription_plans": (),
         "daemon_parse_stage_split": False,
         "daemon_bulk_rebuild_routing": False,
+        "mcp_write_enabled": False,
+        "mcp_judge_enabled": False,
+        "mcp_maintenance_enabled": False,
     }
 
 

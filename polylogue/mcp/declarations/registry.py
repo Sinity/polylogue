@@ -22,6 +22,8 @@ from polylogue.declarations import (
     validate_registry,
 )
 from polylogue.mcp.declarations.models import (
+    MCPCapabilities,
+    MCPCapabilityFlag,
     MCPContinuationContract,
     MCPDeprecationState,
     MCPHandlerBinding,
@@ -30,12 +32,10 @@ from polylogue.mcp.declarations.models import (
     MCPPromptDeclaration,
     MCPResourceDeclaration,
     MCPResultSemantics,
-    MCPRole,
     MCPToolDeclaration,
     MCPTransactionDeclaration,
     MCPVerb,
     PythonParityExpectation,
-    mcp_role_allows,
 )
 
 _REPAIR_COMMAND = "devtools render mcp-equivalence"
@@ -47,7 +47,7 @@ class _ToolRow:
     description: str
     module: str
     registrar: str
-    minimum_role: MCPRole
+    required_capability: MCPCapabilityFlag | None
     verb: MCPVerb
     object_kinds: tuple[str, ...]
     result_semantics: MCPResultSemantics
@@ -64,7 +64,7 @@ def _compatibility(row: _ToolRow) -> CompatibilityKey:
     return CompatibilityKey(
         identity="mcp-tool:" + ",".join(row.object_kinds),
         lifecycle="registered-handler-retained",
-        authority=f"mcp-role:{row.minimum_role}",
+        authority=f"mcp-capability:{row.required_capability or 'read'}",
         access_result_shape=f"{row.verb.value}:{row.result_semantics.value}:{row.output_kind}",
         durability="transport-adapter; domain-owner-controls-durability",
     )
@@ -88,7 +88,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Execute a parser-owned terminal query page or resume its q2 continuation.",
         "polylogue.mcp.server_cutover",
         "register_cutover_read_tools",
-        "read",
+        None,
         MCPVerb.QUERY,
         ("query", "result-set"),
         MCPResultSemantics.EXHAUSTIVE_PAGE,
@@ -105,7 +105,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Read a stable archive URI or public ref through a declared view.",
         "polylogue.mcp.server_cutover",
         "register_cutover_read_tools",
-        "read",
+        None,
         MCPVerb.READ,
         ("object-ref", "evidence-ref"),
         MCPResultSemantics.EXHAUSTIVE_PAGE,
@@ -122,7 +122,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Resolve one exact stable object or evidence identity.",
         "polylogue.mcp.server_cutover",
         "register_cutover_read_tools",
-        "read",
+        None,
         MCPVerb.GET,
         ("object-ref",),
         MCPResultSemantics.SINGLE_OBJECT,
@@ -139,7 +139,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Explain parser grammar, capabilities, refs, result semantics, or recovery.",
         "polylogue.mcp.server_cutover",
         "register_cutover_read_tools",
-        "read",
+        None,
         MCPVerb.EXPLAIN,
         ("query", "capability", "object-ref"),
         MCPResultSemantics.SINGLE_OBJECT,
@@ -156,7 +156,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Compile a policy-gated bounded context image with receipts.",
         "polylogue.mcp.server_cutover",
         "register_cutover_read_tools",
-        "read",
+        None,
         MCPVerb.CONTEXT,
         ("context-snapshot",),
         MCPResultSemantics.BOUNDED_CONTEXT,
@@ -173,7 +173,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Report compact archive authority and readiness status.",
         "polylogue.mcp.server_cutover",
         "register_cutover_read_tools",
-        "read",
+        None,
         MCPVerb.STATUS,
         ("status",),
         MCPResultSemantics.SINGLE_OBJECT,
@@ -207,7 +207,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Accept, reject, defer, or supersede assertion candidates without collapsing candidate state.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
-        "review",
+        "judge",
         MCPVerb.JUDGE,
         ("assertion-candidate", "judgment"),
         MCPResultSemantics.MUTATION,
@@ -241,7 +241,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Preview, execute, list, and inspect maintenance operations.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
-        "admin",
+        "maintenance",
         MCPVerb.MAINTENANCE,
         ("maintenance-plan", "maintenance-operation"),
         MCPResultSemantics.MAINTENANCE,
@@ -264,7 +264,7 @@ def _cutover_declaration(row: _ToolRow) -> MCPToolDeclaration:
         owner_path="polylogue/mcp/declarations/registry.py",
         compatibility=_compatibility(row),
         producer=row.operation_owner,
-        role_gate=f"mcp.role:{row.minimum_role}",
+        role_gate=f"mcp.capability:{row.required_capability or 'read'}",
         schema_ref=row.schema_source,
         discovery_text=row.description,
         repair_command=_REPAIR_COMMAND,
@@ -300,7 +300,7 @@ def _cutover_declaration(row: _ToolRow) -> MCPToolDeclaration:
             ),
         ),
     )
-    is_read = row.minimum_role == "read"
+    is_read = row.required_capability is None
     continuation = "cursor_or_offset" if row.name in {"query", "read"} else "none"
     return MCPToolDeclaration(
         kernel=kernel,
@@ -308,8 +308,8 @@ def _cutover_declaration(row: _ToolRow) -> MCPToolDeclaration:
         description=row.description,
         verb=row.verb,
         object_kinds=row.object_kinds,
-        minimum_role=row.minimum_role,
-        capability=f"{row.minimum_role}:{row.verb.value}",
+        required_capability=row.required_capability,
+        capability=f"{row.required_capability or 'read'}:{row.verb.value}",
         result_semantics=row.result_semantics,
         canonical_plan=row.operation_owner,
         canonical_projection=f"{row.output_kind}:root",
@@ -371,9 +371,20 @@ def declaration_for_tool(name: str) -> MCPToolDeclaration:
         ) from exc
 
 
-def declared_tool_names(role: MCPRole = "admin") -> frozenset[str]:
+_ALL_CAPABILITIES_ENABLED = MCPCapabilities(write=True, judge=True, maintenance=True)
+
+
+def declared_tool_names(capabilities: MCPCapabilities = _ALL_CAPABILITIES_ENABLED) -> frozenset[str]:
+    """Return the tool names visible under ``capabilities``.
+
+    Default is every capability enabled (the full ten-tool surface), used by
+    inventory/discovery tooling that wants the complete declared set rather
+    than one server's resolved config.
+    """
     return frozenset(
-        declaration.name for declaration in MCP_TOOL_DECLARATIONS if mcp_role_allows(role, declaration.minimum_role)
+        declaration.name
+        for declaration in MCP_TOOL_DECLARATIONS
+        if capabilities.allows(declaration.required_capability)
     )
 
 
@@ -381,7 +392,7 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="query",
         verb=MCPVerb.QUERY,
-        minimum_role="read",
+        required_capability=None,
         object_kinds=("query", "result-set"),
         result_semantics=(
             MCPResultSemantics.EXHAUSTIVE_PAGE,
@@ -395,7 +406,7 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="read",
         verb=MCPVerb.READ,
-        minimum_role="read",
+        required_capability=None,
         object_kinds=("object-ref", "evidence-ref"),
         result_semantics=(
             MCPResultSemantics.SINGLE_OBJECT,
@@ -408,7 +419,7 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="get",
         verb=MCPVerb.GET,
-        minimum_role="read",
+        required_capability=None,
         object_kinds=("object-ref",),
         result_semantics=(MCPResultSemantics.SINGLE_OBJECT,),
         purpose="Resolve one exact object identity when a generic read would add ambiguity.",
@@ -417,7 +428,7 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="explain",
         verb=MCPVerb.EXPLAIN,
-        minimum_role="read",
+        required_capability=None,
         object_kinds=("query", "object-ref", "capability"),
         result_semantics=(MCPResultSemantics.SINGLE_OBJECT,),
         purpose="Discover grammar, fields, values, plans, authority, and recovery routes.",
@@ -426,7 +437,7 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="context",
         verb=MCPVerb.CONTEXT,
-        minimum_role="read",
+        required_capability=None,
         object_kinds=("context-snapshot", "context-delivery"),
         result_semantics=(MCPResultSemantics.BOUNDED_CONTEXT,),
         purpose="Compile and retrieve policy-gated bounded context plus receipts.",
@@ -435,7 +446,7 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="status",
         verb=MCPVerb.STATUS,
-        minimum_role="read",
+        required_capability=None,
         object_kinds=("status", "receipt"),
         result_semantics=(MCPResultSemantics.SINGLE_OBJECT, MCPResultSemantics.AGGREGATE),
         purpose="Read archive, source, embedding, coordination, and operation status.",
@@ -447,7 +458,7 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="write",
         verb=MCPVerb.WRITE,
-        minimum_role="write",
+        required_capability="write",
         object_kinds=("object-ref", "assertion"),
         result_semantics=(MCPResultSemantics.MUTATION,),
         purpose="Apply a declaration-owned mutation after shared authorization.",
@@ -456,7 +467,7 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="judge",
         verb=MCPVerb.JUDGE,
-        minimum_role="review",
+        required_capability="judge",
         object_kinds=("assertion-candidate", "judgment"),
         result_semantics=(MCPResultSemantics.MUTATION,),
         purpose="Accept, reject, defer, or supersede candidates without collapsing candidate state.",
@@ -465,7 +476,7 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="run",
         verb=MCPVerb.RUN,
-        minimum_role="write",
+        required_capability="write",
         object_kinds=("saved-query", "recipe", "result-set"),
         result_semantics=(MCPResultSemantics.EXHAUSTIVE_PAGE, MCPResultSemantics.MUTATION),
         purpose="Execute a saved query or governed recipe ref.",
@@ -474,7 +485,7 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
     MCPTransactionDeclaration(
         name="maintenance",
         verb=MCPVerb.MAINTENANCE,
-        minimum_role="admin",
+        required_capability="maintenance",
         object_kinds=("maintenance-plan", "maintenance-operation"),
         result_semantics=(MCPResultSemantics.MAINTENANCE,),
         purpose="Preview, authorize, execute, inspect, and reconcile maintenance operations.",
@@ -486,7 +497,7 @@ TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = tuple(
     MCPResourceDeclaration(
         uri_template=f"polylogue://{kind}/{{id}}",
         object_kinds=(kind,),
-        minimum_role="read",
+        required_capability=None,
         authority="read-only object projection; resources never acquire instruction or mutation authority",
         migration_owner="polylogue-t46.8.2" if kind != "recall-pack" else "polylogue-t46.8.3",
     )
@@ -495,20 +506,20 @@ TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = tuple(
     MCPResourceDeclaration(
         uri_template="polylogue://capabilities/query",
         object_kinds=("capability", "query", "result-set"),
-        minimum_role="read",
+        required_capability=None,
         authority="executable query vocabulary and recovery guidance; no mutation authority",
         migration_owner="polylogue-z9gh.3",
     ),
 )
 
 TARGET_PROMPTS: Final[tuple[MCPPromptDeclaration, ...]] = (
-    MCPPromptDeclaration("resume_context", "resume", "read", "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("postmortem_last", "postmortem", "read", "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("decisions_about", "decision-recovery", "read", "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("unacknowledged_failures", "failure-recovery", "read", "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("sessions_touching_file", "file-touch", "read", "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("cost_of", "cost-analysis", "read", "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("agent_coordination_brief", "coordination", "read", "none", "polylogue-t46.8.3"),
+    MCPPromptDeclaration("resume_context", "resume", None, "none", "polylogue-t46.8.2"),
+    MCPPromptDeclaration("postmortem_last", "postmortem", None, "none", "polylogue-t46.8.2"),
+    MCPPromptDeclaration("decisions_about", "decision-recovery", None, "none", "polylogue-t46.8.2"),
+    MCPPromptDeclaration("unacknowledged_failures", "failure-recovery", None, "none", "polylogue-t46.8.2"),
+    MCPPromptDeclaration("sessions_touching_file", "file-touch", None, "none", "polylogue-t46.8.2"),
+    MCPPromptDeclaration("cost_of", "cost-analysis", None, "none", "polylogue-t46.8.2"),
+    MCPPromptDeclaration("agent_coordination_brief", "coordination", None, "none", "polylogue-t46.8.3"),
 )
 
 if len(TARGET_DEFAULT_READ_ALGEBRA) > 15:

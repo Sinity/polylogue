@@ -37,7 +37,13 @@ from polylogue.agent_integration.spec import (
     TOOL_CONTRACTS,
 )
 from polylogue.core.enums import Origin
-from polylogue.mcp.declarations import PRIVILEGED_ALGEBRA, TARGET_DEFAULT_READ_ALGEBRA, TARGET_PROMPTS, TARGET_RESOURCES
+from polylogue.mcp.declarations import (
+    PRIVILEGED_ALGEBRA,
+    TARGET_DEFAULT_READ_ALGEBRA,
+    TARGET_PROMPTS,
+    TARGET_RESOURCES,
+    MCPCapabilities,
+)
 
 LaneStatus = Literal["pass", "fail", "unverified"]
 
@@ -187,11 +193,11 @@ def _manual_compilation_lane() -> LaneResult:
                     problems.append(f"{contract.name}: missing source declaration {source_name}")
                     continue
                 source_rows.append(declaration)
-            source_roles = {row.minimum_role for row in source_rows}
-            if source_roles != {contract.minimum_role}:
+            source_capabilities = {row.required_capability for row in source_rows}
+            if source_capabilities != {contract.required_capability}:
                 problems.append(
-                    f"{contract.name}: role is not derived from source declarations "
-                    f"({contract.minimum_role!r} versus {sorted(source_roles)!r})"
+                    f"{contract.name}: required capability is not derived from source declarations "
+                    f"({contract.required_capability!r} versus {sorted(source_capabilities, key=str)!r})"
                 )
             source_semantics = tuple(
                 dict.fromkeys(semantic for row in source_rows for semantic in row.result_semantics)
@@ -358,10 +364,10 @@ def _continuation_contract_lane() -> LaneResult:
 def _target_declaration_lane() -> LaneResult:
     name = "target-declaration-reconciliation"
     try:
-        manifest = build_live_manifest("admin")
+        manifest = build_live_manifest(_ALL_CAPABILITIES)
         expected_default = ("query", "read", "get", "explain", "context", "status")
-        if target_tool_names("read") != expected_default:
-            return _fail(name, "default target transaction order changed", target=list(target_tool_names("read")))
+        if target_tool_names() != expected_default:
+            return _fail(name, "default target transaction order changed", target=list(target_tool_names()))
         mappings = {contract.name: list(contract.source_declarations) for contract in TOOL_CONTRACTS}
         if mappings["read"] not in (["read"], ["read", "graph"]):
             return _fail(name, "read compatibility mapping is not mechanical", mapping=mappings["read"])
@@ -374,7 +380,7 @@ def _target_declaration_lane() -> LaneResult:
             tool_names_registered=manifest["tool_names_registered"],
             contract_schemas_verified=manifest["contract_schemas_verified"],
             runtime_tools=len(cast(list[str], manifest["tools"])),
-            target_tools=list(target_tool_names("admin")),
+            target_tools=list(target_tool_names(_ALL_CAPABILITIES)),
             source_mappings=mappings,
         )
     except Exception as exc:
@@ -402,7 +408,6 @@ def _native_installer_lane() -> LaneResult:
             manager = AgentIntegrationManager(home=home, environment={"HOME": str(home), "PATH": str(bin_dir)})
             options = InstallOptions(
                 clients=CLIENTS,
-                role="read",
                 archive_root=root / "archive",
                 config_path=root / "polylogue.toml",
                 server_command=str(server),
@@ -417,7 +422,7 @@ def _native_installer_lane() -> LaneResult:
             upgraded = manager.install(
                 InstallOptions(
                     clients=options.clients,
-                    role="review",
+                    capabilities=MCPCapabilities(judge=True),
                     archive_root=root / "archive-2",
                     config_path=root / "polylogue-2.toml",
                     server_command=str(server),
@@ -453,7 +458,7 @@ def _native_installer_lane() -> LaneResult:
                 name,
                 clients=list(options.clients),
                 no_rewrite_idempotence=True,
-                role_archive_upgrade=True,
+                capability_archive_upgrade=True,
                 doctor=True,
                 exact_clean_uninstall=True,
             )
@@ -495,12 +500,12 @@ def _packaging_home_manager_lane() -> LaneResult:
 def _live_fastmcp_signature_lane() -> LaneResult:
     name = "live-fastmcp-signatures"
     try:
-        if not target_tool_names_are_registered("admin"):
+        if not target_tool_names_are_registered(_ALL_CAPABILITIES):
             return _unverified(
                 name,
                 "six-tool cutover is not registered in this snapshot",
-                runtime_tools=list(declared_runtime_tool_names("admin")),
-                target_tools=list(target_tool_names("admin")),
+                runtime_tools=list(declared_runtime_tool_names(_ALL_CAPABILITIES)),
+                target_tools=list(target_tool_names(_ALL_CAPABILITIES)),
                 blocked_checks=(
                     "exact FastMCP argument names and required/default status",
                     "continuation field and initial-vs-resume signature exclusivity",
@@ -511,7 +516,7 @@ def _live_fastmcp_signature_lane() -> LaneResult:
             )
         from polylogue.mcp.server import build_server
 
-        server = cast(_FastMCPServer, build_server(role="admin"))
+        server = cast(_FastMCPServer, build_server(capabilities=_ALL_CAPABILITIES))
         surfaces = server._tool_manager._tools
         problems: list[str] = []
         for contract in TOOL_CONTRACTS:
@@ -556,7 +561,7 @@ def _live_fastmcp_signature_lane() -> LaneResult:
                     "only after reviewing this exact signature match"
                 ),
             )
-        return _pass(name, registered_tools=list(target_tool_names("admin")), checked=len(TOOL_CONTRACTS))
+        return _pass(name, registered_tools=list(target_tool_names(_ALL_CAPABILITIES)), checked=len(TOOL_CONTRACTS))
     except ModuleNotFoundError as exc:
         return _unverified(name, exc, production_dependency="MCP SDK and locked runtime dependencies")
     except Exception as exc:

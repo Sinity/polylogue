@@ -46,15 +46,12 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return read_agent_asset("deep-reference.md")
 
-    @mcp.resource("polylogue://agent/manifest/{role}")
-    def agent_manifest_resource(role: str) -> str:
-        """Return target/runtime reconciliation for one hard MCP role."""
+    @mcp.resource("polylogue://agent/manifest")
+    def agent_manifest_resource() -> str:
+        """Return target/runtime reconciliation for this server's configured capabilities."""
         from polylogue.agent_integration.manifest import build_live_manifest
-        from polylogue.agent_integration.spec import ROLES
 
-        if role not in ROLES:
-            return hooks.error_json(f"Unknown MCP role: {role}", code="invalid_request")
-        return json.dumps(build_live_manifest(role), ensure_ascii=False, sort_keys=True)
+        return json.dumps(build_live_manifest(hooks.capabilities), ensure_ascii=False, sort_keys=True)
 
     @mcp.resource("polylogue://stats")
     async def stats_resource() -> str:

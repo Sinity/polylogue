@@ -25,7 +25,7 @@ def _write_message(archive_root: Path, native_id: str, text: str) -> None:
 def mcp_server() -> MCPServerUnderTest:
     from polylogue.mcp.server import build_server
 
-    return cast(MCPServerUnderTest, build_server(role="read"))
+    return cast(MCPServerUnderTest, build_server())
 
 
 def test_default_read_discovery_has_no_retired_tools(mcp_server: MCPServerUnderTest) -> None:

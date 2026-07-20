@@ -27,8 +27,9 @@ from polylogue.mcp.declarations import (
     TARGET_DEFAULT_READ_ALGEBRA,
     TARGET_PROMPTS,
     TARGET_RESOURCES,
+    MCPCapabilities,
+    MCPCapabilityFlag,
     MCPResultSemantics,
-    MCPRole,
     MCPTransactionDeclaration,
 )
 
@@ -41,9 +42,7 @@ ArgumentKind = Literal["string", "integer", "boolean", "array", "object"]
 
 TARGET_SCHEMA_STATUS: SchemaStatus = "cutover-parameterized"
 CLIENTS: tuple[AgentClient, ...] = ("claude-code", "codex", "gemini", "hermes")
-ROLES: tuple[MCPRole, ...] = ("read", "write", "review", "admin")
 GUIDANCE_MODES: tuple[GuidanceMode, ...] = ("full", "mcp-only", "off")
-ROLE_ORDER: dict[MCPRole, int] = {"read": 0, "write": 1, "review": 2, "admin": 3}
 DEFAULT_READ_TOOLS: tuple[str, ...] = ("query", "read", "get", "explain", "context", "status")
 PRIVILEGED_TOOLS: tuple[str, ...] = ("write", "judge", "run", "operate")
 ALL_TARGET_TOOLS: tuple[str, ...] = (*DEFAULT_READ_TOOLS, *PRIVILEGED_TOOLS)
@@ -58,7 +57,7 @@ class CapabilityFamily:
 
     id: str
     title: str
-    minimum_role: MCPRole
+    required_capability: MCPCapabilityFlag | None
     first_tool: str
 
 
@@ -90,7 +89,7 @@ class ToolContract:
     """Manual-facing target transaction derived from t46.8 declarations."""
 
     name: str
-    minimum_role: MCPRole
+    required_capability: MCPCapabilityFlag | None
     purpose: str
     source_declarations: tuple[str, ...]
     result_semantics: tuple[MCPResultSemantics, ...]
@@ -205,12 +204,14 @@ def _semantics(source_names: tuple[str, ...]) -> tuple[MCPResultSemantics, ...]:
     return tuple(result)
 
 
-def _minimum_role(source_names: tuple[str, ...]) -> MCPRole:
+def _required_capability(source_names: tuple[str, ...]) -> MCPCapabilityFlag | None:
     index = _target_declaration_index()
-    roles = {index[name].minimum_role for name in source_names}
-    if len(roles) != 1:
-        raise RuntimeError(f"manual transaction sources disagree on role: {source_names!r} -> {sorted(roles)}")
-    return roles.pop()
+    capabilities = {index[name].required_capability for name in source_names}
+    if len(capabilities) != 1:
+        raise RuntimeError(
+            f"manual transaction sources disagree on required capability: {source_names!r} -> {sorted(capabilities, key=str)}"
+        )
+    return capabilities.pop()
 
 
 def _contract(
@@ -225,7 +226,7 @@ def _contract(
 ) -> ToolContract:
     return ToolContract(
         name=name,
-        minimum_role=_minimum_role(source_names),
+        required_capability=_required_capability(source_names),
         purpose=purpose,
         source_declarations=source_names,
         result_semantics=_semantics(source_names),
@@ -448,7 +449,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         name="run",
         source_names=_RUN_SOURCES,
-        purpose="Execute a saved query or governed recipe ref; any nested mutation inherits its own role and confirmation policy.",
+        purpose="Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.",
         arguments=(
             _arg("ref", "string", True, "Saved-query or recipe ref."),
             _arg("arguments", "object", False, "Typed recipe parameters."),
@@ -499,19 +500,19 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
 
 TOOL_CONTRACT_BY_NAME: dict[str, ToolContract] = {contract.name: contract for contract in TOOL_CONTRACTS}
 if tuple(TOOL_CONTRACT_BY_NAME) != ALL_TARGET_TOOLS:
-    raise RuntimeError("agent tool contracts must remain in six-tool then privileged role order")
+    raise RuntimeError("agent tool contracts must remain in six-tool then privileged capability order")
 
 CAPABILITY_FAMILIES: tuple[CapabilityFamily, ...] = (
-    CapabilityFamily("authority", "Archive identity, source coverage, freshness, and readiness", "read", "status"),
+    CapabilityFamily("authority", "Archive identity, source coverage, freshness, and readiness", None, "status"),
     CapabilityFamily(
-        "discovery", "Cross-session, row-level, semantic, aggregate, and prior-art search", "read", "query"
+        "discovery", "Cross-session, row-level, semantic, aggregate, and prior-art search", None, "query"
     ),
-    CapabilityFamily("evidence", "Exact objects, transcripts, topology, raw evidence, and citations", "read", "read"),
+    CapabilityFamily("evidence", "Exact objects, transcripts, topology, raw evidence, and citations", None, "read"),
     CapabilityFamily(
-        "teaching", "Grammar, fields, values, plans, refs, result semantics, and recovery", "read", "explain"
+        "teaching", "Grammar, fields, values, plans, refs, result semantics, and recovery", None, "explain"
     ),
     CapabilityFamily(
-        "continuity", "Resume, postmortem, forensic, coordination, and bounded context", "read", "context"
+        "continuity", "Resume, postmortem, forensic, coordination, and bounded context", None, "context"
     ),
     CapabilityFamily("mutation", "Reversible overlays, judgments, saved runs, and administration", "write", "write"),
 )
@@ -806,7 +807,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Merge only the named polylogue entry in the native Claude MCP configuration.",
         "Install a SessionStart hook whose additionalContext is the complete generated standing manual.",
         "Install the generated deep reference as an owned local file.",
-        "Hook ownership, idempotent merge, role/env selection, drift detection, and lossless uninstall are unchanged.",
+        "Hook ownership, idempotent merge, capability/env selection, drift detection, and lossless uninstall are unchanged.",
         "Only the generated content, target manifest, six-tool vocabulary, continuation recipe, and cache digest change.",
     ),
     ClientDelivery(
@@ -831,7 +832,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install the complete generated manual inside the owned productivity/polylogue SKILL.md.",
         "Include the generated deep reference in the owned skill directory.",
         "YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged.",
-        "The skill body, recipes, role ladder, and cache digest are regenerated for the six-tool surface.",
+        "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the six-tool surface.",
     ),
 )
 
@@ -883,13 +884,13 @@ def recipe_payload() -> dict[str, object]:
 
 
 def integration_spec_payload() -> dict[str, object]:
-    """Return the static client, role, coverage, and MCP target contract."""
+    """Return the static client, capability, coverage, and MCP target contract."""
 
     return {
         "schema_version": 2,
         "content_version": ASSET_VERSION,
         "clients": list(CLIENTS),
-        "roles": list(ROLES),
+        "mcp_capability_flags": ["write", "judge", "maintenance"],
         "guidance_modes": list(GUIDANCE_MODES),
         "capability_families": [asdict(family) for family in CAPABILITY_FAMILIES],
         "origins": [asdict(origin) for origin in ORIGIN_MEANINGS],
@@ -903,7 +904,7 @@ def integration_spec_payload() -> dict[str, object]:
         "manual_resources": [
             "polylogue://agent/manual",
             "polylogue://agent/reference",
-            "polylogue://agent/manifest/{role}",
+            "polylogue://agent/manifest",
         ],
         "schema_status": TARGET_SCHEMA_STATUS,
         "post_cutover_regeneration": [
@@ -928,8 +929,6 @@ __all__ = [
     "PRIVILEGED_TOOLS",
     "QUERY_EXAMPLES",
     "RECIPES",
-    "ROLE_ORDER",
-    "ROLES",
     "TARGET_SCHEMA_STATUS",
     "TOOL_CONTRACTS",
     "TOOL_CONTRACT_BY_NAME",
