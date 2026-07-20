@@ -3262,12 +3262,25 @@ class ArchiveStore:
                             "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
                             (str(existing_head[3]),),
                         ).fetchone()
+                        # Retiring an IN-COHORT head only requires that the
+                        # persisted session row was also written by this
+                        # cohort (head raw or any classified member): both
+                        # representative drift across resumed passes (cohort
+                        # absorption can flip which equivalent member wrote
+                        # the session row) and content-hash drift (parser
+                        # fixes between resumed passes re-derive hashes; the
+                        # same-raw CAS exemption already treats that as
+                        # re-derivation, not conflict) are healed immediately
+                        # by this very replay re-indexing the accepted
+                        # member. Only a persisted session written by a raw
+                        # FOREIGN to the cohort still refuses -- that is the
+                        # genuine unrelated-head hazard this guard exists
+                        # for.
+                        persisted_raw = None if persisted_session is None else str(persisted_session[0])
                         if (
                             existing_raw_id not in classified_raw_ids
                             or persisted_session is None
-                            or str(persisted_session[0]) != existing_raw_id
-                            or not isinstance(persisted_session[1], bytes)
-                            or bytes(existing_head[1]) != bytes(persisted_session[1])
+                            or (persisted_raw != existing_raw_id and persisted_raw not in classified_raw_ids)
                         ):
                             raise RuntimeError(
                                 "membership replay cannot retire an unrelated accepted head: "
