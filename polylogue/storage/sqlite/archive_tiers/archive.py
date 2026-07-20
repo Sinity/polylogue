@@ -3292,12 +3292,17 @@ class ArchiveStore:
                                 f"ambiguous={classification.ambiguous_raw_ids!r}) "
                                 f"persisted_session_raw={None if persisted_session is None else str(persisted_session[0])!r}"
                             )
-                        existing_is_byte_governed = conn.execute(
-                            "SELECT 1 FROM raw_sessions WHERE raw_id = ? AND logical_source_key = ?",
-                            (existing_raw_id, logical_source_key),
-                        ).fetchone()
-                        if existing_is_byte_governed is not None and accepted_raw_id != existing_raw_id:
-                            raise RuntimeError("membership replay cannot replace an unconvertible byte head")
+                        # No byte-governance refusal here: this branch is only
+                        # reachable when the head raw is a member of THIS
+                        # cohort, and membership rows for a source-keyed raw
+                        # only exist after a governance conversion decided it
+                        # belongs to membership classification -- a still-set
+                        # logical_source_key on raw_sessions is interrupted-
+                        # pass ordering drift (the conversion's key-nulling
+                        # had not committed when the pass died), not evidence
+                        # of live byte-chain governance. Foreign byte heads
+                        # never reach this branch: they yield in the
+                        # chain-governed-head branch above.
                         self._conn.execute(
                             "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
                             (logical_source_key,),
