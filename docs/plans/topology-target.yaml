@@ -1885,6 +1885,10 @@ files:
     loc: 216
     target: polylogue/insights/feedback.py
     owner: stable
+  - path: polylogue/insights/hermes_topology_projection.py
+    loc: 303
+    target: polylogue/insights/hermes_topology_projection.py
+    owner: stable
   - path: polylogue/insights/hermes_verification_coverage.py
     loc: 147
     target: polylogue/insights/hermes_verification_coverage.py
@@ -3108,7 +3112,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1120
+    loc: 1102
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3328,20 +3332,16 @@ files:
     loc: 178
     target: polylogue/sources/parsers/grok.py
     owner: stable
-  - path: polylogue/sources/parsers/hermes_identity.py
-    loc: 56
-    target: polylogue/sources/parsers/hermes_identity.py
-    owner: stable
   - path: polylogue/sources/parsers/hermes_lifecycle.py
     loc: 228
     target: polylogue/sources/parsers/hermes_lifecycle.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_spans.py
-    loc: 974
+    loc: 902
     target: polylogue/sources/parsers/hermes_spans.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
-    loc: 984
+    loc: 992
     target: polylogue/sources/parsers/hermes_state.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_verification.py
