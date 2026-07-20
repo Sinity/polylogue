@@ -28,6 +28,13 @@ Checks over `.beads/issues.jsonl`:
   R1  READY bead (open, all blocks-deps closed) at P1/P2 lacking AC — the fast-execution gap
   A1  open non-epic bead has at least one area:* label
   B1  open decision-type bead whose text declares Status: adopted/decided should be closed
+  S1  the most recent bd JSONL sync receipt (``.cache/bd-sync-receipts/``,
+      written by ``devtools/bd_reimport_guard.py``) is missing required
+      fields, fails to parse, or reports a conflicted/unauthorized-downgrade
+      row — the portfolio gate's consumption of polylogue-gxjh.1's monotonic
+      sync receipts (polylogue-8jg9.1). No receipt on disk is not a
+      violation (nothing has synced through the guard yet in this
+      checkout); a *present but unclean* receipt is.
 
 (8jg9.1's design names five conceptual classes: (a) P0/P1 missing AC = P1;
 (b) decision-type bead stuck past adopted/decided = B1; (c) no area:* label =
@@ -43,6 +50,16 @@ lives at `devtools/data/bead-lint-allow.txt` (format:
 `CHECK<TAB>bead-id<TAB>reason` per line; moved from
 `.agent/tools/bead-lint-allow.txt` by polylogue-kapb).
 
+S1 is this module's named consumption of `devtools/bd_reimport_guard.py`'s
+`SyncReceipt` (polylogue-gxjh.1): the sync layer classifies every merged row
+as new/updated/equal/skipped_downgrade/conflicted/recovered_downgrade and
+writes a receipt to `.cache/bd-sync-receipts/`; this gate reads the most
+recent one and refuses to treat a corrupt, incomplete, conflicted, or
+silently-downgraded synchronization as clean, instead of trusting bare `bd`
+command exit status. Per 8jg9.1's division of labor, this module does not
+reimplement merge/conflict resolution — it only consumes the receipt gxjh.1
+already writes.
+
 Wired into ``devtools verify --lab`` alongside the other policy checks, since
 this is a repo-hygiene boundary check rather than a per-edit gate.
 """
@@ -55,6 +72,7 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,6 +89,14 @@ _BEAD_REF_RE = re.compile(r"polylogue-[a-z0-9]+(?:\.[0-9]+)?(?![a-z0-9-])")
 
 _DEFAULT_ISSUES_RELPATH = ".beads/issues.jsonl"
 _DEFAULT_ALLOWLIST_RELPATH = "devtools/data/bead-lint-allow.txt"
+_DEFAULT_RECEIPTS_RELPATH = ".cache/bd-sync-receipts"
+
+# The unclean outcome kinds a SyncReceipt.to_dict() row can carry (see
+# devtools/bd_reimport_guard.py:RowOutcome/SyncReceipt). Duplicated here as
+# string literals rather than imported, since this module reads the receipt
+# purely as data (a downstream consumer, per 8jg9.1/gxjh.1's division of
+# labor) and should not depend on gxjh.1's internal dataclasses.
+_UNCLEAN_OUTCOMES = {"conflicted", "skipped_downgrade"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,21 +163,100 @@ def _load_allowlist(allow_path: Path) -> set[tuple[str, str]]:
     return allow
 
 
+def _latest_receipt_path(receipts_dir: Path) -> Path | None:
+    if not receipts_dir.is_dir():
+        return None
+    # Receipt filenames are `<created_at-token><-source>.json` with the
+    # created_at token stripped of `:`/`-`, so lexicographic sort of
+    # basenames is chronological (see bd_reimport_guard.write_receipt).
+    candidates = sorted(p for p in receipts_dir.glob("*.json") if p.is_file())
+    return candidates[-1] if candidates else None
+
+
+def _check_sync_receipt(receipts_dir: Path, add: Callable[[str, str, str], None]) -> None:
+    """S1: the most recent bd sync receipt, if any, must be clean.
+
+    No receipt on disk is not a finding — `.cache/` is disposable local
+    state and nothing may have synced through the guard yet in this
+    checkout. A *present* receipt that fails to parse, is missing required
+    fields, or reports a conflicted/unauthorized-downgrade row is a hard
+    finding: it means the last JSONL synchronization was not proven clean,
+    and bare command exit status cannot be trusted instead (polylogue-8jg9.1
+    consuming polylogue-gxjh.1's SyncReceipt contract).
+    """
+    latest = _latest_receipt_path(receipts_dir)
+    if latest is None:
+        return
+
+    try:
+        payload = json.loads(latest.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        add("S1", "<sync-receipt>", f"corrupt sync receipt {latest.name}: {exc}")
+        return
+
+    if not isinstance(payload, dict) or "is_clean" not in payload or "outcomes" not in payload:
+        add("S1", "<sync-receipt>", f"incomplete sync receipt {latest.name}: missing is_clean/outcomes")
+        return
+
+    outcomes = payload.get("outcomes")
+    if not isinstance(outcomes, list):
+        add("S1", "<sync-receipt>", f"incomplete sync receipt {latest.name}: outcomes is not a list")
+        return
+
+    if payload.get("is_clean") is True:
+        return
+
+    unclean_rows = [o for o in outcomes if isinstance(o, dict) and o.get("outcome") in _UNCLEAN_OUTCOMES]
+    if not unclean_rows:
+        # is_clean is False but no row explains why (schema drift on gxjh.1's
+        # side, or a payload we don't fully understand) -- still a finding,
+        # since a receipt claiming uncleanliness must be actionable, not silent.
+        add("S1", "<sync-receipt>", f"sync receipt {latest.name} reports is_clean=false with no explanatory rows")
+        return
+
+    for row in unclean_rows:
+        bead_id = str(row.get("id") or "<unknown>")
+        kind = row.get("outcome")
+        current_rev = row.get("current_revision")
+        candidate_rev = row.get("candidate_revision")
+        if kind == "conflicted":
+            add(
+                "S1",
+                bead_id,
+                f"sync receipt {latest.name}: incomparable/conflicted row "
+                f"(current={current_rev!r}, candidate={candidate_rev!r})",
+            )
+        else:  # skipped_downgrade
+            add(
+                "S1",
+                bead_id,
+                f"sync receipt {latest.name}: unauthorized downgrade skipped "
+                f"(current={current_rev!r}, candidate={candidate_rev!r}) -- "
+                "recover explicitly via `bd_reimport_guard.py reconcile --allow-downgrade` "
+                "with an actor/reason if this candidate should win",
+            )
+
+
 def collect_findings(
     path: Path | None = None,
     allow_path: Path | None = None,
     checks: set[str] | None = None,
+    receipts_path: Path | None = None,
 ) -> list[Finding]:
-    """Run all 12 backlog-hygiene checks against a Beads jsonl export.
+    """Run all 16 backlog-hygiene checks against a Beads jsonl export.
 
     ``path`` defaults to ``.beads/issues.jsonl`` under the repo root;
-    ``allow_path`` defaults to ``devtools/data/bead-lint-allow.txt``.
+    ``allow_path`` defaults to ``devtools/data/bead-lint-allow.txt``;
+    ``receipts_path`` (S1) defaults to ``.cache/bd-sync-receipts/`` under the
+    repo root.
     """
     root = _get_root()
     if path is None:
         path = root / _DEFAULT_ISSUES_RELPATH
     if allow_path is None:
         allow_path = root / _DEFAULT_ALLOWLIST_RELPATH
+    if receipts_path is None:
+        receipts_path = root / _DEFAULT_RECEIPTS_RELPATH
     allow = _load_allowlist(allow_path)
 
     issues, deps = _load(path)
@@ -161,6 +266,8 @@ def collect_findings(
     def add(check: str, bid: str, msg: str) -> None:
         if (checks is None or check in checks) and (check, bid) not in allow:
             findings.append(Finding(check, bid, msg))
+
+    _check_sync_receipt(receipts_path, add)
 
     # D1 dangling deps
     for src, dst, typ in deps:
