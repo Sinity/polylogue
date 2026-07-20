@@ -136,10 +136,48 @@ def _observe_artifact(artifact: HermesArtifactKind, artifact_input: HermesArtifa
             fidelity_status = "degraded"
             caveats.append(f"{unpaired_scopes} ATOF scope(s) never observed both their start and end phase.")
     if artifact == "atif":
-        unrecognized_steps = sum(1 for event in events if event.event_type == "hermes_observer_span")
+        # Only a genuinely unrecognized step shape (hermes_spans._events_for_step's
+        # "unrecognized" branch) is fidelity debt. "observation_only" is a
+        # deliberately-recognized shape (a step with an observation but no
+        # tool_calls/message) -- see _events_for_step -- and must not be
+        # conflated with unrecognized input just because both happen to reuse
+        # the generic hermes_observer_span event type.
+        unrecognized_steps = sum(
+            1
+            for event in events
+            if event.event_type == "hermes_observer_span" and event.payload.get("shape") == "unrecognized"
+        )
         if unrecognized_steps:
             fidelity_status = "degraded"
             caveats.append(f"{unrecognized_steps} ATIF step(s) matched none of the documented shapes.")
+    if artifact == "verification":
+        # Mirror hermes_verification.import_fidelity_declaration()'s own
+        # capabilities rather than defaulting to "exact": that declaration's
+        # retention_completeness capability is unconditionally "degraded"
+        # whenever any hermes_verification_event evidence exists (the
+        # producer prunes events older than 30 days and caps retained
+        # events), and its correlation capability is "degraded" whenever any
+        # event/state row carries Hermes's own session_id="default" fallback
+        # (ambiguous_correlation). Upgrading either back to "exact" here
+        # would silently discard fidelity debt the source parser already
+        # declared.
+        verification_events = sum(1 for event in events if event.event_type == "hermes_verification_event")
+        if verification_events:
+            fidelity_status = "degraded"
+            caveats.append(
+                f"{verification_events} verification event(s) reflect only what Hermes's producer "
+                "currently retains (prunes events older than 30 days, caps retained events) -- not a "
+                "complete historical ledger (hermes_verification.import_fidelity_declaration's "
+                "retention_completeness capability)."
+            )
+        ambiguous_events = sum(1 for event in events if event.payload.get("ambiguous_correlation"))
+        if ambiguous_events:
+            fidelity_status = "degraded"
+            caveats.append(
+                f"{ambiguous_events} verification event(s)/state row(s) carry Hermes's own "
+                "session_id='default' fallback -- ambiguous correlation, never silently trusted "
+                "(hermes_verification.import_fidelity_declaration's correlation capability)."
+            )
 
     return HermesArtifactObservation(
         artifact=artifact,

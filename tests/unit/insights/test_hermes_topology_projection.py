@@ -122,6 +122,95 @@ def test_atof_unpaired_scope_events_degrade_atof_fidelity_without_affecting_atif
     assert any("never observed both their start and end phase" in caveat for caveat in atof_obs.caveats)
 
 
+def test_atif_observation_only_steps_do_not_degrade_fidelity_but_unrecognized_ones_do() -> None:
+    """CodeRabbit P2 (hermes_topology_projection.py:142): ``_events_for_step``
+    (hermes_spans.py) deliberately emits ``hermes_observer_span`` for BOTH a
+    recognized "observation-only" step shape (``shape: "observation_only"``)
+    and a genuinely unrecognized one (``shape: "unrecognized"``) -- reusing
+    the same generic event type for two different meanings. The projection
+    must only treat the latter as fidelity debt.
+
+    Mutation: degrade on every ``hermes_observer_span`` regardless of
+    ``payload["shape"]`` (the pre-fix behavior) and the first assertion below
+    fails -- a session with only recognized observation-only steps would be
+    wrongly reported as degraded.
+    """
+    recognized_only_events = [
+        _event("hermes_observer_span", {"step_index": 0, "shape": "observation_only"}),
+    ]
+    projection_recognized = project_hermes_topology(
+        _HERMES_SESSION_ID,
+        conversational=_artifact("conv-id", None),
+        atif=_artifact(hermes_spans.atif_session_provider_id(_HERMES_SESSION_ID), recognized_only_events),
+        atof=_artifact(hermes_spans.atof_session_provider_id(_HERMES_SESSION_ID), None),
+        verification=_artifact("verification:" + _HERMES_SESSION_ID, None),
+    )
+    atif_obs = next(obs for obs in projection_recognized.artifacts if obs.artifact == "atif")
+    assert atif_obs.fidelity_status == "exact"
+    assert atif_obs.caveats == ()
+
+    unrecognized_events = [
+        _event("hermes_observer_span", {"step_index": 0, "shape": "unrecognized", "source": "agent"}),
+    ]
+    projection_unrecognized = project_hermes_topology(
+        _HERMES_SESSION_ID,
+        conversational=_artifact("conv-id", None),
+        atif=_artifact(hermes_spans.atif_session_provider_id(_HERMES_SESSION_ID), unrecognized_events),
+        atof=_artifact(hermes_spans.atof_session_provider_id(_HERMES_SESSION_ID), None),
+        verification=_artifact("verification:" + _HERMES_SESSION_ID, None),
+    )
+    atif_obs_bad = next(obs for obs in projection_unrecognized.artifacts if obs.artifact == "atif")
+    assert atif_obs_bad.fidelity_status == "degraded"
+    assert any("matched none of the documented shapes" in caveat for caveat in atif_obs_bad.caveats)
+
+
+def test_verification_fidelity_preserves_declared_degradation_not_defaulted_exact() -> None:
+    """CodeRabbit P2 (hermes_topology_projection.py:132): the projection must
+    not upgrade the verification artifact's fidelity to 'exact' when
+    ``hermes_verification.import_fidelity_declaration()`` would declare it
+    degraded -- retention_completeness is unconditionally degraded whenever
+    any ``hermes_verification_event`` exists (the producer prunes/caps
+    retained events), and correlation degrades whenever a row carries
+    Hermes's own ``session_id='default'`` ambiguous-correlation fallback.
+
+    Mutation: default verification fidelity_status to 'exact' whenever
+    events is non-empty (the pre-fix behavior) and both assertions below
+    fail.
+    """
+    verification_events = [
+        _event("hermes_verification_event", {"status": "passed", "kind": "lint"}, index=0),
+        _event("hermes_verification_event", {"status": "failed", "kind": "test"}, index=1),
+    ]
+    projection = project_hermes_topology(
+        _HERMES_SESSION_ID,
+        conversational=_artifact("conv-id", None),
+        atif=_artifact(hermes_spans.atif_session_provider_id(_HERMES_SESSION_ID), None),
+        atof=_artifact(hermes_spans.atof_session_provider_id(_HERMES_SESSION_ID), None),
+        verification=_artifact("verification:" + _HERMES_SESSION_ID, verification_events),
+    )
+    verification_obs = next(obs for obs in projection.artifacts if obs.artifact == "verification")
+    assert verification_obs.fidelity_status == "degraded"
+    assert any("currently retains" in caveat for caveat in verification_obs.caveats)
+
+    ambiguous_events = [
+        _event(
+            "hermes_verification_event",
+            {"status": "passed", "kind": "lint", "ambiguous_correlation": True},
+            index=0,
+        ),
+    ]
+    projection_ambiguous = project_hermes_topology(
+        _HERMES_SESSION_ID,
+        conversational=_artifact("conv-id", None),
+        atif=_artifact(hermes_spans.atif_session_provider_id(_HERMES_SESSION_ID), None),
+        atof=_artifact(hermes_spans.atof_session_provider_id(_HERMES_SESSION_ID), None),
+        verification=_artifact("verification:" + _HERMES_SESSION_ID, ambiguous_events),
+    )
+    verification_obs_ambiguous = next(obs for obs in projection_ambiguous.artifacts if obs.artifact == "verification")
+    assert verification_obs_ambiguous.fidelity_status == "degraded"
+    assert any("session_id='default'" in caveat for caveat in verification_obs_ambiguous.caveats)
+
+
 def test_subagent_evidence_is_surfaced_from_both_artifacts_with_source_provenance() -> None:
     """AC: 'derive session links and subagent topology edges from producer-positive
     IDs only' -- surfaced as evidence refs, never a physical session merge."""
