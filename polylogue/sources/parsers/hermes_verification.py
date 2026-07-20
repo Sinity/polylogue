@@ -114,18 +114,21 @@ HermesVerificationEventType: TypeAlias = Literal["hermes_verification_event", "h
 def observer_session_provider_id(hermes_session_id: str, profile_key: str | None = None) -> str:
     """Return the verification-evidence session identity for a Hermes session id.
 
-    Distinct from ``hermes_spans.observer_session_provider_id`` (ATOF/ATIF
-    use the ``observer:`` prefix): a physical merge across these
-    independently-acquired evidence classes is deferred, same discipline as
-    ATOF/ATIF's own deferred merge into the state-db conversational session.
-    The ``verification:`` family prefix keeps this identity distinguishable
-    from ATIF/ATOF's ``observer:`` family even when both qualify the same
-    raw session id against the same profile.
+    Distinct from ``hermes_spans.atif_session_provider_id`` /
+    ``hermes_spans.atof_session_provider_id`` (ATIF/ATOF use their own
+    artifact-qualified ``observer:atif:``/``observer:atof:`` prefixes, fs1.14):
+    a physical merge across these independently-acquired evidence classes is
+    deferred, same discipline as ATOF/ATIF's own deferred merge into the
+    state-db conversational session. The ``verification:`` family prefix
+    keeps this identity distinguishable from ATIF/ATOF's ``observer:``
+    family even when both qualify the same raw session id against the same
+    profile.
 
     ``profile_key`` -- when known -- is folded into the identity using the
     exact same qualifier scheme the state.db parser uses
     (``hermes_identity.qualified_session_id``), mirroring
-    ``hermes_spans.observer_session_provider_id`` (polylogue-y9zx / fs1.14).
+    ``hermes_spans.atif_session_provider_id`` /
+    ``hermes_spans.atof_session_provider_id`` (polylogue-y9zx / fs1.14).
     Two separate Hermes installs (profiles) can legitimately reuse the same
     raw session id, and an unqualified ``verification:<raw_id>`` identity
     silently collapsed their verification-ledger evidence onto one archive
@@ -141,8 +144,9 @@ def observer_session_provider_id(hermes_session_id: str, profile_key: str | None
 def hermes_verification_session_id_for(conversational_session_id: str) -> str:
     """Map a state-db-ingested Hermes session id to its verification-ledger counterpart.
 
-    Mirrors ``hermes_spans.hermes_observer_session_id_for``: preserves
-    whatever ``@profile-<key>`` qualifier the conversational id carries (see
+    Mirrors ``hermes_spans.hermes_atif_session_id_for`` /
+    ``hermes_spans.hermes_atof_session_id_for``: preserves whatever
+    ``@profile-<key>`` qualifier the conversational id carries (see
     ``observer_session_provider_id`` docstring for why this matters) so a
     reader holding the qualified conversational session id looks up the
     verification evidence for the *same install*, not merely the same raw
