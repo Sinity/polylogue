@@ -152,6 +152,17 @@ def emit_facets_response(response: FacetsResponse, *, output_format: str | None)
         return status.label if status is not None and status.label else family.replace("_", " ").title()
 
     click.echo(f"Facets ({scope_label}) — matched result set:")
+    if response.availability is not None:
+        avail = response.availability
+        marker = {"ready": "ready", "degraded": "DEGRADED", "unavailable": "UNAVAILABLE"}[avail.state]
+        budget = (
+            f"; budget {avail.elapsed_s:.2f}s/{avail.deadline_s:.2f}s"
+            if avail.elapsed_s is not None and avail.deadline_s is not None
+            else ""
+        )
+        click.echo(f"  readiness: {marker} (cost_class={avail.cost_class}{budget})")
+        if avail.detail:
+            click.echo(f"  [yellow]{avail.detail}[/yellow]")
     click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
     click.echo("  Family states:")
     ordered_families = [
@@ -1871,6 +1882,9 @@ def analyze_verb(
         cost_outlook=cost_outlook,
         format=output_format or request.params.get("output_format") or "default",
         limit=limit,
+        projection_contract=_analyze_projection_contract_explain(
+            show_facets=show_facets, cost_outlook=cost_outlook, include_deferred=include_deferred
+        ),
     ):
         return
 
@@ -1953,29 +1967,45 @@ def analyze_verb(
             raise click.UsageError("`analyze --cost-outlook` does not support --limit.")
         if plan_name is None:
             raise click.UsageError("`analyze --cost-outlook` requires --plan.")
+        import time as _time
+
+        from polylogue.insights.projection_contracts import cost_outlook_availability
+        from polylogue.surfaces.payloads import model_json_document
+
         projection_method = ProjectionMethod(method)
+        started_at = _time.perf_counter()
         try:
             outlook = run_coroutine_sync(env.polylogue.cost_outlook(plan_name, method=projection_method))
         except PlanLookupError as exc:
             raise click.ClickException(str(exc)) from exc
+        elapsed_s = _time.perf_counter() - started_at
+        availability = cost_outlook_availability(plan_name, ready=outlook is not None, elapsed_s=elapsed_s)
         if outlook is None:
-            message = (
-                f"No cycle window for plan {plan_name!r}: the plan does not declare "
-                "a 'cycle_anchor_day'. Configure one under [[cost.subscription.plans]] "
-                "or use a plan with a fixed monthly anchor."
-            )
             if output_format == "json":
                 click.echo(
                     _json.dumps(
-                        {"plan_name": plan_name, "outlook": None, "reason": "no_cycle_anchor"},
+                        {
+                            "outlook": None,
+                            "availability": model_json_document(availability, exclude_none=True),
+                        },
                         indent=2,
                     )
                 )
                 return
-            env.ui.console.print(f"[yellow]{message}[/yellow]")
+            remediation = f" {availability.remediation}" if availability.remediation else ""
+            env.ui.console.print(f"[yellow]{availability.detail}{remediation}[/yellow]")
             return
         if output_format == "json":
-            click.echo(_json.dumps(outlook.model_dump(mode="json"), indent=2, default=str))
+            click.echo(
+                _json.dumps(
+                    {
+                        "outlook": outlook.model_dump(mode="json"),
+                        "availability": model_json_document(availability, exclude_none=True),
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
             return
         render_outlook_plain(env, outlook)
         return
@@ -2032,6 +2062,28 @@ def _explain_terminal_action(request: RootModeRequest, **terminal_action: object
 
     explain_query_request(request, terminal_action=terminal_action)
     return True
+
+
+def _analyze_projection_contract_explain(
+    *, show_facets: bool, cost_outlook: bool, include_deferred: bool
+) -> dict[str, object] | None:
+    """Surface the declared cost/prerequisite contract for `--explain` (polylogue-duti AC #4).
+
+    Only the two default analysis projections that currently declare a
+    contract (facets, cost-outlook) produce a payload here; other analyze
+    modes (count/by/postmortem/portfolio) have no declared contract yet and
+    explain omits the key entirely rather than fabricating one.
+    """
+    if cost_outlook:
+        from polylogue.insights.projection_contracts import PROJECTION_CONTRACTS
+
+        return PROJECTION_CONTRACTS["cost-outlook"].to_payload()
+    if show_facets:
+        from polylogue.insights.projection_contracts import PROJECTION_CONTRACTS
+
+        key = "facets-deferred" if include_deferred else "facets"
+        return PROJECTION_CONTRACTS[key].to_payload()
+    return None
 
 
 def _effective_read_output_format(request: RootModeRequest, *, view: str, output_format: str | None) -> str | None:

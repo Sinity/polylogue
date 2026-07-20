@@ -3329,6 +3329,50 @@ class SessionMessagesResponsePayload(SurfacePayloadModel):
     offset: int
 
 
+ProjectionAvailabilityState = Literal["ready", "degraded", "unavailable"]
+"""Declared outcome state for a default analysis projection (polylogue-duti).
+
+``ready`` -- the projection completed within its declared cost/detail class
+and budget. ``degraded`` -- the projection returned real data but missed its
+declared interactive budget (e.g. a cheap default projection that ran long).
+``unavailable`` -- the projection could not produce a result because a
+declared prerequisite was not satisfied; the response still carries an
+explicit reason and remediation rather than an opaque null or empty result.
+"""
+
+
+class ProjectionPrerequisitePayload(SurfacePayloadModel):
+    """One declared prerequisite a default analysis projection checked."""
+
+    name: str
+    satisfied: bool
+    description: str
+    remediation: str | None = None
+
+
+class ProjectionAvailabilityPayload(SurfacePayloadModel):
+    """Declared readiness/cost/degraded outcome for a default analysis projection.
+
+    Every default analysis projection (``analyze --facets``, ``analyze
+    --cost-outlook``, ...) reports this envelope alongside its data so a
+    reader never has to infer "empty" vs "not computed" vs "prerequisite
+    missing" from a bare null or zero (polylogue-duti). See
+    ``polylogue.insights.projection_contracts`` for the declaration registry
+    that produces these envelopes.
+    """
+
+    projection: str
+    state: ProjectionAvailabilityState
+    cost_class: str
+    reason: str | None = None
+    detail: str | None = None
+    remediation: str | None = None
+    deadline_s: float | None = None
+    elapsed_s: float | None = None
+    budget_exceeded: bool = False
+    prerequisites: tuple[ProjectionPrerequisitePayload, ...] = ()
+
+
 class FacetTimeRange(SurfacePayloadModel):
     """Time range boundary for facet results."""
 
@@ -3396,6 +3440,10 @@ class FacetsResponse(SurfacePayloadModel):
     stale: bool = False
     stale_age_s: float | None = None
     budget_exceeded: bool = False
+    cost_class: str = "cheap"
+    deadline_s: float | None = None
+    elapsed_s: float | None = None
+    availability: ProjectionAvailabilityPayload | None = None
     complete_families: tuple[str, ...] = ()
     deferred_families: dict[str, str] = Field(default_factory=dict)
     family_errors: dict[str, str] = Field(default_factory=dict)

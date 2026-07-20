@@ -388,6 +388,81 @@ def test_query_action_read_explain_json_outputs_terminal_stage(cli_runner: CliRu
     assert payload["plan_description"][-1] == "terminal stage: read"
 
 
+def test_query_action_analyze_facets_explain_surfaces_projection_contract(cli_runner: CliRunner) -> None:
+    """`--explain` names facets' declared cost class/deadline (polylogue-duti AC #4)."""
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "--format", "json", "--explain", "find", "repo:polylogue", "then", "analyze", "--facets"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    contract = cast(dict[str, Any], cast(dict[str, Any], stage["args"])["projection_contract"])
+    assert contract["projection"] == "facets"
+    assert contract["cost_class"] == "cheap"
+    assert contract["default_deadline_s"] == 2.0
+    assert contract["prerequisites"] == []
+
+
+def test_query_action_analyze_facets_deferred_explain_names_opt_in_prerequisite(cli_runner: CliRunner) -> None:
+    """`--include-deferred` shifts the declared contract to the expensive, opt-in variant."""
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "--explain",
+            "find",
+            "repo:polylogue",
+            "then",
+            "analyze",
+            "--facets",
+            "--include-deferred",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    contract = cast(dict[str, Any], cast(dict[str, Any], stage["args"])["projection_contract"])
+    assert contract["projection"] == "facets-deferred"
+    assert contract["cost_class"] == "expensive"
+    assert contract["default_deadline_s"] is None
+    assert [p["name"] for p in contract["prerequisites"]] == ["include_deferred"]
+
+
+def test_query_action_analyze_cost_outlook_explain_names_cycle_anchor_prerequisite(cli_runner: CliRunner) -> None:
+    """`--explain` names cost-outlook's cycle_anchor_day prerequisite (polylogue-duti AC #4)."""
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--format",
+            "json",
+            "--explain",
+            "find",
+            "repo:polylogue",
+            "then",
+            "analyze",
+            "--cost-outlook",
+            "--plan",
+            "claude-pro",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = cast(dict[str, Any], json.loads(result.output))
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    contract = cast(dict[str, Any], cast(dict[str, Any], stage["args"])["projection_contract"])
+    assert contract["projection"] == "cost-outlook"
+    assert [p["name"] for p in contract["prerequisites"]] == ["cycle_anchor_day"]
+
+
 def test_query_action_read_explain_uses_default_read_format(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         click_cli,
@@ -488,6 +563,7 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
                 "format": "json",
                 "include_deferred": False,
                 "limit": None,
+                "projection_contract": None,
             },
         ),
     ],

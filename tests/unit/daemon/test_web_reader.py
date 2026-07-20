@@ -509,11 +509,20 @@ def _assert_facets_match_facade(
     include_deferred: bool,
 ) -> None:
     expected = _facets_from_facade(workspace, params, include_deferred=include_deferred)
+
     # The two calls are intentionally independent; all route content should
-    # match the facade except the wall-clock timestamp each call assigns.
-    route_without_timestamp = {key: value for key, value in route_payload.items() if key != "generated_at"}
-    expected_without_timestamp = {key: value for key, value in expected.items() if key != "generated_at"}
-    assert route_without_timestamp == expected_without_timestamp
+    # match the facade except the wall-clock timestamp/measured-duration each
+    # call assigns (``generated_at``, top-level and nested ``elapsed_s`` —
+    # polylogue-duti's declared-readiness envelope measures its own
+    # execution time per call).
+    def _without_wall_clock(payload: dict[str, object]) -> dict[str, object]:
+        stripped = {key: value for key, value in payload.items() if key not in ("generated_at", "elapsed_s")}
+        availability = stripped.get("availability")
+        if isinstance(availability, dict):
+            stripped["availability"] = {key: value for key, value in availability.items() if key != "elapsed_s"}
+        return stripped
+
+    assert _without_wall_clock(route_payload) == _without_wall_clock(expected)
 
 
 def _seed_browser_capture_reader_archive(workspace: dict[str, Path]) -> tuple[str, str]:

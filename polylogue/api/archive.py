@@ -4699,12 +4699,15 @@ class PolylogueArchiveMixin:
         this method so the scope vocabulary stays in one place
         (#1269 / slice D of #873).
         """
+        import time
+
         from polylogue.archive.query.facets import (
             FacetBuckets as _FacetBuckets,
         )
         from polylogue.archive.query.facets import (
             compute_idf,
         )
+        from polylogue.insights.projection_contracts import facets_availability
         from polylogue.surfaces.payloads import (
             FacetBucketsPayload,
             FacetsResponse,
@@ -4734,6 +4737,7 @@ class PolylogueArchiveMixin:
             }
 
         scoped_to_query = spec is not None and spec.has_filters()
+        started_at = time.perf_counter()
         global_buckets, scoped_buckets = await run_archive_read(
             _active_archive_root(self.config),
             operation="archive.facets",
@@ -4747,6 +4751,8 @@ class PolylogueArchiveMixin:
             projection="facets",
             workload_class="scan",
         )
+        elapsed_s = time.perf_counter() - started_at
+        availability = facets_availability(include_deferred=include_deferred, elapsed_s=elapsed_s)
         idf_map = compute_idf(global_buckets) if include_idf else {}
         active = scoped_buckets if scoped_to_query else global_buckets
         complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
@@ -4757,7 +4763,11 @@ class PolylogueArchiveMixin:
                 "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "stale": False,
                 "stale_age_s": None,
-                "budget_exceeded": False,
+                "budget_exceeded": availability.budget_exceeded,
+                "cost_class": availability.cost_class,
+                "deadline_s": availability.deadline_s,
+                "elapsed_s": availability.elapsed_s,
+                "availability": availability,
                 "complete_families": complete_families,
                 "deferred_families": deferred_families,
                 "family_errors": {},

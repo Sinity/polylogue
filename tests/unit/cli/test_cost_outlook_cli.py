@@ -100,15 +100,30 @@ class TestCostOutlookJsonContract:
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
-        assert payload["plan_name"] == "claude-pro"
-        assert payload["projection_method"] == "linear"
+        outlook = payload["outlook"]
+        assert outlook["plan_name"] == "claude-pro"
+        assert outlook["projection_method"] == "linear"
         # Both bases reach the payload, never merged.
-        assert set(payload["cycle_to_date"]) == {"credits", "usd"}
+        assert set(outlook["cycle_to_date"]) == {"credits", "usd"}
         # Quota pressure carries the basis label.
-        assert payload["quota_pressure"]["basis"] == "credits"
+        assert outlook["quota_pressure"]["basis"] == "credits"
         # Overage rows include rule and projected cost in USD.
-        assert payload["overage_rows"][0]["overage_rule"] == "metered"
-        assert payload["overage_rows"][0]["projected_overage_cost_usd"] == pytest.approx(8.3)
+        assert outlook["overage_rows"][0]["overage_rule"] == "metered"
+        assert outlook["overage_rows"][0]["projected_overage_cost_usd"] == pytest.approx(8.3)
+        # Declared readiness/cost contract travels alongside the data (polylogue-duti).
+        availability = payload["availability"]
+        assert availability["projection"] == "cost-outlook"
+        assert availability["state"] in {"ready", "degraded"}
+        assert availability["cost_class"] == "cheap"
+        assert availability["prerequisites"] == [
+            {
+                "name": "cycle_anchor_day",
+                "satisfied": True,
+                "description": (
+                    "The plan must declare a fixed monthly cycle_anchor_day to compute a billing-cycle window."
+                ),
+            }
+        ]
 
     def test_unknown_plan_exits_with_typed_message(self, cli_runner: CliRunner) -> None:
         with patch("polylogue.api.Polylogue") as mock_cls:
@@ -137,11 +152,25 @@ class TestCostOutlookJsonContract:
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload == {
-            "plan_name": "github-copilot-pro",
-            "outlook": None,
-            "reason": "no_cycle_anchor",
-        }
+        assert payload["outlook"] is None
+        # Typed unavailable result: explicit reason + remediation, never a bare null (polylogue-duti AC #2).
+        availability = payload["availability"]
+        assert availability["projection"] == "cost-outlook"
+        assert availability["state"] == "unavailable"
+        assert availability["cost_class"] == "cheap"
+        assert availability["reason"] == "no_cycle_anchor"
+        assert "cycle_anchor_day" in availability["detail"]
+        assert "cost.subscription.plans" in availability["remediation"]
+        assert availability["prerequisites"] == [
+            {
+                "name": "cycle_anchor_day",
+                "satisfied": False,
+                "description": (
+                    "The plan must declare a fixed monthly cycle_anchor_day to compute a billing-cycle window."
+                ),
+                "remediation": availability["remediation"],
+            }
+        ]
 
 
 class TestCostOutlookPlainContract:
