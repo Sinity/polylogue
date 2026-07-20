@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from polylogue.core.protocols import ProgressCallback
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
     from polylogue.insights.pathology import PathologyReport
     from polylogue.insights.portfolio import PortfolioBundle
     from polylogue.insights.postmortem import PostmortemBundle
@@ -1223,6 +1224,52 @@ def _archive_reconcile_hermes_session_lifecycle(
             exc_info=True,
         )
         return None
+
+
+def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealth:
+    """Compose the bounded Hermes integration health rollup (polylogue-fs1.15).
+
+    Resolves the Hermes runtime root from the configured source list (the
+    same discovery ``resolve_runtime_config`` performs -- a "hermes" source
+    only appears there when its root exists on this host) and falls back to
+    the conventional ``~/.hermes`` path so a not-yet-discovered root still
+    renders an explicit "disabled" verdict rather than raising. All
+    composition is read-only; see
+    :mod:`polylogue.insights.hermes_integration_health` for the primitives
+    this reuses.
+    """
+    from polylogue.daemon.convergence_debt_alert import source_family_for_subject, watchsource_name_to_family
+    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
+    from polylogue.insights.hermes_integration_health import build_hermes_integration_health
+    from polylogue.paths import hermes_sessions_path
+
+    hermes_root = next(
+        (source.path for source in config.sources if source.name == "hermes" and source.path is not None),
+        None,
+    )
+    if hermes_root is None:
+        hermes_root = hermes_sessions_path()
+
+    archive_root = _active_archive_root(config)
+    # ``polylogue.insights`` may not import ``polylogue.daemon`` directly
+    # (docs/plans/layering.yaml); this surface-adapter layer owns the
+    # daemon-touching convergence-debt bucketing and passes plain counts in.
+    hermes_family = watchsource_name_to_family("hermes")
+    debt = convergence_debt_summary_info(archive_root / "source.db")
+    family_summary = next((item for item in debt.family_summaries if item.family == hermes_family), None)
+    convergence_debt_failed_count = family_summary.failed_count if family_summary is not None else 0
+    convergence_debt_retry_due_count = sum(
+        1
+        for item in debt.recent
+        if item.retry_due and source_family_for_subject(item.subject_type, item.subject_id) == hermes_family
+    )
+
+    return build_hermes_integration_health(
+        archive_root,
+        hermes_root=hermes_root,
+        convergence_debt_failed_count=convergence_debt_failed_count,
+        convergence_debt_retry_due_count=convergence_debt_retry_due_count,
+    )
 
 
 def _archive_list_assertion_candidate_reviews(
@@ -2620,6 +2667,23 @@ class PolylogueArchiveMixin:
             self.config,
             hermes_session_native_id=hermes_session_native_id,
         )
+
+    async def hermes_integration_health(self) -> HermesIntegrationHealth:
+        """Return the bounded Hermes-to-Polylogue integration health rollup (fs1.15).
+
+        Composes existing evidence only: per-source freshness/cursor
+        position (polylogue-1xc.13), a bounded dry-run parser/fidelity pass
+        over the Hermes runtime root, convergence debt bucketed to the
+        Hermes source family, lifecycle-event pairing debt (fs1.7), and
+        context-delivery correlation state (fs1.11). Reports an explicit
+        ``disabled``/``unavailable``/``degraded``/``healthy`` verdict rather
+        than a silent zero when a producer is absent, a source is stale, an
+        event is malformed, or the archive itself is unavailable. Never
+        includes raw transcript text, credentials, or absolute filesystem
+        paths.
+        """
+
+        return _archive_hermes_integration_health(self.config)
 
     async def list_assertion_claim_payloads(
         self,

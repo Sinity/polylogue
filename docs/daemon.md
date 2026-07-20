@@ -344,6 +344,22 @@ Each check produces a typed `HealthAlert` with severity (`ok`, `warning`,
 `error`, `critical`), message, and `consecutive_failures` counter for
 persistent condition detection.
 
+### Hermes Integration Health
+
+`polylogue ops insights hermes-health` (`polylogue.insights.hermes_integration_health`)
+reports one bounded, read-only rollup of Hermes-to-Polylogue integration
+liveness (polylogue-fs1.15): enabled/disabled, per-source-class
+freshness/cursor position (via the named-source freshness projection,
+polylogue-1xc.13), a bounded dry-run parser/fidelity pass over the Hermes
+runtime root, convergence debt bucketed to the Hermes source family,
+lifecycle-event pairing debt (fs1.7), and context-delivery correlation state
+(fs1.11). It composes existing evidence only — no new schema or monitoring
+database — and renders an explicit `disabled`/`unavailable`/`degraded`/
+`healthy` verdict rather than a silent zero when a producer is absent, a
+source is stale, an event is malformed, or the archive itself is
+unavailable. The response never carries raw transcript text, credentials,
+or absolute filesystem paths.
+
 ### Notification Backend
 
 Health alerts are delivered through a configurable notification backend.

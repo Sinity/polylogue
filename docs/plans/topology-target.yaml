@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6518
+    loc: 6582
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -892,7 +892,7 @@ files:
     target: polylogue/cli/commands/init.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
-    loc: 523
+    loc: 585
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/judge.py
@@ -1888,6 +1888,10 @@ files:
   - path: polylogue/insights/feedback.py
     loc: 216
     target: polylogue/insights/feedback.py
+    owner: stable
+  - path: polylogue/insights/hermes_integration_health.py
+    loc: 528
+    target: polylogue/insights/hermes_integration_health.py
     owner: stable
   - path: polylogue/insights/hermes_topology_projection.py
     loc: 341
