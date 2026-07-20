@@ -594,6 +594,29 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace beads-sync",
+        "workspace",
+        "Monotonic, receipted per-row merge of a candidate .beads/issues.jsonl into a base file.",
+        "devtools.beads_sync",
+        entrypoint="main",
+        use_when=(
+            "Import, conflict-recovery, or export of .beads/issues.jsonl (polylogue-gxjh.1). "
+            "Refuses to trust whole-file JSON validity: compares every id's `updated_at`, "
+            "refuses downgrades/incomparable conflicts unless --recover is given with "
+            "--actor/--reason, and writes the merged output via temp+fsync+atomic-rename after "
+            "validating parse/unique-ids. Refuses to touch a base or incoming file that contains "
+            "literal conflict markers. Emits a machine-readable receipt (per-id outcome + both "
+            "revisions) for policy/ops consumers instead of relying on exit-status alone."
+        ),
+        examples=(
+            "devtools workspace beads-sync merge --base .beads/issues.jsonl "
+            "--incoming /tmp/candidate.jsonl --output .beads/issues.jsonl --json",
+            "devtools workspace beads-sync merge --base .beads/issues.jsonl "
+            "--incoming /tmp/recovery.jsonl --output .beads/issues.jsonl "
+            "--recover --actor sinity --reason 'restore pre-clobber state'",
+        ),
+    ),
+    CommandSpec(
         "workspace delivery-gate-status",
         "workspace",
         "Per-release-gate progress board over .beads/issues.jsonl (delivery:<release> / lane:<lane> overlay).",
