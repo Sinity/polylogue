@@ -194,7 +194,17 @@ def optional_count_sync(conn: sqlite3.Connection, sql: str) -> int:
 
 
 def embedded_message_count_sync(conn: sqlite3.Connection) -> int:
-    """Count embedded messages from canonical metadata before vector internals."""
+    """Count messages that have a current embedding.
+
+    v4 (polylogue-q88p): ``message_embeddings_meta`` is keyed by
+    ``embedding_input_hash`` and deduped -- its row count is the number of
+    *distinct vectors*, not messages (identical content across sessions
+    shares one row). ``message_embedding_refs`` (message_id -> hash) is the
+    per-message count and is checked first; older/legacy shapes fall back to
+    the pre-v4 behavior.
+    """
+    if table_exists_sync(conn, "message_embedding_refs"):
+        return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embedding_refs")
     if table_exists_sync(conn, "message_embeddings_meta"):
         return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
     if table_exists_sync(conn, "message_embeddings_rowids"):
@@ -232,7 +242,9 @@ async def optional_count_async(conn: aiosqlite.Connection, sql: str) -> int:
 
 
 async def embedded_message_count_async(conn: aiosqlite.Connection) -> int:
-    """Count embedded messages from canonical metadata before vector internals."""
+    """Count messages that have a current embedding (see sync counterpart)."""
+    if await table_exists_async(conn, "message_embedding_refs"):
+        return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embedding_refs")
     if await table_exists_async(conn, "message_embeddings_meta"):
         return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
     if await table_exists_async(conn, "message_embeddings_rowids"):

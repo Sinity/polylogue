@@ -18,18 +18,47 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+# rescue.py reads a retired source tier through the OLD v3, message_id-keyed
+# shape (message_embeddings/message_embeddings_meta keyed by message_id +
+# content_hash -- see polylogue.storage.embeddings.rescue's module docstring),
+# which is deliberately NOT what the current ArchiveTier.EMBEDDINGS bootstrap
+# produces any more (that is now v4, embedding_input_hash-keyed). Build the
+# retired-tier fixture with the exact old DDL directly rather than through the
+# current bootstrap, matching tests/unit/storage/test_embedding_rescue.py.
+_RETIRED_V3_DDL = f"""
+CREATE VIRTUAL TABLE message_embeddings USING vec0(
+    message_id TEXT PRIMARY KEY,
+    embedding float[{EMBEDDING_DIMENSION}],
+    +session_id TEXT,
+    +origin TEXT
+);
+
+CREATE TABLE message_embeddings_meta (
+    message_id      TEXT PRIMARY KEY,
+    model           TEXT NOT NULL,
+    dimension       INTEGER NOT NULL,
+    content_hash    BLOB NOT NULL,
+    embedded_at_ms  INTEGER,
+    needs_reindex   INTEGER NOT NULL DEFAULT 0,
+    recipe_hash     BLOB,
+    derivation_key  BLOB,
+    generation      INTEGER NOT NULL DEFAULT 0
+);
+"""
 
 
 def _build_empty_retired_source(path: Path) -> None:
     conn = sqlite3.connect(path)
     try:
-        initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
-    except sqlite3.OperationalError as exc:
-        if "vec0" in str(exc) or "sqlite-vec" in str(exc):
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
             pytest.skip("sqlite-vec extension is unavailable")
-        raise
+            raise AssertionError("unreachable") from error
+        conn.executescript(_RETIRED_V3_DDL)
+        conn.commit()
     finally:
         conn.close()
 

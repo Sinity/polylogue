@@ -43,7 +43,7 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
     conn = _connect(tmp_path / "embeddings.db")
     session_id = "codex-session:codex-embedding"
     message_id = f"{session_id}:m1"
-    content_hash = b"x" * 32
+    input_hash = b"x" * 32
 
     meta = upsert_message_embedding(
         conn,
@@ -53,18 +53,18 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
         embedding=[0.0] * EMBEDDING_DIMENSION,
         model="voyage-4",
         embedded_at_ms=1_767_225_700_000,
-        content_hash=content_hash,
+        embedding_input_hash=input_hash,
     )
 
     assert meta == ArchiveEmbeddingMeta(
         message_id=message_id,
         model="voyage-4",
         dimension=EMBEDDING_DIMENSION,
-        content_hash=content_hash,
+        embedding_input_hash=input_hash,
         embedded_at_ms=1_767_225_700_000,
-        needs_reindex=False,
     )
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 1
 
     # The per-message vector upsert intentionally does NOT touch
     # ``embedding_status``; that row is materialized by the session-level
@@ -101,7 +101,7 @@ def test_archive_tiers_embedding_writer_batches_message_upserts(tmp_path: Path) 
                 embedding=[0.01] * EMBEDDING_DIMENSION,
                 model="voyage-4",
                 embedded_at_ms=1_767_225_700_000,
-                content_hash=bytes([index]) * 32,
+                embedding_input_hash=bytes([index]) * 32,
             )
             for index in range(3)
         ],
@@ -111,6 +111,7 @@ def test_archive_tiers_embedding_writer_batches_message_upserts(tmp_path: Path) 
     assert transaction_events == ["BEGIN ", "COMMIT"]
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 3
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 3
 
 
 def test_archive_tiers_embedding_writer_records_reindexable_errors(tmp_path: Path) -> None:

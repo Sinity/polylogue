@@ -248,9 +248,16 @@ def test_embedding_clone_preserves_vectors_and_installs_failure_lifecycle(tmp_pa
         conn.execute("DROP INDEX idx_embedding_failures_active")
         conn.execute("DROP TABLE embedding_failures")
         conn.execute("PRAGMA user_version = 1")
+        # v1/v2 (this helper's real historical scope, hardcoded to require
+        # user_version == 1 below) never touched message_embeddings_meta's
+        # column shape -- only the failure-lifecycle table addition
+        # differed. This test's fixture is built from the CURRENT (v4,
+        # content-addressed, polylogue-q88p) canonical DDL via
+        # initialize_archive_tier above, so the row inserted here must match
+        # that shape, not the pre-v4 message_id-keyed one.
         conn.execute(
-            "INSERT INTO message_embeddings_meta(message_id, model, dimension, content_hash) VALUES (?, ?, ?, ?)",
-            ("message:1", "fixture", 1024, b"m" * 32),
+            "INSERT INTO message_embeddings_meta(embedding_input_hash, model, dimension) VALUES (?, ?, ?)",
+            (b"m" * 32, "fixture", 1024),
         )
         conn.execute("INSERT INTO embedding_status(session_id, origin) VALUES (?, ?)", ("session:1", "chatgpt-export"))
         conn.commit()

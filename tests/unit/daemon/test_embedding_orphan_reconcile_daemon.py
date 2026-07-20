@@ -12,6 +12,7 @@ substrate reconciliation logic already covered directly in
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -67,7 +68,7 @@ def _build_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
                 embedding=[0.01] * EMBEDDING_DIMENSION,
                 model="voyage-4",
                 embedded_at_ms=1_700_000_000_000,
-                content_hash=b"z" * 32,
+                embedding_input_hash=hashlib.sha256(orphan_message_id.encode("utf-8")).digest(),
             )
         ],
     )
@@ -117,13 +118,15 @@ def test_reconcile_embedding_orphans_once_removes_orphan_when_enabled(tmp_path: 
     assert result is not None
     assert result.dry_run is False
     assert result.removed_message_rows == 1
-    assert result.removed_vector_rows == 1
+    # v4: message_embeddings/message_embeddings_meta are content-addressed and
+    # never deleted by this reconciler -- only the message_id -> hash ref is.
+    assert result.removed_vector_rows == 0
 
     conn = sqlite3.connect(embeddings_db)
     try:
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (orphan_message_id,)
+                "SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (orphan_message_id,)
             ).fetchone()[0]
             == 0
         )
@@ -153,7 +156,7 @@ def test_reconcile_embedding_orphans_once_refuses_stale_index_schema(tmp_path: P
     with sqlite3.connect(embeddings_db) as conn:
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (orphan_message_id,)
+                "SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (orphan_message_id,)
             ).fetchone()[0]
             == 1
         )
@@ -181,7 +184,7 @@ def test_daemon_coordinator_owns_real_orphan_reconcile_mutation(tmp_path: Path) 
     with sqlite3.connect(embeddings_db) as conn:
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (orphan_message_id,)
+                "SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (orphan_message_id,)
             ).fetchone()[0]
             == 0
         )

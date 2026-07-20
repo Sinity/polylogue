@@ -412,7 +412,6 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
             SELECT COUNT(*)
             FROM embeddings.message_embeddings_meta
             WHERE model = 'demo-synthetic-embedding'
-              AND needs_reindex = 0
         """,
     ),
     DemoConstruct(

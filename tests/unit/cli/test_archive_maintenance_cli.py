@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
@@ -941,7 +942,7 @@ def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:
                     embedding=[0.01] * EMBEDDING_DIMENSION,
                     model="voyage-4",
                     embedded_at_ms=1_700_000_000_000,
-                    content_hash=b"o" * 32,
+                    embedding_input_hash=hashlib.sha256(orphan_message_id.encode("utf-8")).digest(),
                 )
             ],
         )
@@ -1047,7 +1048,7 @@ def test_embedding_orphan_reconcile_cli_plain_dry_run_reports_would_remove_count
     )
 
     assert result.exit_code == 0
-    assert "Would remove:  1 meta row(s), 1 vector row(s), 1 status row(s)" in result.output
+    assert "Would remove:  1 message ref(s), 1 status row(s)" in result.output
     assert "Removed:" not in result.output
     with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
@@ -1078,11 +1079,13 @@ def test_embedding_orphan_reconcile_cli_apply_removes_rows(
     assert payload["mutates"] is True
     assert payload["dry_run"] is False
     assert payload["removed_message_rows"] == 1
-    assert payload["removed_vector_rows"] == 1
+    # v4: message_embeddings/message_embeddings_meta are content-addressed and
+    # never deleted by this reconciler -- only the message_id -> hash ref is.
+    assert payload["removed_vector_rows"] == 0
     assert payload["sessions_recounted"] == 1
     with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
         assert (
-            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (message_id,)).fetchone()[
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (message_id,)).fetchone()[
                 0
             ]
             == 0
@@ -1102,13 +1105,24 @@ def test_embedding_orphan_reconcile_cli_apply_is_bounded_by_default(
     session_id, _message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
     embeddings_db = cli_workspace["archive_root"] / "embeddings.db"
     with sqlite3.connect(embeddings_db) as conn:
+        # v4: per-message identity for the reconciler's scan is
+        # message_embedding_refs (message_id-keyed) -- message_embeddings_meta
+        # is content-addressed and never independently orphaned, so 500
+        # distinct orphan candidates means 500 distinct refs, not meta rows.
         conn.executemany(
             """
-            INSERT INTO message_embeddings_meta (
-                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
-            ) VALUES (?, 'voyage-4', 1024, ?, 1700000000000, 0)
+            INSERT INTO message_embedding_refs (
+                message_id, session_id, origin, embedding_input_hash, embedded_at_ms
+            ) VALUES (?, ?, 'codex-session', ?, 1700000000000)
             """,
-            [(f"{session_id}:zz-orphan-{position:03d}", b"z" * 32) for position in range(500)],
+            [
+                (
+                    f"{session_id}:zz-orphan-{position:03d}",
+                    f"{session_id}:zz-orphan-{position:03d}",
+                    hashlib.sha256(f"{session_id}:zz-orphan-{position:03d}".encode()).digest(),
+                )
+                for position in range(500)
+            ],
         )
 
     result = cli_runner.invoke(
@@ -1176,7 +1190,7 @@ def test_embedding_orphan_reconcile_cli_apply_refuses_stale_index_schema(
     assert "active index is v32, packaged index is v" in str(result.exception)
     with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
         assert (
-            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (message_id,)).fetchone()[
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (message_id,)).fetchone()[
                 0
             ]
             == 1

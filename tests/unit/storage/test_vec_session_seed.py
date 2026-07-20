@@ -9,6 +9,7 @@ fail here rather than silently at the query surface.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -52,6 +53,10 @@ def embeddings_db(tmp_path: Path) -> Path:
         ("sess-C", "sess-C:m1", _unit_vector(axis0=0.0, axis1=1.0)),
     ]
     for session_id, message_id, vector in seeds:
+        # Content-addressed (polylogue-q88p): each distinct stored vector
+        # needs its own embedding_input_hash, or these deliberately-distinct
+        # geometric fixtures would dedup onto a single vector and the
+        # distance assertions below would test nothing.
         upsert_message_embedding(
             conn,
             message_id=message_id,
@@ -60,7 +65,7 @@ def embeddings_db(tmp_path: Path) -> Path:
             embedding=vector,
             model="voyage-4",
             embedded_at_ms=1_767_225_700_000,
-            content_hash=b"x" * 32,
+            embedding_input_hash=hashlib.sha256(message_id.encode()).digest(),
         )
     conn.close()
     return db_path

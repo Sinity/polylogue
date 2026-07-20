@@ -13,12 +13,17 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.embed import embed_command
 from polylogue.storage.embeddings import status_payload as status_payload_mod
+from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, embedding_input_hash
 from polylogue.storage.embeddings.progress import (
     CatchupRunStart,
     finish_embedding_catchup_run,
     start_embedding_catchup_run,
 )
-from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
+from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+    begin_embedding_attempt,
+    record_embedding_failure,
+    resolve_embedding_failure,
+)
 
 
 class _Cfg:
@@ -70,7 +75,37 @@ def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = 
         conn.commit()
 
 
+# v4 (polylogue-q88p): distinct, >=20-char prose per message so each message's
+# embedding_input_hash -- computed by archive_embeddable_messages_relation via
+# the registered SQL function from exactly this text -- is real and unique,
+# matching what production actually sends to the embedder.
+_COMPLETE_TEXT = "authored prose for the complete session message, long enough to embed"
+_PENDING_TEXT_1 = "authored prose for the first pending session message, long enough"
+_PENDING_TEXT_2 = "authored prose for the second pending session message, long enough"
+
+
+def _pending_session_source_hash() -> bytes:
+    """The exact session-level source_hash `codex-session:pending`'s 2 real
+    messages produce -- hash VALUES only, sorted, matching the production
+    aggregate (`_archive_embedding_source_hash_from_pairs`)."""
+    hashes = sorted(
+        embedding_input_hash(model="voyage-4", input_text=text) for text in (_PENDING_TEXT_1, _PENDING_TEXT_2)
+    )
+    digest = EmbeddingSourceDigest()
+    for value in hashes:
+        digest.update(value)
+    return digest.digest()
+
+
 def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
+    """Build a minimal but real v4-shaped index.db + embeddings.db pair.
+
+    ``message_embeddings_meta``/``message_embedding_refs`` mirror the current
+    production DDL (content-addressed by ``embedding_input_hash``, per-message
+    refs table) -- not the pre-polylogue-q88p message_id-keyed shape -- so the
+    ``--detail`` exact-pending/stale-message code paths in status_payload.py
+    (which join through ``message_embedding_refs``) exercise real behavior.
+    """
     embeddings_db = index_db.with_name("embeddings.db")
     with sqlite3.connect(index_db) as conn:
         conn.executescript(
@@ -82,6 +117,7 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                text TEXT,
                 role TEXT NOT NULL DEFAULT 'user',
                 message_type TEXT NOT NULL DEFAULT 'message',
                 material_origin TEXT NOT NULL DEFAULT 'human_authored',
@@ -90,15 +126,48 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
             );
             INSERT INTO sessions VALUES ('codex-session:complete', 1);
             INSERT INTO sessions VALUES ('codex-session:pending', 2);
-            INSERT INTO messages (message_id, session_id, content_hash)
-            VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
-            INSERT INTO messages (message_id, session_id, content_hash)
-            VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
-            INSERT INTO messages (message_id, session_id, content_hash)
-            VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
             """
         )
+        conn.execute(
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'01')",
+            ("codex-session:complete:m1", "codex-session:complete", _COMPLETE_TEXT),
+        )
+        conn.execute(
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'02')",
+            ("codex-session:pending:m1", "codex-session:pending", _PENDING_TEXT_1),
+        )
+        conn.execute(
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'03')",
+            ("codex-session:pending:m2", "codex-session:pending", _PENDING_TEXT_2),
+        )
         conn.commit()
+
+    from polylogue.storage.embeddings.identity import (
+        EmbeddingRecipe,
+        EmbeddingSourceDigest,
+        embedding_derivation_key,
+        embedding_input_hash,
+    )
+
+    complete_message_id = "codex-session:complete:m1"
+    complete_hash = embedding_input_hash(model="voyage-4", input_text=_COMPLETE_TEXT)
+    # Compute the real production identity chain (not a stand-in) so the
+    # `embedding_derivation_state` row this fixture writes is one the modern
+    # exact-freshness predicate (_archive_embedding_freshness_predicate)
+    # genuinely recognizes as "succeeded" for codex-session:complete -- a
+    # real v4 archive always carries this table alongside a v4-shaped
+    # message_embeddings_meta, so a fixture with one but not the other would
+    # exercise a hybrid shape production never produces (the pre-v3 fallback
+    # this table's absence used to trigger assumes the OLD message_id-keyed
+    # meta_table and errors against this one).
+    recipe = EmbeddingRecipe.current(model="voyage-4", dimensions=1024)
+    source_digest = EmbeddingSourceDigest()
+    source_digest.update(complete_hash)
+    source_hash = source_digest.digest()
+    derivation_key = embedding_derivation_key(
+        session_id="codex-session:complete", source_hash=source_hash, recipe=recipe
+    ).digest()
+
     with sqlite3.connect(embeddings_db) as conn:
         conn.executescript(
             """
@@ -106,26 +175,64 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
                 message_id TEXT PRIMARY KEY
             );
             CREATE TABLE message_embeddings_meta (
-                message_id TEXT PRIMARY KEY,
+                embedding_input_hash BLOB PRIMARY KEY,
                 model TEXT NOT NULL,
                 dimension INTEGER NOT NULL,
-                embedded_at_ms INTEGER NOT NULL,
-                content_hash BLOB,
-                needs_reindex INTEGER NOT NULL DEFAULT 0
+                embedded_at_ms INTEGER,
+                recipe_hash BLOB,
+                output_contract_hash BLOB
+            );
+            CREATE TABLE message_embedding_refs (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                embedding_input_hash BLOB NOT NULL,
+                embedded_at_ms INTEGER
             );
             CREATE TABLE embedding_status (
                 session_id TEXT PRIMARY KEY,
                 origin TEXT NOT NULL,
                 message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                last_embedded_at_ms INTEGER,
                 needs_reindex INTEGER NOT NULL DEFAULT 0,
                 error_message TEXT
             );
-            INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
-            INSERT INTO message_embeddings_meta VALUES (
-                'codex-session:complete:m1', 'voyage-4', 1024, 1767225700000, x'01', 0
+            CREATE TABLE embedding_derivation_state (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT '',
+                generation INTEGER NOT NULL,
+                derivation_key BLOB NOT NULL,
+                source_hash BLOB NOT NULL,
+                recipe_hash BLOB NOT NULL,
+                output_contract_hash BLOB NOT NULL,
+                attempt_state TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                updated_at_ms INTEGER NOT NULL
             );
-            INSERT INTO embedding_status VALUES ('codex-session:complete', 'codex-session', 1, 0, NULL);
+            INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
+            INSERT INTO embedding_status (session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message)
+            VALUES ('codex-session:complete', 'codex-session', 1, 1767225700000, 0, NULL);
             """
+        )
+        conn.execute(
+            "INSERT INTO message_embeddings_meta VALUES (?, 'voyage-4', 1024, 1767225700000, ?, ?)",
+            (complete_hash, recipe.recipe_hash, recipe.output_contract_hash),
+        )
+        conn.execute(
+            """
+            INSERT INTO message_embedding_refs (message_id, session_id, origin, embedding_input_hash, embedded_at_ms)
+            VALUES (?, 'codex-session:complete', 'codex-session', ?, 1767225700000)
+            """,
+            (complete_message_id, complete_hash),
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_derivation_state (
+                session_id, origin, generation, derivation_key, source_hash, recipe_hash,
+                output_contract_hash, attempt_state, message_count, updated_at_ms
+            ) VALUES ('codex-session:complete', 'codex-session', 1, ?, ?, ?, ?, 'succeeded', 1, 1767225700000)
+            """,
+            (derivation_key, source_hash, recipe.recipe_hash, recipe.output_contract_hash),
         )
         conn.commit()
 
@@ -328,9 +435,8 @@ def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path) -> None:
                 resolution_note TEXT,
                 superseded_by TEXT
             );
-            INSERT INTO embedding_status VALUES (
-                'codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400'
-            );
+            INSERT INTO embedding_status (session_id, origin, message_count_embedded, needs_reindex, error_message)
+            VALUES ('codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400');
             INSERT INTO embedding_failures VALUES (
                 'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
                 '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
@@ -390,7 +496,17 @@ def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_pa
         conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:complete'")
     with sqlite3.connect(embeddings_db) as conn:
         conn.execute("DELETE FROM message_embeddings WHERE message_id = 'codex-session:complete:m1'")
-        conn.execute("DELETE FROM message_embeddings_meta WHERE message_id = 'codex-session:complete:m1'")
+        # message_embeddings_meta is content-addressed (embedding_input_hash-
+        # keyed, v4) -- resolve via the ref, then delete both.
+        conn.execute(
+            """
+            DELETE FROM message_embeddings_meta
+            WHERE embedding_input_hash = (
+                SELECT embedding_input_hash FROM message_embedding_refs WHERE message_id = 'codex-session:complete:m1'
+            )
+            """
+        )
+        conn.execute("DELETE FROM message_embedding_refs WHERE message_id = 'codex-session:complete:m1'")
         conn.execute("DELETE FROM embedding_status WHERE session_id = 'codex-session:complete'")
     with sqlite3.connect(embeddings_db) as conn:
         conn.executescript(
@@ -411,22 +527,44 @@ def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_pa
                 resolved_at_ms INTEGER,
                 resolution_action TEXT,
                 resolution_note TEXT,
-                superseded_by TEXT
-            );
-            INSERT INTO embedding_status VALUES (
-                'codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400'
-            );
-            INSERT INTO embedding_failures VALUES (
-                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
-                '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
-                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
-                NULL, NULL, NULL, NULL
+                superseded_by TEXT,
+                generation INTEGER NOT NULL DEFAULT 0,
+                derivation_key BLOB,
+                source_hash BLOB,
+                recipe_hash BLOB
             );
             """
         )
+        # v4: "blocked" is read off embedding_derivation_state.attempt_state =
+        # 'failed_terminal' (the unified freshness key), not merely an
+        # embedding_status row with an error_message -- go through the real
+        # begin_embedding_attempt/record_embedding_failure write path so this
+        # fixture's terminal failure is one the modern predicate actually
+        # recognizes, exactly like a real provider-rejected session would be.
+        attempt = begin_embedding_attempt(
+            conn,
+            session_id="codex-session:pending",
+            origin="codex-session",
+            source_hash=_pending_session_source_hash(),
+            recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+            started_at_ms=1_800_000_000_000,
+        )
+        failure = record_embedding_failure(
+            conn,
+            session_id="codex-session:pending",
+            origin="codex-session",
+            message_refs=("codex-session:pending:m1",),
+            provider="voyage",
+            model="voyage-4",
+            error_class="provider_http_400",
+            error_message="Embedding generation failed: HTTP 400",
+            retryable=False,
+            occurred_at_ms=1_800_000_000_000,
+            attempt=attempt,
+        )
         resolve_embedding_failure(
             conn,
-            failure_id="embedding-failure:terminal",
+            failure_id=failure.failure_id,
             action="acknowledge",
             resolved_at_ms=1_800_000_001_000,
         )
@@ -475,6 +613,19 @@ def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimat
 
 
 def test_status_json_does_not_report_over_100_percent_from_retained_embedding_rows(tmp_path: Path) -> None:
+    """An inflated ``message_count_embedded`` ledger entry must never push
+    coverage past 100%.
+
+    v4: the exact-freshness predicate ties "embedded" to
+    ``embedding_status.message_count_embedded == embedding_derivation_state.
+    message_count == <current real eligible count>`` (all three, exactly) --
+    stricter than the old ">= eligible count" fallback this test originally
+    exercised. An inflated counter that disagrees with the real count now
+    demotes the session straight back to *pending* rather than being trusted
+    at face value, which is what actually prevents the >100% failure mode:
+    there is no path left where a stale/inflated ledger number can present a
+    session as embedded-and-therefore-100%-covered when it isn't.
+    """
     db_anchor = tmp_path / "custom.sqlite"
     index_db = tmp_path / "index.db"
     _seed_archive_file_set_from_archive_tiers(index_db)
@@ -491,12 +642,13 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
             """
         )
     with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        # A content-addressed vector/meta row with no surviving ref -- e.g. the
+        # message that referenced it was removed by an index rebuild. v4 never
+        # deletes these (reconcile.py module docstring); status must not let a
+        # retained, refless row inflate coverage past 100%.
         conn.execute(
-            """
-            INSERT INTO message_embeddings_meta VALUES (
-                'orphaned-by-index-rebuild', 'voyage-4', 1024, 1767225700000, x'ff', 0
-            )
-            """
+            "INSERT INTO message_embeddings_meta VALUES (?, 'voyage-4', 1024, 1767225700000, NULL, NULL)",
+            (b"\xff" * 32,),
         )
         conn.execute(
             "UPDATE embedding_status SET message_count_embedded = 4 WHERE session_id = 'codex-session:complete'"
@@ -515,8 +667,14 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
 
     payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    assert payload["embedded_sessions"] == 1
-    assert payload["pending_sessions"] == 1
+    # codex-session:complete's inflated message_count_embedded (4) no longer
+    # matches its real eligible count (1) or its embedding_derivation_state
+    # row's message_count (1), so the exact predicate demotes it to pending
+    # instead of trusting the stale number -- coverage lands at 0%, never over
+    # 100%.
+    assert payload["embedded_sessions"] == 0
+    assert payload["pending_sessions"] == 2
+    assert payload["embedding_coverage_percent"] == 0.0
     assert payload["embedded_messages"] == 4
     assert payload["failure_count"] == 0
     assert payload["candidate_prose_messages"] == 3
@@ -671,7 +829,7 @@ def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
     original_scalar = status_payload_mod._scalar_int_with_timeout
 
     def fake_scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
-        if "LEFT JOIN embeddings.message_embeddings_meta" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
+        if "LEFT JOIN embeddings.message_embedding_refs" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
             return None
         return original_scalar(conn, sql, timeout_ms=timeout_ms)
 
@@ -724,7 +882,7 @@ def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_ti
     original_scalar = status_payload_mod._scalar_int_with_timeout
 
     def fake_scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
-        if "LEFT JOIN embeddings.message_embeddings_meta" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
+        if "LEFT JOIN embeddings.message_embedding_refs" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
             return None
         return original_scalar(conn, sql, timeout_ms=timeout_ms)
 
@@ -1110,13 +1268,61 @@ def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
 def test_status_json_reports_terminal_failures_before_ready(tmp_path: Path) -> None:
     db_anchor = tmp_path / "index.db"
     _seed_archive_file_set_from_archive_tiers(db_anchor)
-    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-        conn.execute(
+    embeddings_db = tmp_path / "embeddings.db"
+    with sqlite3.connect(embeddings_db) as conn:
+        # v4: go through the real attempt/failure write path (rather than a
+        # bare embedding_status insert) so embedding_derivation_state also
+        # carries the matching 'failed_terminal' row the modern blocked-
+        # session predicate reads. record_embedding_failure requires the
+        # embedding_failures table to exist (it always records the audit
+        # row), so it's created here even though this test's focus is
+        # pending_sessions/failure_count, not the failure ledger itself.
+        conn.executescript(
             """
-            INSERT INTO embedding_status (
-                session_id, origin, message_count_embedded, needs_reindex, error_message
-            ) VALUES ('codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400')
+            CREATE TABLE embedding_failures (
+                failure_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                message_refs_json TEXT NOT NULL DEFAULT '[]',
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                retryable INTEGER NOT NULL,
+                lifecycle_state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER,
+                resolution_action TEXT,
+                resolution_note TEXT,
+                superseded_by TEXT,
+                generation INTEGER NOT NULL DEFAULT 0,
+                derivation_key BLOB,
+                source_hash BLOB,
+                recipe_hash BLOB
+            )
             """
+        )
+        attempt = begin_embedding_attempt(
+            conn,
+            session_id="codex-session:pending",
+            origin="codex-session",
+            source_hash=_pending_session_source_hash(),
+            recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+            started_at_ms=1_800_000_000_000,
+        )
+        record_embedding_failure(
+            conn,
+            session_id="codex-session:pending",
+            origin="codex-session",
+            message_refs=("codex-session:pending:m1",),
+            provider="voyage",
+            model="voyage-4",
+            error_class="provider_http_400",
+            error_message="Embedding generation failed: HTTP 400",
+            retryable=False,
+            occurred_at_ms=1_800_000_000_000,
+            attempt=attempt,
         )
         conn.commit()
 

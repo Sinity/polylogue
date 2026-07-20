@@ -40,7 +40,15 @@ class SqliteVecQueryMixin:
         def _get_connection(self) -> sqlite3.Connection: ...
 
     def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
-        """Upsert message embeddings into the vector store."""
+        """Upsert message embeddings into the vector store.
+
+        Delegates the actual write to the canonical content-addressed
+        primitives (:mod:`polylogue.storage.sqlite.archive_tiers.
+        embedding_write`) instead of hand-rolled SQL, so this provider's
+        vectors are keyed and deduped exactly like the daemon catch-up path
+        (``embed_archive_session_sync``) that shares the same ``embeddings.db``
+        file (polylogue-q88p).
+        """
         if not messages:
             return
 
@@ -59,62 +67,67 @@ class SqliteVecQueryMixin:
             logger.error("Failed to generate embeddings for %s: %s", session_id, exc)
             raise
 
+        from datetime import UTC, datetime
+
+        from polylogue.storage.embeddings.identity import embedding_input_hash
+        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+            ArchiveEmbeddingWrite,
+            upsert_message_embeddings,
+        )
+
         conn = self._get_connection()
         try:
-            source_name = "unknown"
+            origin = "unknown"
             row = conn.execute(
                 "SELECT origin FROM sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             if row:
-                source_name = row[0] or "unknown"
+                origin = row[0] or "unknown"
 
-            for msg, embedding in zip(embeddable, embeddings, strict=True):
-                embedding_blob = _serialize_f32(embedding)
-                conn.execute(
-                    "DELETE FROM message_embeddings WHERE message_id = ?",
-                    (msg.message_id,),
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            writes = [
+                ArchiveEmbeddingWrite(
+                    message_id=msg.message_id,
+                    session_id=msg.session_id,
+                    origin=origin,
+                    embedding=embedding,
+                    model=self.model,
+                    embedded_at_ms=now_ms,
+                    embedding_input_hash=embedding_input_hash(model=self.model, input_text=str(msg.text)),
                 )
-                conn.execute(
-                    """
-                    INSERT INTO message_embeddings (message_id, embedding, source_name, session_id)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (msg.message_id, embedding_blob, source_name, msg.session_id),
-                )
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO message_embeddings_meta (
-                        message_id, model, dimension, embedded_at_ms, content_hash, needs_reindex
-                    ) VALUES (?, ?, ?, CAST(strftime('%s', 'now') AS INTEGER) * 1000, ?, 0)
-                    """,
-                    (
-                        msg.message_id,
-                        self.model,
-                        self.dimension,
-                        msg.content_hash if hasattr(msg, "content_hash") else None,
-                    ),
-                )
+                for msg, embedding in zip(embeddable, embeddings, strict=True)
+            ]
+            upsert_message_embeddings(conn, writes)
 
             conn.execute(
                 """
                 INSERT INTO embedding_status (
-                    session_id, message_count_embedded, last_embedded_at, needs_reindex
-                ) VALUES (?, ?, datetime('now'), 0)
+                    session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+                ) VALUES (?, ?, ?, ?, 0, NULL)
                 ON CONFLICT(session_id) DO UPDATE SET
+                    origin = excluded.origin,
                     message_count_embedded = excluded.message_count_embedded,
-                    last_embedded_at = excluded.last_embedded_at,
+                    last_embedded_at_ms = excluded.last_embedded_at_ms,
                     needs_reindex = 0,
                     error_message = NULL
                 """,
-                (session_id, len(embeddable)),
+                (session_id, origin, len(embeddable), now_ms),
             )
             conn.commit()
         finally:
             conn.close()
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
-        """Find semantically similar messages."""
+        """Find semantically similar messages.
+
+        ``message_embeddings`` is keyed by ``embedding_input_hash`` (content-
+        addressed, deduped), not ``message_id``: a MATCH hit is resolved back
+        to every message currently referencing that hash via
+        ``message_embedding_refs``, so identical content shared across
+        sessions surfaces every one of its messages, not just one arbitrary
+        representative.
+        """
         self._ensure_vec_available()
         self._ensure_tables()
 
@@ -128,11 +141,16 @@ class SqliteVecQueryMixin:
         try:
             rows = conn.execute(
                 """
-                SELECT message_id, distance
-                FROM message_embeddings
-                WHERE embedding MATCH ?
-                  AND k = ?
-                ORDER BY distance
+                SELECT r.message_id AS message_id, hits.distance AS distance
+                FROM (
+                    SELECT embedding_input_hash, distance
+                    FROM message_embeddings
+                    WHERE embedding MATCH ?
+                      AND k = ?
+                ) AS hits
+                JOIN message_embedding_refs AS r
+                  ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+                ORDER BY hits.distance
                 """,
                 (query_embedding, limit),
             ).fetchall()
@@ -160,7 +178,13 @@ class SqliteVecQueryMixin:
             seed_rows: list[sqlite3.Row] = []
             try:
                 seed_rows = conn.execute(
-                    "SELECT message_id, embedding FROM message_embeddings WHERE session_id = ?",
+                    """
+                    SELECT DISTINCT me.embedding_input_hash AS embedding_input_hash, me.embedding AS embedding
+                    FROM message_embedding_refs AS r
+                    JOIN message_embeddings AS me
+                      ON lower(hex(r.embedding_input_hash)) = me.embedding_input_hash
+                    WHERE r.session_id = ?
+                    """,
                     (session_id,),
                 ).fetchall()
             except sqlite3.OperationalError as exc:
@@ -176,11 +200,16 @@ class SqliteVecQueryMixin:
                 embedding_blob = bytes(seed_row["embedding"])
                 neighbors = conn.execute(
                     """
-                    SELECT message_id, session_id, distance
-                    FROM message_embeddings
-                    WHERE embedding MATCH ?
-                      AND k = ?
-                    ORDER BY distance
+                    SELECT r.message_id AS message_id, r.session_id AS session_id, hits.distance AS distance
+                    FROM (
+                        SELECT embedding_input_hash, distance
+                        FROM message_embeddings
+                        WHERE embedding MATCH ?
+                          AND k = ?
+                    ) AS hits
+                    JOIN message_embedding_refs AS r
+                      ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+                    ORDER BY hits.distance
                     """,
                     (embedding_blob, k),
                 ).fetchall()
@@ -203,7 +232,14 @@ class SqliteVecQueryMixin:
         provider: str,
         limit: int = 10,
     ) -> list[tuple[str, float]]:
-        """Find semantically similar messages filtered by provider."""
+        """Find semantically similar messages filtered by provider (origin).
+
+        ``message_embeddings`` no longer carries a per-vector origin column
+        (it is content-addressed and shared across origins); the filter is
+        applied post-join against ``message_embedding_refs.origin`` instead.
+        Over-fetches the KNN candidate pool so a narrow origin filter still
+        has enough candidates to fill ``limit`` after filtering.
+        """
         self._ensure_vec_available()
 
         embeddings = self._get_embeddings([text], input_type="query")
@@ -211,19 +247,26 @@ class SqliteVecQueryMixin:
             return []
 
         query_embedding = _serialize_f32(embeddings[0])
+        fanout_k = max(limit * 5, limit, 1)
 
         conn = self._get_connection()
         try:
             rows = conn.execute(
                 """
-                SELECT message_id, distance
-                FROM message_embeddings
-                WHERE embedding MATCH ?
-                  AND k = ?
-                  AND source_name = ?
-                ORDER BY distance
+                SELECT r.message_id AS message_id, hits.distance AS distance
+                FROM (
+                    SELECT embedding_input_hash, distance
+                    FROM message_embeddings
+                    WHERE embedding MATCH ?
+                      AND k = ?
+                ) AS hits
+                JOIN message_embedding_refs AS r
+                  ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+                WHERE r.origin = ?
+                ORDER BY hits.distance
+                LIMIT ?
                 """,
-                (query_embedding, limit, provider),
+                (query_embedding, fanout_k, provider, limit),
             ).fetchall()
             return [(row["message_id"], row["distance"]) for row in rows]
         finally:

@@ -11,6 +11,7 @@ unfiltered listing.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -99,6 +100,9 @@ def seeded_archive(tmp_path: Path) -> tuple[Path, Config, dict[str, tuple[str, s
     }
     for suffix, vector in vectors.items():
         session_id, message_id = mapping[suffix]
+        # Content-addressed (polylogue-q88p): distinguish each geometrically
+        # distinct fixture vector by its own hash, or they would dedup onto
+        # one stored vector under a shared placeholder key.
         upsert_message_embedding(
             conn,
             message_id=message_id,
@@ -107,7 +111,7 @@ def seeded_archive(tmp_path: Path) -> tuple[Path, Config, dict[str, tuple[str, s
             embedding=vector,
             model="voyage-4",
             embedded_at_ms=1_767_225_700_000,
-            content_hash=b"x" * 32,
+            embedding_input_hash=hashlib.sha256(message_id.encode()).digest(),
         )
     conn.close()
 

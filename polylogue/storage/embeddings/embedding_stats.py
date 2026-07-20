@@ -18,7 +18,6 @@ from polylogue.storage.embeddings.sql import (
     MODEL_COUNTS_SQL,
     PENDING_MESSAGES_SQL,
     PENDING_SESSIONS_SQL,
-    STALE_MESSAGES_SQL,
     TOTAL_MESSAGES_SQL,
 )
 from polylogue.storage.embeddings.support import (
@@ -176,7 +175,13 @@ def _base_parts_sync(conn: sqlite3.Connection, *, detail: bool) -> _EmbeddingSta
             else optional_count_sync(conn, ELIGIBLE_SESSIONS_SQL)
         ),
         pending_messages=optional_count_sync(conn, PENDING_MESSAGES_SQL) if status_exists else total_messages,
-        stale_messages=optional_count_sync(conn, STALE_MESSAGES_SQL),
+        # v4 (polylogue-q88p): this legacy monolithic-archive reader does not
+        # thread a configured model through to compute the identity-free
+        # hash comparison stale_messages_sql() needs; the split-archive path
+        # (storage/embeddings/status_payload.py, the primary runtime status
+        # surface) computes an exact stale count instead. 0 here is an
+        # honest "not computed on this path", not a claim of freshness.
+        stale_messages=0,
         missing_provenance=optional_count_sync(conn, MISSING_META_MESSAGES_SQL),
         sessions_exist=sessions_exist,
         failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL) if status_exists else 0,
@@ -219,7 +224,8 @@ async def _base_parts_async(conn: aiosqlite.Connection, *, detail: bool) -> _Emb
             else await optional_count_async(conn, ELIGIBLE_SESSIONS_SQL)
         ),
         pending_messages=await optional_count_async(conn, PENDING_MESSAGES_SQL) if status_exists else total_messages,
-        stale_messages=await optional_count_async(conn, STALE_MESSAGES_SQL),
+        # See the sync reader above: not computed on this legacy path.
+        stale_messages=0,
         missing_provenance=await optional_count_async(conn, MISSING_META_MESSAGES_SQL),
         sessions_exist=sessions_exist,
         failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL) if status_exists else 0,

@@ -11,6 +11,19 @@ report over 100% (polylogue-1dk1: 675,825 meta rows vs 675,725 status-summed
 embedded messages, 11,348 orphan message ids, 6 orphan session status rows on
 the 2026-07-10 audit).
 
+v4 (polylogue-q88p): ``message_embeddings``/``message_embeddings_meta`` are now
+content-addressed (keyed by ``embedding_input_hash``) and shared/deduped
+across messages and sessions -- a vector row has no single owning message, so
+it can no longer be deleted just because *one* referencing message vanished
+from the index (another message, possibly in a different session, may still
+legitimately point at the same hash). This reconciler therefore now scopes
+strictly to ``message_embedding_refs`` (the rebuildable message_id ->
+embedding_input_hash mapping): an orphan ref whose ``message_id`` no longer
+exists in the live index is removed, but the vector/meta rows it pointed at
+are left untouched. Reference-counted vector/meta GC (removing hash rows with
+zero remaining refs) is deliberately out of scope here -- filed as follow-up
+debt, not attempted in this pass.
+
 Reconciliation here is strictly identity-scoped and applies three guards:
 
 * **Identity guard** — a row is only a reconciliation candidate when its
@@ -251,6 +264,8 @@ def reconcile_embedding_orphans(
             _assert_active_index_generation(index_path)
         conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
 
+        # These now count content-addressed (deduped) rows, not per-message
+        # rows -- message_embedding_refs (below) is the per-message scan.
         scanned_message_meta_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
         scanned_vector_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings")
         scanned_status_rows = _scalar(conn, "SELECT COUNT(*) FROM embedding_status")
@@ -305,17 +320,19 @@ def reconcile_embedding_orphans(
             affected_sessions: set[str] = set()
             for row in limited_message:
                 message_id = str(row["message_id"])
-                removed_meta = _delete_if_still_orphan(conn, "message_embeddings_meta", message_id)
-                removed_vector = _delete_if_still_orphan(conn, "message_embeddings", message_id)
-                removed_message_rows += removed_meta
-                removed_vector_rows += removed_vector
-                if (removed_meta or removed_vector) and row["session_id"]:
+                removed_ref = _delete_if_still_orphan_ref(conn, message_id)
+                removed_message_rows += removed_ref
+                # Vector/meta rows are content-addressed and shared -- never
+                # deleted by this reconciler (see module docstring).
+                if removed_ref and row["session_id"]:
                     affected_sessions.add(str(row["session_id"]))
 
             for session_id in sorted(affected_sessions):
                 if not _index_session_exists(conn, session_id):
                     continue
-                remaining = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings WHERE session_id = ?", (session_id,))
+                remaining = _scalar(
+                    conn, "SELECT COUNT(*) FROM message_embedding_refs WHERE session_id = ?", (session_id,)
+                )
                 cursor = conn.execute(
                     """
                     UPDATE embedding_status
@@ -419,48 +436,38 @@ def reconcile_embedding_orphans(
 
 
 def _orphan_message_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return orphan ``message_embedding_refs`` rows.
+
+    ``content_hash`` is reported as ``NULL`` -- refs carry no content-hash
+    column under content-addressing (see module docstring); ``has_meta``/
+    ``has_vector`` are reported as always-true from the ref's perspective
+    since a ref only ever points at a hash that has both (write-once,
+    atomic), even though this reconciler does not delete either.
+    """
     return conn.execute(
         """
-        WITH embedding_ids AS (
-            SELECT message_id FROM message_embeddings_meta
-            UNION
-            SELECT message_id FROM message_embeddings
-        )
-        SELECT ids.message_id,
-               COALESCE(
-                   vec.session_id,
-                   (
-                       SELECT status.session_id
-                       FROM embedding_status AS status
-                       WHERE ids.message_id LIKE status.session_id || ':%'
-                       ORDER BY length(status.session_id) DESC
-                       LIMIT 1
-                   )
-               ) AS session_id,
-               meta.content_hash,
-               meta.embedded_at_ms,
-               meta.message_id IS NOT NULL AS has_meta,
-               vec.message_id IS NOT NULL AS has_vector
-        FROM embedding_ids AS ids
-        LEFT JOIN message_embeddings_meta AS meta ON meta.message_id = ids.message_id
-        LEFT JOIN message_embeddings AS vec ON vec.message_id = ids.message_id
+        SELECT r.message_id AS message_id,
+               r.session_id AS session_id,
+               NULL AS content_hash,
+               r.embedded_at_ms AS embedded_at_ms,
+               1 AS has_meta,
+               1 AS has_vector
+        FROM message_embedding_refs AS r
         WHERE NOT EXISTS (
-            SELECT 1 FROM idx.messages AS indexed WHERE indexed.message_id = ids.message_id
+            SELECT 1 FROM idx.messages AS indexed WHERE indexed.message_id = r.message_id
         )
-        ORDER BY ids.message_id
+        ORDER BY r.message_id
         """
     ).fetchall()
 
 
-def _delete_if_still_orphan(conn: sqlite3.Connection, table: str, message_id: str) -> int:
-    if table not in {"message_embeddings_meta", "message_embeddings"}:
-        raise ValueError(f"unsupported embedding table: {table}")
+def _delete_if_still_orphan_ref(conn: sqlite3.Connection, message_id: str) -> int:
     cursor = conn.execute(
-        f"""
-        DELETE FROM {table}
+        """
+        DELETE FROM message_embedding_refs
         WHERE message_id = ?
           AND NOT EXISTS (
-              SELECT 1 FROM idx.messages WHERE idx.messages.message_id = {table}.message_id
+              SELECT 1 FROM idx.messages WHERE idx.messages.message_id = message_embedding_refs.message_id
           )
         """,
         (message_id,),

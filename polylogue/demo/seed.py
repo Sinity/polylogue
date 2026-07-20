@@ -34,6 +34,7 @@ from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
     EmbeddingSourceDigest,
     embedding_derivation_key,
+    embedding_input_hash,
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
@@ -1051,14 +1052,6 @@ def _demo_embedding_vector(message_id: str) -> list[float]:
     return [((digest[index % len(digest)] / 255.0) * 2.0) - 1.0 for index in range(EMBEDDING_DIMENSION)]
 
 
-def _demo_embedding_content_hash(value: object) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, str):
-        return bytes.fromhex(value)
-    raise TypeError(f"unsupported content_hash value: {type(value).__name__}")
-
-
 def _seed_demo_embeddings(archive_root: Path) -> None:
     """Seed deterministic embeddings for one authored-prose demo session.
 
@@ -1117,14 +1110,14 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                 str(row["message_id"]),
                 str(row["session_id"]),
                 str(row["origin"]),
-                _demo_embedding_content_hash(row["content_hash"]),
+                embedding_input_hash(model=recipe.model, input_text=str(row["text"])),
             )
             for row in rows
             if row["content_hash"] is not None
         ]
         source_digest = EmbeddingSourceDigest()
-        for message_id, _session_id, _origin, content_hash in sorted(embeddable, key=lambda item: item[0]):
-            source_digest.update(message_id, content_hash)
+        for _message_id, _session_id, _origin, input_hash in sorted(embeddable, key=lambda item: item[3]):
+            source_digest.update(input_hash)
         source_hash = source_digest.digest()
         writes = [
             ArchiveEmbeddingWrite(
@@ -1134,16 +1127,16 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                 embedding=_demo_embedding_vector(message_id),
                 model=_DEMO_EMBEDDING_MODEL,
                 embedded_at_ms=_DEMO_EMBEDDING_AT_MS,
-                content_hash=content_hash,
+                embedding_input_hash=input_hash,
                 recipe_hash=recipe.recipe_hash,
                 derivation_key=message_embedding_derivation_key(
                     message_id=message_id,
-                    content_hash=content_hash,
+                    embedding_input_hash=input_hash,
                     recipe=recipe,
                 ).digest(),
                 generation=1,
             )
-            for message_id, session_id, origin, content_hash in embeddable
+            for message_id, session_id, origin, input_hash in embeddable
         ]
         upsert_message_embeddings(embeddings_conn, writes)
         session_derivation_key = embedding_derivation_key(
