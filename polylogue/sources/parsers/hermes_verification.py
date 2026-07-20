@@ -50,6 +50,25 @@ Retention: the producer prunes events older than 30 days and caps events at
 100 per ``(session_id, root)`` / 10,000 total unreferenced -- this import
 reflects only what Hermes currently retains, not a complete historical
 ledger; the fidelity declaration says so.
+
+PROFILE-QUALIFIED IDENTITY (polylogue-y9zx, mirrors fs1.14 for
+``hermes_spans.py``/PR #3224): the raw Hermes session id alone is not a safe
+archive join key -- two separate Hermes installs (profiles) can legitimately
+reuse the same raw session id, and this parser previously built an
+unqualified ``verification:<raw_id>`` identity that silently collapsed two
+installs' verification-ledger evidence onto one archive session whenever
+that happened. ``observer_session_provider_id``/
+``hermes_verification_session_id_for`` now thread an optional
+``profile_key`` through ``hermes_identity.py`` (the same shared helper
+``hermes_spans.py`` and ``hermes_state.py`` use) so the verification-ledger
+session identity and the ``session_links`` parent edge asserted back to the
+state-db conversational session use the exact same qualifier.
+``parent_session_provider_id`` is only ever set when the profile root is
+known -- an unqualified raw id is not asserted as a parent, the fail-closed
+side of the same fix: no edge is safer than a wrong one. The
+``verification:`` family prefix keeps this identity distinguishable from
+ATIF/ATOF's ``observer:`` family even when both qualify the same raw id
+against the same profile.
 """
 
 from __future__ import annotations
@@ -64,7 +83,10 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
-from .hermes_state import HermesFidelityCapability, HermesImportFidelity
+from .hermes_identity import profile_key as _profile_key
+from .hermes_identity import qualified_session_id as _qualified_session_id
+from .hermes_identity import split_qualified_session_id as _split_qualified_session_id
+from .hermes_state import HermesFidelityCapability, HermesFidelityStatus, HermesImportFidelity
 
 HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
 _DEFAULT_SESSION_ID = "default"
@@ -89,27 +111,46 @@ _REQUIRED_STATE_COLUMNS = frozenset({"session_id", "root", "last_event_id", "las
 HermesVerificationEventType: TypeAlias = Literal["hermes_verification_event", "hermes_verification_state"]
 
 
-def observer_session_provider_id(hermes_session_id: str) -> str:
+def observer_session_provider_id(hermes_session_id: str, profile_key: str | None = None) -> str:
     """Return the verification-evidence session identity for a Hermes session id.
 
     Distinct from ``hermes_spans.observer_session_provider_id`` (ATOF/ATIF
     use the ``observer:`` prefix): a physical merge across these
     independently-acquired evidence classes is deferred, same discipline as
     ATOF/ATIF's own deferred merge into the state-db conversational session.
+    The ``verification:`` family prefix keeps this identity distinguishable
+    from ATIF/ATOF's ``observer:`` family even when both qualify the same
+    raw session id against the same profile.
+
+    ``profile_key`` -- when known -- is folded into the identity using the
+    exact same qualifier scheme the state.db parser uses
+    (``hermes_identity.qualified_session_id``), mirroring
+    ``hermes_spans.observer_session_provider_id`` (polylogue-y9zx / fs1.14).
+    Two separate Hermes installs (profiles) can legitimately reuse the same
+    raw session id, and an unqualified ``verification:<raw_id>`` identity
+    silently collapsed their verification-ledger evidence onto one archive
+    session. When the profile root is not known at parse time
+    (``profile_key=None``), the identity stays unqualified rather than
+    guessing -- the fail-closed side of that same fix.
     """
+    if profile_key:
+        return f"verification:{_qualified_session_id(hermes_session_id, profile_key)}"
     return f"verification:{hermes_session_id}"
 
 
 def hermes_verification_session_id_for(conversational_session_id: str) -> str:
     """Map a state-db-ingested Hermes session id to its verification-ledger counterpart.
 
-    Mirrors ``hermes_spans.hermes_observer_session_id_for``: strips the
-    ``@profile-<key>`` qualifier (the verification ledger carries no
-    profile-root context of its own) so a reader holding the qualified
-    conversational session id can look up its verification evidence.
+    Mirrors ``hermes_spans.hermes_observer_session_id_for``: preserves
+    whatever ``@profile-<key>`` qualifier the conversational id carries (see
+    ``observer_session_provider_id`` docstring for why this matters) so a
+    reader holding the qualified conversational session id looks up the
+    verification evidence for the *same install*, not merely the same raw
+    session id. Falls back to an unqualified id only when the conversational
+    id itself carries no profile qualifier.
     """
-    raw_id = conversational_session_id.split("@profile-", 1)[0]
-    return observer_session_provider_id(raw_id)
+    raw_id, profile_key = _split_qualified_session_id(conversational_session_id)
+    return observer_session_provider_id(raw_id, profile_key)
 
 
 def marker_payload(path: Path, *, profile_root: Path | None = None) -> JSONDocument:
@@ -163,15 +204,49 @@ def _has_required_tables(conn: sqlite3.Connection) -> bool:
     )
 
 
-def parse_verification_evidence_db_payload(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
+def parse_verification_evidence_db_payload(
+    payload: JSONDocument,
+    fallback_id: str,
+    *,
+    profile_root: Path | None = None,
+) -> list[ParsedSession]:
+    """Parse a ``verification_db_path`` marker payload.
+
+    ``profile_root`` is the caller-supplied (dispatch-time) profile root --
+    the same convention ``hermes_spans.parse_atif_document`` uses. When the
+    caller does not know it, the marker payload's own ``profile_root`` field
+    (set by :func:`marker_payload`, e.g. in tests/replay flows that build the
+    payload directly) is used as a fallback so this stays usable without
+    going through dispatch.
+    """
     path_value = payload.get("verification_db_path")
     if not isinstance(path_value, str) or not path_value:
         raise ValueError("Hermes verification_evidence.db marker is missing verification_db_path")
-    return parse_verification_evidence_db(Path(path_value), fallback_id=fallback_id)
+    if profile_root is None:
+        profile_value = payload.get("profile_root")
+        profile_root = Path(profile_value) if isinstance(profile_value, str) and profile_value else None
+    return parse_verification_evidence_db(Path(path_value), fallback_id=fallback_id, profile_root=profile_root)
 
 
-def parse_verification_evidence_db(path: Path, *, fallback_id: str | None = None) -> list[ParsedSession]:
-    """Parse every verification event/state row from a Hermes verification_evidence.db file."""
+def parse_verification_evidence_db(
+    path: Path,
+    *,
+    fallback_id: str | None = None,
+    profile_root: Path | None = None,
+) -> list[ParsedSession]:
+    """Parse every verification event/state row from a Hermes verification_evidence.db file.
+
+    ``profile_root`` -- the directory the raw verification_evidence.db was
+    acquired from, mirroring ``hermes_state.parse_state_db``'s own
+    convention -- is the producer-positive evidence used to profile-qualify
+    both this file's own observer-evidence session identity and the
+    ``session_links`` parent edge it asserts back to the matching state-db
+    conversational session (polylogue-y9zx / fs1.14). When ``profile_root``
+    is ``None`` (unknown at parse time), no parent edge is asserted: a wrong
+    guess would silently correlate this evidence with the wrong install's
+    conversational session, which is worse than leaving the correlation
+    unresolved.
+    """
     del fallback_id
     with _connect_readonly(path) as conn:
         if not _has_required_tables(conn):
@@ -191,8 +266,14 @@ def parse_verification_evidence_db(path: Path, *, fallback_id: str | None = None
         grouped_state.setdefault(session_id, []).append(_verification_state_event(row))
 
     session_ids = sorted(set(grouped_events) | set(grouped_state))
+    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
     return [
-        _verification_session(session_id, grouped_events.get(session_id, []), grouped_state.get(session_id, []))
+        _verification_session(
+            session_id,
+            grouped_events.get(session_id, []),
+            grouped_state.get(session_id, []),
+            profile_key=profile_key_value,
+        )
         for session_id in session_ids
     ]
 
@@ -265,6 +346,8 @@ def _verification_session(
     session_id: str,
     events: list[ParsedSessionEvent],
     state_events: list[ParsedSessionEvent],
+    *,
+    profile_key: str | None,
 ) -> ParsedSession:
     passed = sum(1 for event in events if event.payload.get("status") == "passed")
     failed = sum(1 for event in events if event.payload.get("status") == "failed")
@@ -275,7 +358,16 @@ def _verification_session(
         f"Hermes verification ledger: {len(events)} event(s) ({passed} passed, {failed} failed); "
         f"{len(state_events)} state row(s) across {len(roots)} root(s)."
     )
-    provider_session_id = observer_session_provider_id(session_id)
+    provider_session_id = observer_session_provider_id(session_id, profile_key)
+    # The parent join key: asserting it makes the generic session_links write
+    # path (archive_tiers/write.py::_write_session_link, unchanged by this
+    # parser) resolve this verification-ledger session against the
+    # profile-qualified state-db conversational session sharing the same raw
+    # id -- resolvable once that session is ingested, visible as unresolved
+    # debt otherwise. Only asserted when the profile is known (see
+    # parse_verification_evidence_db docstring): an unqualified raw id is
+    # not a safe cross-profile join key.
+    parent_session_provider_id = _qualified_session_id(session_id, profile_key) if profile_key else None
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
@@ -298,6 +390,8 @@ def _verification_session(
                 payload={
                     "hermes_conversation_session_id_prefix": session_id,
                     "join_key": "sessions.native_id",
+                    "profile_qualified": profile_key is not None,
+                    "asserted_parent_session_provider_id": parent_session_provider_id,
                     "note": (
                         "This session carries Hermes's own claim-vs-evidence verification ledger "
                         "only; correlate with the state-db-ingested conversational session and any "
@@ -308,12 +402,56 @@ def _verification_session(
             *events,
             *state_events,
         ],
+        parent_session_provider_id=parent_session_provider_id,
         ingest_flags=["hermes:verification-evidence"],
     )
 
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _parent_session_link_capability(sessions: list[ParsedSession]) -> HermesFidelityCapability:
+    """Declare fidelity for the ``session_links`` parent edge to the conversational session.
+
+    Mirrors ``hermes_spans._parent_session_link_capability`` (polylogue-y9zx
+    / fs1.14), aggregated across every returned session the same way the
+    other capabilities in this function are: ``inferred`` (not ``exact``)
+    because the archive has not yet confirmed the target conversational
+    session was actually ingested -- that confirmation is the generic
+    ``session_links`` resolution machinery's job, not this parser's.
+    """
+    total = max(len(sessions), 1)
+    linked = sum(1 for session in sessions if session.parent_session_provider_id)
+    if not sessions:
+        return HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total,
+            counts={},
+            detail="No sessions were produced, so no session_links parent edge could be asserted.",
+        )
+    status: HermesFidelityStatus
+    if linked == len(sessions):
+        status = "inferred"
+    elif linked:
+        status = "degraded"
+    else:
+        status = "absent"
+    return HermesFidelityCapability(
+        status=status,
+        observed=linked,
+        expected=total,
+        counts={},
+        detail=(
+            "A profile-qualified session_links parent edge was asserted to the state-db "
+            "conversational session sharing this raw Hermes session id and profile root, for "
+            "every session where the profile root was known at ingest time; resolution against "
+            "an actually-ingested session happens generically at write time. Sessions parsed "
+            "without a known profile root fail closed -- an unqualified raw session id is not a "
+            "safe cross-profile join key."
+        ),
+    )
 
 
 def import_fidelity_declaration(sessions: list[ParsedSession]) -> HermesImportFidelity:
@@ -382,6 +520,7 @@ def import_fidelity_declaration(sessions: list[ParsedSession]) -> HermesImportFi
             "(session_id, root) / 10,000 unreferenced total -- this import reflects only what "
             "Hermes currently retains, not a complete historical verification ledger.",
         ),
+        "parent_session_link": _parent_session_link_capability(sessions),
     }
     caveats = tuple(f"{name}: {cap.detail}" for name, cap in capabilities.items() if cap.status != "exact")
     return HermesImportFidelity(

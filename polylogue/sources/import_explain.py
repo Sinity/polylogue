@@ -490,7 +490,9 @@ def _explain_hermes_verification_evidence_db(path: Path, *, provider_hint: Provi
     """Inspect the real Hermes verification-ledger SQLite parser path without writing a raw blob."""
 
     try:
-        sessions = hermes_verification.parse_verification_evidence_db(path, fallback_id=path.stem)
+        sessions = hermes_verification.parse_verification_evidence_db(
+            path, fallback_id=path.stem, profile_root=path.parent
+        )
     except (OSError, sqlite3.Error, ValueError) as exc:
         return _skipped_entry(
             path,

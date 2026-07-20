@@ -183,7 +183,11 @@ def parse_one_source_path(
                 blob_size=snapshot.blob_size,
                 blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
             )
-        for session in hermes_verification.parse_verification_evidence_db(retained_path, fallback_id=path.stem):
+        for session in hermes_verification.parse_verification_evidence_db(
+            retained_path,
+            fallback_id=path.stem,
+            profile_root=(original_source_path or path).parent,
+        ):
             yield (raw_data, session)
         return
 
