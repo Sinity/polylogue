@@ -753,3 +753,224 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
             assert archive._ensure_source_conn().execute(
                 "SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (rejected_raw,)
             ).fetchone() == (None,)
+
+
+def _parsed_session(*messages: tuple[str, str]) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="session",
+        messages=[
+            ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text) for message_id, text in messages
+        ],
+    )
+
+
+def _write_quarantined_member(archive: ArchiveStore, label: str, session: ParsedSession) -> str:
+    """A capture-style raw: no revision envelope, default quarantined authority."""
+    raw_id = archive.write_raw_payload(
+        provider=Provider.CODEX,
+        payload=label.encode(),
+        source_path=f"{label}.json",
+        acquired_at_ms=1,
+    )
+    archive.replace_raw_membership_census(
+        raw_id,
+        [session],
+        parser_fingerprint="test-parser",
+        censused_at_ms=1,
+    )
+    return raw_id
+
+
+def _write_chain_full(archive: ArchiveStore, label: str, generation: int) -> str:
+    raw_id = archive.write_raw_payload(
+        provider=Provider.CODEX,
+        payload=label.encode(),
+        source_path="session.json",
+        acquired_at_ms=generation,
+    )
+    archive.bind_raw_revision(
+        raw_id,
+        RawRevisionEnvelope(
+            "codex:session",
+            RawRevisionKind.FULL,
+            f"revision-{label}",
+            generation,
+            authority=RawRevisionAuthority.BYTE_PROVEN,
+        ),
+    )
+    return raw_id
+
+
+def _apply_membership_head(archive: ArchiveStore, raw_id: str, session: ParsedSession) -> None:
+    archive.apply_raw_membership_classification(
+        "codex:session",
+        MembershipClassification((raw_id,), (), ()),
+        {raw_id: session},
+        {raw_id: session_revision_projection(session)},
+        acquired_at_ms=0,
+    )
+
+
+def _head_row(archive: ArchiveStore) -> tuple[object, ...] | None:
+    row = archive._conn.execute(
+        """SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier
+           FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"""
+    ).fetchone()
+    return None if row is None else tuple(row)
+
+
+def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_path: Path) -> None:
+    """Capture-vs-export head collision (the v42 rebuild crash): a byte-proven
+
+    chain full at an EQUAL semantic frontier with different content must take
+    the head from a quarantined membership (browser-capture) raw instead of
+    the CAS rejecting the whole replay.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
+        capture = _write_quarantined_member(archive, "capture", capture_session)
+        _apply_membership_head(archive, capture, capture_session)
+        assert _head_row(archive) == (capture, "semantic", 2)
+
+        export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
+        export = _write_chain_full(archive, "export", 2)
+        plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
+        session_id, applied = archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+
+        assert applied == (export,)
+        assert _head_row(archive) == (export, "semantic", 2)
+        stored = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert stored is not None
+        assert bytes(stored[0]).hex() == session_content_hash(export_session)
+
+
+def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
+    """Chain evidence wins unconditionally: a scalar frontier cannot prove a
+
+    capture is a content-superset, so even a capture with MORE semantic units
+    hands the head to chain-governed evidence (the capture raw stays in the
+    source tier; re-adoption needs a real prefix-dominance proof).
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        capture_session = _parsed_session(("m0", "zero"), ("m1", "one"), ("m2", "two"))
+        capture = _write_quarantined_member(archive, "capture", capture_session)
+        _apply_membership_head(archive, capture, capture_session)
+        assert _head_row(archive) == (capture, "semantic", 3)
+
+        export_session = _parsed_session(("m0", "zero"), ("m1", "one"))
+        export = _write_chain_full(archive, "export", 2)
+        plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
+        session_id, applied = archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+
+        assert applied == (export,)
+        assert _head_row(archive) == (export, "semantic", 2)
+        stored = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert stored is not None
+        assert bytes(stored[0]).hex() == session_content_hash(export_session)
+
+
+def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None:
+    """Reverse arrival order: the chain head exists first; an equal-frontier
+
+    quarantined capture cohort must yield (superseded receipts, memberships
+    terminally decided) instead of raising 'cannot retire an unrelated
+    accepted head'.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
+        export = _write_chain_full(archive, "export", 1)
+        plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 1, size=len("export"))])
+        archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+        # A chain-first head is byte-kind: its frontier is never comparable to
+        # a capture's semantic frontier, so the capture must always yield.
+        assert _head_row(archive) == (export, "byte", 6)
+
+        capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
+        capture = _write_quarantined_member(archive, "capture", capture_session)
+        result = archive.apply_raw_membership_classification(
+            "codex:session",
+            MembershipClassification((capture,), (), ()),
+            {capture: capture_session},
+            {capture: session_revision_projection(capture_session)},
+            acquired_at_ms=0,
+        )
+
+        assert result == "codex-session:session"
+        assert _head_row(archive) == (export, "byte", 6)
+        receipts = archive._conn.execute(
+            """SELECT decision, detail FROM raw_revision_applications
+               WHERE raw_id = ? AND logical_source_key = 'codex:session'""",
+            (capture,),
+        ).fetchall()
+        assert [str(row[0]) for row in receipts] == ["superseded"]
+        assert f"superseded_by_chain_governed_head:{export}" in str(receipts[0][1])
+        membership = (
+            archive._ensure_source_conn()
+            .execute(
+                "SELECT decision, revision_authority FROM raw_session_memberships WHERE raw_id = ?",
+                (capture,),
+            )
+            .fetchone()
+        )
+        assert membership is not None and tuple(membership) == ("superseded_equivalent", "byte_proven")
+        stored = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = 'codex-session:session'"
+        ).fetchone()
+        assert stored is not None
+        assert bytes(stored[0]).hex() == session_content_hash(export_session)
+
+
+def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
+    """A capture cohort with more semantic units still yields to a
+    chain-governed semantic head: unit counts are not a dominance proof."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        capture1_session = _parsed_session(("m0", "zero"))
+        capture1 = _write_quarantined_member(archive, "capture1", capture1_session)
+        _apply_membership_head(archive, capture1, capture1_session)
+        export_session = _parsed_session(("m0", "zero"))
+        export = _write_chain_full(archive, "export", 2)
+        plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
+        archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+        assert _head_row(archive) == (export, "semantic", 1)
+
+        capture2_session = _parsed_session(("m0", "zero"), ("m1", "the conversation continued"))
+        capture2 = _write_quarantined_member(archive, "capture2", capture2_session)
+        revisions = [
+            MembershipRevision(capture1, session_revision_projection(capture1_session)),
+            MembershipRevision(capture2, session_revision_projection(capture2_session)),
+        ]
+        classification = classify_membership_revisions(revisions)
+        assert capture2 in classification.accepted_raw_ids
+        archive.apply_raw_membership_classification(
+            "codex:session",
+            classification,
+            {capture1: capture1_session, capture2: capture2_session},
+            {
+                capture1: session_revision_projection(capture1_session),
+                capture2: session_revision_projection(capture2_session),
+            },
+            acquired_at_ms=0,
+        )
+
+        assert _head_row(archive) == (export, "semantic", 1)
+        receipts = archive._conn.execute(
+            """SELECT decision, detail FROM raw_revision_applications
+               WHERE raw_id = ? AND logical_source_key = 'codex:session'""",
+            (capture2,),
+        ).fetchall()
+        assert [str(row[0]) for row in receipts] == ["superseded"]
+        assert f"superseded_by_chain_governed_head:{export}" in str(receipts[0][1])
+        stored = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = 'codex-session:session'"
+        ).fetchone()
+        assert stored is not None
+        assert bytes(stored[0]).hex() == session_content_hash(export_session)
