@@ -580,6 +580,38 @@ carries the original provider-native parent id. The same table also carries the
   of `sessions.content_hash` — mirrors the same boundary as user correction
   assertions (#1131).
 
+## Work-Evidence Graph and Repository-Effect Reconciliation (polylogue-1vpm.6)
+
+`polylogue/insights/work_evidence.py` defines a provider-neutral graph
+(`WorkEvidenceGraph`/`WorkEvidenceNode`/`WorkEvidenceEdge`, stored in
+`index.db`'s `work_evidence_graphs`/`_nodes`/`_edges` tables) for
+orchestration runs, invocations, task/calls, attempts, session segments, and
+agent-reported claims. `polylogue/insights/claude_workflow_materializer.py`
+is the production builder for `claude-workflow:<run-id>` graphs from admitted
+Claude Code Workflow artifacts (a live daemon convergence stage).
+
+A claim node is never treated as ground truth. `polylogue/insights/
+work_reconciliation.py`'s `reconcile_work_effects` attaches independently
+observed `ObservedRepositoryEffect` facts (git commits, Beads issue-state
+changes, GitHub PR activity) and explicit `ReconciliationJudgment`s to a
+graph without ever mutating a claim into an effect. `polylogue/insights/
+work_effects.py` supplies the effect-observation adapters:
+`GitCommitEffectAdapter` (real `git log`, read-only), `BeadsIssueEffectAdapter`
+(reads a `.beads/interactions.jsonl`-shaped ledger), and a typed
+`GitHubPullRequestEffectAdapter` stub that fails explicitly (no network/`gh`
+access assumed) instead of silently returning zero PRs.
+`derive_direct_identifier_judgments` only links a claim to an effect when
+their text shares an exact work-item id token (e.g. a Beads id); time or file
+proximity never counts as a match, so a claim naming no id — or whose id has
+no matching effect — stays explicitly unevaluated rather than being inferred
+from session presence alone.
+
+The production read-modify-write entry point is
+`polylogue/operations/work_effect_reconciliation.py`'s
+`reconcile_graph_repository_effects`, exposed as the CLI command
+`polylogue ops reconcile-work-effects` (dry-run by default; `--yes` persists
+the reconciled graph back through `SessionRepository.replace_work_evidence_graph`).
+
 ## Logical Session Identity (#866)
 
 `session_profiles.logical_session_id` materializes the resolved root of a

@@ -554,18 +554,23 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  auth          Authenticate optional external services.
-  backup        Create a timestamped durability-tier backup.
-  debt          List archive work that needs operator attention.
-  diagnostics   Run archive and session diagnostics.
-  doctor        Run archive health checks and repairs.
-  embed         Enable, preflight, and backfill the embedding pipeline.
-  excise        Excise a session: durable cross-tier removal (polylogue-27m).
-  insights      Check and export derived insight materialization.
-  maintenance   Preview and run maintenance backfill operations.
-  reset         Reset local archive state.
-  scan-secrets  Scan a session for credential-shaped content (polylogue-27m).
-  status        Show daemon and archive status.
+  auth                    Authenticate optional external services.
+  backup                  Create a timestamped durability-tier backup.
+  debt                    List archive work that needs operator attention.
+  diagnostics             Run archive and session diagnostics.
+  doctor                  Run archive health checks and repairs.
+  embed                   Enable, preflight, and backfill the embedding
+                          pipeline.
+  excise                  Excise a session: durable cross-tier removal
+                          (polylogue-27m).
+  insights                Check and export derived insight materialization.
+  maintenance             Preview and run maintenance backfill operations.
+  reconcile-work-effects  Reconcile a work-evidence graph against observed
+                          git/Beads effects.
+  reset                   Reset local archive state.
+  scan-secrets            Scan a session for credential-shaped content
+                          (polylogue-27m).
+  status                  Show daemon and archive status.
 ```
 
 ## Doctor

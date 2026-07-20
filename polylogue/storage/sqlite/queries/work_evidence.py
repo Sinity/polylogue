@@ -21,7 +21,7 @@ from polylogue.insights.work_evidence import (
 )
 from polylogue.storage.query_models import WorkEvidenceTraversalQuery
 
-__all__ = ["get_work_evidence_traversal", "replace_work_evidence_graph"]
+__all__ = ["get_work_evidence_graph", "get_work_evidence_traversal", "replace_work_evidence_graph"]
 
 
 def _json_array(value: object) -> tuple[str, ...]:
@@ -143,6 +143,39 @@ async def replace_work_evidence_graph(
     )
     if transaction_depth == 0:
         await conn.commit()
+
+
+async def get_work_evidence_graph(conn: aiosqlite.Connection, graph_id: str) -> WorkEvidenceGraph | None:
+    """Load one complete graph snapshot for read-modify-write consumers.
+
+    Distinct from :func:`get_work_evidence_traversal`: reconciliation needs
+    every node (in particular every ``claim`` node) to match against observed
+    effects, not a one-hop neighborhood around a single focal ref.
+    """
+
+    graph_cursor = await conn.execute(
+        "SELECT corpus_snapshot_ref FROM work_evidence_graphs WHERE graph_id = ?",
+        (graph_id,),
+    )
+    graph_row = await graph_cursor.fetchone()
+    if graph_row is None:
+        return None
+    node_cursor = await conn.execute(
+        "SELECT * FROM work_evidence_nodes WHERE graph_id = ? ORDER BY node_ref",
+        (graph_id,),
+    )
+    nodes = tuple(_node_from_row(row) for row in await node_cursor.fetchall())
+    edge_cursor = await conn.execute(
+        "SELECT * FROM work_evidence_edges WHERE graph_id = ? ORDER BY edge_ref",
+        (graph_id,),
+    )
+    edges = tuple(_edge_from_row(row) for row in await edge_cursor.fetchall())
+    return WorkEvidenceGraph(
+        graph_id=graph_id,
+        corpus_snapshot_ref=ObjectRef.parse(str(graph_row["corpus_snapshot_ref"])),
+        nodes=nodes,
+        edges=edges,
+    )
 
 
 async def get_work_evidence_traversal(

@@ -81,7 +81,7 @@ _NODE_REF_KINDS: Final[dict[WorkEvidenceNodeKind, frozenset[str]]] = {
     "artifact": frozenset({"artifact"}),
     "actor": frozenset({"actor"}),
     "execution-context": frozenset({"execution-context"}),
-    "effect": frozenset({"commit", "github-issue", "github-pr", "check-run", "artifact"}),
+    "effect": frozenset({"commit", "github-issue", "github-pr", "check-run", "beads-issue", "artifact"}),
 }
 
 

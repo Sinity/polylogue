@@ -5,8 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.insights.work_evidence import WorkEvidenceEdge, WorkEvidenceGraph, WorkEvidenceNode
+from polylogue.core.refs import ObjectRef
+from polylogue.insights.work_evidence import (
+    WorkEvidenceEdge,
+    WorkEvidenceGraph,
+    WorkEvidenceNode,
+    WorkEvidenceSourceRef,
+)
 
 EffectAuthority = Literal["git", "github", "beads", "artifact", "verification"]
 Evaluation = Literal["supported", "partial", "contradicted", "unresolved", "superseded"]
@@ -14,12 +19,21 @@ Evaluation = Literal["supported", "partial", "contradicted", "unresolved", "supe
 
 @dataclass(frozen=True, slots=True)
 class ObservedRepositoryEffect:
-    """An independently observed effect; it is never an agent's claim."""
+    """An independently observed effect; it is never an agent's claim.
+
+    ``evidence_ref`` is a :data:`WorkEvidenceSourceRef` rather than a bare
+    ``EvidenceRef``: most repository effects (a git commit, a Beads
+    interaction-ledger line) are not archived session content, so they cite
+    an ``artifact:``-kind :class:`ObjectRef` the same way raw source-tier
+    revisions do elsewhere in the work-evidence graph (see
+    ``parse_work_evidence_source_ref``). A session-backed effect can still use
+    a plain ``EvidenceRef``.
+    """
 
     ref: ObjectRef
     label: str
     authority: EffectAuthority
-    evidence_ref: EvidenceRef
+    evidence_ref: WorkEvidenceSourceRef
     repository_snapshot_ref: ObjectRef
     occurred_at_ms: int | None = None
 
@@ -31,7 +45,7 @@ class ReconciliationJudgment:
     claim_ref: ObjectRef
     effect_ref: ObjectRef
     evaluation: Evaluation
-    evidence_ref: EvidenceRef
+    evidence_ref: WorkEvidenceSourceRef
 
 
 def reconcile_work_effects(
