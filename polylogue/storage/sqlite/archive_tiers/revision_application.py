@@ -15,6 +15,13 @@ from polylogue.archive.revision_replay import ApplicationDecision
 _MESSAGE_FTS_TRIGGERS = {"messages_fts_ai", "messages_fts_ad", "messages_fts_au"}
 
 
+def _hash_prefix(value: bytes | None) -> str:
+    """Short hex prefix for a content hash, safe for error messages."""
+    if value is None:
+        return "None"
+    return value.hex()[:12]
+
+
 @dataclass(frozen=True, slots=True)
 class RevisionApplicationReceipt:
     raw_id: str
@@ -192,10 +199,44 @@ def record_revision_application_sync(
                 receipt.accepted_content_hash,
             )
             if tuple(existing) != expected:
-                raise RuntimeError(f"conflicting raw revision application receipt: {receipt.decision_id}")
+                # `decision_id` hashes every decision-defining field (raw_id,
+                # session_id, decision, logical_source_key, source_revision,
+                # accepted_raw_id, accepted_source_revision) except
+                # accepted_content_hash. So a row found by decision_id can
+                # only disagree with the incoming receipt on
+                # accepted_content_hash -- a parser/derivation fix reparsing
+                # the exact same accepted raw evidence into a different
+                # content hash. The raw/session/revision identity already
+                # matched to find this row, so that is re-derivation, not a
+                # conflicting decision: update the ledger row's content hash
+                # in place. Any other field actually differing (defensive;
+                # not reachable without a decision_id hash collision) is a
+                # genuine conflict and still rejects.
+                if tuple(existing[:5]) == expected[:5]:
+                    conn.execute(
+                        "UPDATE raw_revision_applications SET accepted_content_hash = ? WHERE decision_id = ?",
+                        (receipt.accepted_content_hash, receipt.decision_id),
+                    )
+                else:
+                    raise RuntimeError(
+                        "conflicting raw revision application receipt: "
+                        f"decision_id={receipt.decision_id} logical_source_key={receipt.logical_source_key!r} "
+                        f"incoming(raw_id={receipt.raw_id!r}, session_id={receipt.session_id!r}, "
+                        f"decision={receipt.decision.value!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
+                        f"accepted_source_revision={receipt.accepted_source_revision!r}, "
+                        f"accepted_content_hash={_hash_prefix(receipt.accepted_content_hash)}) "
+                        f"existing(raw_id={existing[0]!r}, session_id={existing[1]!r}, decision={existing[2]!r}, "
+                        f"accepted_raw_id={existing[3]!r}, accepted_source_revision={existing[4]!r}, "
+                        f"accepted_content_hash={_hash_prefix(existing[5])})"
+                    )
         else:
             if receipt.decision is not ApplicationDecision.SUPERSEDED:
-                raise RuntimeError(f"conflicting raw revision application receipt: {receipt.decision_id}")
+                raise RuntimeError(
+                    "conflicting raw revision application receipt: no existing row and decision is not SUPERSEDED: "
+                    f"decision_id={receipt.decision_id} logical_source_key={receipt.logical_source_key!r} "
+                    f"raw_id={receipt.raw_id!r} session_id={receipt.session_id!r} "
+                    f"decision={receipt.decision.value!r} accepted_raw_id={receipt.accepted_raw_id!r}"
+                )
             semantic_identity = conn.execute(
                 """
                 SELECT raw_id, session_id, logical_source_key, decision,
@@ -222,7 +263,15 @@ def record_revision_application_sync(
                 receipt.accepted_content_hash,
             )
             if semantic_identity is None or tuple(semantic_identity) != expected_identity:
-                raise RuntimeError(f"conflicting raw revision application receipt: {receipt.decision_id}")
+                raise RuntimeError(
+                    "conflicting raw revision application receipt: no matching semantic-identity row for "
+                    f"SUPERSEDED replay: decision_id={receipt.decision_id} "
+                    f"logical_source_key={receipt.logical_source_key!r} raw_id={receipt.raw_id!r} "
+                    f"session_id={receipt.session_id!r} source_revision={receipt.source_revision!r} "
+                    f"accepted_source_revision={receipt.accepted_source_revision!r} "
+                    f"accepted_content_hash={_hash_prefix(receipt.accepted_content_hash)} "
+                    f"found={semantic_identity!r}"
+                )
     if receipt.accepted_raw_id is None or receipt.decision not in {
         ApplicationDecision.SELECTED_BASELINE,
         ApplicationDecision.APPLIED_APPEND,
@@ -243,10 +292,24 @@ def record_revision_application_sync(
         if receipt.accepted_frontier_kind not in {"byte", "semantic"} or receipt.accepted_frontier is None:
             raise ValueError("accepted revision receipt requires a typed frontier")
         if str(existing_head[4]) != receipt.accepted_frontier_kind:
-            raise RuntimeError("raw revision CAS rejected an incomparable accepted frontier")
+            raise RuntimeError(
+                "raw revision CAS rejected an incomparable accepted frontier: "
+                f"logical_source_key={receipt.logical_source_key!r} "
+                f"existing(session_id={existing_head[0]!r}, accepted_raw_id={existing_head[1]!r}, "
+                f"frontier_kind={existing_head[4]!r}, frontier={existing_head[5]!r}) "
+                f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
+                f"frontier_kind={receipt.accepted_frontier_kind!r}, frontier={receipt.accepted_frontier!r})"
+            )
         existing_frontier = int(existing_head[5])
         if receipt.accepted_frontier < existing_frontier:
-            raise RuntimeError("raw revision CAS rejected an older accepted frontier")
+            raise RuntimeError(
+                "raw revision CAS rejected an older accepted frontier: "
+                f"logical_source_key={receipt.logical_source_key!r} "
+                f"existing(session_id={existing_head[0]!r}, accepted_raw_id={existing_head[1]!r}, "
+                f"frontier_kind={existing_head[4]!r}, frontier={existing_frontier}) "
+                f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
+                f"frontier_kind={receipt.accepted_frontier_kind!r}, frontier={receipt.accepted_frontier})"
+            )
         if receipt.accepted_frontier == existing_frontier:
             existing_semantics = (existing_head[0], existing_head[3], existing_head[4], existing_head[5])
             accepted_semantics = (
@@ -255,12 +318,32 @@ def record_revision_application_sync(
                 receipt.accepted_frontier_kind,
                 receipt.accepted_frontier,
             )
-            authorized_fold = receipt.fold_authorization is not None and receipt.fold_authorization.permits(
-                existing_head, receipt
-            )
-            if existing_semantics != accepted_semantics and not authorized_fold:
-                raise RuntimeError("raw revision CAS rejected a conflicting accepted head")
-            if tuple(existing_head) == (
+            if existing_semantics != accepted_semantics:
+                authorized_fold = receipt.fold_authorization is not None and receipt.fold_authorization.permits(
+                    existing_head, receipt
+                )
+                # Same-raw re-application: the incoming receipt derives from the
+                # exact same accepted raw evidence as the existing head (equal
+                # `accepted_raw_id`) -- typically a parser/identity fix reparsing
+                # the same content-addressed blob into a different content hash
+                # and/or session_id. That is re-derivation from identical
+                # evidence, not a genuine conflict, so it supersedes the existing
+                # head. Cross-raw conflicts (a different `accepted_raw_id`
+                # claiming the same frontier with differing semantics) are real
+                # divergence and still require fold authorization to pass.
+                same_raw_supersede = receipt.accepted_raw_id == existing_head[1]
+                if not authorized_fold and not same_raw_supersede:
+                    raise RuntimeError(
+                        "raw revision CAS rejected a conflicting accepted head: "
+                        f"logical_source_key={receipt.logical_source_key!r} "
+                        f"existing(session_id={existing_head[0]!r}, accepted_raw_id={existing_head[1]!r}, "
+                        f"accepted_content_hash={_hash_prefix(existing_head[3])}, "
+                        f"frontier_kind={existing_head[4]!r}, frontier={existing_head[5]!r}) "
+                        f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
+                        f"accepted_content_hash={_hash_prefix(receipt.accepted_content_hash)}, "
+                        f"frontier_kind={receipt.accepted_frontier_kind!r}, frontier={receipt.accepted_frontier!r})"
+                    )
+            elif tuple(existing_head) == (
                 receipt.session_id,
                 receipt.accepted_raw_id,
                 receipt.accepted_source_revision,

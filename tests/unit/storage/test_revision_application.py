@@ -103,13 +103,12 @@ def test_session_fts_proof_detects_missing_row_and_trigger_mutation() -> None:
 @pytest.mark.parametrize(
     "changes",
     [
-        {"session_id": "codex-session:other"},
-        {"accepted_content_hash": b"x" * 32},
         {"accepted_frontier": 99},
         {"accepted_frontier_kind": "semantic"},
     ],
 )
-def test_equal_frontier_cas_rejects_conflicting_semantic_state(changes: dict[str, Any]) -> None:
+def test_equal_frontier_cas_rejects_conflicting_frontier_state(changes: dict[str, Any]) -> None:
+    """(e) a genuinely older or incomparable frontier is still rejected regardless of raw identity."""
     conn = sqlite3.connect(":memory:")
     conn.executescript(INDEX_DDL)
     receipt = _receipt()
@@ -117,6 +116,77 @@ def test_equal_frontier_cas_rejects_conflicting_semantic_state(changes: dict[str
 
     with pytest.raises(RuntimeError, match="conflicting|rejected"):
         record_revision_application_sync(conn, replace(receipt, **changes), decided_at_ms=20)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"accepted_content_hash": b"x" * 32},
+        {"session_id": "codex-session:renamed"},
+    ],
+)
+def test_equal_frontier_cas_allows_same_raw_supersede(changes: dict[str, Any]) -> None:
+    """(a)+(b) same accepted_raw_id, equal frontier, differing derived semantics.
+
+    A parser fix (differing content hash) or an identity-law fix (differing
+    session_id) re-derives from the exact same accepted raw evidence -- the
+    blob is content-addressed and unchanged, only the derivation changed. This
+    must supersede the existing head rather than raise: blocking it would make
+    every parser/identity improvement poison already-committed archives.
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+    receipt = _receipt()
+    record_revision_application_sync(conn, receipt, decided_at_ms=10)
+
+    reapplied = replace(receipt, **changes)
+    record_revision_application_sync(conn, reapplied, decided_at_ms=20)
+
+    row = conn.execute(
+        """
+        SELECT session_id, accepted_raw_id, accepted_content_hash
+        FROM raw_revision_heads WHERE logical_source_key = 'codex:session'
+        """
+    ).fetchone()
+    assert row == (reapplied.session_id, reapplied.accepted_raw_id, reapplied.accepted_content_hash)
+
+
+def test_equal_frontier_cas_rejects_cross_raw_conflict_without_fold_authorization() -> None:
+    """(c) a different accepted_raw_id at the same frontier is a genuine conflict and still rejects.
+
+    The error message must name both the existing and incoming accepted_raw_id
+    so a rebuild failure is diagnosable without re-running under a debugger.
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+    receipt = _receipt()
+    record_revision_application_sync(conn, receipt, decided_at_ms=10)
+
+    conflicting = replace(
+        receipt,
+        raw_id="raw-conflict",
+        accepted_raw_id="raw-conflict",
+        accepted_content_hash=b"z" * 32,
+    )
+    with pytest.raises(RuntimeError, match="conflicting accepted head") as excinfo:
+        record_revision_application_sync(conn, conflicting, decided_at_ms=20)
+    message = str(excinfo.value)
+    assert receipt.accepted_raw_id in message
+    assert "raw-conflict" in message
+
+
+def test_equal_frontier_cas_idempotent_same_everything_reapplication() -> None:
+    """(d) re-applying the exact same receipt at an equal frontier is a clean no-op."""
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+    receipt = _receipt()
+    record_revision_application_sync(conn, receipt, decided_at_ms=10)
+    record_revision_application_sync(conn, receipt, decided_at_ms=20)
+
+    row = conn.execute(
+        "SELECT accepted_raw_id, accepted_content_hash, decided_at_ms FROM raw_revision_heads"
+    ).fetchone()
+    assert row == (receipt.accepted_raw_id, receipt.accepted_content_hash, 10)
 
 
 def test_larger_full_snapshot_supersedes_deeper_append_generation() -> None:
