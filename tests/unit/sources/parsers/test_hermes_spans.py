@@ -44,11 +44,35 @@ def test_looks_like_atif_payload_requires_real_atif_schema_version_and_session_a
     # The old, pre-fix synthetic marker shape must NOT match anymore -- that
     # was exactly the review finding (a self-referential detector that could
     # only ever recognize this repo's own test fixture).
-    assert not hermes_spans.looks_like_atif_payload(
-        {"polylogue_artifact": "hermes_atif_trace", "session_id": "x", "spans": []}
-    )
+    marker_only_payload = {"polylogue_artifact": "hermes_atif_trace", "session_id": "x", "spans": []}
+    assert not hermes_spans.looks_like_atif_payload(marker_only_payload)
+    # Same proof through the real dispatch entrypoint, not just the predicate.
+    assert detect_provider(marker_only_payload) is not Provider.HERMES
     # Missing steps.
     assert not hermes_spans.looks_like_atif_payload({"schema_version": "ATIF-v1.7", "session_id": "x"})
+
+
+def test_looks_like_atof_payload_rejects_a_repository_invented_marker_only_shape() -> None:
+    """fs1.2.1 AC2: the structural detector admits the real ATOF wire shape
+    (atof_version/kind/uuid/timestamp/name -- see module docstring's NVIDIA
+    sourcing) and rejects a payload containing only an invented marker key
+    that never appeared in the real producer bytes. Unlike ATIF (which once
+    shipped a self-referential ``polylogue_artifact: "hermes_atif_trace"``
+    marker detector, see the test above), ATOF's detector was built directly
+    against the real wire shape and never had an invented marker of its
+    own -- this test proves a marker-only payload was never, and is still
+    not, sufficient on its own."""
+
+    real_record = json.loads(REAL_ATOF_FIXTURE.read_text().splitlines()[0])
+    assert hermes_spans.looks_like_atof_payload(real_record)
+
+    marker_only: JSONDocument = {"polylogue_artifact": "hermes_atof_trace", "session_id": "x"}
+    assert not hermes_spans.looks_like_atof_payload(marker_only)
+    # Real fields present but wrong types/values must not slip through either.
+    assert not hermes_spans.looks_like_atof_payload({"atof_version": "0.1", "kind": "unknown-kind"})
+    assert not hermes_spans.looks_like_atof_payload(
+        {"atof_version": "0.1", "kind": "scope", "uuid": "u1", "timestamp": "t", "name": None}
+    )
 
 
 def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> None:
