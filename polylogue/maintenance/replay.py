@@ -99,6 +99,14 @@ _STATE_DIRNAME: Final[str] = ".maintenance-state"
 #: never becomes a second archive-wide materialization.
 _REBUILD_CENSUS_SPILL_CACHE_BYTES: Final[int] = 512 * 1024 * 1024
 
+#: Rebuild-scale commit batching (polylogue-amg1/oikv machinery; the rebuild
+#: caller previously never opted in, paying one fsync'd commit per censused
+#: raw and per replayed cohort -- thousands per page). A crash discards at
+#: most one open batch and the resume reprocesses it from scratch (contract
+#: pinned by test_backfill_resumes_after_replay_batch_crash_discards_whole_
+#: batch_cleanly et al.), so the loss window is bounded and cheap.
+_REBUILD_COMMIT_BATCH_UNITS: Final[int] = 200
+
 
 # ---------------------------------------------------------------------------
 # Target dispatch
@@ -196,6 +204,7 @@ async def rebuild_index_from_source(
         owned_inactive_generation=owned_inactive_generation,
         max_cached_payload_bytes=_REBUILD_CENSUS_SPILL_CACHE_BYTES,
         ingest_workers=resolved_ingest_workers,
+        commit_batch_size=_REBUILD_COMMIT_BATCH_UNITS,
         bulk_fts=bulk_fts,
         bulk_build=bulk_build,
         prefetch_cache=prefetch_cache,
