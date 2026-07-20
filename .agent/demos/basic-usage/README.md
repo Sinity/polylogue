@@ -1,7 +1,7 @@
 # Basic Usage — The Features Actually Work
 
-Generated: 2026-07-18
-Archive: Polylogue's deterministic demo archive (`polylogue demo seed`), index schema v40 at capture time.
+Generated: 2026-07-20
+Archive: Polylogue's deterministic demo archive (`polylogue demo seed`), index schema v42 at capture time.
 
 Eight short, real walkthroughs proving ordinary Polylogue features work
 end-to-end, not just in unit tests. Every command below was actually run; every

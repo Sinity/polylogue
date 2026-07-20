@@ -1,6 +1,6 @@
 $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
-{
-  "archive_root": "/tmp/polylogue-basic-usage-demo",
+
+  "archive_root": "/realm/tmp/polylogue-demo-refresh-1784526507",
   "detail_level": "full",
   "coverage_matrix": [
     {
@@ -126,50 +126,50 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
   ],
   "model_rollup_grain": "physical_session",
   "model_rollup_usage": {
-    "input_tokens": 56000,
-    "output_tokens": 10500,
-    "cached_input_tokens": 280000,
+    "input_tokens": 56256,
+    "output_tokens": 10596,
+    "cached_input_tokens": 280020,
     "cache_write_tokens": 42000,
     "reasoning_output_tokens": 0,
-    "total_tokens": 388500
+    "total_tokens": 388872
   },
   "logical_model_rollup_grain": "logical_session_model_high_water",
   "logical_model_rollup_usage": {
-    "input_tokens": 56000,
-    "output_tokens": 10500,
-    "cached_input_tokens": 280000,
+    "input_tokens": 56256,
+    "output_tokens": 10596,
+    "cached_input_tokens": 280020,
     "cache_write_tokens": 42000,
     "reasoning_output_tokens": 0,
-    "total_tokens": 388500
+    "total_tokens": 388872
   },
   "pricing_catalog_provenance": "litellm-model-prices-vendored+polylogue-curated-overrides",
   "pricing_catalog_effective_date": "2026-06-27",
   "pricing_lanes": [
     {
       "provenance": "priced",
-      "row_count": 4,
-      "session_count": 4,
+      "row_count": 6,
+      "session_count": 6,
       "matched_model_row_count": 3,
-      "unmatched_model_row_count": 1,
+      "unmatched_model_row_count": 3,
       "usage": {
-        "input_tokens": 56000,
-        "output_tokens": 10500,
-        "cached_input_tokens": 280000,
+        "input_tokens": 56256,
+        "output_tokens": 10596,
+        "cached_input_tokens": 280020,
         "cache_write_tokens": 42000,
         "reasoning_output_tokens": 0,
-        "total_tokens": 388500
+        "total_tokens": 388872
       },
       "stored_cost_usd": 2.835,
       "catalog_api_equivalent_usd": null,
       "catalog_priced_subtotal_usd": 2.835,
       "subscription_credit_usd": 0.0,
       "grain": "physical_session",
-      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "observed_at": "2026-07-20T05:56:19.734297+00:00",
       "exact_total_tokens_evidence": {
         "family": "usage.pricing_lane_exact_total_tokens",
         "fact_ref": "insight:session-model-usage:physical_session:priced:exact-total-tokens",
         "value_state": "known",
-        "value": 388500,
+        "value": 388872,
         "measurement_authority": [
           "provider-reported"
         ],
@@ -179,7 +179,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         ],
         "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -190,9 +190,9 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "physical_session session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
-          "supported_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
+          "supported_count": 6,
           "complete": true,
           "coverage_ratio": 1.0,
           "intended_refs": [],
@@ -201,7 +201,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -225,7 +225,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         ],
         "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -236,8 +236,8 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "physical_session session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
           "supported_count": 3,
           "complete": false,
           "coverage_ratio": 1.0,
@@ -246,13 +246,13 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "exclusions": [
             {
               "subject_ref": "insight:session-model-usage:physical_session:priced",
-              "reason": "unpriced-model-rows:1"
+              "reason": "unpriced-model-rows:3"
             }
           ]
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -270,29 +270,29 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
   "logical_pricing_lanes": [
     {
       "provenance": "priced",
-      "row_count": 4,
-      "session_count": 4,
+      "row_count": 6,
+      "session_count": 6,
       "matched_model_row_count": 3,
-      "unmatched_model_row_count": 1,
+      "unmatched_model_row_count": 3,
       "usage": {
-        "input_tokens": 56000,
-        "output_tokens": 10500,
-        "cached_input_tokens": 280000,
+        "input_tokens": 56256,
+        "output_tokens": 10596,
+        "cached_input_tokens": 280020,
         "cache_write_tokens": 42000,
         "reasoning_output_tokens": 0,
-        "total_tokens": 388500
+        "total_tokens": 388872
       },
       "stored_cost_usd": 0.0,
       "catalog_api_equivalent_usd": null,
       "catalog_priced_subtotal_usd": 2.835,
       "subscription_credit_usd": 0.0,
       "grain": "logical_session_model_high_water",
-      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "observed_at": "2026-07-20T05:56:19.734297+00:00",
       "exact_total_tokens_evidence": {
         "family": "usage.pricing_lane_exact_total_tokens",
         "fact_ref": "insight:session-model-usage:logical_session_model_high_water:priced:exact-total-tokens",
         "value_state": "known",
-        "value": 388500,
+        "value": 388872,
         "measurement_authority": [
           "provider-reported"
         ],
@@ -302,7 +302,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         ],
         "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -313,9 +313,9 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
-          "supported_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
+          "supported_count": 6,
           "complete": true,
           "coverage_ratio": 1.0,
           "intended_refs": [],
@@ -324,7 +324,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -348,7 +348,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         ],
         "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -359,8 +359,8 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
           "supported_count": 3,
           "complete": false,
           "coverage_ratio": 1.0,
@@ -369,13 +369,13 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "exclusions": [
             {
               "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced",
-              "reason": "unpriced-model-rows:1"
+              "reason": "unpriced-model-rows:3"
             }
           ]
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -399,12 +399,12 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
   "subscription_credit_catalog_effective_date": "2026-05-07",
   "subscription_credit_usd": 0.0,
   "logical_subscription_credit_usd": 0.0,
-  "observed_at": "2026-07-18T13:22:28.873594+00:00",
+  "observed_at": "2026-07-20T05:56:19.734297+00:00",
   "exact_total_tokens_evidence": {
     "family": "usage.pricing_lane_exact_total_tokens",
     "fact_ref": "insight:provider-usage:physical-exact-total-tokens:total",
     "value_state": "known",
-    "value": 388500,
+    "value": 388872,
     "measurement_authority": [
       "provider-reported"
     ],
@@ -414,7 +414,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     ],
     "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
     "temporal": {
-      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "observed_at": "2026-07-20T05:56:19.734297+00:00",
       "time_source": "materialization_ts",
       "time_confidence": "unknown",
       "frame_start": null,
@@ -440,7 +440,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     },
     "freshness": {
       "state": "fresh",
-      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
       "cause": null,
       "last_good_at": null,
       "last_good_evidence_refs": []
@@ -450,7 +450,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
       {
         "fact_ref": "insight:session-model-usage:physical_session:priced:exact-total-tokens",
         "value_state": "known",
-        "value": 388500,
+        "value": 388872,
         "measurement_authority": [
           "provider-reported"
         ],
@@ -458,7 +458,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "insight:session-model-usage:physical_session:priced"
         ],
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -469,9 +469,9 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "physical_session session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
-          "supported_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
+          "supported_count": 6,
           "complete": true,
           "coverage_ratio": 1.0,
           "intended_refs": [],
@@ -480,7 +480,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -504,7 +504,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     ],
     "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
     "temporal": {
-      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "observed_at": "2026-07-20T05:56:19.734297+00:00",
       "time_source": "materialization_ts",
       "time_confidence": "unknown",
       "frame_start": null,
@@ -529,7 +529,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
       "exclusions": [
         {
           "subject_ref": "insight:session-model-usage:physical_session:priced",
-          "reason": "unpriced-model-rows:1"
+          "reason": "unpriced-model-rows:3"
         },
         {
           "subject_ref": "insight:session-model-usage:physical_session:priced:catalog-api-equivalent-cost",
@@ -543,7 +543,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     },
     "freshness": {
       "state": "fresh",
-      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
       "cause": null,
       "last_good_at": null,
       "last_good_evidence_refs": []
@@ -562,7 +562,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "insight:session-model-usage:physical_session:priced"
         ],
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -573,8 +573,8 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "physical_session session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
           "supported_count": 3,
           "complete": false,
           "coverage_ratio": 1.0,
@@ -583,13 +583,13 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "exclusions": [
             {
               "subject_ref": "insight:session-model-usage:physical_session:priced",
-              "reason": "unpriced-model-rows:1"
+              "reason": "unpriced-model-rows:3"
             }
           ]
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -602,7 +602,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     "family": "usage.pricing_lane_exact_total_tokens",
     "fact_ref": "insight:provider-usage:logical-exact-total-tokens:total",
     "value_state": "known",
-    "value": 388500,
+    "value": 388872,
     "measurement_authority": [
       "provider-reported"
     ],
@@ -612,7 +612,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     ],
     "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
     "temporal": {
-      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "observed_at": "2026-07-20T05:56:19.734297+00:00",
       "time_source": "materialization_ts",
       "time_confidence": "unknown",
       "frame_start": null,
@@ -638,7 +638,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     },
     "freshness": {
       "state": "fresh",
-      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
       "cause": null,
       "last_good_at": null,
       "last_good_evidence_refs": []
@@ -648,7 +648,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
       {
         "fact_ref": "insight:session-model-usage:logical_session_model_high_water:priced:exact-total-tokens",
         "value_state": "known",
-        "value": 388500,
+        "value": 388872,
         "measurement_authority": [
           "provider-reported"
         ],
@@ -656,7 +656,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "insight:session-model-usage:logical_session_model_high_water:priced"
         ],
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -667,9 +667,9 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
-          "supported_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
+          "supported_count": 6,
           "complete": true,
           "coverage_ratio": 1.0,
           "intended_refs": [],
@@ -678,7 +678,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -702,7 +702,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     ],
     "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
     "temporal": {
-      "observed_at": "2026-07-18T13:22:28.873594+00:00",
+      "observed_at": "2026-07-20T05:56:19.734297+00:00",
       "time_source": "materialization_ts",
       "time_confidence": "unknown",
       "frame_start": null,
@@ -727,7 +727,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
       "exclusions": [
         {
           "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced",
-          "reason": "unpriced-model-rows:1"
+          "reason": "unpriced-model-rows:3"
         },
         {
           "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced:catalog-api-equivalent-cost",
@@ -741,7 +741,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
     },
     "freshness": {
       "state": "fresh",
-      "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+      "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
       "cause": null,
       "last_good_at": null,
       "last_good_evidence_refs": []
@@ -760,7 +760,7 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "insight:session-model-usage:logical_session_model_high_water:priced"
         ],
         "temporal": {
-          "observed_at": "2026-07-18T13:22:28.873594+00:00",
+          "observed_at": "2026-07-20T05:56:19.734297+00:00",
           "time_source": "materialization_ts",
           "time_confidence": "unknown",
           "frame_start": null,
@@ -771,8 +771,8 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "intended_frame": "logical_session_model_high_water session_model_usage rows for 'priced'",
           "grain": "pricing_lane",
           "denominator": "session_model_usage rows in the declared lane",
-          "intended_count": 4,
-          "observed_count": 4,
+          "intended_count": 6,
+          "observed_count": 6,
           "supported_count": 3,
           "complete": false,
           "coverage_ratio": 1.0,
@@ -781,13 +781,13 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
           "exclusions": [
             {
               "subject_ref": "insight:session-model-usage:logical_session_model_high_water:priced",
-              "reason": "unpriced-model-rows:1"
+              "reason": "unpriced-model-rows:3"
             }
           ]
         },
         "freshness": {
           "state": "fresh",
-          "evaluated_at": "2026-07-18T13:22:28.873594+00:00",
+          "evaluated_at": "2026-07-20T05:56:19.734297+00:00",
           "cause": null,
           "last_good_at": null,
           "last_good_evidence_refs": []
@@ -866,6 +866,77 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
       "sample_stale_rollup_sessions": [],
       "caveats": [
         "provider usage telemetry is partial; request, cumulative, and cache semantics are incomplete"
+      ]
+    },
+    {
+      "origin": "antigravity-session",
+      "detail_level": "full",
+      "provider": "antigravity",
+      "declared_coverage": "unsupported",
+      "coverage_state": "unsupported",
+      "coverage_basis": "no reliable provider token telemetry is supported for this origin",
+      "evidence_stream": "transcript_text_only",
+      "request_semantics": "No provider usage telemetry parser is implemented for this origin.",
+      "cumulative_semantics": "No cumulative provider usage window is available.",
+      "cache_semantics": "No cache read/write token lanes are available.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 1,
+      "message_count": 2,
+      "transcript_word_count": 29,
+      "raw_session_count": 1,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
+      "provider_event_session_count": 0,
+      "provider_event_count": 0,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 0,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 0,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "provider usage telemetry unsupported for this origin"
       ]
     },
     {
@@ -1156,6 +1227,148 @@ $ polylogue analyze usage --format json (excerpt: logical_pricing_lanes)
       "caveats": [
         "exact provider telemetry is supported for this origin but no usage events are materialized",
         "some sessions have no provider usage event rows; transcript words and model rollups cover different evidence"
+      ]
+    },
+    {
+      "origin": "gemini-cli-session",
+      "detail_level": "full",
+      "provider": "gemini-cli",
+      "declared_coverage": "partial",
+      "coverage_state": "partial_provider_telemetry",
+      "coverage_basis": "message-level token fields are materialized, but exact provider request/cumulative semantics are incomplete",
+      "evidence_stream": "message_token_fields",
+      "request_semantics": "Local Gemini CLI documents may carry generic usage/tokens dictionaries per message.",
+      "cumulative_semantics": "No provider cumulative session usage window is available.",
+      "cache_semantics": "Generic cache_read/cache_write keys are preserved when present, but their provider semantics are not independently verified.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 1,
+      "message_count": 2,
+      "transcript_word_count": 33,
+      "raw_session_count": 1,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
+      "provider_event_session_count": 1,
+      "provider_event_count": 1,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 1,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 1,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 160,
+        "output_tokens": 64,
+        "cached_input_tokens": 20,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 160,
+        "output_tokens": 64,
+        "cached_input_tokens": 20,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 244
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 160,
+        "output_tokens": 64,
+        "cached_input_tokens": 20,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 244
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "provider usage telemetry is partial; request, cumulative, and cache semantics are incomplete"
+      ]
+    },
+    {
+      "origin": "hermes-session",
+      "detail_level": "full",
+      "provider": "hermes",
+      "declared_coverage": "partial",
+      "coverage_state": "partial_provider_telemetry",
+      "coverage_basis": "message-level token fields are materialized, but exact provider request/cumulative semantics are incomplete",
+      "evidence_stream": "message_token_fields",
+      "request_semantics": "Hermes local-agent documents may carry generic usage/tokens dictionaries per message.",
+      "cumulative_semantics": "No provider cumulative session usage window is available.",
+      "cache_semantics": "Generic cache_read/cache_write keys are preserved when present, but their provider semantics are not independently verified.",
+      "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
+      "session_count": 1,
+      "message_count": 5,
+      "transcript_word_count": 39,
+      "raw_session_count": 1,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
+      "provider_event_session_count": 0,
+      "provider_event_count": 0,
+      "token_count_event_count": 0,
+      "message_usage_event_count": 0,
+      "zero_token_event_count": 0,
+      "missing_model_event_count": 0,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 1,
+      "origin_reported_model_row_count": 0,
+      "estimated_model_row_count": 0,
+      "stale_rollup_session_count": 0,
+      "provider_request_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "provider_cumulative_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      },
+      "model_rollup_grain": "physical_session",
+      "model_rollup_usage": {
+        "input_tokens": 96,
+        "output_tokens": 32,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 128
+      },
+      "logical_model_rollup_grain": "logical_session_model_high_water",
+      "logical_model_rollup_usage": {
+        "input_tokens": 96,
+        "output_tokens": 32,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 128
+      },
+      "sample_missing_model_sessions": [],
+      "sample_zero_token_sessions": [],
+      "sample_acquired_not_materialized_raw_ids": [],
+      "sample_stale_rollup_sessions": [],
+      "caveats": [
+        "provider usage telemetry is partial; request, cumulative, and cache semantics are incomplete"
       ]
     }
   ],
