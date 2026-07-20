@@ -9,7 +9,9 @@ depending on text density -- see the calibration data below).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from polylogue.sources.parsers.base import ParsedSession
 
@@ -77,6 +79,7 @@ def estimate_parsed_tree_bytes(sessions: Sequence[ParsedSession]) -> int:
     """
     total_chars = 0
     object_count = 0
+    total_inline_attachment_bytes = 0
     for session in sessions:
         object_count += 1
         total_chars += _text_len(session.title)
@@ -125,13 +128,56 @@ def estimate_parsed_tree_bytes(sessions: Sequence[ParsedSession]) -> int:
             total_chars += _text_len(attachment.mime_type)
             total_chars += _text_len(attachment.source_url)
             total_chars += _text_len(attachment.caption)
+            if attachment.inline_bytes is not None:
+                # Embedded attachment payloads stay resident in the decoded
+                # session (and in the spill pickle) byte-for-byte -- count
+                # them directly, no char multiplier.
+                total_inline_attachment_bytes += len(attachment.inline_bytes)
 
         for event in session.session_events:
             object_count += 1
             total_chars += _text_len(event.event_type)
             total_chars += _mapping_char_len(event.payload)
 
-    return _ESTIMATOR_OBJECT_OVERHEAD_BYTES * object_count + _ESTIMATOR_BYTES_PER_CHAR * total_chars
+    return (
+        _ESTIMATOR_OBJECT_OVERHEAD_BYTES * object_count
+        + _ESTIMATOR_BYTES_PER_CHAR * total_chars
+        + total_inline_attachment_bytes
+    )
 
 
-__all__ = ["estimate_parsed_tree_bytes"]
+def effective_physical_memory_bytes() -> int | None:
+    """Physical RAM available to THIS process: host RAM capped by cgroup limit.
+
+    Under a container/systemd cgroup memory limit, ``SC_PHYS_PAGES`` reports
+    host RAM; sizing an adaptive cache from it starves a memory-limited
+    process. Reads cgroup v2 ``memory.max`` (and legacy v1
+    ``memory.limit_in_bytes``) and returns the minimum of host RAM and any
+    finite limit; ``None`` when neither is knowable.
+    """
+
+    physical: int | None
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        physical = pages * page_size if pages > 0 and page_size > 0 else None
+    except (ValueError, OSError, AttributeError):
+        physical = None
+    limits = []
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if raw and raw != "max" and raw.isdigit():
+            value = int(raw)
+            # v1 reports an enormous sentinel when unlimited
+            if 0 < value < (1 << 60):
+                limits.append(value)
+    if limits:
+        smallest = min(limits)
+        return smallest if physical is None else min(physical, smallest)
+    return physical
+
+
+__all__ = ["estimate_parsed_tree_bytes", "effective_physical_memory_bytes"]

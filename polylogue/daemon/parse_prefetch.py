@@ -39,7 +39,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
-from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
+from polylogue.pipeline.parsed_tree_size import (
+    effective_physical_memory_bytes,
+    estimate_parsed_tree_bytes,
+)
 from polylogue.sources import revision_backfill
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
@@ -99,14 +102,7 @@ def daemon_parse_stage_worker_count() -> int:
 
 
 def _physical_memory_bytes() -> int | None:
-    try:
-        pages = os.sysconf("SC_PHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-    except (ValueError, OSError, AttributeError):
-        return None
-    if pages <= 0 or page_size <= 0:
-        return None
-    return pages * page_size
+    return effective_physical_memory_bytes()
 
 
 def daemon_parse_stage_max_inflight_bytes() -> int:

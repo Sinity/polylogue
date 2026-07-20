@@ -32,7 +32,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
-from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
+from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import parallel_threads_effective
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
@@ -1357,10 +1357,7 @@ class _ParsedSessionSpill:
         self.cached_payload_bytes = 0
         self._decoded: dict[str, tuple[list[ParsedSession], int, int]] = {}
         self._decoded_tree_bytes = 0
-        try:
-            physical = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-        except (ValueError, OSError, AttributeError):
-            physical = 0
+        physical = effective_physical_memory_bytes() or 0
         self._decoded_budget = (
             max(self._DECODED_CACHE_MIN_TREE_BYTES, min(self._DECODED_CACHE_MAX_TREE_BYTES, physical // 16))
             if physical
