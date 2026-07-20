@@ -497,6 +497,19 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
     assert "DOM browser-capture fallback" in event["summary"]
 
 
+# A genuine, non-browser-capture arrival (plain "export" below) always
+# outranks a native browser capture, and vice versa -- regardless of which
+# arrives first and regardless of message count (polylogue-z1c6 +
+# review follow-up). This supersedes an earlier "richer/tied content wins,
+# ties favor native" policy: browser capture exists only to backfill a
+# session before its direct/native provider export shows up, never to
+# compete with or shadow that export once it arrives, even if the export
+# happens to carry fewer messages than what the capture already saw. Every
+# row below is deliberately paired (kind/count swapped, order swapped) so
+# the parametrization itself proves the outcome is order-independent: the
+# "export" side wins every row here since none of them lack an export
+# entirely (see ``fuller-export-*`` for the case where the export was
+# already going to win under the old policy too).
 @pytest.mark.parametrize(
     (
         "initial_kind",
@@ -509,13 +522,13 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
         "incoming_is_older",
     ),
     [
-        ("native", 2, "export", 2, "Native browser", 2, "initial", False),
-        ("export", 2, "native", 2, "Native browser", 2, "incoming", False),
-        ("native", 2, "export", 1, "Native browser", 2, "initial", False),
-        ("export", 1, "native", 2, "Native browser", 2, "incoming", False),
+        ("native", 2, "export", 2, "Ordinary export", 2, "incoming", False),
+        ("export", 2, "native", 2, "Ordinary export", 2, "initial", False),
+        ("native", 2, "export", 1, "Ordinary export", 1, "incoming", False),
+        ("export", 1, "native", 2, "Ordinary export", 1, "initial", False),
         ("native", 2, "export", 3, "Fuller export", 3, "incoming", False),
         ("export", 3, "native", 2, "Fuller export", 3, "initial", False),
-        ("export", 2, "native", 2, "Native browser", 2, "incoming", True),
+        ("export", 2, "native", 2, "Ordinary export", 2, "initial", True),
     ],
     ids=(
         "native-before-equal",
@@ -599,7 +612,92 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
 
 
 @pytest.mark.parametrize(
-    ("arrivals", "expected_title", "expected_native_flag", "expected_capture_gap_count"),
+    ("export_message_count", "native_message_count"),
+    [(2, 2), (1, 2), (2, 1), (3, 2), (2, 3)],
+    ids=("equal", "weaker-export", "weaker-native", "fuller-export", "fuller-native"),
+)
+def test_archive_tiers_archive_facade_export_vs_native_precedence_is_order_independent(
+    tmp_path: Path,
+    export_message_count: int,
+    native_message_count: int,
+) -> None:
+    """A direct export and a native browser capture must converge to the same
+    final transcript regardless of which one is ingested first.
+
+    Directly proves the two symmetric ``browser_capture_precedence`` rules
+    (``existing_is_browser_capture and not incoming_is_browser_capture`` /
+    its mirror) actually make the outcome order-independent, rather than
+    relying on separately eyeballing the parametrized before/after rows in
+    ``test_archive_tiers_archive_facade_native_browser_precedence_matrix``
+    above (polylogue-z1c6 review follow-up: the mirror rule was missing,
+    letting a native capture ingested *after* an established export replace
+    it whenever it had at least as many messages).
+    """
+
+    def export_session(native_id: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=native_id,
+            title="Direct export",
+            messages=[
+                ParsedMessage(provider_message_id=f"export-{i}", role=Role.USER, text=f"export message {i}")
+                for i in range(export_message_count)
+            ],
+        )
+
+    def native_session(native_id: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=native_id,
+            title="Native browser capture",
+            messages=[
+                ParsedMessage(provider_message_id=f"native-{i}", role=Role.USER, text=f"native message {i}")
+                for i in range(native_message_count)
+            ],
+            ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG],
+        )
+
+    def final_transcript(*, export_first: bool) -> tuple[str, int]:
+        native_id = f"order-independence-{export_first}-{export_message_count}-{native_message_count}"
+        root = tmp_path / f"archive-{export_first}"
+        first, second = (
+            (export_session(native_id), native_session(native_id))
+            if export_first
+            else (native_session(native_id), export_session(native_id))
+        )
+        with ArchiveStore(root) as facade:
+            first_result = facade.write_raw_and_parsed_result(
+                first,
+                payload=b"first",
+                source_path="/tmp/first.json",
+                acquired_at_ms=1_767_000_000_000,
+            )
+            facade.write_raw_and_parsed_result(
+                second,
+                payload=b"second",
+                source_path="/tmp/second.json",
+                acquired_at_ms=1_767_000_000_001,
+            )
+        session_id = first_result.session_id
+        conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+        try:
+            title, message_count = conn.execute(
+                "SELECT title, message_count FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return str(title), int(message_count)
+
+    export_first_result = final_transcript(export_first=True)
+    native_first_result = final_transcript(export_first=False)
+
+    assert export_first_result == native_first_result
+    assert export_first_result == ("Direct export", export_message_count)
+
+
+@pytest.mark.parametrize(
+    ("arrivals", "expected_title", "expected_native_flag", "expected_capture_gap_count", "expected_content_changed"),
     [
         (
             (
@@ -610,6 +708,7 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
             "Newest export",
             False,
             0,
+            (True, True, True),
         ),
         (
             (
@@ -617,9 +716,13 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
                 ("native", 2, "Older native", "2026-04-01T00:00:00Z"),
                 ("native", 2, "Native update", "2026-04-02T00:00:00Z"),
             ),
-            "Native update",
-            True,
+            "Newer export",
+            False,
             0,
+            # A genuine export, once established, resists every later native
+            # arrival unconditionally (polylogue-z1c6 review follow-up) --
+            # neither later native arrival changes content.
+            (True, False, False),
         ),
         (
             (
@@ -630,9 +733,14 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
             "Fuller export",
             False,
             1,
+            (True, True, True),
         ),
     ],
-    ids=("owner-flag-is-replaced", "forced-owner-resets-freshness", "capture-gap-survives-later-owner"),
+    ids=(
+        "owner-flag-is-replaced",
+        "established-export-resists-later-native-arrivals",
+        "capture-gap-survives-later-owner",
+    ),
 )
 def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     tmp_path: Path,
@@ -640,6 +748,7 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     expected_title: str,
     expected_native_flag: bool,
     expected_capture_gap_count: int,
+    expected_content_changed: tuple[bool, bool, bool],
 ) -> None:
     session_native_id = f"browser-three-arrivals-{expected_title.lower().replace(' ', '-')}"
 
@@ -694,9 +803,12 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     finally:
         conn.close()
 
-    assert [outcome.content_changed for outcome in outcomes] == [True, True, True]
-    assert [outcome.counts["sessions"] for outcome in outcomes] == [1, 1, 1]
-    assert dict(stored) == {"raw_id": outcomes[-1].raw_id, "title": expected_title}
+    assert [outcome.content_changed for outcome in outcomes] == list(expected_content_changed)
+    assert [outcome.counts["sessions"] for outcome in outcomes] == [
+        int(changed) for changed in expected_content_changed
+    ]
+    owner_index = max(index for index, changed in enumerate(expected_content_changed) if changed)
+    assert dict(stored) == {"raw_id": outcomes[owner_index].raw_id, "title": expected_title}
     assert (native_flag is not None) is expected_native_flag
     assert capture_gap_count == expected_capture_gap_count
 

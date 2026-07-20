@@ -78,6 +78,39 @@ def test_parse_payload_unwraps_single_gemini_cli_record_list() -> None:
     assert from_list[0].provider_session_id == from_dict[0].provider_session_id
 
 
+def test_parse_payload_unwraps_single_drive_chunked_session_list() -> None:
+    """A one-session AI Studio / Drive export must keep its bare identity.
+
+    ``_lower_drive_like_payload``'s ``_looks_like_chunked_session_list``
+    branch recurses through EVERY array element with ``f"{fallback_id}-
+    {index}"`` unconditionally, unlike its sibling fallthrough loop a few
+    lines below, which special-cases ``len(payloads) == 1`` to avoid
+    suffixing a genuinely single-item wrapper. Any caller that decodes a
+    lone chunkedPrompt document through a list-shaped stream reader (e.g.
+    ``revision_backfill._parse_one``'s ``list(_iter_json_stream(...))``)
+    therefore derives a DIFFERENT session identity (``...-0`` suffixed) than
+    a caller that keeps the bare dict, purely from incidental list-wrapping
+    with no session-count difference (polylogue-z1c6).
+    """
+    record = {
+        "id": "demo-00",
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "hi"},
+                {"role": "model", "text": "hello"},
+            ]
+        },
+    }
+
+    from_dict = parse_payload(Provider.GEMINI, record, "demo-00")
+    from_list = parse_payload(Provider.GEMINI, [record], "demo-00")
+
+    assert len(from_dict) == 1
+    assert len(from_list) == 1
+    assert from_dict[0].provider_session_id == "demo-00"
+    assert from_list[0].provider_session_id == "demo-00"
+
+
 def test_parse_payload_unwraps_single_antigravity_metadata_list() -> None:
     """Antigravity ``*.metadata.json`` brain artifacts are single JSON objects;
     the list-wrapped full-ingest input must still resolve via source_path."""

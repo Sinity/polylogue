@@ -188,6 +188,34 @@ def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> No
     assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
 
 
+def test_direct_export_outranks_browser_capture_siblings_regardless_of_growth() -> None:
+    """A genuine non-browser-capture revision always wins over dom/native
+    browser-capture siblings, even though its content is neither a byte/hash
+    -growth superset of them nor resolvable by provider-timestamp comparison.
+    Browser capture exists to backfill a session before its paired direct/
+    native provider export shows up, never to compete with or shadow that
+    export once it arrives (polylogue-z1c6)."""
+    direct = _revision("raw-direct", "real one", "real two", "real three")
+    dom = MembershipRevision(
+        "raw-dom",
+        _revision("raw-dom", "dom-only-turn").projection,
+        "2026-07-04T09:55:00Z",
+        browser_snapshot_fidelity="dom",
+    )
+    native = MembershipRevision(
+        "raw-native",
+        _revision("raw-native", "native-turn-a", "native-turn-b").projection,
+        "2026-07-04T09:54:00Z",
+        browser_snapshot_fidelity="native",
+    )
+
+    result = classify_membership_revisions([dom, native, direct])
+
+    assert result.accepted_raw_ids == ("raw-direct",)
+    assert result.equivalent_raw_ids == ("raw-dom", "raw-native")
+    assert result.ambiguous_raw_ids == ()
+
+
 def test_browser_snapshot_accepts_later_attachment_enrichment_without_provider_update() -> None:
     older = _revision("raw-old", "prompt", "answer")
     newer = _revision("raw-new", "prompt", "answer")

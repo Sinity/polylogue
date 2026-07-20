@@ -1370,6 +1370,15 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
         assert raw_id == "raw-native"
 
 
+# A genuine, non-browser-capture arrival ("export" below) always outranks a
+# native browser capture, and vice versa -- regardless of arrival order and
+# regardless of message count (polylogue-z1c6 + review follow-up). This
+# supersedes an earlier "richer/tied content wins, ties favor native" policy:
+# browser capture exists only to backfill a session before its direct/native
+# provider export shows up, never to compete with or shadow that export once
+# it arrives. Mirrors the equivalent matrix in
+# tests/unit/storage/test_archive_tiers_archive.py for the ArchiveStore
+# facade write path; this one exercises the ingest_batch worker write path.
 @pytest.mark.parametrize(
     (
         "initial_kind",
@@ -1382,13 +1391,13 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
         "incoming_is_older",
     ),
     [
-        ("native", 2, "export", 2, "Native browser", 2, "raw-initial", False),
-        ("export", 2, "native", 2, "Native browser", 2, "raw-incoming", False),
-        ("native", 2, "export", 1, "Native browser", 2, "raw-initial", False),
-        ("export", 1, "native", 2, "Native browser", 2, "raw-incoming", False),
+        ("native", 2, "export", 2, "Ordinary export", 2, "raw-incoming", False),
+        ("export", 2, "native", 2, "Ordinary export", 2, "raw-initial", False),
+        ("native", 2, "export", 1, "Ordinary export", 1, "raw-incoming", False),
+        ("export", 1, "native", 2, "Ordinary export", 1, "raw-initial", False),
         ("native", 2, "export", 3, "Fuller export", 3, "raw-incoming", False),
         ("export", 3, "native", 2, "Fuller export", 3, "raw-initial", False),
-        ("export", 2, "native", 2, "Native browser", 2, "raw-incoming", True),
+        ("export", 2, "native", 2, "Ordinary export", 2, "raw-initial", True),
     ],
     ids=(
         "native-before-equal",
@@ -1468,7 +1477,7 @@ def test_write_session_native_browser_precedence_matrix(
 
 
 @pytest.mark.parametrize(
-    ("arrivals", "expected_title", "expected_native_flag"),
+    ("arrivals", "expected_title", "expected_native_flag", "expected_content_changed"),
     [
         (
             (
@@ -1478,6 +1487,7 @@ def test_write_session_native_browser_precedence_matrix(
             ),
             "Newest export",
             False,
+            (True, True, True),
         ),
         (
             (
@@ -1485,17 +1495,22 @@ def test_write_session_native_browser_precedence_matrix(
                 ("native", 2, "Older native", "2026-04-01T00:00:00Z"),
                 ("native", 2, "Native update", "2026-04-02T00:00:00Z"),
             ),
-            "Native update",
-            True,
+            "Newer export",
+            False,
+            # A genuine export, once established, resists every later native
+            # arrival unconditionally (polylogue-z1c6 review follow-up) --
+            # neither later native arrival changes content.
+            (True, False, False),
         ),
     ],
-    ids=("owner-flag-is-replaced", "forced-owner-resets-freshness"),
+    ids=("owner-flag-is-replaced", "established-export-resists-later-native-arrivals"),
 )
 def test_write_session_browser_precedence_tracks_three_arrivals(
     tmp_path: Path,
     arrivals: tuple[tuple[str, int, str, str], ...],
     expected_title: str,
     expected_native_flag: bool,
+    expected_content_changed: tuple[bool, bool, bool],
 ) -> None:
     session_id = f"chatgpt-export:browser-three-arrivals-{expected_title.lower().replace(' ', '-')}"
 
@@ -1536,8 +1551,9 @@ def test_write_session_browser_precedence_tracks_three_arrivals(
             (session_id, NATIVE_BROWSER_CAPTURE_INGEST_FLAG),
         ).fetchone()
 
-    assert [changed for changed, _counts in outcomes] == [True, True, True]
-    assert dict(stored) == {"raw_id": "raw-2", "title": expected_title}
+    assert [changed for changed, _counts in outcomes] == list(expected_content_changed)
+    owner_index = max(index for index, changed in enumerate(expected_content_changed) if changed)
+    assert dict(stored) == {"raw_id": f"raw-{owner_index}", "title": expected_title}
     assert (native_flag is not None) is expected_native_flag
 
 

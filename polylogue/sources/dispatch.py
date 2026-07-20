@@ -647,13 +647,22 @@ def _lower_drive_like_payload(
         ):
             return [_chunked_prompt_spec(provider, payloads, fallback_id)]
         if _looks_like_chunked_session_list(payloads):
+            # A single-element wrapper (a lone session document decoded through
+            # a list-shaped stream reader, e.g. any caller that materializes a
+            # plain JSON document via a generic JSON-stream iterator) must keep
+            # the bare ``fallback_id`` -- suffixing it with a spurious ``-0``
+            # only for THIS branch (while the sibling fallthrough loop below
+            # already special-cases ``len(payloads) == 1``) diverges a
+            # one-item wrapped payload's session identity from the identical
+            # bare-document payload's identity, purely based on which decode
+            # path incidentally wrapped it in a list (polylogue-z1c6).
             nested_specs: list[LoweredPayloadSpec] = []
             for index, item in enumerate(payloads):
                 nested_specs.extend(
                     _lower_payload_specs(
                         provider,
                         item,
-                        f"{fallback_id}-{index}",
+                        fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
                         depth=depth + 1,
                         schema_resolution=schema_resolution,
                     )

@@ -69,10 +69,18 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
     ):
         browser_order = _provider_ordered_browser_snapshots(representatives)
         if browser_order is None:
+            direct_export = _direct_export_precedence(representatives)
+            if direct_export is None:
+                return MembershipClassification(
+                    (),
+                    tuple(sorted(equivalents)),
+                    tuple(sorted(item.raw_id for item in representatives)),
+                )
+            accepted, browser_capture_raw_ids = direct_export
             return MembershipClassification(
+                (accepted.raw_id,),
+                tuple(sorted((*equivalents, *browser_capture_raw_ids))),
                 (),
-                tuple(sorted(equivalents)),
-                tuple(sorted(item.raw_id for item in representatives)),
             )
         representatives = browser_order
     return MembershipClassification(
@@ -112,6 +120,33 @@ def _provider_ordered_browser_snapshots(
         if not _browser_snapshot_dominates(older, newer):
             return None
     return ordered
+
+
+def _direct_export_precedence(
+    revisions: list[MembershipRevision],
+) -> tuple[MembershipRevision, tuple[str, ...]] | None:
+    """A genuine non-browser-capture revision always outranks browser-capture siblings.
+
+    Browser capture exists to backfill a session before its direct/native
+    provider export shows up, never to compete with or shadow that export
+    once it arrives -- a materially different transcript (e.g. a browser
+    snapshot's own message ids) is expected and does not make the group
+    ambiguous. When exactly one candidate in an otherwise-unresolved
+    membership group carries no browser-capture provenance at all
+    (``browser_snapshot_fidelity is None``) and at least one sibling is
+    browser-capture-sourced, the non-browser candidate is authoritative for
+    session content regardless of byte-growth or provider-timestamp
+    comparisons; the browser-capture siblings are retained as raw
+    provenance only, not indexed content (polylogue-z1c6). Returns ``None``
+    when this specific shape does not apply (zero or multiple non-browser
+    candidates), leaving the caller's existing ambiguous-quarantine
+    behavior untouched.
+    """
+    direct = [item for item in revisions if item.browser_snapshot_fidelity is None]
+    browser_sourced = [item for item in revisions if item.browser_snapshot_fidelity is not None]
+    if len(direct) != 1 or not browser_sourced:
+        return None
+    return direct[0], tuple(item.raw_id for item in browser_sourced)
 
 
 def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevision) -> bool:

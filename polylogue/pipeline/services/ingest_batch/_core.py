@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
@@ -297,8 +297,9 @@ _SCOPED_FK_PARENTS = {
 }
 
 
-def _incoming_has_ingest_flag(payload: SessionWritePayload, flag: str) -> bool:
-    return flag in payload.parsed_session.ingest_flags
+def _incoming_has_ingest_flag(payload: SessionWritePayload, flag: str | Sequence[str]) -> bool:
+    flags = (flag,) if isinstance(flag, str) else flag
+    return any(candidate in payload.parsed_session.ingest_flags for candidate in flags)
 
 
 def _session_parent_id(payload: SessionWritePayload) -> str | None:
@@ -447,11 +448,11 @@ def _write_session(
         existing_has_native_browser_payload = session_has_parser_ingest_flag(
             conn,
             payload.session_id,
-            NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+            NATIVE_BROWSER_CAPTURE_FLAGS,
         )
         incoming_has_native_browser_payload = _incoming_has_ingest_flag(
             payload,
-            NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+            NATIVE_BROWSER_CAPTURE_FLAGS,
         )
         current_stored_message_count = stored_message_count(conn, payload.session_id)
         lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback

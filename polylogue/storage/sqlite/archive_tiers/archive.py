@@ -22,7 +22,7 @@ from typing import Any, BinaryIO, Literal, TypedDict, cast
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -1566,7 +1566,7 @@ class ArchiveStore:
         existing_is_dom_fallback = False
         incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
         existing_has_native_browser_payload = False
-        incoming_has_native_browser_payload = NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
+        incoming_has_native_browser_payload = any(flag in session.ingest_flags for flag in NATIVE_BROWSER_CAPTURE_FLAGS)
         current_stored_message_count = 0
         browser_precedence: BrowserCapturePrecedence = "default"
 
@@ -1612,7 +1612,7 @@ class ArchiveStore:
             existing_has_native_browser_payload = session_has_parser_ingest_flag(
                 self._conn,
                 session_id,
-                NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+                NATIVE_BROWSER_CAPTURE_FLAGS,
             )
             current_stored_message_count = stored_message_count(self._conn, session_id)
             lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
