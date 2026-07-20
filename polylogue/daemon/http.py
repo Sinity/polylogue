@@ -4005,18 +4005,48 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         much worse place to block on that than a CLI call a human can
         interrupt (polylogue-dlmv). Callers that want the full
         diagnostics can still request ``?detail=full`` explicitly.
+
+        A missing/unopenable ``index.db`` used to propagate a raw
+        ``sqlite3.OperationalError`` as an unhandled 500 (polylogue-d07y).
+        Sibling read endpoints (``/api/archive-debt``, the split-archive
+        ``/api/sessions`` fast path) degrade gracefully instead — this route
+        now returns the same typed ``route_state: degraded`` envelope shape,
+        privacy-projected like every other archive-path-bearing payload here.
         """
         origin = self._get_param(params, "origin")
         limit = self._get_int(params, "limit", 25)
         detail = self._get_param(params, "detail", "headline") or "headline"
         from polylogue.paths import archive_root as configured_archive_root
 
+        archive_root = configured_archive_root()
+
         async def _get(poly: Polylogue) -> object:
             report = await poly.provider_usage_report(origin=origin, limit=limit, detail=detail)
             return report.to_dict()
 
-        result = _web_privacy_safe_projection(self._sync_run(_get), configured_archive_root())
-        self._send_json(HTTPStatus.OK, result)
+        try:
+            result = self._sync_run(_get)
+        except (DatabaseError, sqlite3.Error) as exc:
+            logger.warning("provider-usage archive read degraded: %s", exc)
+            reason = f"Provider usage accounting is unavailable: archive index could not be read ({exc})."
+            degraded: dict[str, object] = {
+                "archive_root": str(archive_root),
+                "origin": origin,
+                "detail_level": detail,
+                "origins": [],
+                "caveats": [reason],
+                "route_state": _route_readiness_payload(
+                    "degraded",
+                    "/api/provider-usage",
+                    reason=reason,
+                    component="index_db",
+                    stale_available=False,
+                ),
+            }
+            self._send_json(HTTPStatus.OK, _web_privacy_safe_projection(degraded, archive_root))
+            return
+
+        self._send_json(HTTPStatus.OK, _web_privacy_safe_projection(result, archive_root))
 
     @daemon_safe_handler
     def _handle_query_units(self, params: dict[str, list[str]]) -> None:
