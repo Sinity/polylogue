@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Literal
+from typing import BinaryIO, Final, Literal
 
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
@@ -1264,11 +1264,31 @@ class _ParsedSessionSpill:
     I/O for completeness and makes no raw cohort silently disappear.
     """
 
+    #: Decoded-session RAM layer budget (payload-equivalent bytes). Replay
+    #: consumes a cohort almost immediately after census parses it, so a
+    #: small hot layer turns the common for_raw() into a dict hit instead of
+    #: a pickle.loads round-trip. Bounded independently of the sqlite layer.
+    _DECODED_CACHE_PAYLOAD_BYTES: Final[int] = 256 * 1024 * 1024
+
     def __init__(self, archive_root: Path, *, max_cached_payload_bytes: int | None) -> None:
-        fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=archive_root)
+        # Place the spill beside the RESOLVED index tier, not the archive
+        # root: on deployments where the .db files are symlinks (e.g. root
+        # SSD config dir -> NVMe data disk), a spill in archive_root would
+        # put census churn on the wear-limited disk the symlinks exist to
+        # protect.
+        index_path = archive_root / "index.db"
+        spill_dir = index_path.resolve().parent if index_path.exists() else archive_root
+        fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=spill_dir)
         os.close(fd)
         self.path = Path(name)
         self.conn = sqlite3.connect(self.path)
+        # Disposable single-connection cache: durability is meaningless (the
+        # fallback is reparsing durable source evidence), so skip the
+        # journal and every fsync -- the per-add commit previously paid a
+        # synchronous journal cycle per censused raw.
+        self.conn.execute("PRAGMA journal_mode=OFF")
+        self.conn.execute("PRAGMA synchronous=OFF")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
         self.conn.execute(
             """
             CREATE TABLE parsed_sessions (
@@ -1283,6 +1303,8 @@ class _ParsedSessionSpill:
         self.conn.execute("CREATE INDEX parsed_sessions_logical ON parsed_sessions(logical_key, raw_id)")
         self.max_cached_payload_bytes = max_cached_payload_bytes
         self.cached_payload_bytes = 0
+        self._decoded: dict[str, tuple[list[ParsedSession], int]] = {}
+        self._decoded_payload_bytes = 0
 
     def __enter__(self) -> _ParsedSessionSpill:
         return self
@@ -1316,8 +1338,21 @@ class _ParsedSessionSpill:
                 ),
             )
         self.cached_payload_bytes += payload_bytes
+        self._retain_decoded(raw_id, sessions, payload_bytes=payload_bytes)
+
+    def _retain_decoded(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
+        if payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
+            return
+        while self._decoded and self._decoded_payload_bytes + payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
+            _evicted_raw, (_evicted_sessions, evicted_bytes) = self._decoded.popitem()
+            self._decoded_payload_bytes -= evicted_bytes
+        self._decoded[raw_id] = (sessions, payload_bytes)
+        self._decoded_payload_bytes += payload_bytes
 
     def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+        decoded = self._decoded.get(raw_id)
+        if decoded is not None:
+            return decoded
         rows = self.conn.execute(
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
         ).fetchall()
