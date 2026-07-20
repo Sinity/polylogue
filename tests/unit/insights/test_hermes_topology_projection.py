@@ -9,6 +9,8 @@ aggregator under test -- directly, mirroring
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from polylogue.core.types import SessionEventId, SessionId
 from polylogue.insights.hermes_topology_projection import (
     HermesArtifactInput,
@@ -209,6 +211,77 @@ def test_verification_fidelity_preserves_declared_degradation_not_defaulted_exac
     verification_obs_ambiguous = next(obs for obs in projection_ambiguous.artifacts if obs.artifact == "verification")
     assert verification_obs_ambiguous.fidelity_status == "degraded"
     assert any("session_id='default'" in caveat for caveat in verification_obs_ambiguous.caveats)
+
+
+def test_composes_with_profile_qualified_verification_ids_like_atif_and_atof(tmp_path: Path) -> None:
+    """Composition regression: #3227 (merged separately, profile-qualifying
+    hermes_verification.py) must compose with this branch's artifact-family
+    qualification and this projection exactly the way #3224's ATIF/ATOF
+    profile qualification does.
+
+    The projection itself never hardcodes a session-id shape -- callers
+    resolve each artifact's ``session_id`` (see ``HermesArtifactInput``
+    docstring) -- so the real composition point is
+    ``hermes_verification.hermes_verification_session_id_for``, which now
+    PRESERVES the ``@profile-<key>`` qualifier (it used to strip it, before
+    #3227) exactly like ``hermes_spans.hermes_atif_session_id_for`` /
+    ``hermes_spans.hermes_atof_session_id_for`` do. This test drives the
+    real resolution helpers from a profile-qualified conversational session
+    id -- not a hand-typed "verification:<id>" string -- and proves the
+    projection reports the SAME resolved, profile-qualified verification
+    session id it was handed, and that two different profiles resolve to
+    two different, non-colliding verification session ids for the same raw
+    Hermes session id.
+
+    Mutation: reintroduce id-stripping in
+    hermes_verification_session_id_for (or hand it an unqualified id here)
+    and the qualified-id assertions below fail.
+    """
+    from polylogue.sources.parsers import hermes_verification
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    profile_a_root = tmp_path / "install-a"
+    profile_b_root = tmp_path / "install-b"
+    profile_a_key = profile_key(profile_a_root)
+    profile_b_key = profile_key(profile_b_root)
+    assert profile_a_key != profile_b_key
+
+    conversational_a = qualified_session_id(_HERMES_SESSION_ID, profile_a_key)
+    conversational_b = qualified_session_id(_HERMES_SESSION_ID, profile_b_key)
+
+    verification_session_id_a = hermes_verification.hermes_verification_session_id_for(conversational_a)
+    verification_session_id_b = hermes_verification.hermes_verification_session_id_for(conversational_b)
+
+    # Preserved, not stripped -- and matches the same qualifier
+    # hermes_spans.atif_session_provider_id/atof_session_provider_id use for
+    # the same raw id + profile.
+    assert verification_session_id_a == f"verification:{_HERMES_SESSION_ID}@profile-{profile_a_key}"
+    assert verification_session_id_b == f"verification:{_HERMES_SESSION_ID}@profile-{profile_b_key}"
+    assert verification_session_id_a != verification_session_id_b
+
+    verification_events = [_event("hermes_verification_event", {"status": "passed", "kind": "lint"})]
+    projection_a = project_hermes_topology(
+        _HERMES_SESSION_ID,
+        conversational=_artifact(conversational_a, None),
+        atif=_artifact(hermes_spans.atif_session_provider_id(_HERMES_SESSION_ID, profile_a_key), None),
+        atof=_artifact(hermes_spans.atof_session_provider_id(_HERMES_SESSION_ID, profile_a_key), None),
+        verification=_artifact(verification_session_id_a, verification_events),
+    )
+    projection_b = project_hermes_topology(
+        _HERMES_SESSION_ID,
+        conversational=_artifact(conversational_b, None),
+        atif=_artifact(hermes_spans.atif_session_provider_id(_HERMES_SESSION_ID, profile_b_key), None),
+        atof=_artifact(hermes_spans.atof_session_provider_id(_HERMES_SESSION_ID, profile_b_key), None),
+        verification=_artifact(verification_session_id_b, verification_events),
+    )
+
+    verification_obs_a = next(obs for obs in projection_a.artifacts if obs.artifact == "verification")
+    verification_obs_b = next(obs for obs in projection_b.artifacts if obs.artifact == "verification")
+    assert verification_obs_a.session_id == verification_session_id_a
+    assert verification_obs_b.session_id == verification_session_id_b
+    assert verification_obs_a.session_id != verification_obs_b.session_id
+    assert verification_obs_a.available is True
+    assert verification_obs_b.available is True
 
 
 def test_subagent_evidence_is_surfaced_from_both_artifacts_with_source_provenance() -> None:

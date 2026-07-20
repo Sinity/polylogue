@@ -270,22 +270,21 @@ ATIF and ATOF get **distinct** artifact-qualified prefixes (`fs1.14`) — see
 [What Polylogue cannot claim](#what-polylogue-cannot-claim-from-your-hermes-runtime)
 item 1 for the collision this fixed. When the acquiring directory (the
 `profile_root` Polylogue derives from the artifact's own source path) is
-known, both ATIF's and ATOF's identity additionally carries the same
-`@profile-<key>` qualifier the `state.db` conversational session uses — two
-separate Hermes installs (profiles) that happen to reuse the same raw
-session id get fully independent archive rows, not just independent
-artifact families (also `fs1.14`; see item 1 below). Read-side helpers
-cross-reference all four without merging them:
-`hermes_spans.hermes_atif_session_id_for()` and
-`hermes_spans.hermes_atof_session_id_for()` each take a `state.db`-ingested
-conversational session id and return the matching observer session id,
-*preserving* whatever `@profile-<key>` qualifier it carries — a reader
-holding the qualified conversational id resolves observer evidence for the
-same install, not merely the same raw session id.
-`hermes_verification.hermes_verification_session_id_for()` is not yet part
-of this fix's scope and still *strips* the `@profile-<key>` qualifier (the
-verification ledger carries no profile-root context of its own); see item 1
-below for why this is a deliberate scoping decision, not an inconsistency.
+known, ATIF's, ATOF's, and the verification ledger's identity all
+additionally carry the same `@profile-<key>` qualifier the `state.db`
+conversational session uses — two separate Hermes installs (profiles) that
+happen to reuse the same raw session id get fully independent archive rows
+on every artifact class, not just independent artifact families (`fs1.14`
+for ATIF/ATOF, `polylogue-y9zx` for the verification ledger; see item 1
+below). Read-side helpers cross-reference all four without merging them:
+`hermes_spans.hermes_atif_session_id_for()`,
+`hermes_spans.hermes_atof_session_id_for()`, and
+`hermes_verification.hermes_verification_session_id_for()` each take a
+`state.db`-ingested conversational session id and return the matching
+observer/verification session id, *preserving* whatever `@profile-<key>`
+qualifier it carries — a reader holding the qualified conversational id
+resolves that artifact's evidence for the same install, not merely the same
+raw session id.
 `polylogue/insights/hermes_topology_projection.py` composes all four artifact
 classes for one raw Hermes session id into one typed, read-only projection
 (availability, per-artifact fidelity, unpaired-trace debt, and explicit
@@ -322,9 +321,12 @@ This is the section to read before you trust anything above it.
    anything else. This still does **not** mean they are unioned into one
    queryable session: read the relevant ids (or use
    `hermes_topology_projection.project_hermes_topology`) to see the combined
-   evidence. The verification ledger (`hermes_verification.py`) has the
-   identical unqualified-id / profile-stripping pattern but was explicitly
-   left out of this fix's scope — see the "Session identity" section above.
+   evidence. The verification ledger (`hermes_verification.py`) had the
+   identical unqualified-id collapse risk on the profile axis (it was never
+   part of the ATIF/ATOF artifact-family collision, since it already used
+   its own `verification:` prefix) — fixed separately as `polylogue-y9zx`,
+   merged as PR #3227, using the same shared `hermes_identity.py` qualifier
+   scheme; see the "Session identity" section above.
 2. **No physical merge across `state.db` transcript ↔ observer evidence ↔
    verification ledger.** Three logically-related session ids can exist for
    one real Hermes session (conversational, observer, verification). Reading
