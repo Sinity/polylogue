@@ -1271,6 +1271,7 @@ def test_periodic_raw_materialization_flag_off_never_warms_parse_stage(
 
     class FakeResolved:
         daemon_parse_stage_split = False
+        daemon_bulk_rebuild_routing = False
 
     seen_prefetch_cache: list[object] = []
 
@@ -1310,6 +1311,7 @@ def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drai
 
     class FakeResolved:
         daemon_parse_stage_split = True
+        daemon_bulk_rebuild_routing = False
 
     order: list[str] = []
     lease_during_warm: list[bool] = []
@@ -1361,6 +1363,7 @@ def test_periodic_raw_materialization_flag_on_warm_exception_still_hands_back_ca
 
     class FakeResolved:
         daemon_parse_stage_split = True
+        daemon_bulk_rebuild_routing = False
 
     _sentinel_cache = object()
     seen_prefetch_cache: list[object] = []
@@ -1407,6 +1410,7 @@ def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_w
 
     class FakeResolved:
         daemon_parse_stage_split = True
+        daemon_bulk_rebuild_routing = False
 
     warm_delay_seconds = 0.2
     released_hold_seconds: list[float] = []
@@ -4029,3 +4033,169 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
     asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))  # must not raise
+
+
+def test_daemon_bulk_rebuild_transaction_in_flight_flag_off_never_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag-off path must not even consult
+    ``has_resumable_daemon_bulk_rebuild_transaction`` -- mirrors
+    ``_maybe_route_daemon_bulk_rebuild``'s own flag gate exactly."""
+    from polylogue.daemon import cli as daemon_cli
+
+    class FakeResolved:
+        daemon_bulk_rebuild_routing = False
+
+    def fail_has_resumable(_root: object) -> bool:
+        pytest.fail("must not check for a resumable transaction while the flag is off")
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr(
+        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fail_has_resumable
+    )
+
+    assert asyncio.run(daemon_cli._daemon_bulk_rebuild_transaction_in_flight()) is False
+
+
+def test_daemon_bulk_rebuild_transaction_in_flight_flag_on_delegates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Flag on: delegates straight to ``has_resumable_daemon_bulk_rebuild_transaction``
+    against the configured archive root."""
+    from polylogue.daemon import cli as daemon_cli
+
+    class FakeResolved:
+        daemon_bulk_rebuild_routing = True
+
+    seen_roots: list[Path] = []
+
+    def fake_has_resumable(root: Path) -> bool:
+        seen_roots.append(root)
+        return True
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fake_has_resumable
+    )
+
+    assert asyncio.run(daemon_cli._daemon_bulk_rebuild_transaction_in_flight()) is True
+    assert seen_roots == [tmp_path]
+
+
+def test_periodic_raw_materialization_convergence_suppresses_trickle_while_bulk_rebuild_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-gd6v residual: the trickle census/drain pass must stand
+    down for the tick while the daemon's own bulk-rebuild transaction is in
+    flight, instead of both mechanisms converging on the same raw backlog
+    every tick (double parse/replay work + needless writer-hold contention).
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    async def fake_in_flight() -> bool:
+        return True
+
+    routed: list[RawMaterializationCounts] = []
+
+    async def fake_route(counts: RawMaterializationCounts) -> bool:
+        routed.append(counts)
+        return True
+
+    async def fail_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        pytest.fail(f"trickle drain must not run while a bulk-rebuild transaction is in flight (actor={actor})")
+
+    async def fake_sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
+    monkeypatch.setattr(daemon_cli, "_maybe_route_daemon_bulk_rebuild", fake_route)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
+
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert len(routed) == 1
+    assert routed[0].candidate_count == 0  # a placeholder counts object -- has_resumable alone gates routing
+
+
+def test_periodic_raw_materialization_convergence_falls_back_to_outer_interval_on_bulk_rebuild_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A swallowed bulk-rebuild pass failure during suppression must not
+    turn into a tight 1s retry storm -- it falls back to the same slower
+    outer interval a trickle pass failure already falls back to."""
+    from polylogue.daemon import cli as daemon_cli
+
+    async def fake_in_flight() -> bool:
+        return True
+
+    async def fake_route_fails(_counts: object) -> bool:
+        return False  # mirrors _maybe_route_daemon_bulk_rebuild's own swallowed-failure return
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    async def fail_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        pytest.fail(f"trickle drain must not run while a bulk-rebuild transaction is in flight (actor={actor})")
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
+    monkeypatch.setattr(daemon_cli, "_maybe_route_daemon_bulk_rebuild", fake_route_fails)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
+
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert sleeps == [daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS]
+
+
+def test_periodic_raw_materialization_convergence_resumes_trickle_once_bulk_rebuild_no_longer_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once ``has_resumable_daemon_bulk_rebuild_transaction`` flips false
+    (promoted or abandoned), the very next tick resumes the ordinary
+    trickle census/drain pass automatically -- no operator action, no wait
+    for the outer interval."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    in_flight_sequence = iter([True, False])
+
+    async def fake_in_flight() -> bool:
+        return next(in_flight_sequence)
+
+    routed: list[object] = []
+
+    async def fake_route(counts: object) -> bool:
+        routed.append(counts)
+        return True
+
+    trickle_calls: list[str] = []
+
+    async def fake_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        trickle_calls.append(actor)
+        return RawMaterializationCounts(remaining_candidates=0)
+
+    async def fake_sleep(seconds: float) -> None:
+        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
+            raise asyncio.CancelledError
+        # burst-pause sleeps between suppressed passes: no-op, let the tick continue.
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
+    monkeypatch.setattr(daemon_cli, "_maybe_route_daemon_bulk_rebuild", fake_route)
+    monkeypatch.setattr(daemon_cli, "_maybe_recommend_bulk_rebuild", lambda _counts: None)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert trickle_calls == ["maintenance.raw_materialization"]
+    assert len(routed) >= 1  # the suppression branch drove at least one bulk pass first
