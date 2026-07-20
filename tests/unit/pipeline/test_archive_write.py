@@ -8,6 +8,7 @@ detection — rather than inspecting an intermediate counts envelope.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -338,6 +339,125 @@ async def test_preserves_empty_and_explicit_native_message_ids(async_backend: SQ
     native_ids = [row["native_id"] for row in rows]
     assert None in native_ids
     assert "msg-explicit" in native_ids
+
+
+async def test_whitespace_only_native_message_id_falls_back_and_writes_blocks(async_backend: SQLiteBackend) -> None:
+    """Regression for the v42 rebuild FK crash (operation ab5bad1f).
+
+    A whitespace-only provider-native id stores truthy under a bare
+    ``or None`` (so the old code path kept it), but ``identity_law``'s
+    ``native_id.strip()`` check falls back to the position/variant id. The
+    two disagreeing meant ``blocks`` referenced a ``message_id`` that
+    ``messages`` never stored -- a FOREIGN KEY constraint failure. This
+    write must now succeed, store ``native_id`` as NULL, and use the
+    position/variant fallback for both the DB row and any dependent block.
+    """
+    session = ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id="conv-whitespace",
+        title="Test",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(provider_message_id="   ", role=Role.USER, text="Hello", timestamp="2024-01-01T00:00:00Z"),
+        ],
+        attachments=[],
+    )
+
+    session_id = await ingest_session(session, async_backend)
+
+    async with async_backend.connection() as conn:
+        message_row = await (
+            await conn.execute(
+                "SELECT message_id, native_id FROM messages WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+        assert message_row is not None
+        block_count = await _count(
+            async_backend, "SELECT COUNT(*) FROM blocks WHERE message_id = ?", message_row["message_id"]
+        )
+
+    assert message_row["native_id"] is None
+    assert message_row["message_id"] == f"{session_id}:0.0"
+    assert block_count == 1
+
+
+async def test_surrogate_native_message_id_round_trips_consistently(async_backend: SQLiteBackend) -> None:
+    """A lone-surrogate provider-native id must normalize identically on both
+    the stored ``messages.native_id`` value and the generated ``message_id``
+    the dependent ``blocks`` row references (latent Divergence-2 FK-failure
+    class from the same rebuild crash)."""
+    raw_native_id = "\ud800tail"
+    session = ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id="conv-surrogate",
+        title="Test",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id=raw_native_id, role=Role.USER, text="Hello", timestamp="2024-01-01T00:00:00Z"
+            ),
+        ],
+        attachments=[],
+    )
+
+    session_id = await ingest_session(session, async_backend)
+
+    async with async_backend.connection() as conn:
+        message_row = await (
+            await conn.execute(
+                "SELECT message_id, native_id FROM messages WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+        assert message_row is not None
+        block_count = await _count(
+            async_backend, "SELECT COUNT(*) FROM blocks WHERE message_id = ?", message_row["message_id"]
+        )
+
+    assert message_row["native_id"] == "�tail"
+    assert message_row["message_id"] == f"{session_id}:�tail"
+    assert block_count == 1
+
+
+def test_message_native_id_divergence_raises_fk_error_naming_the_session(
+    test_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The FK-context wrapper around the write path (polylogue rebuild
+    ab5bad1f) must chain a bare ``sqlite3.IntegrityError`` into one that names
+    the session, instead of the original bare 'FOREIGN KEY constraint
+    failed' a 10-hour rebuild died on with zero context.
+
+    Forces the divergence directly (bypassing the now-fixed single source of
+    truth) by making the Python-side identity computation disagree with
+    whatever ``messages.native_id`` actually stores, independent of whether
+    a real provider payload can still trigger it.
+    """
+    from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
+    from tests.infra.live_ingest import write_session_sync
+
+    monkeypatch.setattr(archive_tier_write, "archive_message_id", lambda *a, **k: "bogus-id-does-not-exist")
+
+    session = ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id="conv-forced-divergence",
+        title="Test",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(provider_message_id="msg-1", role=Role.USER, text="Hello", timestamp="2024-01-01T00:00:00Z"),
+        ],
+        attachments=[],
+    )
+
+    with pytest.raises(sqlite3.IntegrityError) as exc_info:
+        write_session_sync(test_db, session)
+
+    message = str(exc_info.value)
+    assert "unknown-export:conv-forced-divergence" in message
+    assert "conv-forced-divergence" in message
 
 
 async def test_stores_typed_origin_on_session(async_backend: SQLiteBackend) -> None:

@@ -343,287 +343,293 @@ def write_parsed_session_to_archive(
     # When the caller owns the transaction (bulk batching) we must not commit
     # per session; nullcontext leaves BEGIN/COMMIT to the caller.
     transaction = conn if manage_transaction else nullcontext()
-    with transaction:
-        conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-        if bulk_build:
-            # polylogue-v6i3: gate messages_fts/blocks_command_trigram trigger
-            # BODIES for this session's *entire* write (block inserts in the
-            # ordinary merge/full-replace paths, not just the prefix-tail
-            # reextract cascade -- see _bulk_fts_session_guard, which detects
-            # this outer guard and becomes a no-op rather than double-managing
-            # the same row). Cleared alongside the 'session-write' guard below.
-            conn.execute(
-                "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                (FTS_BULK_SESSION_WRITE_GUARD,),
-            )
-        t0 = time.perf_counter()
-        conn.execute(
-            """
-            INSERT INTO sessions (
-                native_id, origin, raw_id, branch_type, active_leaf_message_id,
-                title, session_kind, title_source, git_branch, git_repository_url, commit_hash,
-                instructions_text, reported_duration_ms, provider_project_ref,
-                message_count, word_count, tool_use_count, thinking_count,
-                paste_count, user_message_count, authored_user_message_count,
-                assistant_message_count, system_message_count,
-                tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
-                content_hash, created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(origin, native_id) DO UPDATE SET
-                raw_id = excluded.raw_id,
-                branch_type = excluded.branch_type,
-                active_leaf_message_id = excluded.active_leaf_message_id,
-                title = COALESCE(excluded.title, sessions.title),
-                session_kind = excluded.session_kind,
-                title_source = COALESCE(excluded.title_source, sessions.title_source),
-                git_branch = excluded.git_branch,
-                git_repository_url = excluded.git_repository_url,
-                commit_hash = excluded.commit_hash,
-                provider_project_ref = excluded.provider_project_ref,
-                instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
-                reported_duration_ms = excluded.reported_duration_ms,
-                content_hash = excluded.content_hash,
-                created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
-                updated_at_ms = CASE
-                    WHEN ? THEN excluded.updated_at_ms
-                    ELSE MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
-                END
-            """,
-            (
-                native_id,
-                origin.value,
-                raw_id,
-                _enum_value(session.branch_type),
-                active_leaf_message_id,
-                _sqlite_text(session.title),
-                _enum_value(session.session_kind) or SessionKind.STANDARD.value,
-                _enum_value(session.title_source),
-                _sqlite_text(session.git_branch),
-                _sqlite_text(session.git_repository_url),
-                _sqlite_text(session.git_commit_hash),
-                _sqlite_text(session.instructions_text),
-                session.reported_duration_ms,
-                _sqlite_text(session.provider_project_ref),
-                session_counts["message_count"],
-                session_counts["word_count"],
-                session_counts["tool_use_count"],
-                session_counts["thinking_count"],
-                session_counts["paste_count"],
-                session_counts["user_message_count"],
-                session_counts["authored_user_message_count"],
-                session_counts["assistant_message_count"],
-                session_counts["system_message_count"],
-                session_counts["tool_message_count"],
-                session_counts["user_word_count"],
-                session_counts["authored_user_word_count"],
-                session_counts["assistant_word_count"],
-                session_content_hash,
-                _timestamp_ms(session.created_at),
-                _timestamp_ms(session.updated_at),
-                force_replace,
-            ),
-        )
-        add_timing("index.session_upsert", t0)
-        position_offset = 0
-        stale_attachment_ids: set[str] = set()
-        t0 = time.perf_counter()
-        if merge_append:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            position_offset = int(row[0] or 0) if row is not None else 0
+    try:
+        with transaction:
+            conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
+            if bulk_build:
+                # polylogue-v6i3: gate messages_fts/blocks_command_trigram trigger
+                # BODIES for this session's *entire* write (block inserts in the
+                # ordinary merge/full-replace paths, not just the prefix-tail
+                # reextract cascade -- see _bulk_fts_session_guard, which detects
+                # this outer guard and becomes a no-op rather than double-managing
+                # the same row). Cleared alongside the 'session-write' guard below.
+                conn.execute(
+                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+                    (FTS_BULK_SESSION_WRITE_GUARD,),
+                )
+            t0 = time.perf_counter()
             conn.execute(
                 """
-                UPDATE messages
-                SET is_active_leaf = 0
-                WHERE session_id = ?
-                  AND is_active_path = 1
-                  AND is_active_leaf = 1
+                INSERT INTO sessions (
+                    native_id, origin, raw_id, branch_type, active_leaf_message_id,
+                    title, session_kind, title_source, git_branch, git_repository_url, commit_hash,
+                    instructions_text, reported_duration_ms, provider_project_ref,
+                    message_count, word_count, tool_use_count, thinking_count,
+                    paste_count, user_message_count, authored_user_message_count,
+                    assistant_message_count, system_message_count,
+                    tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
+                    content_hash, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(origin, native_id) DO UPDATE SET
+                    raw_id = excluded.raw_id,
+                    branch_type = excluded.branch_type,
+                    active_leaf_message_id = excluded.active_leaf_message_id,
+                    title = COALESCE(excluded.title, sessions.title),
+                    session_kind = excluded.session_kind,
+                    title_source = COALESCE(excluded.title_source, sessions.title_source),
+                    git_branch = excluded.git_branch,
+                    git_repository_url = excluded.git_repository_url,
+                    commit_hash = excluded.commit_hash,
+                    provider_project_ref = excluded.provider_project_ref,
+                    instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
+                    reported_duration_ms = excluded.reported_duration_ms,
+                    content_hash = excluded.content_hash,
+                    created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
+                    updated_at_ms = CASE
+                        WHEN ? THEN excluded.updated_at_ms
+                        ELSE MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
+                    END
                 """,
-                (session_id,),
+                (
+                    native_id,
+                    origin.value,
+                    raw_id,
+                    _enum_value(session.branch_type),
+                    active_leaf_message_id,
+                    _sqlite_text(session.title),
+                    _enum_value(session.session_kind) or SessionKind.STANDARD.value,
+                    _enum_value(session.title_source),
+                    _sqlite_text(session.git_branch),
+                    _sqlite_text(session.git_repository_url),
+                    _sqlite_text(session.git_commit_hash),
+                    _sqlite_text(session.instructions_text),
+                    session.reported_duration_ms,
+                    _sqlite_text(session.provider_project_ref),
+                    session_counts["message_count"],
+                    session_counts["word_count"],
+                    session_counts["tool_use_count"],
+                    session_counts["thinking_count"],
+                    session_counts["paste_count"],
+                    session_counts["user_message_count"],
+                    session_counts["authored_user_message_count"],
+                    session_counts["assistant_message_count"],
+                    session_counts["system_message_count"],
+                    session_counts["tool_message_count"],
+                    session_counts["user_word_count"],
+                    session_counts["authored_user_word_count"],
+                    session_counts["assistant_word_count"],
+                    session_content_hash,
+                    _timestamp_ms(session.created_at),
+                    _timestamp_ms(session.updated_at),
+                    force_replace,
+                ),
             )
-            active_leaf_message_id = _active_leaf_message_id(
+            add_timing("index.session_upsert", t0)
+            position_offset = 0
+            stale_attachment_ids: set[str] = set()
+            t0 = time.perf_counter()
+            if merge_append:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                position_offset = int(row[0] or 0) if row is not None else 0
+                conn.execute(
+                    """
+                    UPDATE messages
+                    SET is_active_leaf = 0
+                    WHERE session_id = ?
+                      AND is_active_path = 1
+                      AND is_active_leaf = 1
+                    """,
+                    (session_id,),
+                )
+                active_leaf_message_id = _active_leaf_message_id(
+                    session_id,
+                    messages,
+                    session.active_leaf_message_provider_id,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                )
+                conn.execute(
+                    "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
+                    (active_leaf_message_id, session_id),
+                )
+                add_timing("index.merge_prepare", t0)
+            else:
+                stale_attachment_ids = _session_attachment_ids(conn, session_id)
+                _replace_full_session_messages_and_blocks(
+                    conn,
+                    session,
+                    messages,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix=stage_timing_prefix,
+                    bulk_build=bulk_build,
+                )
+                add_timing("index.full_replace", t0)
+            if merge_append:
+                t0 = time.perf_counter()
+                _write_messages(
+                    conn,
+                    session_id,
+                    messages,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                )
+                add_timing("index.messages", t0)
+                t0 = time.perf_counter()
+                _write_blocks(
+                    conn,
+                    session_id,
+                    messages,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                )
+                add_timing("index.blocks", t0)
+                t0 = time.perf_counter()
+                if not bulk_build:
+                    refresh_action_pairs(conn, session_id)
+                add_timing("index.action_pairs", t0)
+                t0 = time.perf_counter()
+                _write_web_constructs(
+                    conn,
+                    session,
+                    messages,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                    replace_session=False,
+                )
+                add_timing("index.web_constructs", t0)
+            t0 = time.perf_counter()
+            _write_attachments(
+                conn,
                 session_id,
                 messages,
-                session.active_leaf_message_provider_id,
+                session.attachments,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_message_native_ids,
+                refresh_attachment_ids=stale_attachment_ids,
+                preacquired_blobs=preacquired_attachment_blobs,
+            )
+            add_timing("index.attachments", t0)
+            t0 = time.perf_counter()
+            _write_paste_spans(
+                conn,
+                session_id,
+                messages,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
             )
-            conn.execute(
-                "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
-                (active_leaf_message_id, session_id),
-            )
-            add_timing("index.merge_prepare", t0)
-        else:
-            stale_attachment_ids = _session_attachment_ids(conn, session_id)
-            _replace_full_session_messages_and_blocks(
+            add_timing("index.paste_spans", t0)
+            t0 = time.perf_counter()
+            _write_parent_links(
                 conn,
-                session,
+                session_id,
                 messages,
+                position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
+            )
+            add_timing("index.parent_links", t0)
+            t0 = time.perf_counter()
+            _write_session_link(
+                conn,
+                session_id,
+                session,
+                branch_point_message_id=branch_point_message_id,
+                inheritance=lineage_inheritance,
+            )
+            add_timing("index.session_link", t0)
+            t0 = time.perf_counter()
+            event_position_offset = _next_session_event_position(conn, session_id)
+            provider_usage_baseline = (
+                _provider_usage_cumulative_baseline(conn, parent_session_id, branch_point_message_id)
+                if parent_session_id is not None
+                and branch_point_message_id is not None
+                and lineage_inheritance == "prefix-sharing"
+                else None
+            )
+            session_event_result = _write_session_events(
+                conn,
+                session_id,
+                messages,
+                session.session_events,
+                position_offset=position_offset,
+                event_position_offset=event_position_offset,
+                duplicate_native_ids=duplicate_message_native_ids,
+                provider_usage_baseline=provider_usage_baseline,
+                inherited_source_message_ids=inherited_source_message_ids,
+                ambiguous_source_provider_ids=event_duplicate_message_native_ids,
+            )
+            add_timing("index.session_events", t0)
+            t0 = time.perf_counter()
+            _write_working_dirs(conn, session_id, session.working_directories)
+            add_timing("index.working_dirs", t0)
+            t0 = time.perf_counter()
+            _write_repo_edges(conn, session_id, session)
+            add_timing("index.repo_edges", t0)
+            t0 = time.perf_counter()
+            _seed_session_model_usage_rows(
+                conn,
+                session_id,
+                session,
+                replace_existing_model_rows=not merge_append,
+                aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
+            )
+            add_timing("index.model_usage_seed", t0)
+            if merge_append and session_event_result.wrote_provider_usage_events:
+                t0 = time.perf_counter()
+                _aggregate_appended_provider_usage_into_model_usage(
+                    conn,
+                    session_id,
+                    start_position=event_position_offset,
+                )
+                add_timing("index.provider_usage_rollup", t0)
+            elif not merge_append:
+                t0 = time.perf_counter()
+                _aggregate_provider_usage_into_model_usage(conn, session_id)
+                add_timing("index.provider_usage_rollup", t0)
+            t0 = time.perf_counter()
+            if merge_append:
+                _increment_session_counts_for_append(conn, session_id, session_counts)
+            else:
+                _refresh_session_counts(conn, session_id)
+            add_timing("index.session_counts", t0)
+            t0 = time.perf_counter()
+            _resolve_session_graph(
+                conn,
+                session_id,
+                native_id,
+                origin.value,
+                cache=signature_cache,
+                add_timing=add_timing,
+                bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
             )
-            add_timing("index.full_replace", t0)
-        if merge_append:
-            t0 = time.perf_counter()
-            _write_messages(
-                conn,
-                session_id,
-                messages,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-            )
-            add_timing("index.messages", t0)
-            t0 = time.perf_counter()
-            _write_blocks(
-                conn,
-                session_id,
-                messages,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-            )
-            add_timing("index.blocks", t0)
+            add_timing("index.graph_resolve", t0)
             t0 = time.perf_counter()
             if not bulk_build:
-                refresh_action_pairs(conn, session_id)
-            add_timing("index.action_pairs", t0)
-            t0 = time.perf_counter()
-            _write_web_constructs(
-                conn,
-                session,
-                messages,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                replace_session=False,
-            )
-            add_timing("index.web_constructs", t0)
-        t0 = time.perf_counter()
-        _write_attachments(
-            conn,
-            session_id,
-            messages,
-            session.attachments,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_message_native_ids,
-            refresh_attachment_ids=stale_attachment_ids,
-            preacquired_blobs=preacquired_attachment_blobs,
-        )
-        add_timing("index.attachments", t0)
-        t0 = time.perf_counter()
-        _write_paste_spans(
-            conn,
-            session_id,
-            messages,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_message_native_ids,
-        )
-        add_timing("index.paste_spans", t0)
-        t0 = time.perf_counter()
-        _write_parent_links(
-            conn,
-            session_id,
-            messages,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_message_native_ids,
-        )
-        add_timing("index.parent_links", t0)
-        t0 = time.perf_counter()
-        _write_session_link(
-            conn,
-            session_id,
-            session,
-            branch_point_message_id=branch_point_message_id,
-            inheritance=lineage_inheritance,
-        )
-        add_timing("index.session_link", t0)
-        t0 = time.perf_counter()
-        event_position_offset = _next_session_event_position(conn, session_id)
-        provider_usage_baseline = (
-            _provider_usage_cumulative_baseline(conn, parent_session_id, branch_point_message_id)
-            if parent_session_id is not None
-            and branch_point_message_id is not None
-            and lineage_inheritance == "prefix-sharing"
-            else None
-        )
-        session_event_result = _write_session_events(
-            conn,
-            session_id,
-            messages,
-            session.session_events,
-            position_offset=position_offset,
-            event_position_offset=event_position_offset,
-            duplicate_native_ids=duplicate_message_native_ids,
-            provider_usage_baseline=provider_usage_baseline,
-            inherited_source_message_ids=inherited_source_message_ids,
-            ambiguous_source_provider_ids=event_duplicate_message_native_ids,
-        )
-        add_timing("index.session_events", t0)
-        t0 = time.perf_counter()
-        _write_working_dirs(conn, session_id, session.working_directories)
-        add_timing("index.working_dirs", t0)
-        t0 = time.perf_counter()
-        _write_repo_edges(conn, session_id, session)
-        add_timing("index.repo_edges", t0)
-        t0 = time.perf_counter()
-        _seed_session_model_usage_rows(
-            conn,
-            session_id,
-            session,
-            replace_existing_model_rows=not merge_append,
-            aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
-        )
-        add_timing("index.model_usage_seed", t0)
-        if merge_append and session_event_result.wrote_provider_usage_events:
-            t0 = time.perf_counter()
-            _aggregate_appended_provider_usage_into_model_usage(
-                conn,
-                session_id,
-                start_position=event_position_offset,
-            )
-            add_timing("index.provider_usage_rollup", t0)
-        elif not merge_append:
-            t0 = time.perf_counter()
-            _aggregate_provider_usage_into_model_usage(conn, session_id)
-            add_timing("index.provider_usage_rollup", t0)
-        t0 = time.perf_counter()
-        if merge_append:
-            _increment_session_counts_for_append(conn, session_id, session_counts)
-        else:
-            _refresh_session_counts(conn, session_id)
-        add_timing("index.session_counts", t0)
-        t0 = time.perf_counter()
-        _resolve_session_graph(
-            conn,
-            session_id,
-            native_id,
-            origin.value,
-            cache=signature_cache,
-            add_timing=add_timing,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-        )
-        add_timing("index.graph_resolve", t0)
-        t0 = time.perf_counter()
-        if not bulk_build:
-            refresh_delegation_facts_for_session(conn, session_id)
-        add_timing("index.delegation_facts", t0)
-        conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-        if bulk_build:
-            conn.execute(
-                "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-                (FTS_BULK_SESSION_WRITE_GUARD,),
-            )
-        if merge_append and session.ingest_flags:
-            t0 = time.perf_counter()
-            _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
-            add_timing("index.ingest_flags", t0)
-        elif not merge_append:
-            t0 = time.perf_counter()
-            _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
-            add_timing("index.ingest_flags", t0)
+                refresh_delegation_facts_for_session(conn, session_id)
+            add_timing("index.delegation_facts", t0)
+            conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+            if bulk_build:
+                conn.execute(
+                    "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                    (FTS_BULK_SESSION_WRITE_GUARD,),
+                )
+            if merge_append and session.ingest_flags:
+                t0 = time.perf_counter()
+                _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                add_timing("index.ingest_flags", t0)
+            elif not merge_append:
+                t0 = time.perf_counter()
+                _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                add_timing("index.ingest_flags", t0)
+    except sqlite3.IntegrityError as exc:
+        raise sqlite3.IntegrityError(
+            f"FOREIGN KEY constraint failed writing session_id={session_id!r} "
+            f"origin={origin.value!r} native_id={native_id!r}: {exc}"
+        ) from exc
     return session_id
 
 
@@ -1465,7 +1471,7 @@ def _write_messages(
             # columns with non-standard placeholders (like parent_message_id=NULL)
             yield (
                 session_id,
-                _sqlite_text(_effective_message_native_id(message, duplicate_native_ids)) or None,
+                _stored_message_native_id(message, duplicate_native_ids),
                 # parent_message_id: skipped (always NULL in VALUES)
                 position,
                 _enum_value(message.role),
@@ -4600,22 +4606,69 @@ def _message_id(
     variant_index = message.variant_index if message.variant_index is not None else 0
     return archive_message_id(
         session_id,
-        _effective_message_native_id(message, duplicate_native_ids),
+        _stored_message_native_id(message, duplicate_native_ids),
         position=position if message.position is not None else position_offset + fallback_position,
         variant_index=variant_index,
     )
 
 
 def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozenset[str]:
-    counts = Counter(message.provider_message_id for message in messages if message.provider_message_id)
+    """Native ids that collide once normalized the same way ``messages.native_id`` stores them.
+
+    Counts by the surrogate-substituted (``_sqlite_text``) form, not the raw
+    provider string, so two distinct raw ids that collapse onto the same
+    U+FFFD-substituted text are treated as ambiguous too -- otherwise the
+    ``messages`` UNIQUE generated ``message_id`` column would silently
+    resolve the collision via ``INSERT OR REPLACE`` (one message vanishes)
+    while Python-side code still believed both had distinct identities.
+    """
+    counts = Counter(
+        normalized for message in messages if (normalized := _sqlite_text(message.provider_message_id)) is not None
+    )
     return frozenset(native_id for native_id, count in counts.items() if count > 1)
 
 
 def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
-    native_id = message.provider_message_id
+    """Return the surrogate-normalized native id, or ``None`` if ambiguous.
+
+    ``duplicate_native_ids`` (from ``_duplicate_message_native_ids``) is keyed
+    by the same surrogate-substituted form computed here, so membership is
+    always compared apples-to-apples.
+    """
+    native_id = _sqlite_text(message.provider_message_id)
     if native_id in duplicate_native_ids:
         return None
     return native_id
+
+
+def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
+    """Return the exact value ``messages.native_id`` stores for this message.
+
+    This is the single source of truth for message identity (polylogue
+    rebuild ab5bad1f FK-failure fix): both the ``_write_messages`` INSERT and
+    ``_message_id`` (which feeds ``core.identity_law.message_id``, the
+    reference the generated ``messages.message_id`` column reimplements in
+    SQL) MUST route through this helper, or the two computations can diverge
+    and a later ``blocks`` insert can reference a ``message_id`` that was
+    never written.
+
+    Beyond duplicate suppression and surrogate substitution
+    (``_effective_message_native_id``), this maps an empty or
+    whitespace-only native id to ``None`` -- matching
+    ``identity_law.message_local_id``'s ``native_id.strip()`` truthiness
+    check, which falls back to the ``position.variant_index`` component --
+    and strips a non-empty native id, matching
+    ``identity_law._required_text``'s own ``.strip()``. Without this, a
+    provider-native id of ``"  "`` stores truthy in SQLite (survives the bare
+    ``or None`` the DB write used before this helper existed) while
+    ``identity_law`` strips it to falsy and falls back to the position/variant
+    id -- producing two different message ids for the same message.
+    """
+    native_id = _effective_message_native_id(message, duplicate_native_ids)
+    if native_id is None:
+        return None
+    stripped = native_id.strip()
+    return stripped or None
 
 
 def _block_type(block: ParsedContentBlock) -> BlockType:
