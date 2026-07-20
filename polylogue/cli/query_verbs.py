@@ -162,7 +162,7 @@ def emit_facets_response(response: FacetsResponse, *, output_format: str | None)
         )
         click.echo(f"  readiness: {marker} (cost_class={avail.cost_class}{budget})")
         if avail.detail:
-            click.echo(f"  [yellow]{avail.detail}[/yellow]")
+            click.secho(f"  {avail.detail}", fg="yellow")
     click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
     click.echo("  Family states:")
     ordered_families = [
@@ -1999,7 +1999,7 @@ def analyze_verb(
             click.echo(
                 _json.dumps(
                     {
-                        "outlook": outlook.model_dump(mode="json"),
+                        **outlook.model_dump(mode="json"),
                         "availability": model_json_document(availability, exclude_none=True),
                     },
                     indent=2,
@@ -2007,6 +2007,14 @@ def analyze_verb(
                 )
             )
             return
+        if availability.state != "ready":
+            detail = availability.detail or "projection exceeded its declared interactive deadline"
+            budget = (
+                f" ({availability.elapsed_s:.2f}s elapsed vs {availability.deadline_s:.2f}s deadline)"
+                if availability.elapsed_s is not None and availability.deadline_s is not None
+                else ""
+            )
+            env.ui.console.print(f"[yellow]readiness: {availability.state} — {detail}{budget}[/yellow]")
         render_outlook_plain(env, outlook)
         return
 

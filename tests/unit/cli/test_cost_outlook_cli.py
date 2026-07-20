@@ -100,7 +100,9 @@ class TestCostOutlookJsonContract:
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
-        outlook = payload["outlook"]
+        # The documented CycleOutlook envelope stays top-level (docs/cost-model.md);
+        # availability is additive, not a re-nesting of the contract.
+        outlook = payload
         assert outlook["plan_name"] == "claude-pro"
         assert outlook["projection_method"] == "linear"
         # Both bases reach the payload, never merged.
@@ -196,6 +198,27 @@ class TestCostOutlookPlainContract:
         assert "Quota pressure (credits)" in out
         # Subscription-quota math caveat must surface.
         assert "non-authoritative" in out
+
+    def test_plain_mode_surfaces_degraded_readiness(self, cli_runner: CliRunner) -> None:
+        """A deadline-exceeding run must warn in plain output, not silently render (polylogue-duti)."""
+        with (
+            patch("polylogue.api.Polylogue") as mock_cls,
+            patch("polylogue.insights.projection_contracts.budget_exceeded", return_value=True),
+        ):
+            poly = mock_cls.return_value
+            poly.__aenter__ = AsyncMock(return_value=poly)
+            poly.__aexit__ = AsyncMock(return_value=None)
+            poly.cost_outlook = AsyncMock(return_value=_quota_outlook())
+
+            result = cli_runner.invoke(
+                click_cli,
+                ["--plain", "analyze", "--cost-outlook", "--plan", "claude-pro", "--format", "plaintext"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "readiness: degraded" in result.output
+        # The outlook itself still renders after the warning.
+        assert "(estimate)" in result.output
 
     def test_plain_mode_surfaces_absent_quota_explicitly(self, cli_runner: CliRunner) -> None:
         with patch("polylogue.api.Polylogue") as mock_cls:
