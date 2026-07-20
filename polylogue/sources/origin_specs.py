@@ -693,7 +693,15 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             "provider-package:grok-export/export-json@v1",
             "export-json",
             Provider.GROK,
-            "accepted",
+            # Kept "proposed" (not "accepted") deliberately: the detector and
+            # parser are real and admitted (OriginSpec.lifecycle="executable"
+            # above), but no schema-discovery harvesting pass has run against
+            # a real xAI export sample -- the wire shape is reconstructed from
+            # independent secondary sources (see polylogue/sources/parsers/
+            # grok.py), not a harvested provider-package catalog. "accepted"
+            # would require schema_package evidence this origin does not yet
+            # have, and would fail `devtools provider-completeness --check`.
+            "proposed",
             detector_paths=("polylogue/sources/parsers/grok.py", "polylogue/sources/dispatch.py"),
             raw_model_paths=("polylogue/sources/parsers/grok.py",),
             parser_paths=("polylogue/sources/parsers/grok.py",),
@@ -707,7 +715,8 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             caveats=(
                 "No schema-discovery harvesting pass has run against a real xAI export; the wire shape is "
                 "reconstructed from independent secondary sources (see polylogue/sources/parsers/grok.py), "
-                "not a harvested provider-package catalog.",
+                "not a harvested provider-package catalog. Promote to accepted once real-sample schema "
+                "evidence exists.",
             ),
         ),
     ),

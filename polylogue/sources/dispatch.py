@@ -725,7 +725,12 @@ def _lower_grok_export_payload(payload: object, fallback_id: str) -> list[Lowere
     specs: list[LoweredPayloadSpec] = []
     for index, item in enumerate(conversations):
         item_record = _payload_record(item)
-        if item_record is None:
+        # A malformed entry (missing "conversation"/"responses", wrong types)
+        # is skipped rather than admitted as a zero-message phantom session --
+        # matching how _bundle_record_specs silently drops non-record bundle
+        # entries for ChatGPT/Claude AI rather than emitting an empty session
+        # per malformed item.
+        if item_record is None or not grok.looks_like_conversation(item_record):
             continue
         specs.append(
             _single_record_spec(

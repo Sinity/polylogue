@@ -229,3 +229,28 @@ def test_parse_payload_unwraps_single_element_wrapped_grok_document() -> None:
 def test_parse_payload_empty_conversations_list_yields_no_sessions() -> None:
     sessions = parse_payload(Provider.GROK, {"conversations": []}, "grok-export")
     assert sessions == []
+
+
+def test_parse_payload_skips_malformed_entries_in_mixed_validity_export() -> None:
+    """A malformed conversation entry must not become a phantom zero-message
+    session -- only entries matching the conversation shape are admitted
+    (dispatch.py:_lower_grok_export_payload applies looks_like_conversation
+    per entry, mirroring how _bundle_record_specs silently drops non-record
+    ChatGPT/Claude AI bundle entries rather than emitting empty sessions)."""
+    document = {
+        "conversations": [
+            _nested_conversation(),
+            {"not": "a-conversation-shape"},
+            {"conversation": {"title": "missing responses key"}},
+            {"conversation": "not-a-mapping", "responses": []},
+            _flat_conversation(),
+        ]
+    }
+    sessions = parse_payload(Provider.GROK, document, "grok-export")
+
+    assert len(sessions) == 2
+    assert all(s.messages for s in sessions)
+    assert {s.title for s in sessions} == {"Debugging a React hook", "Flat shape chat"}
+    # Malformed entries are skipped, not renumbered around -- surviving specs
+    # keep their original array-position suffix.
+    assert {s.provider_session_id for s in sessions} == {"grok-export-0", "grok-export-4"}
