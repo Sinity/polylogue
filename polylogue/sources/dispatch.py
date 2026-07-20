@@ -948,7 +948,15 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
 
     if spec.provider is Provider.HERMES and spec.mode == "grouped_records":
         payloads = _payload_sequence(spec.payload)
-        return hermes_spans.parse_atof_stream(payloads, spec.fallback_id) if payloads is not None else []
+        return (
+            hermes_spans.parse_atof_stream(
+                payloads,
+                spec.fallback_id,
+                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+            )
+            if payloads is not None
+            else []
+        )
 
     if spec.mode == "local_agent_document":
         record = _payload_record(spec.payload)
@@ -969,7 +977,13 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         if spec.provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_payload(record):
             return hermes_verification.parse_verification_evidence_db_payload(record, spec.fallback_id)
         if spec.provider is Provider.HERMES and hermes_spans.looks_like_atif_payload(record):
-            return [hermes_spans.parse_atif_document(record, spec.fallback_id)]
+            return [
+                hermes_spans.parse_atif_document(
+                    record,
+                    spec.fallback_id,
+                    profile_root=Path(spec.source_path).parent if spec.source_path else None,
+                )
+            ]
         if spec.provider is Provider.ANTIGRAVITY:
             if antigravity.looks_like_markdown_export(record):
                 return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
@@ -1030,7 +1044,11 @@ def parse_stream_payload(
     if runtime_provider is Provider.BEADS:
         return beads.parse(payloads, fallback_id, source_path=source_path)
     if runtime_provider is Provider.HERMES:
-        return hermes_spans.parse_atof_stream(payloads, fallback_id)
+        return hermes_spans.parse_atof_stream(
+            payloads,
+            fallback_id,
+            profile_root=Path(source_path).parent if source_path else None,
+        )
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 

@@ -1600,9 +1600,18 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 handle.write(json.dumps(record) + "\n")
         await processor.ingest_files([source_path], emit_event=False)
 
+        # fs1.14: a resolvable profile root (the watched directory) now
+        # profile-qualifies the observer session identity -- see
+        # hermes_identity.profile_key / hermes_spans.observer_session_provider_id.
+        from polylogue.sources.parsers.hermes_identity import profile_key
+
+        expected_key = profile_key(root)
         event_uuids_by_session = _atof_event_uuids_by_session(workspace_env["archive_root"])
-        assert event_uuids_by_session.get("observer:atof-session-a") == ["a-turn-1", "a-turn-2"]
-        assert event_uuids_by_session.get("observer:atof-session-b") == ["b-turn-1"]
+        assert event_uuids_by_session.get(f"observer:atof-session-a@profile-{expected_key}") == [
+            "a-turn-1",
+            "a-turn-2",
+        ]
+        assert event_uuids_by_session.get(f"observer:atof-session-b@profile-{expected_key}") == ["b-turn-1"]
 
         # Idempotent replay: re-ingesting the SAME growth batch bytes again
         # (e.g. a poll cycle firing before the cursor advanced, or a daemon
