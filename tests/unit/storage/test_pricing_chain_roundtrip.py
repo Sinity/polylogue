@@ -111,7 +111,7 @@ class TestPriceCatalogSeed:
         conn.close()
 
     def test_seed_versions_changed_pricing_and_writer_uses_new_catalog(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
     ) -> None:
         """A catalog correction preserves old evidence and prices new usage by hash."""
         conn = _make_archive(tmp_path)
@@ -123,6 +123,16 @@ class TestPriceCatalogSeed:
             model_name,
             replace(original_pricing, input_usd_per_1m=original_pricing.input_usd_per_1m + 1.0),
         )
+        # _catalog_hash() is process-lifetime memoized (polylogue-623q: PRICING
+        # is never mutated in production, so re-walking+re-hashing its ~3.5K
+        # entries on every session write was pure redundant CPU). This test is
+        # the one place that legitimately mutates PRICING mid-process via
+        # monkeypatch, so it must invalidate the memo around the mutation --
+        # both so this write observes the revised dict, and so teardown
+        # (monkeypatch reverting PRICING) doesn't leave a stale post-mutation
+        # hash cached for whichever test runs next in this process.
+        _catalog_hash.cache_clear()
+        request.addfinalizer(_catalog_hash.cache_clear)
 
         with conn:
             write_parsed_session_to_archive(
