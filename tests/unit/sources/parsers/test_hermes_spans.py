@@ -60,7 +60,7 @@ def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> N
     sessions = parse_payload(Provider.HERMES, payload, "fallback-id")
     assert len(sessions) == 1
     session = sessions[0]
-    assert session.provider_session_id == "observer:hermes-session-1"
+    assert session.provider_session_id == "observer:atif:hermes-session-1"
     assert session.source_name is Provider.HERMES
     # Never a duplicated transcript: the only "message" is a bounded summary.
     assert len(session.messages) == 1
@@ -75,7 +75,7 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
     assert detect_provider(payload) is Provider.HERMES
 
     session = parse_payload(Provider.HERMES, payload, "fallback-id")[0]
-    assert session.provider_session_id == "observer:real-nemo-relay-session-redacted"
+    assert session.provider_session_id == "observer:atif:real-nemo-relay-session-redacted"
     assert len(payload["steps"]) == 6
     llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
     assert len(llm_events) == 5
@@ -117,12 +117,16 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     session = sessions[0]
     # fs1.14: dispatch derives profile_root from source_path's parent
     # directory (production route, not a bespoke test-only call), so a real
-    # source_path now yields a profile-qualified identity and a parent
-    # session_links join key -- see test_dispatch_threads_source_path_directory_as_profile_root_for_atif.
+    # source_path now yields an artifact- AND profile-qualified identity and
+    # a parent session_links join key -- see
+    # test_dispatch_threads_source_path_directory_as_profile_root_for_atif.
     from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
 
     expected_key = profile_key(REAL_ATOF_FIXTURE.parent)
-    assert session.provider_session_id == f"observer:real-nemo-relay-session-redacted@profile-{expected_key}"
+    assert (
+        session.provider_session_id
+        == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"
+    )
     assert session.parent_session_provider_id == qualified_session_id("real-nemo-relay-session-redacted", expected_key)
     events = session.session_events
     assert sum(event.event_type == "hermes_llm_request_span" for event in events) == 3
@@ -474,27 +478,42 @@ def test_decision_points_and_error_taxonomy_are_honestly_absent_not_fabricated()
 
 
 def test_observer_session_id_correlates_with_qualified_state_db_session_id() -> None:
-    """Read-side join key: the observer-evidence session and the state-db session
-    share the same profile-qualified identity -- fs1.14 fixed the prior
-    behavior where ``hermes_observer_session_id_for`` stripped the profile
-    qualifier off a real conversational session id, which is exactly what let
-    two separate Hermes installs (profiles) reusing the same raw session id
-    silently collapse onto one observer-evidence archive session."""
+    """Read-side join key: the ATIF/ATOF observer-evidence sessions and the
+    state-db session share the same profile-qualified identity -- fs1.14
+    fixed the prior behavior where the read-side correlation helpers
+    stripped the profile qualifier off a real conversational session id,
+    which is exactly what let two separate Hermes installs (profiles)
+    reusing the same raw session id silently collapse onto one
+    observer-evidence archive session."""
 
     qualified = "hermes-session-1@profile-abc123def456"
-    assert hermes_spans.hermes_observer_session_id_for(qualified) == "observer:hermes-session-1@profile-abc123def456"
-    assert hermes_spans.hermes_observer_session_id_for(qualified) == hermes_spans.observer_session_provider_id(
+    assert (
+        hermes_spans.hermes_atif_session_id_for(qualified)
+        == "observer:atif:hermes-session-1@profile-abc123def456"
+    )
+    assert hermes_spans.hermes_atif_session_id_for(qualified) == hermes_spans.atif_session_provider_id(
+        "hermes-session-1", "abc123def456"
+    )
+    assert (
+        hermes_spans.hermes_atof_session_id_for(qualified)
+        == "observer:atof:hermes-session-1@profile-abc123def456"
+    )
+    assert hermes_spans.hermes_atof_session_id_for(qualified) == hermes_spans.atof_session_provider_id(
         "hermes-session-1", "abc123def456"
     )
     # Two different profiles reusing the same raw session id must NOT
     # collapse onto the same observer session identity.
     other_profile = "hermes-session-1@profile-fedcba654321"
-    assert hermes_spans.hermes_observer_session_id_for(qualified) != hermes_spans.hermes_observer_session_id_for(
+    assert hermes_spans.hermes_atif_session_id_for(qualified) != hermes_spans.hermes_atif_session_id_for(
+        other_profile
+    )
+    assert hermes_spans.hermes_atof_session_id_for(qualified) != hermes_spans.hermes_atof_session_id_for(
         other_profile
     )
     # A legacy/unqualified conversational id (no profile marker at all) falls
     # back to an unqualified observer id rather than fabricating a profile.
-    assert hermes_spans.hermes_observer_session_id_for("hermes-session-1") == "observer:hermes-session-1"
+    assert hermes_spans.hermes_atif_session_id_for("hermes-session-1") == "observer:atif:hermes-session-1"
+    assert hermes_spans.hermes_atof_session_id_for("hermes-session-1") == "observer:atof:hermes-session-1"
 
 
 def test_atif_asserts_profile_qualified_parent_session_link_when_profile_root_known(tmp_path: Path) -> None:
@@ -510,7 +529,7 @@ def test_atif_asserts_profile_qualified_parent_session_link_when_profile_root_kn
 
     expected_key = profile_key(profile_root)
     assert session.parent_session_provider_id == qualified_session_id("hermes-session-1", expected_key)
-    assert session.provider_session_id == f"observer:hermes-session-1@profile-{expected_key}"
+    assert session.provider_session_id == f"observer:atif:hermes-session-1@profile-{expected_key}"
 
     correlation_event = session.session_events[0]
     assert correlation_event.event_type == "hermes_observer_trace_correlation"
@@ -529,7 +548,7 @@ def test_atif_fails_closed_on_unknown_profile_root() -> None:
     session = hermes_spans.parse_atif_document(payload, "fallback-id")
 
     assert session.parent_session_provider_id is None
-    assert session.provider_session_id == "observer:hermes-session-1"
+    assert session.provider_session_id == "observer:atif:hermes-session-1"
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.capabilities["parent_session_link"].status == "absent"
@@ -588,6 +607,7 @@ def test_atof_stream_asserts_profile_qualified_parent_session_link(tmp_path: Pat
 
     expected_key = profile_key(profile_root)
     assert session.parent_session_provider_id == qualified_session_id("hermes-session-2", expected_key)
+    assert session.provider_session_id == f"observer:atof:hermes-session-2@profile-{expected_key}"
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.capabilities["parent_session_link"].status == "inferred"
@@ -617,3 +637,50 @@ def test_dispatch_threads_source_path_directory_as_profile_root_for_atif() -> No
 
     expected_key = profile_key(Path("/home/example/.hermes/atif"))
     assert session.parent_session_provider_id == qualified_session_id("hermes-session-3", expected_key)
+    assert session.provider_session_id == f"observer:atif:hermes-session-3@profile-{expected_key}"
+
+
+def test_atif_and_atof_no_longer_collide_on_one_session_identity_fs1_14() -> None:
+    """Regression for the fs1.14 ATIF+ATOF collapse.
+
+    Before the fix, both artifact families minted the identical
+    ``observer:<hermes_session_id>`` provider_session_id for the same raw
+    Hermes session id. Since ``sessions.session_id`` is computed from
+    ``origin`` + this native id, importing an ATIF trajectory export and an
+    ATOF event stream for the SAME session would physically collide on one
+    archive row -- the second ingest's content-hash full-replace would
+    silently discard the first artifact's session_events. This test proves
+    the two artifact families now produce distinct, non-colliding session
+    identities for an identical raw Hermes session id, through the real
+    dispatch/parse route each artifact actually ingests through.
+
+    Mutation: reintroduce a shared ``observer_session_provider_id`` helper
+    (or otherwise make ``atif_session_provider_id`` == ``atof_session_provider_id``
+    for the same input) and this test fails.
+    """
+    hermes_session_id = "shared-session-both-artifacts"
+
+    atif_payload = hermes_spans.marker_payload(hermes_session_id, _steps())
+    atif_session = parse_payload(Provider.HERMES, atif_payload, "fallback-id")[0]
+
+    atof_records = [
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "uuid": "turn-1",
+            "timestamp": "2026-07-18T09:00:00Z",
+            "name": "hermes.turn.start",
+            "metadata": {"session_id": hermes_session_id},
+        }
+    ]
+    atof_sessions = parse_stream_payload(Provider.HERMES, iter(atof_records), "fallback-id")
+    atof_session = atof_sessions[0]
+
+    assert atif_session.provider_session_id != atof_session.provider_session_id
+    assert atif_session.provider_session_id == "observer:atif:shared-session-both-artifacts"
+    assert atof_session.provider_session_id == "observer:atof:shared-session-both-artifacts"
+
+    # Both retain their own independent evidence -- neither the ATIF LLM/tool
+    # spans nor the ATOF context span were dropped or merged into the other.
+    assert any(event.event_type == "hermes_llm_request_span" for event in atif_session.session_events)
+    assert any(event.event_type == "hermes_context_span" for event in atof_session.session_events)
