@@ -28,7 +28,7 @@ from polylogue.storage.derivation_identity import (
     DerivationKeyLike,
     DerivationSubject,
 )
-from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest
+from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, embedding_input_hash
 from polylogue.storage.embeddings.materialization import (
     EmbedSessionOutcome,
     embed_archive_session_sync,
@@ -275,7 +275,7 @@ def test_config_change_then_old_terminal_error_cannot_clear_new_generation(
     conn.row_factory = sqlite3.Row
     try:
         source = EmbeddingSourceDigest()
-        source.update("codex-session:race:m1", b"x" * 32)
+        source.update(b"x" * 32)
         old_attempt = begin_embedding_attempt(
             conn,
             session_id="codex-session:race",
@@ -471,7 +471,7 @@ def test_unscoped_or_legacy_failure_receipt_cannot_project_over_keyed_generation
         )
 
         source = EmbeddingSourceDigest()
-        source.update("codex-session:legacy-race:m1", b"y" * 32)
+        source.update(b"y" * 32)
         attempt = begin_embedding_attempt(
             conn,
             session_id=legacy_failure.session_id,
@@ -524,6 +524,23 @@ def test_unscoped_or_legacy_failure_receipt_cannot_project_over_keyed_generation
     assert latest_receipt["derivation_key"] is None
 
 
+def _current_ref_and_vector(conn: sqlite3.Connection, session_id: str) -> tuple[str, bytes, bytes]:
+    """Resolve one session's (message_id, embedding_input_hash, vector) via the
+    v4 ref -> content-addressed row join (message_embeddings/
+    message_embeddings_meta are keyed by embedding_input_hash, not message_id,
+    so message_embedding_refs is the required message_id -> hash bridge)."""
+    row = conn.execute(
+        """
+        SELECT r.message_id, r.embedding_input_hash, m.embedding
+        FROM message_embedding_refs AS r
+        JOIN message_embeddings AS m ON m.embedding_input_hash = lower(hex(r.embedding_input_hash))
+        WHERE r.session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    return str(row[0]), bytes(row[1]), bytes(row[2])
+
+
 def test_same_id_full_replace_reselects_and_atomically_replaces_vector_and_meta(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     session_id = _write_archive_session(root, native_id="full-replace", text=_INITIAL_TEXT)
@@ -532,15 +549,7 @@ def test_same_id_full_replace_reselects_and_atomically_replaces_vector_and_meta(
 
     conn = _open_embeddings(root / "embeddings.db")
     try:
-        old_message_id, old_hash, old_vector = conn.execute(
-            """
-            SELECT m.message_id, mm.content_hash, m.embedding
-            FROM message_embeddings AS m
-            JOIN message_embeddings_meta AS mm USING (message_id)
-            WHERE m.session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
+        old_message_id, old_input_hash, old_vector = _current_ref_and_vector(conn, session_id)
     finally:
         conn.close()
 
@@ -558,28 +567,26 @@ def test_same_id_full_replace_reselects_and_atomically_replaces_vector_and_meta(
     index_conn = sqlite3.connect(root / "index.db")
     embed_conn = _open_embeddings(root / "embeddings.db")
     try:
-        current_message_id, current_hash = index_conn.execute(
-            "SELECT message_id, content_hash FROM messages WHERE session_id = ?",
+        current_message_id = index_conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ?",
             (session_id,),
-        ).fetchone()
-        rows = embed_conn.execute(
-            """
-            SELECT m.message_id, mm.content_hash, m.embedding
-            FROM message_embeddings AS m
-            JOIN message_embeddings_meta AS mm USING (message_id)
-            WHERE m.session_id = ?
-            """,
-            (session_id,),
-        ).fetchall()
+        ).fetchone()[0]
+        new_message_id, new_input_hash, new_vector = _current_ref_and_vector(embed_conn, session_id)
     finally:
         index_conn.close()
         embed_conn.close()
 
-    assert len(rows) == 1
-    assert rows[0][0] == old_message_id == current_message_id
-    assert bytes(rows[0][1]) == bytes(current_hash)
-    assert bytes(rows[0][1]) != bytes(old_hash)
-    assert bytes(rows[0][2]) != bytes(old_vector)
+    # message_id is stable across the full-replace (same native_id/position);
+    # embedding_input_hash -- identity-free, H(model, embedder input text) --
+    # is what actually changes when the text changes, re-deriving to exactly
+    # what the production identity function computes for the new text. The
+    # vector itself is atomically replaced too (never left pointing at the
+    # stale text's embedding).
+    assert new_message_id == old_message_id == current_message_id
+    assert new_input_hash == embedding_input_hash(model="voyage-4", input_text=_CHANGED_TEXT)
+    assert old_input_hash == embedding_input_hash(model="voyage-4", input_text=_INITIAL_TEXT)
+    assert new_input_hash != old_input_hash
+    assert new_vector != old_vector
 
 
 def test_derivation_key_value_shape_is_storage_neutral_and_generation_free() -> None:

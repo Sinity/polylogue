@@ -334,8 +334,14 @@ def plan_session_excision(archive_root: Path, session_id: str) -> ExcisionPlan:
         try:
             try_load_sqlite_vec(conn)
             placeholders = ",".join("?" for _ in target.message_ids)
+            # message_embeddings/message_embeddings_meta are content-addressed
+            # (keyed by embedding_input_hash, polylogue-q88p) and may be
+            # shared with messages outside this excision target; the
+            # message-scoped count is the per-message ref count, not a raw
+            # vector-table count (a shared vector must not be reported as
+            # "will be removed" when another message still needs it).
             row = conn.execute(
-                f"SELECT COUNT(*) FROM message_embeddings WHERE message_id IN ({placeholders})",
+                f"SELECT COUNT(*) FROM message_embedding_refs WHERE message_id IN ({placeholders})",
                 target.message_ids,
             ).fetchone()
             embeddings_vectors = int(row[0]) if row else 0
@@ -439,6 +445,7 @@ def _apply_single_session_excision(
 
     counts: dict[str, int] = {
         "embeddings_vectors": 0,
+        "embeddings_vectors_gc": 0,
         "index_sessions": 0,
         "index_messages": len(target.message_ids),
         "index_blocks": len(target.block_ids),
@@ -454,15 +461,50 @@ def _apply_single_session_excision(
             try_load_sqlite_vec(conn)
             with conn:
                 placeholders = ",".join("?" for _ in target.message_ids)
+                # message_embeddings/message_embeddings_meta are content-
+                # addressed and may be shared with messages outside this
+                # excision target (polylogue-q88p) -- deleting a vector by
+                # message_id is no longer meaningful (there is no message_id
+                # column on those tables) and would be unsafe even if it
+                # were, since another live message could still reference the
+                # same hash. Delete this excision's refs first, then remove
+                # the underlying vector/meta rows only for hashes that no
+                # longer have ANY remaining ref -- reference-counted, scoped
+                # strictly to the hashes this excision actually touched (not
+                # a general background GC sweep).
+                affected_hashes = tuple(
+                    bytes(row[0])
+                    for row in conn.execute(
+                        f"SELECT DISTINCT embedding_input_hash FROM message_embedding_refs "
+                        f"WHERE message_id IN ({placeholders})",
+                        target.message_ids,
+                    ).fetchall()
+                )
                 cursor = conn.execute(
-                    f"DELETE FROM message_embeddings WHERE message_id IN ({placeholders})",
+                    f"DELETE FROM message_embedding_refs WHERE message_id IN ({placeholders})",
                     target.message_ids,
                 )
                 counts["embeddings_vectors"] = max(cursor.rowcount, 0)
-                conn.execute(
-                    f"DELETE FROM message_embeddings_meta WHERE message_id IN ({placeholders})",
-                    target.message_ids,
-                )
+                removed_vector_hashes = 0
+                for input_hash in affected_hashes:
+                    still_referenced = conn.execute(
+                        "SELECT 1 FROM message_embedding_refs WHERE embedding_input_hash = ? LIMIT 1",
+                        (input_hash,),
+                    ).fetchone()
+                    if still_referenced is not None:
+                        continue
+                    conn.execute(
+                        "DELETE FROM message_embeddings WHERE embedding_input_hash = ?",
+                        (input_hash.hex(),),
+                    )
+                    removed_vector_hashes += max(
+                        conn.execute(
+                            "DELETE FROM message_embeddings_meta WHERE embedding_input_hash = ?",
+                            (input_hash,),
+                        ).rowcount,
+                        0,
+                    )
+                counts["embeddings_vectors_gc"] = removed_vector_hashes
                 conn.execute("DELETE FROM embedding_status WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM embedding_failures WHERE session_id = ?", (session_id,))
         finally:

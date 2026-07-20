@@ -743,17 +743,18 @@ def _archive_embedding_status_payload(
         if embeddings_db.exists():
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
-            vector_table = _attached_table_name(conn, "embeddings", "message_embeddings")
             meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
             failure_table = _attached_table_name(conn, "embeddings", "embedding_failures")
+            refs_table = _attached_table_name(conn, "embeddings", "message_embedding_refs")
         else:
             status_table = ""
-            vector_table = ""
             meta_table = ""
             failure_table = ""
+            refs_table = ""
         has_messages = _table_exists(conn, "messages")
         has_status = bool(status_table)
         has_meta = bool(meta_table)
+        has_refs = bool(refs_table)
         total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
         legacy_blocked_sessions = (
             _scalar_int(
@@ -796,6 +797,19 @@ def _archive_embedding_status_payload(
                 JOIN sessions AS s ON s.session_id = e.session_id
                 """,
             )
+        elif refs_table:
+            # message_embedding_refs is per-message; message_embeddings_meta
+            # is per-distinct-vector (deduped) and would undercount identical
+            # content shared across sessions as one message.
+            exact_embedded_messages = _scalar_int_with_timeout(
+                conn,
+                f"""
+                SELECT COUNT(*)
+                FROM {refs_table}
+                """,
+                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+            )
+            embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
         elif has_meta:
             exact_embedded_messages = _scalar_int_with_timeout(
                 conn,
@@ -909,7 +923,8 @@ def _archive_embedding_status_payload(
                 newest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][1])
         if include_detail and has_messages:
             candidate_prose_messages, candidate_prose_messages_exact = _candidate_prose_message_count(conn)
-            messages_ref = archive_embeddable_messages_relation(conn, alias="m")
+            configured_model = str(getattr(cfg, "embedding_model", "") or "")
+            messages_ref = archive_embeddable_messages_relation(conn, alias="m", model=configured_model)
             status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
             blocked_session_clause = (
                 "AND NOT (e.session_id IS NOT NULL AND COALESCE(e.needs_reindex, 0) = 0 "
@@ -925,22 +940,24 @@ def _archive_embedding_status_payload(
             if total_messages is None:
                 total_messages = 0
                 pending_messages_exact = False
-            if has_meta and embedded_messages == 0 and blocked_sessions == 0:
+            # v4 (polylogue-q88p): a message is pending unless its ref exists
+            # AND that ref's recorded hash matches the message's *current*
+            # embedding_input_hash (computed by the relation above). Presence-
+            # based -- there is no per-vector "needs_reindex" anymore.
+            if has_refs and embedded_messages == 0 and blocked_sessions == 0:
                 pending_messages = total_messages
-            elif has_meta:
-                meta_join = "ON em.message_id = m.message_id"
-                meta_missing_column = "em.message_id"
+            elif has_refs:
                 status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
                 exact_pending_messages = _scalar_int_with_timeout(
                     conn,
                     f"""
                     SELECT COUNT(*)
                     FROM {messages_ref}
-                    LEFT JOIN {meta_table} em {meta_join}
+                    LEFT JOIN {refs_table} r ON r.message_id = m.message_id
                     {status_join}
                     WHERE (
-                        {meta_missing_column} IS NULL
-                        OR COALESCE(em.needs_reindex, 0) = 1
+                        r.message_id IS NULL
+                        OR r.embedding_input_hash != m.embedding_input_hash
                         {status_reindex_clause}
                       )
                       {blocked_session_clause}
@@ -954,21 +971,19 @@ def _archive_embedding_status_payload(
                     pending_messages = exact_pending_messages
             else:
                 pending_messages = total_messages
-            if has_meta and embedded_messages == 0:
+            if has_refs and embedded_messages == 0:
                 missing_provenance = 0
                 stale_messages = 0
-            elif has_meta and pending_messages_exact:
-                meta_join = "ON em.message_id = m.message_id"
-                meta_missing_column = "em.message_id"
-                if vector_table:
+            elif has_refs and pending_messages_exact:
+                if meta_table:
                     exact_missing_provenance = _scalar_int_with_timeout(
                         conn,
                         f"""
                         SELECT COUNT(*)
-                        FROM {vector_table} me
+                        FROM {refs_table} r
                         LEFT JOIN {meta_table} em
-                          ON em.message_id = me.message_id
-                        WHERE em.message_id IS NULL
+                          ON em.embedding_input_hash = r.embedding_input_hash
+                        WHERE em.embedding_input_hash IS NULL
                         """,
                         timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
                     )
@@ -983,12 +998,9 @@ def _archive_embedding_status_payload(
                         f"""
                         SELECT COUNT(*)
                         FROM {messages_ref}
-                        JOIN {meta_table} em {meta_join}
+                        JOIN {refs_table} r ON r.message_id = m.message_id
                         {status_join}
-                        WHERE (
-                            COALESCE(em.needs_reindex, 0) = 1
-                            OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
-                          )
+                        WHERE r.embedding_input_hash != m.embedding_input_hash
                           {blocked_session_clause}
                         """,
                         timeout_ms=DETAIL_QUERY_TIMEOUT_MS,

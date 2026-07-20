@@ -122,18 +122,28 @@ def embedding_orphan_reconcile_command(
 
 
 def _render_embedding_orphan_reconcile_plain(report: EmbeddingOrphanReconcileReport) -> None:
+    """Render the reconcile report honestly under the v4 content-addressed model.
+
+    polylogue-q88p: ``message_embeddings``/``message_embeddings_meta`` are
+    content-addressed and shared -- this reconciler never deletes them (a
+    vector's underlying hash may still be referenced by another live
+    message). Only ``message_embedding_refs`` (the per-message mapping) is
+    ever removed, so the report speaks in terms of refs, not "meta"/"vector
+    row(s) removed" -- that wording would claim a mutation that never
+    happens. ``scanned_message_meta_rows``/``scanned_vector_rows`` remain
+    informational counts of the (deduped) content-addressed tables.
+    """
     click.echo("Embedding orphan reconcile")
     click.echo(f"Index DB:      {report.index_db}")
     click.echo(f"Embeddings DB: {report.embeddings_db}")
     click.echo(f"Mode:          {'dry-run' if report.dry_run else 'apply'}")
     click.echo(
-        f"Scanned:       {report.scanned_message_meta_rows:,} message meta row(s), "
-        f"{report.scanned_vector_rows:,} vector row(s), "
+        f"Scanned:       {report.scanned_message_meta_rows:,} distinct vector meta row(s) "
+        f"(content-addressed, shared), {report.scanned_vector_rows:,} distinct vector row(s), "
         f"{report.scanned_status_rows:,} status row(s)"
     )
     click.echo(
-        f"Orphans:       {report.orphan_message_rows:,} message identity row(s) "
-        f"({report.orphan_message_meta_rows:,} meta, {report.orphan_vector_rows:,} vector), "
+        f"Orphans:       {report.orphan_message_rows:,} orphan message ref(s), "
         f"{report.orphan_status_rows:,} status row(s)"
     )
     if report.skipped_recent_message_rows or report.skipped_recent_status_rows:
@@ -145,14 +155,13 @@ def _render_embedding_orphan_reconcile_plain(report: EmbeddingOrphanReconcileRep
         )
     if report.dry_run:
         click.echo(
-            f"Would remove:  {report.candidate_message_meta_rows:,} meta row(s), "
-            f"{report.candidate_vector_rows:,} vector row(s), "
+            f"Would remove:  {report.candidate_message_rows:,} message ref(s), "
             f"{report.candidate_status_rows:,} status row(s)"
         )
     else:
         click.echo(
-            f"Removed:       {report.removed_message_rows:,} meta row(s), "
-            f"{report.removed_vector_rows:,} vector row(s), {report.removed_status_rows:,} status row(s)"
+            f"Removed:       {report.removed_message_rows:,} message ref(s), "
+            f"{report.removed_status_rows:,} status row(s)"
         )
     if report.sessions_recounted:
         click.echo(f"Recounted:     {report.sessions_recounted:,} session(s) message_count_embedded")

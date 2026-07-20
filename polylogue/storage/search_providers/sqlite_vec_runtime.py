@@ -60,45 +60,23 @@ class SqliteVecRuntimeMixin:
         Detects dimension mismatches between the configured dimension and the
         existing vec0 table. Drops and recreates the vec0 table when the
         dimension has changed.
+
+        Uses the canonical archive_tiers DDL (:mod:`polylogue.storage.sqlite.
+        archive_tiers.embeddings`) rather than a duplicate hand-rolled schema
+        -- a second, drifted declaration here previously created ``+source_name``
+        / message_id-keyed shapes that mismatched what the archive_tiers
+        bootstrap (and the daemon catch-up path) actually writes, silently
+        breaking this provider's own :meth:`SqliteVecQueryMixin.upsert` when
+        both ran against the same ``embeddings.db``.
         """
         conn = self._get_connection()
         try:
             # Detect and handle dimension mismatch before creating tables
             _reconcile_vec0_dimension(conn, self.dimension)
 
-            conn.execute(
-                f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
-                    message_id TEXT PRIMARY KEY,
-                    embedding float[{self.dimension}],
-                    +source_name TEXT,
-                    +session_id TEXT
-                )
-                """
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS message_embeddings_meta (
-                    message_id TEXT PRIMARY KEY,
-                    model TEXT NOT NULL,
-                    dimension INTEGER NOT NULL,
-                    embedded_at_ms INTEGER,
-                    content_hash TEXT,
-                    needs_reindex INTEGER NOT NULL DEFAULT 0
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS embedding_status (
-                    session_id TEXT PRIMARY KEY,
-                    message_count_embedded INTEGER DEFAULT 0,
-                    last_embedded_at TEXT,
-                    needs_reindex INTEGER DEFAULT 0,
-                    error_message TEXT
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_embedding_status_needs
-                ON embedding_status(needs_reindex) WHERE needs_reindex = 1
-            """)
+            from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL
+
+            conn.executescript(EMBEDDINGS_DDL)
             conn.commit()
             self._tables_ensured = True
         finally:

@@ -18,6 +18,7 @@ plus a mocked ``EmbedSessionOutcome`` stream for the embed loop, and
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -67,16 +68,37 @@ def _seed_embedding_tables(
     dimension: int,
     session_ids: tuple[str, ...] = (),
 ) -> None:
-    """Create message_embeddings_meta + embedding_status with seeded rows."""
+    """Create message_embeddings_meta + embedding_status with seeded rows.
+
+    v4: message_embeddings_meta is keyed by ``embedding_input_hash`` and
+    carries ``recipe_hash`` -- ``_reconcile_embedding_config_change``'s
+    model-change detection (``meta_recipe_changed``) reads that column
+    directly (a bare model-name mismatch alone deliberately does not trigger
+    reindex any more; the recipe hash, which embeds the model name, is the
+    monotonic signal). Seed it with the *stored* recipe's hash (computed from
+    ``model``/``dimension`` here) so a caller's subsequent "configure a
+    different model" step produces a genuine, detectable mismatch.
+
+    A model-only (non-dimension) config change only actually marks
+    ``embedding_status.needs_reindex`` for sessions whose
+    ``embedding_derivation_state`` generation advances (the bulk-mark path is
+    reserved for dimension changes, which invalidate every stored vector
+    archive-wide) -- so each seeded session also gets a derivation_state row
+    pinned to the *stored* recipe, matching what a genuinely-embedded session
+    would carry.
+    """
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
+    stored_recipe = EmbeddingRecipe.current(model=model, dimensions=dimension)
     conn.execute(
         """
         CREATE TABLE message_embeddings_meta (
-            message_id TEXT PRIMARY KEY,
+            embedding_input_hash BLOB PRIMARY KEY,
             model TEXT NOT NULL,
             dimension INTEGER NOT NULL,
             embedded_at_ms INTEGER,
-            content_hash TEXT,
-            needs_reindex INTEGER NOT NULL DEFAULT 0
+            recipe_hash BLOB,
+            output_contract_hash BLOB
         )
         """
     )
@@ -92,14 +114,45 @@ def _seed_embedding_tables(
         """
     )
     conn.execute(
-        "INSERT INTO message_embeddings_meta(message_id, model, dimension, embedded_at_ms) "
-        "VALUES (?, ?, ?, 1767225600000)",
-        ("msg-1", model, dimension),
+        """
+        CREATE TABLE embedding_derivation_state (
+            session_id TEXT PRIMARY KEY,
+            origin TEXT NOT NULL DEFAULT '',
+            generation INTEGER NOT NULL,
+            derivation_key BLOB NOT NULL,
+            source_hash BLOB NOT NULL,
+            recipe_hash BLOB NOT NULL,
+            output_contract_hash BLOB NOT NULL,
+            attempt_state TEXT NOT NULL,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            updated_at_ms INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO message_embeddings_meta(embedding_input_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash) "
+        "VALUES (?, ?, ?, 1767225600000, ?, ?)",
+        (b"\x01" * 32, model, dimension, stored_recipe.recipe_hash, stored_recipe.output_contract_hash),
     )
     for conv_id in session_ids:
         conn.execute(
             "INSERT INTO embedding_status(session_id, needs_reindex) VALUES (?, 0)",
             (conv_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_derivation_state (
+                session_id, origin, generation, derivation_key, source_hash, recipe_hash,
+                output_contract_hash, attempt_state, message_count, updated_at_ms
+            ) VALUES (?, 'codex-session', 1, ?, ?, ?, ?, 'succeeded', 1, 1767225600000)
+            """,
+            (
+                conv_id,
+                hashlib.sha256(f"{conv_id}:derivation".encode()).digest(),
+                hashlib.sha256(f"{conv_id}:source".encode()).digest(),
+                stored_recipe.recipe_hash,
+                stored_recipe.output_contract_hash,
+            ),
         )
     conn.commit()
 
@@ -121,7 +174,43 @@ def _create_vec0_table(conn: sqlite3.Connection, dimension: int) -> None:
     conn.commit()
 
 
+# v4 (polylogue-q88p): distinct, >=20-char prose per message so each
+# message's embedding_input_hash -- computed from exactly this text -- is
+# real and unique, matching what production actually sends to the embedder.
+_READINESS_COMPLETE_TEXT = "authored prose for the complete readiness session message, long enough"
+_READINESS_PENDING_TEXT_1 = "authored prose for the first pending readiness message, long enough"
+_READINESS_PENDING_TEXT_2 = "authored prose for the second pending readiness message, long enough"
+_READINESS_ERROR_TEXT = "authored prose for the failed readiness session message, long enough"
+
+
 def _seed_archive_embedding_readiness_db(path: Path) -> None:
+    """Build a real v4-shaped index.db + embeddings.db pair for readiness reads.
+
+    ``codex-session:complete`` is embedded through the real
+    begin_embedding_attempt/complete_embedding_attempt_success write path;
+    ``codex-session:error`` gets a real *retryable* failure through
+    begin_embedding_attempt/record_embedding_failure (matching this fixture's
+    original needs_reindex=1 intent -- a retryable failure stays part of the
+    pending backlog, unlike an acknowledged/terminal one, which is what
+    status_payload.py's exact freshness predicate now keys "blocked" off of
+    via embedding_derivation_state.attempt_state, not a bare embedding_status
+    error_message column).
+    """
+    from polylogue.storage.embeddings.identity import (
+        EmbeddingRecipe,
+        EmbeddingSourceDigest,
+        embedding_input_hash,
+    )
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+        ArchiveEmbeddingWrite,
+        begin_embedding_attempt,
+        complete_embedding_attempt_success,
+        record_embedding_failure,
+    )
+    from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
     path.parent.mkdir(parents=True, exist_ok=True)
     embeddings_path = path.with_name("embeddings.db")
     with sqlite3.connect(path) as conn:
@@ -134,6 +223,7 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                text TEXT,
                 role TEXT NOT NULL DEFAULT 'user',
                 message_type TEXT NOT NULL DEFAULT 'message',
                 material_origin TEXT NOT NULL DEFAULT 'human_authored',
@@ -143,47 +233,87 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
             INSERT INTO sessions VALUES ('codex-session:complete', 1);
             INSERT INTO sessions VALUES ('codex-session:pending', 2);
             INSERT INTO sessions VALUES ('codex-session:error', 1);
-            INSERT INTO messages (message_id, session_id, content_hash)
-            VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
-            INSERT INTO messages (message_id, session_id, content_hash)
-            VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
-            INSERT INTO messages (message_id, session_id, content_hash)
-            VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
-            INSERT INTO messages (message_id, session_id, content_hash)
-            VALUES ('codex-session:error:m1', 'codex-session:error', x'04');
             """
         )
-        conn.commit()
-    with sqlite3.connect(embeddings_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE message_embeddings (
-                message_id TEXT PRIMARY KEY
-            );
-            CREATE TABLE message_embeddings_meta (
-                message_id TEXT PRIMARY KEY,
-                model TEXT NOT NULL,
-                dimension INTEGER NOT NULL,
-                embedded_at_ms INTEGER NOT NULL,
-                content_hash BLOB,
-                needs_reindex INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
-            INSERT INTO message_embeddings_meta VALUES (
-                'codex-session:complete:m1', 'voyage-4', 1024, 1767225700000, x'01', 0
-            );
-            INSERT INTO embedding_status VALUES ('codex-session:complete', 'codex-session', 1, 0, NULL);
-            INSERT INTO embedding_status VALUES ('codex-session:error', 'codex-session', 0, 1, 'voyage timeout');
-            """
+        conn.execute(
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'01')",
+            ("codex-session:complete:m1", "codex-session:complete", _READINESS_COMPLETE_TEXT),
+        )
+        conn.execute(
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'02')",
+            ("codex-session:pending:m1", "codex-session:pending", _READINESS_PENDING_TEXT_1),
+        )
+        conn.execute(
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'03')",
+            ("codex-session:pending:m2", "codex-session:pending", _READINESS_PENDING_TEXT_2),
+        )
+        conn.execute(
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'04')",
+            ("codex-session:error:m1", "codex-session:error", _READINESS_ERROR_TEXT),
         )
         conn.commit()
+
+    recipe = EmbeddingRecipe.current(model="voyage-4", dimensions=EMBEDDING_DIMENSION)
+    econn = sqlite3.connect(embeddings_path)
+    try:
+        initialize_archive_tier(econn, ArchiveTier.EMBEDDINGS)
+
+        complete_hash = embedding_input_hash(model="voyage-4", input_text=_READINESS_COMPLETE_TEXT)
+        complete_source = EmbeddingSourceDigest()
+        complete_source.update(complete_hash)
+        complete_attempt = begin_embedding_attempt(
+            econn,
+            session_id="codex-session:complete",
+            origin="codex-session",
+            source_hash=complete_source.digest(),
+            recipe=recipe,
+            started_at_ms=1_767_225_700_000,
+        )
+        complete_embedding_attempt_success(
+            econn,
+            attempt=complete_attempt,
+            writes=[
+                ArchiveEmbeddingWrite(
+                    message_id="codex-session:complete:m1",
+                    session_id="codex-session:complete",
+                    origin="codex-session",
+                    embedding=[0.01] * EMBEDDING_DIMENSION,
+                    model="voyage-4",
+                    embedded_at_ms=1_767_225_700_000,
+                    embedding_input_hash=complete_hash,
+                    recipe_hash=complete_attempt.recipe_hash,
+                    generation=complete_attempt.generation,
+                )
+            ],
+            completed_at_ms=1_767_225_700_000,
+        )
+
+        error_hash = embedding_input_hash(model="voyage-4", input_text=_READINESS_ERROR_TEXT)
+        error_source = EmbeddingSourceDigest()
+        error_source.update(error_hash)
+        error_attempt = begin_embedding_attempt(
+            econn,
+            session_id="codex-session:error",
+            origin="codex-session",
+            source_hash=error_source.digest(),
+            recipe=recipe,
+            started_at_ms=1_767_225_700_000,
+        )
+        record_embedding_failure(
+            econn,
+            session_id="codex-session:error",
+            origin="codex-session",
+            message_refs=("codex-session:error:m1",),
+            provider="voyage",
+            model="voyage-4",
+            error_class="provider_timeout",
+            error_message="voyage timeout",
+            retryable=True,
+            occurred_at_ms=1_767_225_700_000,
+            attempt=error_attempt,
+        )
+    finally:
+        econn.close()
 
 
 # ── 1. configured readiness branch ─────────────────────────────────

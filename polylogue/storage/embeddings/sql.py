@@ -46,28 +46,17 @@ PENDING_MESSAGES_SQL = """
       AND m.material_origin IN ('human_authored', 'assistant_authored')
       AND m.word_count > 0
 """
-EMBEDDED_MESSAGES_SQL = "SELECT COUNT(*) FROM message_embeddings"
+# v4 (polylogue-q88p): a message's vector is looked up through
+# message_embedding_refs (message_id -> embedding_input_hash), not directly
+# by message_id -- message_embeddings/message_embeddings_meta are keyed by
+# the content-addressed hash and are shared/deduped across messages.
+EMBEDDED_MESSAGES_SQL = "SELECT COUNT(*) FROM message_embedding_refs"
 MISSING_META_MESSAGES_SQL = """
     SELECT COUNT(*)
-    FROM message_embeddings me
+    FROM message_embedding_refs r
     LEFT JOIN message_embeddings_meta em
-      ON em.message_id = me.message_id
-    WHERE em.message_id IS NULL
-"""
-STALE_MESSAGES_SQL = """
-    SELECT COUNT(*)
-    FROM message_embeddings me
-    JOIN messages m ON m.message_id = me.message_id
-    LEFT JOIN message_embeddings_meta em
-      ON em.message_id = me.message_id
-    WHERE (
-            em.message_id IS NULL
-         OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
-    )
-      AND m.message_type = 'message'
-      AND m.role IN ('user', 'assistant')
-      AND m.material_origin IN ('human_authored', 'assistant_authored')
-      AND m.word_count > 0
+      ON em.embedding_input_hash = r.embedding_input_hash
+    WHERE em.embedding_input_hash IS NULL
 """
 EMBEDDED_AT_BOUNDS_SQL = """
     SELECT MIN(embedded_at_ms) AS oldest_embedded_at, MAX(embedded_at_ms) AS newest_embedded_at

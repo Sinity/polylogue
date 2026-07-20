@@ -73,6 +73,18 @@ async def _purge_message_fts_async(conn: aiosqlite.Connection, session_id: str) 
 
 
 def _invalidate_embedding_state_sync(conn: sqlite3.Connection, session_id: str) -> None:
+    """Drop this session's stale message_id -> vector association before re-materializing.
+
+    v4 (polylogue-q88p): ``message_embeddings``/``message_embeddings_meta``
+    are content-addressed and shared/deduped -- they are never deleted here.
+    Only ``message_embedding_refs`` (the per-message mapping) is invalidated;
+    the real re-embed pass that follows re-materialization writes fresh refs,
+    reusing any vector whose hash the new content happens to match for free.
+    """
+    if _table_exists_sync(conn, "message_embedding_refs"):
+        conn.execute("DELETE FROM message_embedding_refs WHERE session_id = ?", (session_id,))
+        return
+    # Legacy v3 (pre-q88p) shape fallback: message-id-keyed meta/vector rows.
     if _table_exists_sync(conn, "message_embeddings_meta"):
         conn.execute(
             """
@@ -88,6 +100,10 @@ def _invalidate_embedding_state_sync(conn: sqlite3.Connection, session_id: str) 
 
 
 async def _invalidate_embedding_state_async(conn: aiosqlite.Connection, session_id: str) -> None:
+    """Async counterpart of :func:`_invalidate_embedding_state_sync` (see its docstring)."""
+    if await _table_exists_async(conn, "message_embedding_refs"):
+        await conn.execute("DELETE FROM message_embedding_refs WHERE session_id = ?", (session_id,))
+        return
     if await _table_exists_async(conn, "message_embeddings_meta"):
         await conn.execute(
             """

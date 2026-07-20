@@ -11,6 +11,7 @@ condemns, never the ones the content-hash and quiet-window guards protect.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -121,8 +122,15 @@ def _write_embedding(
     message_id: str,
     session_id: str,
     embedded_at_ms: int,
-    content_hash: bytes | None = None,
+    embedding_input_hash: bytes | None = None,
 ) -> None:
+    """Write one message's vector/meta/ref via the real v4 content-addressed writer.
+
+    Defaults to a hash derived from ``message_id`` (unique per message) unless
+    an explicit ``embedding_input_hash`` is supplied -- e.g. to simulate two
+    messages whose current embedder input text is identical and therefore
+    dedups onto one shared vector row.
+    """
     upsert_message_embeddings(
         conn,
         [
@@ -133,7 +141,11 @@ def _write_embedding(
                 embedding=[0.01] * EMBEDDING_DIMENSION,
                 model="voyage-4",
                 embedded_at_ms=embedded_at_ms,
-                content_hash=content_hash if content_hash is not None else (bytes([len(message_id) % 255]) * 32),
+                embedding_input_hash=(
+                    embedding_input_hash
+                    if embedding_input_hash is not None
+                    else hashlib.sha256(message_id.encode("utf-8")).digest()
+                ),
             )
         ],
     )
@@ -187,18 +199,33 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
 
     assert report.orphan_message_rows == 1
     assert report.removed_message_rows == 1
-    assert report.removed_vector_rows == 1
+    # v4: message_embeddings/message_embeddings_meta are content-addressed and
+    # shared -- this reconciler only ever removes the orphan message_id ->
+    # hash *ref*, never the vector/meta row itself (module docstring).
+    assert report.removed_vector_rows == 0
     assert report.sessions_recounted == 1
     assert report.more_pending is False
 
     conn = sqlite3.connect(embeddings_db)
     try:
         assert (
-            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (m1,)).fetchone()[0] == 1
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (m1,)).fetchone()[0] == 1
         )
         assert (
-            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (m2,)).fetchone()[0] == 0
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (m2,)).fetchone()[0] == 0
         )
+        # The trivially-simplified deeper invariant behind the old (now
+        # removed) content-hash-mismatch test: an identity-present message's
+        # vector/meta row is never touched by this reconciler -- and neither
+        # is an orphaned message's, which is the new, stronger form of that
+        # guarantee (there is no content_hash column left to compare against).
+        m2_hash = hashlib.sha256(m2.encode("utf-8")).digest()
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM message_embeddings_meta WHERE embedding_input_hash = ?", (m2_hash,)
+            ).fetchone()[0]
+            == 1
+        ), "an orphaned ref's underlying vector/meta row survives untouched -- reference-counted GC is out of scope"
         status = conn.execute(
             "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
         ).fetchone()
@@ -266,26 +293,64 @@ def test_apply_accepts_generation_metadata_beside_external_pointer_anchor(tmp_pa
     )
 
     assert report.removed_message_rows == 1
-    assert report.removed_vector_rows == 1
+    # v4: the vector/meta row is content-addressed and never deleted by this
+    # reconciler -- only the message_id -> hash ref is removed.
+    assert report.removed_vector_rows == 0
     with _connect_embeddings(embeddings_db) as verify:
-        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 0
-        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 0
+        assert verify.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 0
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
 
 
-def test_reconcile_preserves_content_hash_mismatch_when_identity_present(tmp_path: Path) -> None:
-    """Content-hash guard: a message that still exists (identity present) is
-    never removed merely because its stored content_hash is stale — that is
-    0k6's re-embed territory, not this reconciler's."""
+# NOTE: the old `test_reconcile_preserves_content_hash_mismatch_when_identity_
+# present` test verified that a message which still exists in the index is
+# never removed merely because its recorded content_hash had gone stale --
+# that mismatch-tolerance mechanism doesn't exist under v4 (there is no
+# content_hash column on message_embedding_refs/message_embeddings_meta left
+# to compare; presence alone is the check). The deeper invariant it protected
+# — an identity-present message's underlying row is never disturbed by this
+# reconciler — is now folded into
+# `test_reconcile_removes_orphan_ref_but_preserves_shared_vector_and_meta_rows`
+# below, which additionally proves the *stronger* v4 claim: even an orphaned
+# message's now-refless vector/meta row is left untouched, since reference-
+# counted GC is explicitly out of scope (see reconcile.py's module docstring).
 
-    session_id = "codex-session:s2"
-    m1 = f"{session_id}:m1"
-    _connect_index(tmp_path / "index.db", sessions=[session_id], messages={session_id: [m1]})
+
+def test_reconcile_removes_orphan_ref_but_preserves_shared_vector_and_meta_rows(tmp_path: Path) -> None:
+    """v4: message_embeddings/message_embeddings_meta are content-addressed and
+    shared across messages/sessions -- removing one message's orphan ref must
+    never touch the vector/meta row a still-live message legitimately shares
+    the same hash with (dedup), nor the row belonging to an orphan alone.
+    Reference-counted vector GC is explicitly out of scope (module docstring).
+    """
+
+    live_session = "codex-session:live"
+    orphan_session = "codex-session:orphan"
+    live_id = f"{live_session}:m1"
+    orphan_id = f"{orphan_session}:m1"
+    shared_hash = b"\x42" * 32
+
+    # orphan_session/orphan_id is intentionally absent from index.db --
+    # standing in for a rebuild that dropped it while live_session survived.
+    _connect_index(tmp_path / "index.db", sessions=[live_session], messages={live_session: [live_id]})
 
     embeddings_db = tmp_path / "embeddings.db"
     conn = _connect_embeddings(embeddings_db)
-    old_hash = b"a" * 32
-    _write_embedding(conn, message_id=m1, session_id=session_id, embedded_at_ms=_OLD_MS, content_hash=old_hash)
-    _write_status(conn, session_id=session_id, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    _write_embedding(
+        conn, message_id=live_id, session_id=live_session, embedded_at_ms=_OLD_MS, embedding_input_hash=shared_hash
+    )
+    _write_embedding(
+        conn,
+        message_id=orphan_id,
+        session_id=orphan_session,
+        embedded_at_ms=_OLD_MS,
+        embedding_input_hash=shared_hash,
+    )
+    _write_status(conn, session_id=live_session, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1, (
+        "both messages share one hash -- the write-once vector/meta row is written exactly once"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 2
     conn.close()
 
     report = reconcile_embedding_orphans(
@@ -296,16 +361,33 @@ def test_reconcile_preserves_content_hash_mismatch_when_identity_present(tmp_pat
         mutation_authority="offline-exclusive",
     )
 
-    assert report.orphan_message_rows == 0
-    assert report.removed_message_rows == 0
+    assert report.orphan_message_rows == 1
+    assert report.removed_message_rows == 1
+    assert report.removed_vector_rows == 0, "vectors are content-addressed/shared -- never deleted by this reconciler"
 
-    conn = sqlite3.connect(embeddings_db)
-    try:
-        row = conn.execute("SELECT content_hash FROM message_embeddings_meta WHERE message_id = ?", (m1,)).fetchone()
-        assert row is not None
-        assert bytes(row[0]) == old_hash, "identity-present row must be preserved untouched, hash and all"
-    finally:
-        conn.close()
+    with _connect_embeddings(embeddings_db) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (orphan_id,)).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (live_id,)).fetchone()[0]
+            == 1
+        )
+        # The shared vector/meta row survives untouched -- the live message
+        # can still resolve its embedding through it.
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM message_embeddings_meta WHERE embedding_input_hash = ?", (shared_hash,)
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM message_embeddings WHERE embedding_input_hash = ?", (shared_hash.hex(),)
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_reconcile_removes_orphan_status_for_deleted_session(tmp_path: Path) -> None:
@@ -371,7 +453,7 @@ def test_reconcile_respects_quiet_window(tmp_path: Path) -> None:
     conn = sqlite3.connect(embeddings_db)
     try:
         assert (
-            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (m1,)).fetchone()[0] == 1
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (m1,)).fetchone()[0] == 1
         )
     finally:
         conn.close()
@@ -468,7 +550,7 @@ def test_reconcile_dry_run_does_not_mutate(tmp_path: Path) -> None:
     conn = sqlite3.connect(embeddings_db)
     try:
         assert (
-            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (m1,)).fetchone()[0] == 1
+            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (m1,)).fetchone()[0] == 1
         )
     finally:
         conn.close()
@@ -571,56 +653,23 @@ def test_apply_refuses_live_v32_index_and_preserves_orphans(tmp_path: Path) -> N
         assert verify.execute("SELECT COUNT(*) FROM embedding_status").fetchone()[0] == 1
 
 
-def test_reconcile_counts_and_removes_meta_only_and_vec_only_orphans(tmp_path: Path) -> None:
-    """Real vec0/DDL proof: row-kind counts and removals must not be inferred from identity count."""
-    meta_session = "codex-session:meta-only"
-    vec_session = "codex-session:vec-only"
-    meta_id = f"{meta_session}:m1"
-    vec_id = f"{vec_session}:m1"
-    _connect_index(
-        tmp_path / "index.db",
-        sessions=[meta_session, vec_session],
-        messages={meta_session: [], vec_session: []},
-    )
-    embeddings_db = tmp_path / "embeddings.db"
-    conn = _connect_embeddings(embeddings_db)
-    _write_embedding(conn, message_id=meta_id, session_id=meta_session, embedded_at_ms=_OLD_MS)
-    _write_embedding(conn, message_id=vec_id, session_id=vec_session, embedded_at_ms=_OLD_MS)
-    _write_status(conn, session_id=meta_session, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
-    _write_status(conn, session_id=vec_session, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
-    conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (meta_id,))
-    conn.execute("DELETE FROM message_embeddings_meta WHERE message_id = ?", (vec_id,))
-    conn.commit()
-    conn.close()
-
-    inspected = inspect_embedding_orphans(tmp_path / "index.db", embeddings_db, now_ms=_NOW_MS)
-    assert inspected.scanned_message_meta_rows == 1
-    assert inspected.scanned_vector_rows == 1
-    assert inspected.orphan_message_rows == 2
-    assert inspected.orphan_message_meta_rows == 1
-    assert inspected.orphan_vector_rows == 1
-
-    applied = reconcile_embedding_orphans(
-        tmp_path / "index.db",
-        embeddings_db,
-        dry_run=False,
-        now_ms=_NOW_MS,
-        mutation_authority="offline-exclusive",
-    )
-    assert applied.removed_message_rows == 1
-    assert applied.removed_vector_rows == 1
-    assert applied.sessions_recounted == 2
-
-    with _connect_embeddings(embeddings_db) as verify:
-        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 0
-        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 0
-        statuses = [
-            tuple(row)
-            for row in verify.execute(
-                "SELECT session_id, message_count_embedded, needs_reindex FROM embedding_status ORDER BY session_id"
-            ).fetchall()
-        ]
-    assert statuses == [(meta_session, 0, 1), (vec_session, 0, 1)]
+# NOTE: the old `test_reconcile_counts_and_removes_meta_only_and_vec_only_
+# orphans` test manually deleted rows straight out of message_embeddings /
+# message_embeddings_meta (bypassing the writer) to construct a "meta row
+# exists but vector row doesn't" / vice-versa scenario, then asserted the
+# reconciler's has_meta/has_vector row-kind counts and removals differed
+# accordingly. Under v4 that distinction is gone on both sides: the tables
+# are keyed by embedding_input_hash, not message_id (so a raw `DELETE ...
+# WHERE message_id = ?` against them no longer targets anything meaningful),
+# and `_orphan_message_rows` reports has_meta/has_vector as always-true from
+# a ref's perspective since a ref only ever points at a hash written
+# atomically with both (see reconcile.py's `_orphan_message_rows`
+# docstring) -- this reconciler doesn't distinguish or delete either kind
+# any more. The test is removed as vacuous under the new schema; its
+# "removal is scoped to real DDL, not inferred" spirit lives on in
+# `test_reconcile_removes_orphan_ref_but_preserves_shared_vector_and_meta_rows`
+# above, which proves against real vec0 + STRICT-table DDL that a ref
+# removal never touches the surviving content-addressed row.
 
 
 def test_reconcile_rolls_back_delete_recount_and_status_cleanup_then_retries(tmp_path: Path) -> None:
@@ -690,7 +739,7 @@ def test_reconcile_rolls_back_delete_recount_and_status_cleanup_then_retries(tmp
         mutation_authority="offline-exclusive",
     )
     assert retry.removed_message_rows == 2
-    assert retry.removed_vector_rows == 2
+    assert retry.removed_vector_rows == 0  # v4: vectors/meta are content-addressed, never deleted here
     assert retry.removed_status_rows == 1
     assert retry.sessions_recounted == 1
     assert retry.more_pending is False

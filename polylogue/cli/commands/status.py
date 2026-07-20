@@ -269,7 +269,10 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "thread_sessions",
         "insight_materialization",
     ),
-    "embeddings": ("message_embeddings_meta", "embedding_status"),
+    # message_embeddings_meta/message_embeddings are content-addressed and
+    # deduped (polylogue-q88p); message_embedding_refs is the per-message
+    # count operators actually want from a row-count status summary.
+    "embeddings": ("message_embedding_refs", "message_embeddings_meta", "embedding_status"),
     "user": (
         "assertions",
         "annotation_schemas",

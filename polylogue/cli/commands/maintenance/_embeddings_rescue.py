@@ -4,10 +4,12 @@ Break-glass, offline-only migration path for polylogue-04kl: a retired
 ``embeddings.db.v2-retired-YYYYMMDD`` tier can hold hundreds of thousands of
 Voyage vectors whose ``message_id`` + ``content_hash`` identity still matches
 the freshly rebuilt index. ``--plan`` (default) is a read-only census;
-``--yes`` copies vectors for every *fully rescuable* session (see
+``--yes`` recomputes the content-addressed ``embedding_input_hash`` for each
+matched message and copies vectors for every *fully rescuable* session (see
 :mod:`polylogue.storage.embeddings.rescue` for why rescue is session-, not
-message-, granular) directly into the live ``embeddings.db``, skipping a live
-Voyage API re-embed for those sessions entirely.
+message-, granular) directly into the live, content-addressed ``embeddings.db``
+(polylogue-q88p), skipping a live Voyage API re-embed for those sessions
+entirely.
 """
 
 from __future__ import annotations
