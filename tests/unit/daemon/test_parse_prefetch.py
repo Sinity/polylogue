@@ -222,3 +222,36 @@ def test_warm_times_out_on_a_hung_worker_and_leaves_it_uncached(
     # warm() returned close to its own timeout, not after the hung worker's
     # sleep -- proving the wait is genuinely bounded, not merely reordered.
     assert elapsed < 0.3
+
+
+def test_max_inflight_bytes_default_is_adaptive_and_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whale-memory budget scales with physical RAM, clamped to [64MiB, 2GiB].
+
+    The old fixed 64 MiB default starved bulk-scale warm on whale corpora
+    (measured live: 0.37 raws/s stalled on cache admission vs 56.7 raws/s
+    with an adequate budget) — the budget must grow on capable machines
+    while keeping the 64 MiB floor semantics on small ones.
+    """
+    from polylogue.daemon import parse_prefetch as pp
+
+    monkeypatch.delenv("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES", raising=False)
+
+    # 32 GiB machine -> hits the 2 GiB ceiling (32 GiB / 16 = 2 GiB).
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: 32 * 1024**3)
+    assert pp.daemon_parse_stage_max_inflight_bytes() == 2 * 1024**3
+
+    # 512 MiB machine -> clamped up to the 64 MiB floor.
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: 512 * 1024**2)
+    assert pp.daemon_parse_stage_max_inflight_bytes() == 64 * 1024**2
+
+    # 8 GiB machine -> proportional (8 GiB / 16 = 512 MiB).
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: 8 * 1024**3)
+    assert pp.daemon_parse_stage_max_inflight_bytes() == 512 * 1024**2
+
+    # Unknown physical memory -> conservative floor.
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: None)
+    assert pp.daemon_parse_stage_max_inflight_bytes() == 64 * 1024**2
+
+    # Explicit env override always wins.
+    monkeypatch.setenv("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES", "123456789")
+    assert pp.daemon_parse_stage_max_inflight_bytes() == 123456789
