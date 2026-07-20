@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import pickle
 import sqlite3
@@ -18,6 +17,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO, Final, Literal
 
+from polylogue import logging as _polylogue_logging
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -40,7 +40,7 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = _polylogue_logging.get_logger(__name__)
 
 
 def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "native"] | None:
@@ -696,6 +696,7 @@ def backfill_historical_revision_evidence(
             prefetch_cache=prefetch_cache,
         )
         stage_timings["census"] = time.perf_counter() - census_started
+        receipt_started = time.perf_counter()
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         # The direct backfill entry point must publish the same current-parser
         # receipt as the census-only entry point before it assigns or applies
@@ -703,6 +704,7 @@ def backfill_historical_revision_evidence(
         # durable receipt writer observes one complete source snapshot.
         archive.commit()
         _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
+        stage_timings["census_receipt"] = time.perf_counter() - receipt_started
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids
 
@@ -730,7 +732,11 @@ def backfill_historical_revision_evidence(
                 # cohort to membership governance and let parsed-content
                 # prefix rules decide it; append chains remain byte-governed.
                 for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
+                    spill_started = time.perf_counter()
                     sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+                    stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                        time.perf_counter() - spill_started
+                    )
                     if len(sessions) != 1:
                         raise RuntimeError(f"full revision {raw_id} no longer parses to one session")
                     archive.replace_raw_membership_census(
@@ -872,6 +878,7 @@ def backfill_historical_revision_evidence(
         if replay_batched:
             archive.commit()
         if stage_timings:
+            stage_timings["total"] = time.perf_counter() - census_started
             _LOGGER.info(
                 "backfill stage timings: %s",
                 " ".join(f"{key}={value:.1f}s" for key, value in sorted(stage_timings.items(), key=lambda kv: -kv[1])),
