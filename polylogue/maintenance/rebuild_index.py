@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
@@ -25,6 +25,9 @@ from polylogue.storage.fts.sql import FTS_REBUILD_SQL, TRIGRAM_REBUILD_DELETE_AL
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from polylogue.storage.table_existence import table_exists
+
+if TYPE_CHECKING:
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
 
 _PLANNER_STATS_ANALYSIS_LIMIT = 1000
 
@@ -110,6 +113,13 @@ class RebuildIndexRequest:
     raw_batch_size: int = 500
     pass_byte_budget_mb: float | None = None
     pass_deadline_seconds: float | None = None
+    # polylogue-gd6v: daemon-internal callers only (never CLI/HTTP -- there is
+    # no JSON wire shape for a live cache object). Lets the daemon's bulk
+    # rebuild routing substitute parse output already computed off the
+    # writer hold (``DaemonParseStage``) for this pass's census phase. Every
+    # existing caller leaves this ``None`` and gets the exact unmodified
+    # parse path.
+    prefetch_cache: RawParsePrefetchCache | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +364,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 # _repopulate_bulk_build_derived_state, called below right
                 # before readiness.
                 bulk_build=True,
+                prefetch_cache=request.prefetch_cache,
             )
             if selected_raw_ids:
                 _refresh_generation_planner_statistics(Path(generation.index_path))

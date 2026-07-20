@@ -125,6 +125,24 @@ def _daemon_parse_stage() -> DaemonParseStage:
     return _daemon_parse_stage_singleton
 
 
+# polylogue-gd6v: a SEPARATE parse-stage instance (own bounded thread pool +
+# prefetch cache) from the trickle conveyor's ``_daemon_parse_stage()``
+# above. Trickle mode and bulk-rebuild routing are independent lifecycles
+# (see docs/design/convergence-simplification-inventory.md's "trickle mode
+# stays... bulk mode adds only" framing) that can be in flight
+# simultaneously; sharing one pool would let one starve the other's budget.
+_daemon_bulk_rebuild_parse_stage_singleton: DaemonParseStage | None = None
+
+
+def _daemon_bulk_rebuild_parse_stage() -> DaemonParseStage:
+    global _daemon_bulk_rebuild_parse_stage_singleton
+    if _daemon_bulk_rebuild_parse_stage_singleton is None:
+        from polylogue.daemon.parse_prefetch import DaemonParseStage
+
+        _daemon_bulk_rebuild_parse_stage_singleton = DaemonParseStage()
+    return _daemon_bulk_rebuild_parse_stage_singleton
+
+
 async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> RawParsePrefetchCache | None:
     """Pre-parse this pass's census candidates outside the writer hold.
 
@@ -650,6 +668,64 @@ def _maybe_recommend_bulk_rebuild(counts: RawMaterializationCounts) -> None:
     )
 
 
+async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> None:
+    """polylogue-gd6v: route a bulk-scale backlog into a daemon-owned blue-green rebuild.
+
+    Off by default (``daemon_bulk_rebuild_routing`` config flag). Once a
+    bulk-rebuild transaction is in flight (this tick or a prior one,
+    surviving a daemon restart -- see ``polylogue.daemon.bulk_rebuild``),
+    keeps driving it every tick regardless of the instantaneous trickle
+    backlog reading: abandoning a partially-built generation mid-flight
+    would waste every page already replayed into it. This runs after the
+    trickle pass has already released the writer coordinator, so scheduling
+    another writer-coordinated pass here is safe.
+    """
+    from polylogue.config import load_polylogue_config
+
+    if not load_polylogue_config().daemon_bulk_rebuild_routing:
+        return
+    from polylogue.config import Config
+    from polylogue.daemon.bulk_rebuild import (
+        DAEMON_BULK_REBUILD_OPERATION_ID,
+        has_resumable_daemon_bulk_rebuild_transaction,
+        run_daemon_bulk_rebuild_pass,
+    )
+    from polylogue.paths import archive_root, render_root
+
+    root = archive_root()
+    if not _bulk_scale_raw_materialization_backlog(counts) and not await asyncio.to_thread(
+        has_resumable_daemon_bulk_rebuild_transaction, root
+    ):
+        return
+    config = Config(archive_root=root, render_root=render_root(), sources=[])
+    try:
+        receipt = await run_daemon_bulk_rebuild_pass(
+            config=config,
+            parse_stage=_daemon_bulk_rebuild_parse_stage(),
+            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+        )
+    except Exception:
+        logger.warning("bulk-rebuild: routed pass failed", exc_info=True)
+        return
+    if receipt is None:
+        return
+    transaction_status = str(receipt.transaction["status"]) if receipt.transaction else receipt.status
+    processed = receipt.transaction.get("processed_raw_count") if receipt.transaction else None
+    logger.info(
+        "bulk-rebuild: pass status=%s transaction_status=%s processed_raw_count=%s selected=%d",
+        receipt.status,
+        transaction_status,
+        processed,
+        receipt.selected_raw_count,
+    )
+    if transaction_status == "promoted":
+        logger.warning(
+            "bulk-rebuild: promoted a daemon-built generation covering the backlog (operation %s); "
+            "the trickle conveyor's remaining backlog reflects the new active index from the next tick",
+            DAEMON_BULK_REBUILD_OPERATION_ID,
+        )
+
+
 async def _periodic_raw_materialization_convergence() -> None:
     """Continuously converge durable raw source rows into the index tier.
 
@@ -698,6 +774,7 @@ async def _periodic_raw_materialization_convergence() -> None:
                     and materialized.executed_plans == 0
                 )
                 _maybe_recommend_bulk_rebuild(materialized)
+                await _maybe_route_daemon_bulk_rebuild(materialized)
                 if materialized.made_progress:
                     logger.info(
                         "raw materialization: repaired %d session(s), executed %d frontier plan(s), %d candidate(s) remaining",
@@ -1828,6 +1905,11 @@ async def run_daemon_services(
                 # cannot itself hang the shutdown sequence; it just stops the
                 # pool from keeping the process alive at exit.
                 _daemon_parse_stage_singleton.shutdown()
+            if _daemon_bulk_rebuild_parse_stage_singleton is not None:
+                # polylogue-gd6v: same non-blocking shutdown contract as the
+                # trickle conveyor's parse-stage warmer above, for the
+                # bulk-rebuild routing's own (separate) pool.
+                _daemon_bulk_rebuild_parse_stage_singleton.shutdown()
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:

@@ -33,6 +33,7 @@ turns the same code path into a real speedup.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from polylogue.config import Config
@@ -166,7 +167,19 @@ class DaemonParseStage:
         candidate_raw_ids = raw_materialization_pending_census_raw_ids(
             config, limit=limit, max_payload_bytes=max_payload_bytes
         )
-        raw_ids = [raw_id for raw_id in candidate_raw_ids if not self.cache.contains(raw_id)]
+        return self.warm_raw_ids(config, raw_ids=candidate_raw_ids, max_payload_bytes=max_payload_bytes)
+
+    def warm_raw_ids(self, config: Config, *, raw_ids: Sequence[str], max_payload_bytes: int) -> int:
+        """Pre-parse an explicit ``raw_ids`` list outside any writer hold.
+
+        Same read-only, graceful-degradation contract as :meth:`warm`, but
+        for a caller (polylogue-gd6v's daemon bulk-rebuild routing) that
+        already knows exactly which raws its next bounded pass will select
+        -- a resumable rebuild transaction's own paged cursor -- instead of
+        querying the raw-materialization conveyor's own pending-census
+        candidate set. :meth:`warm` is now a thin wrapper around this method.
+        """
+        raw_ids = [raw_id for raw_id in raw_ids if not self.cache.contains(raw_id)]
         if not raw_ids:
             return 0
         archive_root = config.archive_root
@@ -236,5 +249,6 @@ class DaemonParseStage:
 __all__ = [
     "DaemonParseStage",
     "daemon_parse_stage_max_inflight_bytes",
+    "daemon_parse_stage_warm_timeout_seconds",
     "daemon_parse_stage_worker_count",
 ]

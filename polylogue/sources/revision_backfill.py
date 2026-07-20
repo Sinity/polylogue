@@ -598,6 +598,7 @@ def backfill_historical_revision_evidence(
     commit_batch_size: int | None = None,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -647,6 +648,18 @@ def backfill_historical_revision_evidence(
     messages_fts/blocks_command_trigram/action_pairs/delegation_facts refresh
     is skipped during replay, deferred to one archive-wide repopulate at
     readiness. Only the offline rebuild caller passes ``True``.
+
+    ``prefetch_cache`` (polylogue-gd6v, default ``None``) is threaded to the
+    census phase exactly like ``census_historical_revision_evidence``'s own
+    parameter: a raw already parsed off the writer hold (the daemon's
+    ``DaemonParseStage``, warmed ahead of a bounded bulk-rebuild pass) is
+    consumed directly instead of reparsed. A prefetch hit still flows through
+    ``apply_outcome``'s ``spill.add(...)`` exactly like a freshly-parsed
+    outcome, so the REPLAY phase's own ``spill.for_raw`` lookups (which do
+    all of the actual cohort writes) see identical warmed content -- this is
+    what makes prefetching the census phase alone enough to also skip
+    replay-phase reparsing for the same raws. ``None`` (every existing
+    caller) reproduces the exact unmodified parse path.
     """
     adoption_deferred = 0
     quarantined = 0
@@ -674,6 +687,7 @@ def backfill_historical_revision_evidence(
             max_payload_bytes=max_payload_bytes,
             ingest_workers=ingest_workers,
             commit_batch_size=commit_batch_size,
+            prefetch_cache=prefetch_cache,
         )
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         # The direct backfill entry point must publish the same current-parser

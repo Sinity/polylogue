@@ -350,6 +350,23 @@ class IndexGenerationStore:
             )
         )
 
+    def discard_transaction(self, operation_id: str) -> bool:
+        """Remove a terminal transaction's record so its ``operation_id`` can be reused.
+
+        Only the record itself is removed; pass receipts under
+        ``<operation_id>.receipts/`` are left in place as audit history
+        (mirroring ``save_pass_receipt``'s own retention). The candidate
+        generation is a SEPARATE lifecycle -- callers that also want to
+        reclaim a still-inactive generation must call
+        ``discard_if_inactive`` themselves; a ``promoted`` generation is
+        already the active index and must never be discarded here.
+        """
+        path = self._transaction_path(operation_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
     def next_raw_page(
         self,
         transaction: IndexRebuildTransaction,

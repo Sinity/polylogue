@@ -562,6 +562,16 @@ class PolylogueConfig:
         """
         return bool(self._data.get("daemon_parse_stage_split"))
 
+    @property
+    def daemon_bulk_rebuild_routing(self) -> bool:
+        """Opt-in: route a bulk-scale raw backlog into a daemon-owned blue-green rebuild.
+
+        polylogue-m6tp phase (c) / polylogue-gd6v. Off by default until the
+        archive-scale equivalence receipt lands. See
+        ``polylogue.daemon.bulk_rebuild``.
+        """
+        return bool(self._data.get("daemon_bulk_rebuild_routing"))
+
     def get(self, key: str, default: object = None) -> object:
         value = self._data.get(key, default)
         return _thaw_config_value(value)
@@ -1148,6 +1158,22 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "free-threaded 3.14t daemon deploy."
         ),
     ),
+    ConfigInventoryEntry(
+        "daemon_bulk_rebuild_routing",
+        toml_path="daemon.raw_materialization.bulk_rebuild_routing",
+        env_var="POLYLOGUE_DAEMON_BULK_REBUILD_ROUTING",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Opt-in (polylogue-m6tp phase (c) / polylogue-gd6v): once a raw "
+            "backlog is bulk-scale (the #3145 threshold), route it into a "
+            "daemon-owned resumable blue-green index generation build "
+            "instead of the trickle conveyor, promoting it once exact-ready. "
+            "Off by default until the archive-scale equivalence receipt "
+            "lands; the offline `polylogue ops maintenance rebuild-index` "
+            "command remains available regardless of this flag."
+        ),
+    ),
 )
 
 _CONFIG_INVENTORY_BY_KEY = {entry.key: entry for entry in _CONFIG_INVENTORY}
@@ -1182,6 +1208,7 @@ _BOOL_CONFIG_KEYS = frozenset(
         "notification_email_use_starttls",
         "observability_enabled",
         "daemon_parse_stage_split",
+        "daemon_bulk_rebuild_routing",
     }
 )
 
@@ -1379,6 +1406,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "live_full_ingest_workers": 1,
         "subscription_plans": (),
         "daemon_parse_stage_split": False,
+        "daemon_bulk_rebuild_routing": False,
     }
 
 
