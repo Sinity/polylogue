@@ -439,6 +439,103 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         assert tuple(head) == (folded, 20)
 
 
+def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: Path) -> None:
+    """polylogue-52l2: a raw discovered for a logical identity that already
+    has quarantined/ambiguous siblings must not be accepted as an
+    unambiguous singleton byte-proven baseline.
+
+    This mirrors the LIVE incremental watcher's own call sequence
+    (``sources/live/batch.py``): ``bind_raw_revision`` then
+    ``classify_raw_revision_cohort`` directly, with no census-phase
+    re-derivation or connected-component re-expansion in between (those only
+    happen in the offline ``backfill_historical_revision_evidence`` path,
+    which is why this bug does not reproduce through that entry point).
+
+    ``classify_raw_revision_cohort`` only ever queries
+    ``raw_sessions WHERE logical_source_key = ? AND revision_kind = 'full'``.
+    Retiring an ambiguous sibling to membership governance
+    (``replace_raw_membership_census(..., retire_full_revision_governance=True)``,
+    exactly what the backfill caller does with
+    ``convertible_full_revision_raw_ids`` once a cohort is decided
+    ambiguous) nulls its ``raw_sessions.logical_source_key`` -- it becomes
+    invisible to that query. A THIRD raw for the same identity, discovered
+    afterward, is then evaluated completely alone:
+    ``classify_historical_full_revision_streams`` unconditionally accepts a
+    singleton stream as a "byte-proven baseline" (there is no sibling to
+    compare a byte-prefix against), so the isolated raw would permanently
+    become the accepted session content -- an outcome that depends on
+    incremental discovery order, not on which content is actually correct.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    def parsed_solo(native_id: str, *texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=native_id,
+            messages=[
+                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(texts)
+            ],
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_a = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            raw_a,
+            RawRevisionEnvelope(
+                "chatgpt:s1", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        raw_b = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"bbb-right", source_path="b.json", acquired_at_ms=2
+        )
+        archive.bind_raw_revision(
+            raw_b,
+            RawRevisionEnvelope(
+                "chatgpt:s1", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+
+        first_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+        assert first_plan.accepted_raw_ids == ()
+
+        # Both siblings genuinely disagree (no byte-prefix relation) --
+        # exactly what the backfill caller does when a cohort is decided
+        # ambiguous: move it to membership governance so parsed-content
+        # prefix rules can still arbitrate it later.
+        for raw_id, session in (
+            (raw_a, parsed_solo("s1", "base", "left")),
+            (raw_b, parsed_solo("s1", "base", "right")),
+        ):
+            archive.replace_raw_membership_census(
+                raw_id,
+                [session],
+                parser_fingerprint="revision-membership-v1",
+                censused_at_ms=0,
+                detail="historical non-prefix full revision governance",
+                retire_full_revision_governance=True,
+            )
+
+        # A THIRD raw for the same logical identity, discovered afterward.
+        raw_c = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+        )
+        archive.bind_raw_revision(
+            raw_c,
+            RawRevisionEnvelope(
+                "chatgpt:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        second_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+
+    # The isolated raw must not be promoted alone: this identity has known,
+    # unresolved ambiguous siblings that a real classifier must weigh it
+    # against, not silently outrank by discovery order.
+    assert second_plan.accepted_raw_ids == ()
+
+
 def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 

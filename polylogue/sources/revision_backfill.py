@@ -25,6 +25,7 @@ from polylogue.archive.ingest_flags import (
 )
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
+    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
@@ -760,7 +761,7 @@ def backfill_historical_revision_evidence(
                         sessions,
                         parser_fingerprint="revision-membership-v1",
                         censused_at_ms=0,
-                        detail="historical non-prefix full revision governance",
+                        detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                         retire_full_revision_governance=True,
                     )
                     membership_candidates.setdefault(logical_key, set()).add(raw_id)
