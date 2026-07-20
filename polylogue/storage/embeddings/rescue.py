@@ -1,18 +1,33 @@
-"""Rescue vectors from a retired embeddings tier by exact content-hash match.
+"""Rescue vectors from a retired embeddings tier, landing directly into the
+content-addressed (embedding_input_hash) layout.
 
 polylogue-04kl: a prior incident retired an embeddings tier
 (``embeddings.db.v2-retired-YYYYMMDD``) while the index was rebuilt from
 source. That retired tier still holds hundreds of thousands of Voyage
-vectors keyed by ``message_id`` + a 32-byte ``content_hash``. The freshly
-rebuilt index computes the *same* content-hash identity for each message, so
-an exact rescue is possible: a retired vector is safe to copy into the fresh
-``embeddings.db`` whenever
+vectors, keyed by the OLD v3 identity: ``message_id`` + a 32-byte
+identity-contaminated ``content_hash`` (``messages.content_hash`` includes
+session_id/position/variant_index -- see polylogue-q88p). The v4 embeddings
+tier this rescue writes into is keyed by ``embedding_input_hash`` instead
+(identity-free: ``H(model, embedder input text)``), so a straight copy is not
+possible; rescue must *recompute* the new key for each candidate message and
+land the vector under that key.
+
+A retired vector is safe to rescue for a message whenever:
 
 * its ``message_id`` still exists among the fresh index's *currently
   eligible* (authored-prose) messages,
 * its stored ``content_hash`` matches that message's current content hash
-  exactly, and
+  exactly (identity-contaminated, but an exact match remains a valid --
+  merely conservative -- sufficient proof that the message's text is
+  unchanged from what the retired vector was computed for), and
 * its stored ``model`` matches the configured embedding model.
+
+Once matched, this rescue recomputes ``embedding_input_hash`` from the
+message's *current* embedder input text (the same prose expression the live
+embed path uses) and writes the retired vector under that new key, plus a
+``message_embedding_refs`` row for the message. The content_hash match is
+what licenses treating "current text" and "retired text" as identical; the
+new key is never trusted from the retired file (which cannot know it).
 
 Session-level granularity is not a stylistic choice -- it is required by how
 catch-up materialization actually works. ``embed_archive_session_sync``
@@ -36,7 +51,9 @@ embed path uses (:func:`begin_embedding_attempt` +
 one embedded for real -- the daemon's freshness predicate
 (``_archive_embedding_freshness_predicate``) will no longer select it, and a
 second rescue run naturally treats it as already-fresh (idempotent, no
-re-write).
+re-write). Content-addressing also means a rescued vector is immediately
+shared with every other message (any origin/session) whose current text
+hashes to the same ``embedding_input_hash`` -- dedup applies to rescue too.
 """
 
 from __future__ import annotations
@@ -346,18 +363,27 @@ def plan_embedding_rescue(
     )
 
 
-def _session_eligible_messages(conn: sqlite3.Connection, relation: str, session_id: str) -> list[tuple[str, bytes]]:
+def _session_eligible_messages(
+    conn: sqlite3.Connection, relation: str, session_id: str
+) -> list[tuple[str, bytes, bytes]]:
+    """Return ``(message_id, content_hash, embedding_input_hash)`` triples.
+
+    ``content_hash`` licenses the retired-vector match (old, identity-
+    contaminated identity); ``embedding_input_hash`` -- computed by the
+    relation from the message's *current* embedder input text -- is the key
+    the rescued vector is written under in the new content-addressed layout.
+    """
     rows = conn.execute(
-        f"SELECT e.message_id, e.content_hash FROM {relation} WHERE e.session_id = ?",
+        f"SELECT e.message_id, e.content_hash, e.embedding_input_hash FROM {relation} WHERE e.session_id = ?",
         (session_id,),
     ).fetchall()
-    return [(str(row[0]), bytes(row[1])) for row in rows]
+    return [(str(row[0]), bytes(row[1]), bytes(row[2])) for row in rows]
 
 
-def _source_hash_for(messages: list[tuple[str, bytes]]) -> bytes:
+def _source_hash_for(messages: list[tuple[str, bytes, bytes]]) -> bytes:
     digest = EmbeddingSourceDigest()
-    for message_id, content_hash in sorted(messages):
-        digest.update(message_id, content_hash)
+    for _message_id, _content_hash, input_hash in sorted(messages, key=lambda item: item[2]):
+        digest.update(input_hash)
     return digest.digest()
 
 
@@ -432,7 +458,7 @@ def execute_embedding_rescue(
         if not loaded:
             raise RuntimeError("embedding rescue requires sqlite-vec") from error
 
-        relation = archive_embeddable_messages_relation(index_conn, alias="e")
+        relation = archive_embeddable_messages_relation(index_conn, alias="e", model=resolved_recipe.model)
         counts = _session_rollup_counts(index_conn, relation, resolved_recipe.model)
         samples = _classification_samples(index_conn, relation, resolved_recipe.model, sample_size=sample_size)
         fully_rescuable_ids = _fully_rescuable_session_ids(index_conn, relation, resolved_recipe.model)
@@ -488,7 +514,7 @@ def execute_embedding_rescue(
 
             writes: list[ArchiveEmbeddingWrite] = []
             incomplete = False
-            for message_id, content_hash in messages:
+            for message_id, _content_hash, input_hash in messages:
                 vector = _read_retired_vector(index_conn, message_id)
                 if vector is None:
                     incomplete = True
@@ -501,11 +527,11 @@ def execute_embedding_rescue(
                         embedding=vector,
                         model=resolved_recipe.model,
                         embedded_at_ms=resolved_now_ms,
-                        content_hash=content_hash,
+                        embedding_input_hash=input_hash,
                         recipe_hash=attempt.recipe_hash,
                         derivation_key=message_embedding_derivation_key(
                             message_id=message_id,
-                            content_hash=content_hash,
+                            embedding_input_hash=input_hash,
                             recipe=resolved_recipe,
                         ).digest(),
                         generation=attempt.generation,
@@ -550,16 +576,22 @@ def execute_embedding_rescue(
 
             rescued_sessions += 1
             rescued_messages += len(writes)
-            rescued_message_ids.extend(message_id for message_id, _ in messages)
+            rescued_message_ids.extend(message_id for message_id, _content_hash, _input_hash in messages)
 
         if rescued_message_ids and sample_verify_count > 0:
             step = max(1, len(rescued_message_ids) // sample_verify_count)
             sample_ids = rescued_message_ids[::step][:sample_verify_count]
             for message_id in sample_ids:
                 verified_total += 1
-                target_row = embeddings_conn.execute(
-                    "SELECT embedding FROM message_embeddings WHERE message_id = ?",
+                ref_row = embeddings_conn.execute(
+                    "SELECT embedding_input_hash FROM message_embedding_refs WHERE message_id = ?",
                     (message_id,),
+                ).fetchone()
+                if ref_row is None:
+                    continue
+                target_row = embeddings_conn.execute(
+                    "SELECT embedding FROM message_embeddings WHERE embedding_input_hash = ?",
+                    (bytes(ref_row[0]).hex(),),
                 ).fetchone()
                 source_row = index_conn.execute(
                     "SELECT embedding FROM retired.message_embeddings WHERE message_id = ?",

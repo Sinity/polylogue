@@ -7,6 +7,17 @@ retired ``embeddings.db``-shaped source file and a fresh target
 sessions/messages correctly and :func:`execute_embedding_rescue` only ever
 mutates *fully rescuable* sessions, is idempotent on rerun, and its sampled
 byte-identity verification actually catches a corrupted copy.
+
+v4 (polylogue-q88p): the retired source tier keeps the OLD v3 identity
+(``message_embeddings``/``message_embeddings_meta`` keyed by ``message_id`` +
+``content_hash`` -- see ``rescue.py`` module docstring), so its DDL/writer is
+built here directly rather than through the current ``ArchiveTier.EMBEDDINGS``
+bootstrap, which now produces the NEW v4 (``embedding_input_hash``-keyed)
+shape. The target tier this rescue writes INTO uses the real, current v4
+bootstrap -- assertions against it read through ``message_embedding_refs``
+(the message_id -> hash mapping), not a message_id column on
+``message_embeddings``/``message_embeddings_meta`` directly, since those two
+tables are content-addressed and no longer carry message identity.
 """
 
 from __future__ import annotations
@@ -18,17 +29,14 @@ from typing import NamedTuple
 
 import pytest
 
-from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.rescue import (
     execute_embedding_rescue,
     plan_embedding_rescue,
 )
+from polylogue.storage.search_providers.sqlite_vec_support import _serialize_f32
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.embedding_write import (
-    ArchiveEmbeddingWrite,
-    upsert_message_embeddings,
-)
+from polylogue.storage.sqlite.archive_tiers.embedding_write import read_embedding_meta
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -58,6 +66,31 @@ CREATE TABLE messages (
 );
 """
 
+# OLD v3 retired-tier DDL (pre-polylogue-q88p): message_id-keyed, carries
+# content_hash directly on the meta row. Deliberately NOT the current
+# ArchiveTier.EMBEDDINGS bootstrap (which is v4, embedding_input_hash-keyed) --
+# this is exactly what a retired incident evidence file looks like.
+_RETIRED_V3_DDL = f"""
+CREATE VIRTUAL TABLE message_embeddings USING vec0(
+    message_id TEXT PRIMARY KEY,
+    embedding float[{EMBEDDING_DIMENSION}],
+    +session_id TEXT,
+    +origin TEXT
+);
+
+CREATE TABLE message_embeddings_meta (
+    message_id      TEXT PRIMARY KEY,
+    model           TEXT NOT NULL,
+    dimension       INTEGER NOT NULL,
+    content_hash    BLOB NOT NULL,
+    embedded_at_ms  INTEGER,
+    needs_reindex   INTEGER NOT NULL DEFAULT 0,
+    recipe_hash     BLOB,
+    derivation_key  BLOB,
+    generation      INTEGER NOT NULL DEFAULT 0
+);
+"""
+
 
 def _content_hash(seed: str) -> bytes:
     return (seed.encode("utf-8") * 32)[:32]
@@ -76,16 +109,37 @@ def _connect_index(path: Path, *, sessions: list[str], messages: dict[str, list[
             )
         for session_id, entries in messages.items():
             for message_id, content_hash in entries:
+                # Distinct per-message text (not the table default) so each
+                # message's embedding_input_hash -- H(model, current embedder
+                # input text) -- differs; otherwise two default-text messages
+                # would collide onto the same content-addressed hash and the
+                # write-once vector table would silently dedup them together,
+                # defeating tests that expect two independent rescued vectors.
                 conn.execute(
-                    "INSERT INTO messages (message_id, session_id, content_hash) VALUES (?, ?, ?)",
-                    (message_id, session_id, content_hash),
+                    "INSERT INTO messages (message_id, session_id, content_hash, text) VALUES (?, ?, ?, ?)",
+                    (message_id, session_id, content_hash, f"authored prose unique to {message_id}"),
                 )
         conn.commit()
     finally:
         conn.close()
 
 
+def _connect_retired_v3_tier(path: Path) -> sqlite3.Connection:
+    """Open (creating) a retired-tier file with the OLD v3, message_id-keyed DDL."""
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    loaded, error = try_load_sqlite_vec(conn)
+    if not loaded:
+        conn.close()
+        pytest.skip("sqlite-vec extension is unavailable")
+        raise AssertionError("unreachable") from error
+    conn.executescript(_RETIRED_V3_DDL)
+    conn.commit()
+    return conn
+
+
 def _connect_embeddings_tier(path: Path) -> sqlite3.Connection:
+    """Open (creating) the CURRENT v4 target embeddings tier."""
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     try:
@@ -109,21 +163,21 @@ def _write_retired(
     content_hash: bytes,
     model: str = _MODEL,
     seed: int = 1,
+    embedded_at_ms: int = 1_700_000_000_000,
 ) -> None:
-    upsert_message_embeddings(
-        conn,
-        [
-            ArchiveEmbeddingWrite(
-                message_id=message_id,
-                session_id=session_id,
-                origin=Origin.CODEX_SESSION,
-                embedding=_vector_for(seed),
-                model=model,
-                embedded_at_ms=1_700_000_000_000,
-                content_hash=content_hash,
-            )
-        ],
+    """Write one vector directly into the OLD v3 message_id-keyed shape."""
+    conn.execute(
+        "INSERT INTO message_embeddings (message_id, embedding, session_id, origin) VALUES (?, ?, ?, ?)",
+        (message_id, _serialize_f32(_vector_for(seed)), session_id, "codex-session"),
     )
+    conn.execute(
+        """
+        INSERT INTO message_embeddings_meta (message_id, model, dimension, content_hash, embedded_at_ms)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (message_id, model, EMBEDDING_DIMENSION, content_hash, embedded_at_ms),
+    )
+    conn.commit()
 
 
 def _target_embeddings_path(tmp_path: Path) -> Path:
@@ -131,8 +185,9 @@ def _target_embeddings_path(tmp_path: Path) -> Path:
 
 
 def _connect_target_for_read(path: Path) -> sqlite3.Connection:
-    """Plain connection to the target tier with sqlite-vec loaded for reads."""
+    """Plain connection to the v4 target tier with sqlite-vec loaded for reads."""
     conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
     loaded, error = try_load_sqlite_vec(conn)
     if not loaded:
         conn.close()
@@ -176,7 +231,7 @@ class TestPlanEmbeddingRescue:
         )
 
         retired_path = tmp_path / "retired-embeddings.db"
-        retired_conn = _connect_embeddings_tier(retired_path)
+        retired_conn = _connect_retired_v3_tier(retired_path)
         _write_retired(retired_conn, message_id=full_m1, session_id=full, content_hash=hash_m1, seed=1)
         _write_retired(retired_conn, message_id=full_m2, session_id=full, content_hash=hash_m2, seed=2)
         _write_retired(retired_conn, message_id=partial_m1, session_id=partial, content_hash=hash_p1, seed=3)
@@ -213,7 +268,7 @@ class TestPlanEmbeddingRescue:
         content_hash = _content_hash("m1")
         _connect_index(tmp_path / "index.db", sessions=[session_id], messages={session_id: [(m1, content_hash)]})
         retired_path = tmp_path / "retired-embeddings.db"
-        retired_conn = _connect_embeddings_tier(retired_path)
+        retired_conn = _connect_retired_v3_tier(retired_path)
         _write_retired(retired_conn, message_id=m1, session_id=session_id, content_hash=content_hash, seed=1)
         retired_conn.close()
 
@@ -255,7 +310,7 @@ class TestExecuteEmbeddingRescue:
             },
         )
         retired_path = tmp_path / "retired-embeddings.db"
-        retired_conn = _connect_embeddings_tier(retired_path)
+        retired_conn = _connect_retired_v3_tier(retired_path)
         _write_retired(retired_conn, message_id=full_m1, session_id=full, content_hash=hash_m1, seed=1)
         _write_retired(retired_conn, message_id=full_m2, session_id=full, content_hash=hash_m2, seed=2)
         _write_retired(retired_conn, message_id=partial_m1, session_id=partial, content_hash=hash_p1, seed=3)
@@ -291,21 +346,23 @@ class TestExecuteEmbeddingRescue:
         try:
             full_m1, full_m2 = seed.full_messages
             for message_id in (full_m1, full_m2):
+                # v4: message_embeddings/message_embeddings_meta are keyed by
+                # embedding_input_hash, not message_id -- resolve through the
+                # per-message message_embedding_refs mapping (the same read
+                # path production code uses, read_embedding_meta).
                 assert (
                     conn.execute(
-                        "SELECT COUNT(*) FROM message_embeddings WHERE message_id = ?", (message_id,)
+                        "SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (message_id,)
                     ).fetchone()[0]
                     == 1
                 )
-                assert (
-                    conn.execute(
-                        "SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (message_id,)
-                    ).fetchone()[0]
-                    == 1
-                )
-            # The partial session must never be written -- no vectors at all.
+                meta = read_embedding_meta(conn, message_id)
+                assert meta.message_id == message_id
+                assert meta.model == _MODEL
+                assert meta.dimension == EMBEDDING_DIMENSION
+            # The partial session must never be written -- no refs at all.
             partial_row_count = conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings WHERE session_id = ?", (seed.partial,)
+                "SELECT COUNT(*) FROM message_embedding_refs WHERE session_id = ?", (seed.partial,)
             ).fetchone()[0]
             assert partial_row_count == 0
 
@@ -313,13 +370,13 @@ class TestExecuteEmbeddingRescue:
                 "SELECT message_count_embedded, needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
                 (seed.full,),
             ).fetchone()
-            assert status == (2, 0, None)
+            assert tuple(status) == (2, 0, None)
 
             derivation = conn.execute(
                 "SELECT attempt_state, message_count FROM embedding_derivation_state WHERE session_id = ?",
                 (seed.full,),
             ).fetchone()
-            assert derivation == ("succeeded", 2)
+            assert tuple(derivation) == ("succeeded", 2)
         finally:
             conn.close()
 
@@ -351,11 +408,11 @@ class TestExecuteEmbeddingRescue:
         conn = _connect_target_for_read(target)
         try:
             full_m1, _full_m2 = seed.full_messages
-            row = conn.execute(
-                "SELECT embedded_at_ms FROM message_embeddings_meta WHERE message_id = ?", (full_m1,)
-            ).fetchone()
-            # Second run must not have rewritten the already-rescued vector.
-            assert row[0] == 1_800_000_000_000
+            meta = read_embedding_meta(conn, full_m1)
+            # Second run must not have rewritten the already-rescued vector:
+            # the content-addressed meta row is write-once, so its
+            # embedded_at_ms stays pinned to the first rescue's timestamp.
+            assert meta.embedded_at_ms == 1_800_000_000_000
         finally:
             conn.close()
 
@@ -370,7 +427,7 @@ class TestExecuteEmbeddingRescue:
             messages={full_a: [(m_a, hash_a)], full_b: [(m_b, hash_b)]},
         )
         retired_path = tmp_path / "retired-embeddings.db"
-        retired_conn = _connect_embeddings_tier(retired_path)
+        retired_conn = _connect_retired_v3_tier(retired_path)
         _write_retired(retired_conn, message_id=m_a, session_id=full_a, content_hash=hash_a, seed=1)
         _write_retired(retired_conn, message_id=m_b, session_id=full_b, content_hash=hash_b, seed=2)
         retired_conn.close()
@@ -415,7 +472,7 @@ class TestExecuteEmbeddingRescue:
             messages={session_id: [(message_id, content_hash)]},
         )
         retired_path = tmp_path / "retired-embeddings.db"
-        retired_conn = _connect_embeddings_tier(retired_path)
+        retired_conn = _connect_retired_v3_tier(retired_path)
         _write_retired(retired_conn, message_id=message_id, session_id=session_id, content_hash=content_hash, seed=7)
         retired_conn.close()
 

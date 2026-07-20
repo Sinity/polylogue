@@ -1520,10 +1520,15 @@ def _message_content_hash(
 ) -> bytes:
     """Digest the stored message content, not just its identity.
 
-    Embedding freshness compares ``message_embeddings_meta.content_hash`` with
-    ``messages.content_hash``. The digest must therefore change when the text
-    sent to the embedder changes, even if the provider-native message id and
-    message count stay stable across a re-ingest.
+    This hash is deliberately IDENTITY-INCLUSIVE (session_id, position,
+    variant_index, provider_message_id) -- it drives row-level re-ingest/
+    dedup change detection for the ``messages`` table itself. It is no
+    longer what embedding freshness is gated on: since polylogue-q88p,
+    embeddings are keyed by ``embedding_input_hash`` (identity-FREE --
+    ``storage/embeddings/identity.py``), computed straight from the
+    embedder's input text, so a rebuild or lineage-normalization shift that
+    changes this hash without changing the actual text no longer forces a
+    wasted re-embed.
     """
 
     block_parts: list[str] = []

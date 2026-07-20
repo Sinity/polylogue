@@ -40,9 +40,8 @@ class ArchiveEmbeddingMeta:
     message_id: str
     model: str
     dimension: int
-    content_hash: bytes
+    embedding_input_hash: bytes
     embedded_at_ms: int | None
-    needs_reindex: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +65,7 @@ class ArchiveEmbeddingWrite:
     embedding: list[float]
     model: str
     embedded_at_ms: int
-    content_hash: bytes
+    embedding_input_hash: bytes
     recipe_hash: bytes | None = None
     derivation_key: bytes | None = None
     generation: int = 0
@@ -259,11 +258,11 @@ def upsert_message_embedding(
     embedding: list[float],
     model: str,
     embedded_at_ms: int,
-    content_hash: bytes | None = None,
+    embedding_input_hash: bytes | None = None,
 ) -> ArchiveEmbeddingMeta:
     """Upsert one message vector plus its reproducibility metadata."""
-    if content_hash is None:
-        raise ValueError("content_hash is required for message embedding metadata")
+    if embedding_input_hash is None:
+        raise ValueError("embedding_input_hash is required for message embedding metadata")
     upsert_message_embeddings(
         conn,
         [
@@ -274,7 +273,7 @@ def upsert_message_embedding(
                 embedding=embedding,
                 model=model,
                 embedded_at_ms=embedded_at_ms,
-                content_hash=content_hash,
+                embedding_input_hash=embedding_input_hash,
             )
         ],
     )
@@ -284,15 +283,15 @@ def upsert_message_embedding(
 def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
     if len(write.embedding) != EMBEDDING_DIMENSION:
         raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
-    if len(write.content_hash) != 32:
-        raise ValueError("content_hash must be a SHA-256 value")
+    if len(write.embedding_input_hash) != 32:
+        raise ValueError("embedding_input_hash must be a SHA-256 value")
     recipe = EmbeddingRecipe.current(model=write.model, dimensions=EMBEDDING_DIMENSION)
     recipe_hash = write.recipe_hash or recipe.recipe_hash
     derivation_key = (
         write.derivation_key
         or message_embedding_derivation_key(
             message_id=write.message_id,
-            content_hash=write.content_hash,
+            embedding_input_hash=write.embedding_input_hash,
             recipe=recipe,
         ).digest()
     )
@@ -303,7 +302,7 @@ def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
         embedding=write.embedding,
         model=write.model,
         embedded_at_ms=write.embedded_at_ms,
-        content_hash=write.content_hash,
+        embedding_input_hash=write.embedding_input_hash,
         recipe_hash=recipe_hash,
         derivation_key=derivation_key,
         generation=write.generation,
@@ -311,43 +310,60 @@ def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
 
 
 def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[ArchiveEmbeddingWrite]) -> None:
+    """Write content-addressed vectors/meta once per hash, plus per-message refs.
+
+    ``message_embeddings`` (vec0) and ``message_embeddings_meta`` are keyed by
+    ``embedding_input_hash`` and are write-once: a hash whose meta row already
+    exists is never re-inserted or deleted here (dedup — identical content
+    embeds exactly once, and a vector already proven valid for its hash stays
+    valid regardless of which message(s) currently reference it). Only
+    ``message_embedding_refs`` (message_id -> hash) is rewritten per call,
+    since that mapping tracks the *current* message set.
+    """
     for raw_write in writes:
         write = _prepared_write(raw_write)
+        hash_hex = write.embedding_input_hash.hex()
+        existing = conn.execute(
+            "SELECT 1 FROM message_embeddings_meta WHERE embedding_input_hash = ?",
+            (write.embedding_input_hash,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO message_embeddings (embedding_input_hash, embedding, model)
+                VALUES (?, ?, ?)
+                """,
+                (hash_hex, _serialize_f32(write.embedding), write.model),
+            )
+            conn.execute(
+                """
+                INSERT INTO message_embeddings_meta (
+                    embedding_input_hash, model, dimension, embedded_at_ms,
+                    recipe_hash, output_contract_hash
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    write.embedding_input_hash,
+                    write.model,
+                    EMBEDDING_DIMENSION,
+                    write.embedded_at_ms,
+                    write.recipe_hash,
+                    None,
+                ),
+            )
         origin_value = _enum_value(write.origin)
-        conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (write.message_id,))
         conn.execute(
             """
-            INSERT INTO message_embeddings (message_id, embedding, session_id, origin)
-            VALUES (?, ?, ?, ?)
-            """,
-            (write.message_id, _serialize_f32(write.embedding), write.session_id, origin_value),
-        )
-        conn.execute(
-            """
-            INSERT INTO message_embeddings_meta (
-                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex,
-                recipe_hash, derivation_key, generation
-            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+            INSERT INTO message_embedding_refs (
+                message_id, session_id, origin, embedding_input_hash, embedded_at_ms
+            ) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
-                model = excluded.model,
-                dimension = excluded.dimension,
-                content_hash = excluded.content_hash,
-                embedded_at_ms = excluded.embedded_at_ms,
-                needs_reindex = 0,
-                recipe_hash = excluded.recipe_hash,
-                derivation_key = excluded.derivation_key,
-                generation = excluded.generation
+                session_id = excluded.session_id,
+                origin = excluded.origin,
+                embedding_input_hash = excluded.embedding_input_hash,
+                embedded_at_ms = excluded.embedded_at_ms
             """,
-            (
-                write.message_id,
-                write.model,
-                EMBEDDING_DIMENSION,
-                write.content_hash,
-                write.embedded_at_ms,
-                write.recipe_hash,
-                write.derivation_key,
-                write.generation,
-            ),
+            (write.message_id, write.session_id, origin_value, write.embedding_input_hash, write.embedded_at_ms),
         )
 
 
@@ -382,7 +398,7 @@ def complete_embedding_attempt_success(
     now_ms = int(time.time() * 1000) if completed_at_ms is None else completed_at_ms
     prepared = tuple(_prepared_write(write) for write in writes)
     message_ids: set[str] = set()
-    source_digest = EmbeddingSourceDigest()
+    input_hashes: list[bytes] = []
     for write in sorted(prepared, key=lambda item: item.message_id):
         if write.session_id != attempt.session_id:
             raise ValueError("all embedding writes must belong to the attempt session")
@@ -395,13 +411,19 @@ def complete_embedding_attempt_success(
             raise ValueError("embedding write recipe must match the owning attempt")
         expected_message_key = message_embedding_derivation_digest_from_hashes(
             message_id=write.message_id,
-            content_hash=write.content_hash,
+            embedding_input_hash=write.embedding_input_hash,
             recipe_hash=attempt.recipe_hash,
             output_contract_hash=attempt.output_contract_hash,
         )
         if write.derivation_key != expected_message_key:
             raise ValueError("embedding write key must match its message content and attempt recipe")
-        source_digest.update(write.message_id, write.content_hash)
+        input_hashes.append(write.embedding_input_hash)
+    # Digested in hash-sorted order to match the order-independent SQL
+    # aggregate (_EmbeddingSourceHashAggregate) that computes the same
+    # session source_hash at selection time.
+    source_digest = EmbeddingSourceDigest()
+    for input_hash in sorted(input_hashes):
+        source_digest.update(input_hash)
     if source_digest.digest() != attempt.source_hash:
         raise ValueError("embedding writes must cover the attempt's exact source identity")
     message_count = len(prepared)
@@ -421,19 +443,26 @@ def complete_embedding_attempt_success(
         if current is None:
             return False
 
+        # message_embeddings / message_embeddings_meta are content-addressed
+        # (keyed by embedding_input_hash) and write-once/shared across
+        # messages and sessions -- they are never deleted on session
+        # re-embed. Only this session's message_id -> hash refs are stale;
+        # drop the ones this generation no longer writes (message removed
+        # from the session, or the session shrank) before rewriting.
+        current_message_ids = {write.message_id for write in prepared}
         prior_message_ids = tuple(
             str(row[0])
             for row in conn.execute(
-                "SELECT message_id FROM message_embeddings WHERE session_id = ?",
+                "SELECT message_id FROM message_embedding_refs WHERE session_id = ?",
                 (attempt.session_id,),
             ).fetchall()
         )
-        conn.execute("DELETE FROM message_embeddings WHERE session_id = ?", (attempt.session_id,))
-        if prior_message_ids:
-            placeholders = ", ".join("?" for _ in prior_message_ids)
+        stale_message_ids = tuple(sorted(set(prior_message_ids) - current_message_ids))
+        if stale_message_ids:
+            placeholders = ", ".join("?" for _ in stale_message_ids)
             conn.execute(
-                f"DELETE FROM message_embeddings_meta WHERE message_id IN ({placeholders})",
-                prior_message_ids,
+                f"DELETE FROM message_embedding_refs WHERE message_id IN ({placeholders})",
+                stale_message_ids,
             )
         _write_message_embeddings(conn, prepared)
         updated = conn.execute(
@@ -848,12 +877,16 @@ def _failure_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveEmbedding
 
 
 def read_embedding_meta(conn: sqlite3.Connection, target_id: str) -> ArchiveEmbeddingMeta:
+    """Resolve one message's current vector metadata via its ref -> hash mapping."""
+
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         """
-        SELECT message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
-        FROM message_embeddings_meta
-        WHERE message_id = ?
+        SELECT r.message_id AS message_id, em.model AS model, em.dimension AS dimension,
+               em.embedding_input_hash AS embedding_input_hash, em.embedded_at_ms AS embedded_at_ms
+        FROM message_embedding_refs AS r
+        JOIN message_embeddings_meta AS em ON em.embedding_input_hash = r.embedding_input_hash
+        WHERE r.message_id = ?
         """,
         (target_id,),
     ).fetchone()
@@ -863,9 +896,8 @@ def read_embedding_meta(conn: sqlite3.Connection, target_id: str) -> ArchiveEmbe
         message_id=row["message_id"],
         model=row["model"],
         dimension=row["dimension"],
-        content_hash=row["content_hash"],
+        embedding_input_hash=row["embedding_input_hash"],
         embedded_at_ms=row["embedded_at_ms"],
-        needs_reindex=bool(row["needs_reindex"]),
     )
 
 

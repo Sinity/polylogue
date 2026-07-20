@@ -138,16 +138,23 @@ def _source_message_embeddings(
 ) -> list[tuple[str, bytes]]:
     """Return ``(message_id, embedding_blob)`` rows for the source session.
 
-    The blob is returned exactly as stored in ``message_embeddings`` so
-    it can be passed back into a ``vec0`` ``MATCH`` clause without any
-    re-encoding round trip.
+    ``message_embeddings`` is content-addressed (keyed by
+    ``embedding_input_hash``, polylogue-q88p), not by ``message_id``/
+    ``session_id`` directly -- resolve through ``message_embedding_refs``.
+    ``DISTINCT`` on the hash avoids issuing duplicate ``MATCH`` queries when
+    the session has multiple messages sharing identical text. The blob is
+    returned exactly as stored so it can be passed back into a ``vec0``
+    ``MATCH`` clause without any re-encoding round trip.
     """
 
     rows = conn.execute(
         """
-        SELECT message_id, embedding
-        FROM message_embeddings
-        WHERE session_id = ?
+        SELECT MIN(r.message_id), me.embedding
+        FROM message_embedding_refs AS r
+        JOIN message_embeddings AS me
+          ON lower(hex(r.embedding_input_hash)) = me.embedding_input_hash
+        WHERE r.session_id = ?
+        GROUP BY me.embedding_input_hash
         """,
         (session_id,),
     ).fetchall()
@@ -160,9 +167,12 @@ def _source_archive_message_embeddings(
 ) -> list[tuple[str, bytes]]:
     rows = conn.execute(
         """
-        SELECT message_id, embedding
-        FROM message_embeddings
-        WHERE session_id = ?
+        SELECT MIN(r.message_id), me.embedding
+        FROM message_embedding_refs AS r
+        JOIN message_embeddings AS me
+          ON lower(hex(r.embedding_input_hash)) = me.embedding_input_hash
+        WHERE r.session_id = ?
+        GROUP BY me.embedding_input_hash
         """,
         (session_id,),
     ).fetchall()
@@ -177,18 +187,26 @@ def _knn_for_embedding(
 ) -> list[tuple[str, str, float]]:
     """Run a single ``MATCH`` and return ``(message_id, session_id, distance)``.
 
-    The vec0 column ``distance`` here is L2 distance over the indexed
-    embeddings. Cosine similarity is recovered downstream once a row's
-    embedding has been pulled into the score-aggregation step.
+    A hash hit is resolved back to every message currently referencing it
+    (content-addressed dedup, polylogue-q88p) -- one MATCH row can expand
+    into several result rows. The vec0 column ``distance`` here is L2
+    distance over the indexed embeddings. Cosine similarity is recovered
+    downstream once a row's embedding has been pulled into the
+    score-aggregation step.
     """
 
     rows = conn.execute(
         """
-        SELECT message_id, session_id, distance
-        FROM message_embeddings
-        WHERE embedding MATCH ?
-          AND k = ?
-        ORDER BY distance
+        SELECT r.message_id, r.session_id, hits.distance
+        FROM (
+            SELECT embedding_input_hash, distance
+            FROM message_embeddings
+            WHERE embedding MATCH ?
+              AND k = ?
+        ) AS hits
+        JOIN message_embedding_refs AS r
+          ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+        ORDER BY hits.distance
         """,
         (embedding_blob, k),
     ).fetchall()
@@ -203,11 +221,16 @@ def _archive_knn_for_embedding(
 ) -> list[tuple[str, str, float]]:
     rows = conn.execute(
         """
-        SELECT message_id, session_id, distance
-        FROM message_embeddings
-        WHERE embedding MATCH ?
-          AND k = ?
-        ORDER BY distance
+        SELECT r.message_id, r.session_id, hits.distance
+        FROM (
+            SELECT embedding_input_hash, distance
+            FROM message_embeddings
+            WHERE embedding MATCH ?
+              AND k = ?
+        ) AS hits
+        JOIN message_embedding_refs AS r
+          ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+        ORDER BY hits.distance
         """,
         (embedding_blob, k),
     ).fetchall()

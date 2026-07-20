@@ -23,7 +23,7 @@ over the `CREATE TABLE` statement.
 |-----------|------|------------------|
 | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 10` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 35` |
-| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 3` |
+| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 4` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 6` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
@@ -72,14 +72,30 @@ read models (`session_profiles`, `session_work_events`, `session_phases`,
 ### `embeddings.db` — vectors (rebuildable, expensive)
 
 `message_embeddings` (a `vec0` virtual table, 1024-dimensional float
-embeddings), `message_embeddings_meta`, `embedding_derivation_state`,
-`embedding_status`, and the inspectable `embedding_failures` lifecycle ledger.
-The derivation state owns the exact source/recipe/output key and active attempt
-generation; status flags are compatibility projections rather than independent
-freshness authority. Populated only when embedding is enabled with a valid
-Voyage key (see
-[Architecture § Embedding Pipeline](architecture.md#embedding-pipeline)).
-Rebuildable, but re-embedding costs Voyage API calls.
+embeddings) and `message_embeddings_meta` are **content-addressed**: both are
+keyed by `embedding_input_hash = SHA-256(model, embedder input text)` — a pure
+function of exactly what is sent to the embedding provider, deliberately
+excluding every identity-bearing field (`session_id`, `message_id`,
+`position`, `variant_index`, ...), the same philosophy as the block evidence
+hash (`blocks` table). A hash's presence in `message_embeddings_meta` **is**
+freshness — there is no per-vector "needs_reindex" state, and identical text
+across forked/replayed/coincidentally-duplicate messages is stored exactly
+once (dedup). `message_embedding_refs` is the rebuildable per-message mapping
+(`message_id -> embedding_input_hash`) that resolves a vector back to the
+message(s) that currently reference it; it is rewritten per session re-embed,
+while the vector/meta rows themselves are write-once and never deleted by
+ordinary re-embed (an index rebuild or lineage-normalization shift that
+renumbers a message cannot invalidate its vector as long as the text is
+unchanged). `embedding_derivation_state`, `embedding_status`, and the
+inspectable `embedding_failures` lifecycle ledger remain **session**-scoped
+attempt/generation bookkeeping (unchanged in shape) — the derivation state
+owns the exact source/recipe/output key and active attempt generation; status
+flags are compatibility projections rather than independent freshness
+authority. Populated only when embedding is enabled with a valid Voyage key
+(see [Architecture § Embedding Pipeline](architecture.md#embedding-pipeline)).
+Rebuildable, but re-embedding costs Voyage API calls — content-addressing is
+what makes a rebuild (index reset, lineage renormalization) NOT imply a
+re-embed for text that has not changed.
 
 ### `user.db` — irreplaceable human input (back up this one)
 

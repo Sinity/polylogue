@@ -317,7 +317,12 @@ full permission audit trail (PermissionRequest/PermissionDenied).
 Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
 1024 dimensions) via SQLite-vec (`vec0` virtual table):
 
-- **Storage**: `message_embeddings` (vec0), `message_embeddings_meta`, `embedding_status`
+- **Storage**: `message_embeddings` (vec0) and `message_embeddings_meta` are
+  content-addressed, keyed by `embedding_input_hash = SHA-256(model,
+  embedder input text)` rather than message identity — see
+  [Schema § embeddings.db](schema.md#embeddingsdb-vectors-rebuildable-expensive)
+  for why. `message_embedding_refs` maps `message_id -> embedding_input_hash`;
+  `embedding_status` remains session-scoped.
 - **Search**: `--similar` flag triggers pure vector search; hybrid mode combines
   FTS5 + vector via Reciprocal Rank Fusion
 - **Integration**: Daemon-side post-ingest and ambient catch-up embedding is

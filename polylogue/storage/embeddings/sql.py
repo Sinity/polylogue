@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.storage.embeddings.identity import EMBEDDING_INPUT_HASH_SQL_FUNCTION, sql_string_literal
+
 EMBEDDABLE_MESSAGE_WHERE = """
     m.message_type = 'message'
     AND m.role IN ('user', 'assistant')
@@ -46,15 +48,54 @@ PENDING_MESSAGES_SQL = """
       AND m.material_origin IN ('human_authored', 'assistant_authored')
       AND m.word_count > 0
 """
-EMBEDDED_MESSAGES_SQL = "SELECT COUNT(*) FROM message_embeddings"
+# v4 (polylogue-q88p): a message's vector is looked up through
+# message_embedding_refs (message_id -> embedding_input_hash), not directly
+# by message_id -- message_embeddings/message_embeddings_meta are keyed by
+# the content-addressed hash and are shared/deduped across messages.
+EMBEDDED_MESSAGES_SQL = "SELECT COUNT(*) FROM message_embedding_refs"
 MISSING_META_MESSAGES_SQL = """
     SELECT COUNT(*)
-    FROM message_embeddings me
+    FROM message_embedding_refs r
     LEFT JOIN message_embeddings_meta em
-      ON em.message_id = me.message_id
-    WHERE em.message_id IS NULL
+      ON em.embedding_input_hash = r.embedding_input_hash
+    WHERE em.embedding_input_hash IS NULL
 """
-STALE_MESSAGES_SQL = """
+
+
+def stale_messages_sql(model: str) -> str:
+    """Count refs whose recorded hash no longer matches the message's live text.
+
+    There is no per-vector "stale" state under content-addressing (a hash
+    with a meta row is fresh by construction); "stale" instead means the
+    *ref* is out of date -- the message's current embedder input text hashes
+    differently than what was recorded the last time it was embedded, so a
+    fresh vector for the new hash has not been written yet even though an
+    old ref row still points at the superseded one. Requires
+    ``register_embedding_identity_sql(conn)`` to already be installed on the
+    connection this runs against.
+    """
+    model_literal = sql_string_literal(model)
+    prose_expr = (
+        "(SELECT GROUP_CONCAT(b.text, char(10)||char(10)) "
+        "FROM blocks b WHERE b.message_id = m.message_id "
+        "AND b.block_type = 'text' AND b.text IS NOT NULL ORDER BY b.position)"
+    )
+    return f"""
+    SELECT COUNT(*)
+    FROM message_embedding_refs r
+    JOIN messages m ON m.message_id = r.message_id
+    WHERE m.message_type = 'message'
+      AND m.role IN ('user', 'assistant')
+      AND m.material_origin IN ('human_authored', 'assistant_authored')
+      AND m.word_count > 0
+      AND r.embedding_input_hash != {EMBEDDING_INPUT_HASH_SQL_FUNCTION}({model_literal}, {prose_expr})
+    """
+
+
+# Legacy (v3) shape, kept for readers that may still be pointed at a
+# not-yet-rebuilt embeddings.db: message_embeddings/message_embeddings_meta
+# were message_id-keyed and compared against messages.content_hash directly.
+STALE_MESSAGES_SQL_LEGACY = """
     SELECT COUNT(*)
     FROM message_embeddings me
     JOIN messages m ON m.message_id = me.message_id

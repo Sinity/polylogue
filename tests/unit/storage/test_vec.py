@@ -258,53 +258,76 @@ def test_upsert_noop_contract(
     ids=["provider-row", "missing-provider-row"],
 )
 def test_upsert_persistence_contract(
-    mock_provider: MutableSqliteVecProvider,
+    tmp_path: Path,
     source_name: str | None,
     expected_provider: str,
 ) -> None:
-    """Upsert must filter messages, persist embeddings, and stamp provider metadata."""
+    """Upsert must filter messages, persist embeddings, and stamp provider metadata.
+
+    ``upsert`` now delegates to the canonical content-addressed write
+    primitives (polylogue-q88p), so this exercises a real sqlite-vec-backed
+    ``embeddings.db`` rather than mocked SQL -- the shape those primitives
+    write (embedding_input_hash-keyed vectors + message_embedding_refs) is
+    not expressible as raw "INSERT INTO message_embeddings" string matching
+    against a mock connection anymore.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    provider = MutableSqliteVecProvider(voyage_key="test-voyage-key", db_path=tmp_path / "test.db", model="voyage-4")
+    provider.dimension = 1024
+    provider._vec_available = None
+    provider._tables_ensured = False
+
+    conn = sqlite3.connect(provider.db_path)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+    except sqlite3.OperationalError as exc:
+        if "vec0" in str(exc) or "sqlite-vec" in str(exc):
+            pytest.skip("sqlite-vec extension is unavailable")
+        raise
+    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT)")
+    if source_name is not None:
+        conn.execute("INSERT INTO sessions (session_id, origin) VALUES (?, ?)", ("conv-1", source_name))
+    conn.commit()
+    conn.close()
+
     messages = [
         make_message(message_id="m1", text="This is a long embeddable message."),
         make_message(message_id="m2", text="short"),
         make_message(message_id="m3", text="This is another long embeddable message."),
     ]
     embeddings_called_with: list[str] = []
-    insert_calls: list[tuple[str, tuple[object, ...] | None]] = []
-    mock_provider._ensure_vec_available = MagicMock()
-    mock_provider._ensure_tables = MagicMock()
 
     def capture_embeddings(texts: list[str], input_type: str = "document") -> list[Embedding]:
         del input_type
         embeddings_called_with.extend(texts)
-        return [[0.1, 0.2] for _ in texts]
+        return [[0.1] * 1024 for _ in texts]
 
-    def capture_execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
-        insert_calls.append((sql, params))
-        cursor = MagicMock()
-        if "SELECT origin FROM sessions" in sql:
-            cursor.fetchone.return_value = (source_name,) if source_name is not None else None
-        return cursor
+    provider._get_embeddings = capture_embeddings
 
-    mock_provider._get_embeddings = capture_embeddings
-    connection = MagicMock()
-    connection.execute = capture_execute
-    connection.commit = MagicMock()
-    connection.close = MagicMock()
-    mock_provider._get_connection = MagicMock(return_value=connection)
-
-    mock_provider.upsert("conv-1", messages)
+    provider.upsert("conv-1", messages)
 
     assert embeddings_called_with == [
         "This is a long embeddable message.",
         "This is another long embeddable message.",
     ]
-    assert connection.commit.called
-    assert connection.close.called
-    embedding_inserts = [params for sql, params in insert_calls if "INSERT INTO message_embeddings" in sql]
-    assert len(embedding_inserts) == 2
-    assert all(expected_provider in str(params) for params in embedding_inserts)
-    status_updates = [sql for sql, _ in insert_calls if "INSERT INTO embedding_status" in sql]
-    assert len(status_updates) == 1
+
+    verify = sqlite3.connect(provider.db_path)
+    try:
+        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+        loaded, error = try_load_sqlite_vec(verify)
+        assert loaded, error
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 2
+        assert verify.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 2
+        origins = {
+            str(row[0]) for row in verify.execute("SELECT DISTINCT origin FROM message_embedding_refs").fetchall()
+        }
+        assert origins == {expected_provider}
+        assert verify.execute("SELECT COUNT(*) FROM embedding_status").fetchone()[0] == 1
+    finally:
+        verify.close()
 
 
 def test_upsert_closes_connection_on_embedding_error(mock_provider: MutableSqliteVecProvider) -> None:
@@ -367,9 +390,9 @@ def test_query_route_contract(
         assert result == [("msg-1", 0.5), ("msg-2", 0.7)]
         assert connection.close.called
         if provider is None:
-            assert all("source_name = ?" not in sql for sql, _ in executed_queries)
+            assert all("r.origin = ?" not in sql for sql, _ in executed_queries)
         else:
-            assert any("source_name = ?" in sql for sql, _ in executed_queries)
+            assert any("r.origin = ?" in sql for sql, _ in executed_queries)
             assert any(provider in str(params) for _, params in executed_queries)
     else:
         assert result == []
@@ -399,6 +422,16 @@ def test_get_embedding_stats_contract(
         if operational_error:
             raise sqlite3.OperationalError("Table not found")
         if "sqlite_master" in sql and "sessions" in sql:
+            return MagicMock(fetchone=MagicMock(return_value=None))
+        # embedded_message_count_sync (polylogue-q88p) checks
+        # message_embedding_refs, then message_embeddings_meta, then
+        # message_embeddings_rowids before falling back to the raw vec0
+        # table this fixture pins its count against -- report the first
+        # three as absent so the count query lands on the same
+        # "message_embeddings" branch this fixture always exercised.
+        if "sqlite_master" in sql and (
+            "message_embedding_refs" in sql or "message_embeddings_meta" in sql or "message_embeddings_rowids" in sql
+        ):
             return MagicMock(fetchone=MagicMock(return_value=None))
         if "message_embeddings" in sql:
             return MagicMock(fetchone=MagicMock(return_value=[msg_count]))

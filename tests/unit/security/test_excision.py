@@ -115,6 +115,7 @@ def _seed_session(
         index_conn.close()
 
     if with_embedding and with_message:
+        from polylogue.storage.embeddings.identity import embedding_input_hash
         from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
         embeddings_db = archive_root / "embeddings.db"
@@ -122,15 +123,22 @@ def _seed_session(
         emb_conn = sqlite3.connect(embeddings_db)
         try:
             try_load_sqlite_vec(emb_conn)
+            # Content-addressed (polylogue-q88p): vectors/meta are keyed by
+            # embedding_input_hash, not message_id; message_embedding_refs
+            # is the per-message mapping excision must delete from.
+            input_hash = embedding_input_hash(model="test-model", input_text=f"excision-fixture-{native_id}")
             emb_conn.execute(
-                "INSERT INTO message_embeddings (message_id, embedding, session_id, origin) "
-                "VALUES (?, ?, ?, 'codex-session')",
-                (message_id, b"\x00\x00\x80\x3f" * 1024, session_id),
+                "INSERT INTO message_embeddings (embedding_input_hash, embedding, model) VALUES (?, ?, ?)",
+                (input_hash.hex(), b"\x00\x00\x80\x3f" * 1024, "test-model"),
             )
             emb_conn.execute(
-                "INSERT INTO message_embeddings_meta (message_id, model, dimension, content_hash) "
-                "VALUES (?, 'test-model', 1024, zeroblob(32))",
-                (message_id,),
+                "INSERT INTO message_embeddings_meta (embedding_input_hash, model, dimension) VALUES (?, ?, ?)",
+                (input_hash, "test-model", 1024),
+            )
+            emb_conn.execute(
+                "INSERT INTO message_embedding_refs (message_id, session_id, origin, embedding_input_hash) "
+                "VALUES (?, ?, 'codex-session', ?)",
+                (message_id, session_id, input_hash),
             )
             emb_conn.execute(
                 "INSERT INTO embedding_status (session_id, message_count_embedded) VALUES (?, 1)",

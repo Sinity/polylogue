@@ -800,29 +800,36 @@ def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
     """Write a single ``message_embeddings_meta`` row into ``embeddings.db``.
 
     Native auto search intentionally does not read this table; explicit vector
-    lanes still use the configured embeddings database.
+    lanes still use the configured embeddings database. ``needs_reindex`` is
+    accepted for call-site compatibility (fresh vs. stale intent) but, like
+    the rest of this row's shape, has no bearing on the assertions below --
+    v4's ``message_embeddings_meta`` doesn't even carry a ``needs_reindex``
+    column any more (presence of a hash row IS freshness); it is threaded
+    through only so callers can still express "fresh" vs. "stale" seeding
+    intent at the call site.
     """
+    del needs_reindex
     conn = sqlite3.connect(archive_root / "embeddings.db")
     try:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS message_embeddings_meta (
-                message_id      TEXT PRIMARY KEY,
-                model           TEXT NOT NULL,
-                dimension       INTEGER NOT NULL,
-                content_hash    BLOB NOT NULL,
-                embedded_at_ms  INTEGER,
-                needs_reindex   INTEGER NOT NULL DEFAULT 0
+                embedding_input_hash   BLOB PRIMARY KEY,
+                model                  TEXT NOT NULL,
+                dimension              INTEGER NOT NULL,
+                embedded_at_ms         INTEGER,
+                recipe_hash            BLOB,
+                output_contract_hash   BLOB
             );
             """
         )
         conn.execute(
             """
             INSERT INTO message_embeddings_meta (
-                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+                embedding_input_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("elev-1:m1", "voyage-4", 1024, b"\x00" * 32, 1, needs_reindex),
+            (b"\x00" * 32, "voyage-4", 1024, 1, None, None),
         )
         conn.commit()
     finally:

@@ -789,10 +789,17 @@ def test_pending_archive_window_counts_only_embeddable_prose() -> None:
         pending = select_pending_archive_session_window(conn, status_table="", min_messages=1)
 
         assert [item.session_id for item in pending] == ["mixed"]
-        # Missing-status sessions use the cheap aggregate as a conservative
-        # budget estimate; exact text-floor counts are reserved for deciding
-        # whether an existing clean status row is stale.
-        assert pending[0].message_count == 4
+        # v4 (polylogue-q88p "unify embedding freshness into one monotonic
+        # key"): there is no longer a separate "cheap aggregate estimate vs.
+        # exact text-floor count" split -- _archive_embedding_freshness_
+        # predicate's exact desired_messages CTE is the ONE path, used
+        # whether or not a status table is available (a missing status_table
+        # only changes fresh_sql/blocked_sql to constants, not how message
+        # counts themselves are computed). So a status_table="" caller still
+        # gets the real embeddable-prose count (2: m-user + m-assistant),
+        # correctly excluding the context/tool-result rows even without a
+        # status ledger to consult.
+        assert pending[0].message_count == 2
     finally:
         conn.close()
 

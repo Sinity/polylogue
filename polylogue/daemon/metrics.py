@@ -649,6 +649,13 @@ def _emit_storage_route_metrics(lines: list[str], counts: dict[str, int]) -> Non
 
 
 def _embedding_message_count(conn: sqlite3.Connection, *, status_table: str = "", meta_table: str = "") -> int:
+    # message_embedding_refs is the per-message count (polylogue-q88p);
+    # message_embeddings/message_embeddings_meta are content-addressed and
+    # deduped, so their row count undercounts messages whenever identical
+    # text is shared across sessions -- only fall back to them for legacy
+    # (pre-v4) archives that predate the refs table.
+    if _table_exists(conn, "message_embedding_refs"):
+        return _scalar_int(conn, "SELECT COUNT(*) FROM message_embedding_refs")
     if _table_exists(conn, "message_embeddings_rowids"):
         return _scalar_int(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
     if _table_exists(conn, "message_embeddings"):
