@@ -283,6 +283,33 @@ class TestIdentityMismatchDetection:
         test_conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
         assert _identity_mismatch_count(test_conn) == 1
 
+    def test_missing_identity_row_is_not_counted_as_mismatch(self, test_conn: sqlite3.Connection) -> None:
+        """A coverage GAP is not a CONFLICT -- this is the design boundary that
+        keeps ``storage/sqlite/archive_tiers/write.py``'s non-bulk
+        full-session-replace fast path (which does not populate the identity
+        ledger inline, see the polylogue-1xc.12 STOP-and-report note) from
+        making ``ready`` permanently false on ordinary archives. Simulates
+        that exact gap directly: a docsize-indexed rowid with NO identity
+        row at all must not count, while a PRESENT-but-wrong row (proven
+        elsewhere in this class) must.
+        """
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-coverage-gap",
+            native_message_id="msg-identity-coverage-gap",
+            text="indexed via messages_fts but never ledgered",
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert _identity_row(test_conn, rowid) is not None
+
+        test_conn.execute("DELETE FROM messages_fts_identity WHERE rowid = ?", (rowid,))
+        assert _identity_row(test_conn, rowid) is None
+        docsize_row = test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = ?", (rowid,)).fetchone()
+        assert docsize_row is not None, "messages_fts row must survive -- only its ledger entry was removed"
+
+        assert _identity_mismatch_count(test_conn) == 0
+
 
 class TestIdentityMismatchGatesReadiness:
     """Wired into the same readiness contract missing_rows/excess_rows use."""

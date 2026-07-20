@@ -409,6 +409,19 @@ def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
     )
 
 
+def _blocks_content_hash_available_sync(conn: sqlite3.Connection) -> bool:
+    """Whether ``blocks.content_hash`` exists (identity ledger source-hash input).
+
+    Some low-level tests exercise ``messages_fts`` repair against a minimal
+    hand-rolled ``blocks`` table (a handful of TEXT columns, no
+    ``content_hash``) rather than the full archive schema -- the identity
+    ledger is additive there: skip populating it rather than erroring, the
+    same accommodation already made for other optional derived surfaces
+    (``session_work_events_fts``/``threads_fts`` existence checks above).
+    """
+    return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)").fetchall())
+
+
 def insert_missing_message_rows_batched_sync(
     conn: sqlite3.Connection,
     *,
@@ -421,6 +434,7 @@ def insert_missing_message_rows_batched_sync(
         raise ValueError("batch_rows must be positive")
 
     ensure_fts_index_sync(conn)
+    identity_supported = _blocks_content_hash_available_sync(conn)
     before = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0) if measure_counts else 0
     max_rowid = _row_int(
         conn.execute(
@@ -440,9 +454,11 @@ def insert_missing_message_rows_batched_sync(
         changes_before = conn.total_changes
         conn.execute(sql, (lower, upper))
         inserted = conn.total_changes - changes_before
-        identity_changes_before = conn.total_changes
-        conn.execute(identity_sql, (lower, upper))
-        identity_changed = conn.total_changes - identity_changes_before
+        identity_changed = 0
+        if identity_supported:
+            identity_changes_before = conn.total_changes
+            conn.execute(identity_sql, (lower, upper))
+            identity_changed = conn.total_changes - identity_changes_before
         if inserted or identity_changed:
             conn.commit()
             _passive_wal_checkpoint_sync(conn)

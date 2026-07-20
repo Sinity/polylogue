@@ -346,16 +346,35 @@ def repair_message_identity_rows_range_sql() -> str:
 
 
 def message_identity_mismatch_sql() -> str:
-    """Exact rowid+block_id+source+recipe identity check for ``messages_fts``.
+    """Exact rowid+block_id+source+recipe identity CONFLICT check for ``messages_fts``.
 
     Two independent failure classes, summed: (1) an indexed row
     (``messages_fts_docsize`` joined with a still-indexable ``blocks`` row)
-    whose identity ledger entry is missing, or bound to a different
+    whose identity ledger entry EXISTS but is bound to a different
     ``block_id``, or carries a stale ``source_hash``/``recipe_id`` -- the
     rowid-reuse/changed-text/changed-recipe cases count-only reconciliation
     cannot see because both sides still balance; (2) an identity ledger row
     left over for a rowid no longer present in ``messages_fts_docsize`` at
     all (an orphan, e.g. from a partial/interrupted write).
+
+    Deliberately NOT counted: an indexed row with NO identity ledger entry
+    at all. Every per-row trigger arm and bulk companion writes the ledger
+    alongside its ``messages_fts`` write, but
+    ``storage/sqlite/archive_tiers/write.py``'s non-bulk full-session-replace
+    fast path (``delete_session_rows_sql``/``insert_session_rows_sql``
+    called directly, outside this module -- see the polylogue-1xc.12 note in
+    ``docs/internals.md``) does not yet call the identity companions inline,
+    so a session written through that path is coverage-incomplete until the
+    next repair backfills it. A missing entry is provably safe on its own:
+    nothing reads block identity FROM this ledger except this
+    reconciliation query itself, and the next trigger-fired mutation at that
+    rowid (delete or update) creates a correct fresh row regardless of
+    whether one existed before. Only a PRESENT-but-WRONG entry is the
+    dangerous rowid-reuse signature this check exists to catch -- a
+    consumer trusting the ledger would see a real but incorrect binding, not
+    an absence. Counting missing rows here would make ``ready`` permanently
+    false on any archive that writes through the ordinary session-replace
+    path, which defeats the point of a readiness signal.
     """
     return f"""
         SELECT
@@ -363,9 +382,8 @@ def message_identity_mismatch_sql() -> str:
                 SELECT COUNT(*)
                 FROM messages_fts_docsize AS d
                 JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
-                LEFT JOIN messages_fts_identity AS i ON i.rowid = d.id
-                WHERE i.rowid IS NULL
-                   OR i.block_id != b.block_id
+                JOIN messages_fts_identity AS i ON i.rowid = d.id
+                WHERE i.block_id != b.block_id
                    OR i.source_hash IS NOT b.content_hash
                    OR i.recipe_id != '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
             )

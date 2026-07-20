@@ -215,19 +215,29 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   now also joins `blocks`/`messages_fts_docsize`/`messages_fts_identity` on
   rowid AND `block_id`/`source_hash`/`recipe_id`, catching rowid-reuse,
   changed-text, and changed-recipe drift that a count-only or rowid-only
-  check cannot see. Bulk paths outside the per-row triggers (full rebuild,
-  batched missing/excess repair, session-scoped repair in
-  `storage/fts/fts_lifecycle.py`) pair their `messages_fts` writes with the
-  matching identity companion SQL. The one exception is
-  `storage/sqlite/archive_tiers/write.py`'s non-bulk full-session-replace
-  fast path (`delete_session_rows_sql`/`insert_session_rows_sql` called
-  directly, bypassing the suspended block triggers): it does not yet call
-  the identity companions inline, so a session re-ingested through that path
-  transiently shows as identity-incomplete until the next repair/reconciliation
-  pass backfills it (`dangling_repair.py`'s missing-row repair now also
-  upserts identity rows for any indexed rowid lacking one) — the same
-  eventually-consistent contract `missing_rows`/`excess_rows` already had
-  before this change, not a new weaker guarantee. Existing index tiers must
+  check cannot see. `message_identity_mismatch_sql` deliberately counts only
+  a PRESENT-but-WRONG ledger entry, never a missing one: nothing reads block
+  identity from the ledger except this reconciliation query itself, and the
+  next trigger-fired mutation at that rowid creates a correct fresh row
+  regardless of whether one existed before, so an absent entry is a coverage
+  gap, not a conflict — counting it would make `ready` permanently false on
+  any archive that writes through the ordinary session-replace path (see
+  below), defeating the point of a readiness signal. Bulk paths outside the
+  per-row triggers (full rebuild, batched missing/excess repair,
+  session-scoped repair in `storage/fts/fts_lifecycle.py`) pair their
+  `messages_fts` writes with the matching identity companion SQL, and the
+  batched missing-row repair also opportunistically UPSERTs a correct entry
+  for any indexed rowid whose ledger entry is missing or wrong. The one
+  exception is `storage/sqlite/archive_tiers/write.py`'s non-bulk
+  full-session-replace fast path (`delete_session_rows_sql`/
+  `insert_session_rows_sql` called directly, bypassing the suspended block
+  triggers): it does not yet call the identity companions inline, so a
+  session written through that path is coverage-incomplete (not
+  conflicting) until the next repair backfills it — a STOP-and-report gap
+  (polylogue-1xc.12): closing it fully needs one additional paired
+  `delete_session_identity_rows_sql`/`insert_session_identity_rows_sql`
+  call at each of write.py's four `delete_session_rows_sql`/
+  `insert_session_rows_sql` call sites. Existing index tiers must
   be rebuilt from source evidence (`polylogue ops reset --index && polylogued
   run`) to populate the new ledger for already-indexed rows; a declared
   clone-safe fast-forward exists (`IndexDeltaDeclaration` v43 in
