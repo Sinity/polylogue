@@ -1238,6 +1238,8 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
     :mod:`polylogue.insights.hermes_integration_health` for the primitives
     this reuses.
     """
+    from polylogue.daemon.convergence_debt_alert import source_family_for_subject, watchsource_name_to_family
+    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
     from polylogue.insights.hermes_integration_health import build_hermes_integration_health
     from polylogue.paths import hermes_sessions_path
 
@@ -1247,7 +1249,27 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
     )
     if hermes_root is None:
         hermes_root = hermes_sessions_path()
-    return build_hermes_integration_health(_active_archive_root(config), hermes_root=hermes_root)
+
+    archive_root = _active_archive_root(config)
+    # ``polylogue.insights`` may not import ``polylogue.daemon`` directly
+    # (docs/plans/layering.yaml); this surface-adapter layer owns the
+    # daemon-touching convergence-debt bucketing and passes plain counts in.
+    hermes_family = watchsource_name_to_family("hermes")
+    debt = convergence_debt_summary_info(archive_root / "source.db")
+    family_summary = next((item for item in debt.family_summaries if item.family == hermes_family), None)
+    convergence_debt_failed_count = family_summary.failed_count if family_summary is not None else 0
+    convergence_debt_retry_due_count = sum(
+        1
+        for item in debt.recent
+        if item.retry_due and source_family_for_subject(item.subject_type, item.subject_id) == hermes_family
+    )
+
+    return build_hermes_integration_health(
+        archive_root,
+        hermes_root=hermes_root,
+        convergence_debt_failed_count=convergence_debt_failed_count,
+        convergence_debt_retry_due_count=convergence_debt_retry_due_count,
+    )
 
 
 def _archive_list_assertion_candidate_reviews(

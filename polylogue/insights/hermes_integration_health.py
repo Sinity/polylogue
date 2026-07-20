@@ -21,7 +21,10 @@ Hermes coverage. This module adds only the rollup on top, composing:
   — per-file freshness/cursor/parse/index/FTS evidence.
 - :func:`polylogue.daemon.convergence_debt_status.convergence_debt_summary_info`
   — durable post-ingest convergence debt, bucketed to the Hermes source
-  family.
+  family. This module does not import ``polylogue.daemon`` directly
+  (``docs/plans/layering.yaml`` forbids insights -> daemon): the caller
+  (a surface adapter, e.g. ``polylogue.api.archive``) computes the
+  Hermes-scoped debt counts and passes them in.
 - :func:`polylogue.context.hermes_lifecycle_reconciliation.reconcile_hermes_session_lifecycle`
   — per-session lifecycle-event pairing debt (fs1.7).
 - :func:`polylogue.context.hermes_delivery_correlation.correlate_hermes_context_deliveries`
@@ -45,8 +48,6 @@ from polylogue.archive.query.source_freshness import project_named_source_freshn
 from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
 from polylogue.context.hermes_lifecycle_reconciliation import reconcile_hermes_session_lifecycle
 from polylogue.core.enums import Origin
-from polylogue.daemon.convergence_debt_alert import watchsource_name_to_family
-from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.logging import get_logger
 from polylogue.sources.import_explain import explain_import_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -55,7 +56,6 @@ logger = get_logger(__name__)
 
 HermesHealthVerdict = Literal["disabled", "healthy", "degraded", "unavailable"]
 
-_HERMES_FAMILY = watchsource_name_to_family("hermes")
 _DEFAULT_SOURCE_LIMIT = 25
 _DEFAULT_SESSION_LIMIT = 10
 
@@ -211,6 +211,8 @@ def build_hermes_integration_health(
     now: datetime | None = None,
     source_limit: int = _DEFAULT_SOURCE_LIMIT,
     session_limit: int = _DEFAULT_SESSION_LIMIT,
+    convergence_debt_failed_count: int = 0,
+    convergence_debt_retry_due_count: int = 0,
 ) -> HermesIntegrationHealth:
     """Project one bounded Hermes integration health rollup.
 
@@ -220,6 +222,11 @@ def build_hermes_integration_health(
     directory content is retained past this call; the response carries
     filenames, not absolute paths, and evidence refs/ids, never rendered
     bytes or transcript text.
+
+    ``convergence_debt_failed_count``/``convergence_debt_retry_due_count``
+    are pre-computed by the caller (bucketed to the Hermes source family via
+    :func:`polylogue.daemon.convergence_debt_status.convergence_debt_summary_info`)
+    because this module may not import ``polylogue.daemon`` directly.
     """
     observed = now or datetime.now(UTC)
     checked_at = observed.isoformat()
@@ -270,6 +277,12 @@ def build_hermes_integration_health(
                 insights_converged = freshness.insights.converged
                 projection_error_count = len(freshness.errors)
             except Exception as exc:  # defensive: freshness projection must never crash the rollup
+                logger.warning(
+                    "hermes health: named-source freshness projection failed for %s: %s",
+                    source_ref,
+                    exc,
+                    exc_info=True,
+                )
                 caveats.append(f"freshness projection failed for {source_ref}: {type(exc).__name__}")
         sources.append(
             HermesSourceStatus(
@@ -318,13 +331,6 @@ def build_hermes_integration_health(
             caveats.append(skip.reason)
     caveats.extend(explain.caveats)
 
-    debt = convergence_debt_summary_info(archive_root / "source.db")
-    family_summary = next((item for item in debt.family_summaries if item.family == _HERMES_FAMILY), None)
-    convergence_debt_failed_count = family_summary.failed_count if family_summary is not None else 0
-    convergence_debt_retry_due_count = sum(
-        1 for item in debt.recent if item.retry_due and _debt_item_is_hermes(item.subject_type, item.subject_id)
-    )
-
     session_ids = _recent_hermes_session_native_ids(archive_root / "source.db", limit=session_limit)
     lifecycle_debt = HermesLifecycleDebtSummary(0, 0, 0, 0, ())
     delivery_correlation = HermesDeliveryCorrelationSummary(0, 0, 0, 0, ())
@@ -354,12 +360,6 @@ def build_hermes_integration_health(
         delivery_correlation=delivery_correlation,
         caveats=all_caveats,
     )
-
-
-def _debt_item_is_hermes(subject_type: str, subject_id: str) -> bool:
-    from polylogue.daemon.convergence_debt_alert import source_family_for_subject
-
-    return source_family_for_subject(subject_type, subject_id) == _HERMES_FAMILY
 
 
 def _sample_session_debt(
