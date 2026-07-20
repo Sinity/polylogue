@@ -176,11 +176,13 @@ def _base_parts_sync(conn: sqlite3.Connection, *, detail: bool) -> _EmbeddingSta
         ),
         pending_messages=optional_count_sync(conn, PENDING_MESSAGES_SQL) if status_exists else total_messages,
         # v4 (polylogue-q88p): this legacy monolithic-archive reader does not
-        # thread a configured model through to compute the identity-free
-        # hash comparison stale_messages_sql() needs; the split-archive path
-        # (storage/embeddings/status_payload.py, the primary runtime status
-        # surface) computes an exact stale count instead. 0 here is an
-        # honest "not computed on this path", not a claim of freshness.
+        # thread a configured embedding model through, and computing the
+        # identity-free stale comparison (embedding_input_hash != the
+        # message's current embedder input text) requires one. The
+        # split-archive path (storage/embeddings/status_payload.py, the
+        # primary runtime status surface) has the model and computes an
+        # exact stale count there. 0 here is an honest "not computed on
+        # this path", not a claim of freshness.
         stale_messages=0,
         missing_provenance=optional_count_sync(conn, MISSING_META_MESSAGES_SQL),
         sessions_exist=sessions_exist,
