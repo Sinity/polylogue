@@ -23,11 +23,14 @@ from polylogue.insights.archive import (
     ThreadInsight,
     ThreadInsightQuery,
 )
-from polylogue.insights.archive_models import ArchiveInsightModel
+from polylogue.insights.archive_models import ArchiveInsightModel, ObjectivePosturePayload
+from polylogue.insights.objective_posture import resolve_session_objective_posture
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
+    from polylogue.core.enums import AssertionKind, AssertionStatus
+    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
 
 RESUME_BRIEF_MATERIALIZER_VERSION = 2
@@ -105,6 +108,10 @@ class ResumeInferences(ArchiveInsightModel):
     work_events: tuple[ResumeWorkEvent, ...] = ()
     phases: tuple[ResumePhase, ...] = ()
     thread: ResumeThread | None = None
+    # polylogue-37t.23: the full authority-blended resumability projection
+    # (structural_inference tier, overlaid with any live assertion-tier
+    # evidence). Distinct from `terminal_state` (how the process ended).
+    objective_posture: ObjectivePosturePayload = Field(default_factory=ObjectivePosturePayload)
 
 
 class ResumeRelatedSession(ArchiveInsightModel):
@@ -171,6 +178,13 @@ class ResumeCandidate(ArchiveInsightModel):
     last_message_at: str | None = None
     title: str
     terminal_state: str = "unknown"
+    # polylogue-37t.23: structural_inference-tier objective posture (the
+    # strongest posture across the logical session's member profiles). Not
+    # overlaid with the assertion tier here -- that would require a live
+    # user.db query per candidate on every ranking call. Callers that need
+    # the full authority-blended posture for one candidate should follow up
+    # with `resume_brief`, whose `inferences.objective_posture` overlays it.
+    objective_posture: str = "unknown"
     workflow_shape: str = "unknown"
     file_overlap: tuple[str, ...] = ()
     overlap_basis: ResumeOverlapBasis = Field(default_factory=ResumeOverlapBasis)
@@ -213,6 +227,14 @@ class ResumeOperations(Protocol):
         self,
         query: SessionProfileInsightQuery | None = None,
     ) -> list[SessionProfileInsight]: ...
+
+    async def list_assertion_claims(
+        self,
+        *,
+        kinds: Sequence[str | AssertionKind] | None = None,
+        target_ref: str | None = None,
+        statuses: Sequence[str | AssertionStatus] | None = None,
+    ) -> list[ArchiveAssertionEnvelope]: ...
 
 
 def _iso(value: object) -> str | None:
@@ -598,6 +620,27 @@ def _terminal_weight(state: str) -> float:
     }.get(state, 0.25)
 
 
+def _posture_weight(posture: str) -> float:
+    """Score a `SessionEnrichmentPayload.objective_posture.posture` value for
+    resume ranking (polylogue-37t.23). Higher = more likely to still have
+    open work worth resuming. Unlike `_terminal_weight` (how the process
+    ended), this reflects whether the *objective* looks resolved --
+    "completed" scores 0.0 even though no tier available today can actually
+    emit it (see `polylogue.insights.objective_posture`); the entry is kept
+    honest for when the assertion/work-evidence/goal-graph tiers do.
+    """
+
+    return {
+        "blocked": 1.0,
+        "awaiting_operator": 0.95,
+        "awaiting_effect": 0.85,
+        "abandoned_inactive": 0.4,
+        "ambiguous": 0.5,
+        "unknown": 0.25,
+        "completed": 0.0,
+    }.get(posture, 0.25)
+
+
 def _workflow_weight(shape: str) -> float:
     return {
         "agentic_loop": 1.0,
@@ -624,6 +667,20 @@ def _profile_workflow_shape(profile: SessionProfileInsight) -> str:
 
 def _strongest_terminal_state(profiles: Sequence[SessionProfileInsight]) -> str:
     return max((_profile_terminal_state(profile) for profile in profiles), key=_terminal_weight, default="unknown")
+
+
+def _profile_objective_posture(profile: SessionProfileInsight) -> str:
+    if profile.enrichment is not None:
+        return profile.enrichment.objective_posture.posture
+    return "unknown"
+
+
+def _strongest_objective_posture(profiles: Sequence[SessionProfileInsight]) -> str:
+    return max(
+        (_profile_objective_posture(profile) for profile in profiles),
+        key=_posture_weight,
+        default="unknown",
+    )
 
 
 def _strongest_workflow_shape(profiles: Sequence[SessionProfileInsight]) -> str:
@@ -792,6 +849,9 @@ def _inferences(
         work_events=_event_summary(events),
         phases=_phase_summary(phases),
         thread=_thread_summary(thread),
+        objective_posture=(
+            enrichment_payload.objective_posture if enrichment_payload is not None else ObjectivePosturePayload()
+        ),
     )
 
 
@@ -876,6 +936,14 @@ def _next_steps(
     inferences: ResumeInferences,
 ) -> tuple[str, ...]:
     steps: list[str] = []
+    # polylogue-37t.23: a durably-declared (assertion-tier) obligation is
+    # the strongest continuity signal available -- surface it ahead of the
+    # heuristic blocker-text/work-event/message steps below.
+    posture = inferences.objective_posture
+    if posture.authority == "assertion" and posture.posture in {"blocked", "awaiting_operator"}:
+        label = posture.posture.replace("_", " ")
+        ref = posture.evidence_refs[0] if posture.evidence_refs else "declared obligation"
+        steps.append(f"Resolve {label} ({ref})")
     if inferences.blockers:
         steps.append(f"Resolve blocker: {inferences.blockers[0]}")
 
@@ -968,6 +1036,20 @@ async def build_resume_brief(
         phases=phases,
         thread=thread,
     )
+    # polylogue-37t.23: overlay the live assertion tier on top of the
+    # structural_inference tier already carried by `inferences.
+    # objective_posture` -- a single-session detail view can afford the
+    # extra user.db read that bulk ranking (`_rank_resume_profiles`) cannot.
+    try:
+        blended_posture = await resolve_session_objective_posture(
+            operations,
+            session_id=session_id,
+            structural=inferences.objective_posture,
+        )
+        inferences = inferences.model_copy(update={"objective_posture": blended_posture})
+    except Exception as exc:  # degrade, never break the brief
+        uncertainties.append(ResumeUncertainty(source="objective_posture", detail=f"{type(exc).__name__}: {exc}"))
+
     related_sessions = await _related_sessions(
         operations,
         session,
@@ -1111,19 +1193,28 @@ def _rank_resume_profiles(
         else:
             recency_score = 0.0
         terminal_state = _strongest_terminal_state(members)
+        objective_posture = _strongest_objective_posture(members)
         workflow_shape = _strongest_workflow_shape(members)
         breakdown = {
             "recency": round(recency_score, 4),
             "file_overlap": round(overlap_score.score, 4),
             "cwd_match": round(cwd_score, 4),
             "terminal_state": round(_terminal_weight(terminal_state), 4),
+            "objective_posture": round(_posture_weight(objective_posture), 4),
             "workflow_shape": round(_workflow_weight(workflow_shape), 4),
         }
+        # polylogue-37t.23: `objective_posture` (open obligations) now
+        # carries real ranking weight alongside `terminal_state` (how the
+        # process ended) -- the two are orthogonal signals, per bead design.
+        # `terminal_state`'s weight is trimmed rather than dropped: it still
+        # distinguishes e.g. a still-pending tool call from a genuinely
+        # ambiguous ending.
         score = round(
-            (0.35 * breakdown["recency"])
-            + (0.25 * breakdown["file_overlap"])
-            + (0.15 * breakdown["cwd_match"])
-            + (0.15 * breakdown["terminal_state"])
+            (0.30 * breakdown["recency"])
+            + (0.20 * breakdown["file_overlap"])
+            + (0.10 * breakdown["cwd_match"])
+            + (0.10 * breakdown["terminal_state"])
+            + (0.20 * breakdown["objective_posture"])
             + (0.10 * breakdown["workflow_shape"]),
             6,
         )
@@ -1134,6 +1225,7 @@ def _rank_resume_profiles(
                 last_message_at=last_message_at,
                 title=_candidate_title(representative),
                 terminal_state=terminal_state,
+                objective_posture=objective_posture,
                 workflow_shape=workflow_shape,
                 file_overlap=overlap_score.file_overlap,
                 overlap_basis=overlap_score.basis,
@@ -1144,7 +1236,14 @@ def _rank_resume_profiles(
         )
 
     if not normalized_recent and not normalized_cwd:
-        candidates = [candidate for candidate in candidates if candidate.terminal_state not in {"clean_finish"}]
+        # polylogue-37t.23: exclude only sessions the objective-posture
+        # projection actually calls "completed" (the structural_inference
+        # tier alone never does -- see `structural_objective_posture`; this
+        # only bites once the assertion/work-evidence/goal-graph tiers can
+        # observe a satisfied effect). Replaces the former `terminal_state
+        # == "clean_finish"` filter, which the polylogue-ve9z ladder
+        # decision made permanently dead (that state is no longer emitted).
+        candidates = [candidate for candidate in candidates if candidate.objective_posture != "completed"]
     candidates.sort(
         key=lambda candidate: (
             -candidate.score,

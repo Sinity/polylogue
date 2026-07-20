@@ -240,6 +240,13 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                 ("enrichment", "confidence"),
                 ("enrichment", "input_band_summary"),
             ),
+            *_true_zero_paths(
+                "polylogue-37t.23: objective-posture confidence is an explicit "
+                "heuristic/assertion-derived output (0.0 means authority=='none', "
+                "i.e. no tier had anything to say), never a missing-evidence "
+                "sentinel.",
+                ("enrichment", "objective_posture", "confidence"),
+            ),
         ),
         notes=(
             "Structural-only terminal state (polylogue-ve9z, 2026-07-16): "

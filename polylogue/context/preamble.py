@@ -95,6 +95,7 @@ async def build_context_preamble_payload(
                     title=getattr(c, "title", None),
                     date=getattr(c, "date", None),
                     terminal_state=getattr(c, "terminal_state", None),
+                    objective_posture=getattr(c, "objective_posture", None),
                     summary=getattr(c, "summary", None),
                     origin=getattr(c, "origin", None),
                     overlap_basis=_candidate_overlap_basis(c),
