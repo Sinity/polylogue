@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -453,3 +454,113 @@ def test_effective_config_payload_sinex_mode_off_is_silent(
     assert not any(
         isinstance(diag, dict) and str(diag.get("code", "")).startswith("sinex_mode_") for diag in diagnostics
     )
+
+
+@pytest.mark.parametrize(
+    ("env_var", "cfg_property"),
+    [
+        ("POLYLOGUE_MCP_WRITE_ENABLED", "mcp_write_enabled"),
+        ("POLYLOGUE_MCP_JUDGE_ENABLED", "mcp_judge_enabled"),
+        ("POLYLOGUE_MCP_MAINTENANCE_ENABLED", "mcp_maintenance_enabled"),
+    ],
+)
+class TestMCPCapabilityBooleanFailsClosed:
+    """polylogue-800m: a capability boundary must never fail open on a typo.
+
+    ``bool("flase")`` is ``True`` in plain Python -- if an unrecognized
+    string reached these properties untouched, a typo'd env var or a quoted
+    TOML value would silently register the write/judge/maintenance MCP
+    dispatchers. These flags must accept only the canonical boolean tokens
+    and raise loudly (``ConfigError``) on anything else.
+    """
+
+    def test_unrecognized_env_value_raises(
+        self,
+        env_var: str,
+        cfg_property: str,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import ConfigError, load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.setenv(env_var, "flase")
+
+        with pytest.raises(ConfigError, match=re.escape(f"{env_var}='flase'")):
+            load_polylogue_config()
+
+    @pytest.mark.parametrize("token", ["false", "0", "no", "off", "FALSE", "Off"])
+    def test_falsy_tokens_disable(
+        self,
+        env_var: str,
+        cfg_property: str,
+        token: str,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.setenv(env_var, token)
+
+        cfg = load_polylogue_config()
+
+        assert getattr(cfg, cfg_property) is False
+
+    @pytest.mark.parametrize("token", ["true", "1", "yes", "on", "TRUE", "On"])
+    def test_truthy_tokens_enable(
+        self,
+        env_var: str,
+        cfg_property: str,
+        token: str,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.setenv(env_var, token)
+
+        cfg = load_polylogue_config()
+
+        assert getattr(cfg, cfg_property) is True
+
+    def test_toml_true_enables(
+        self,
+        env_var: str,
+        cfg_property: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        toml_key = cfg_property.removeprefix("mcp_")
+        cfg_path = tmp_path / "polylogue.toml"
+        cfg_path.write_text(f"[mcp]\n{toml_key} = true\n", encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+        cfg = load_polylogue_config(config_path=cfg_path)
+
+        assert getattr(cfg, cfg_property) is True
+
+    def test_quoted_toml_string_does_not_silently_pass_truthiness_check(
+        self,
+        env_var: str,
+        cfg_property: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """A quoted TOML value (a string, not a TOML bool) must still fail closed."""
+        from polylogue.config import ConfigError, load_polylogue_config
+
+        toml_key = cfg_property.removeprefix("mcp_")
+        cfg_path = tmp_path / "polylogue.toml"
+        cfg_path.write_text(f'[mcp]\n{toml_key} = "flase"\n', encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+        cfg = load_polylogue_config(config_path=cfg_path)
+
+        with pytest.raises(ConfigError, match=re.escape(f"{cfg_property}='flase'")):
+            getattr(cfg, cfg_property)
