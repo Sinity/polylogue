@@ -2856,6 +2856,39 @@ class ArchiveStore:
         )
         return row is not None and bool(row[0])
 
+    def raw_membership_decision_pending(self, raw_id: str) -> bool:
+        """Return True only when this raw's own decision is genuinely undecided.
+
+        ``raw_membership_authority_complete`` collapses three distinct
+        non-complete states into one boolean: ``decision IS NULL`` (the
+        raw-authority protocol's async classification -- the raw-materialization
+        conveyor, see ``sources/revision_backfill.py`` -- has censused this raw
+        but not yet arbitrated it), and ``decision IN ('ambiguous', 'deferred')``
+        (arbitration already ran and concluded a genuine, byte-level conflict
+        that requires new evidence to resolve, not the passage of time). Only
+        the first is a legitimate hand-off; the second is a decided outcome
+        that must surface as a failure (polylogue-emx2 vs. the fail-closed
+        invariants pinned by #2684/#2716/#2718/#2837). This predicate isolates
+        the NULL case so callers can distinguish "still pending" from "decided,
+        unresolved" instead of treating both as non-failures.
+        """
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT c.status = 'complete'
+               AND EXISTS (
+                   SELECT 1 FROM raw_session_memberships AS m
+                   WHERE m.raw_id = c.raw_id AND m.decision IS NULL
+               )
+            FROM raw_membership_census AS c WHERE c.raw_id = ?
+            """,
+                (raw_id,),
+            )
+            .fetchone()
+        )
+        return row is not None and bool(row[0])
+
     def raw_revision_replay_adoptable(self, sessions: Sequence[ParsedSession]) -> bool:
         """Return whether replay may adopt an existing ungoverned session."""
         aggregate = merge_parsed_session_chunks(sessions)
