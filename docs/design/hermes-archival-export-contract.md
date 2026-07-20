@@ -139,6 +139,10 @@ and `::test_published_hook_adapters_refuse_duplicated_transcript_payloads`.
   call sites to `contrib/polylogue-hook`/`polylogue-hooks`.
 - **Physical session-tree merge of observer-layer spans into the
   conversational session.** See
-  `polylogue/sources/parsers/hermes_spans.py` (fs1.2) — spans land as their
-  own observer-evidence session, correlated by shared Hermes session id, not
-  physically merged into the state-db-ingested message tree.
+  `polylogue/sources/parsers/hermes_spans.py` (fs1.2) — ATIF and ATOF spans
+  each land as their own artifact-qualified observer-evidence session
+  (`observer:atif:<id>` / `observer:atof:<id>`, fs1.14 fixed a prior
+  collision where both shared one `observer:<id>` identity), correlated by
+  shared Hermes session id via
+  `polylogue/insights/hermes_topology_projection.py`, not physically merged
+  into the state-db-ingested message tree.
