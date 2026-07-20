@@ -682,3 +682,157 @@ def test_hot_insight_convergence_debt_uses_archive_source_quiet_deadline(
     retry_at = datetime.fromisoformat(debt.next_retry_at or "")
     failed_at = datetime.fromisoformat(debt.last_failed_at)
     assert retry_at - failed_at == timedelta(seconds=50)
+
+
+def _seed_healthy_hot_skip_cursor(cursor: CursorStore, path: Path, *, source_name: str) -> None:
+    """Write a cursor that the byte/fingerprint hot-skip path would trust on its own."""
+    stat = path.stat()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    cursor.set(
+        path,
+        stat.st_size,
+        byte_offset=stat.st_size,
+        last_complete_newline=stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint=digest,
+        tail_hash=encode_cursor_hash_authority(digest, digest, ctime_ns=stat.st_ctime_ns),
+        source_name=source_name,
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+
+def _seed_parsed_source_raw(conn: sqlite3.Connection, *, path: Path, native_id: str, raw_id: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO raw_sessions (
+            raw_id, origin, native_id, source_path, source_index,
+            blob_hash, blob_size, acquired_at_ms, parsed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (raw_id, "codex-session", native_id, str(path), 0, b"a" * 32, path.stat().st_size, 1, 1),
+    )
+
+
+def test_catch_up_demotes_hot_skip_cursor_when_index_holds_no_sessions(tmp_path: Path) -> None:
+    """polylogue-emx2: a cursor claiming acquisition must not skip when the
+    index tier that would corroborate materialization is empty -- the
+    signature left by a full index reset/rebuild (Finding 8: 14,879 cursors
+    skipped 100% of files against an empty post-reset index)."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "src"
+    root.mkdir()
+    healthy = root / "healthy.jsonl"
+    healthy.write_text('{"role":"user","content":"hello"}\n', encoding="utf-8")
+
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    _seed_healthy_hot_skip_cursor(cursor, healthy, source_name="test")
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _seed_parsed_source_raw(conn, path=healthy, native_id="healthy", raw_id="raw-healthy")
+        conn.commit()
+    # index.db intentionally left with zero rows in `sessions` -- the
+    # post-reset state this bead targets.
+
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),), cursor=cursor)
+    candidates = watcher._scan_catch_up_candidates([root])
+    plan = watcher._plan_catch_up(candidates)
+
+    assert plan.needed == (healthy,), "a cursor the index cannot corroborate must be demoted to needed, not hot-skipped"
+    assert plan.skipped_file_count == 0
+
+
+def test_catch_up_trusts_hot_skip_cursor_when_index_corroborates_it(tmp_path: Path) -> None:
+    """The corroborated companion to the demotion test above: once the raw
+    this cursor claims is actually materialized as a session in the index,
+    the hot-skip path is trusted again and no re-ingest is scheduled."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "src"
+    root.mkdir()
+    healthy = root / "healthy.jsonl"
+    healthy.write_text('{"role":"user","content":"hello"}\n', encoding="utf-8")
+
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    _seed_healthy_hot_skip_cursor(cursor, healthy, source_name="test")
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _seed_parsed_source_raw(conn, path=healthy, native_id="healthy", raw_id="raw-healthy")
+        conn.commit()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("healthy", "codex-session", "raw-healthy", 1, b"c" * 32, 1, 1),
+        )
+        conn.commit()
+
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),), cursor=cursor)
+    candidates = watcher._scan_catch_up_candidates([root])
+    plan = watcher._plan_catch_up(candidates)
+
+    assert plan.needed == ()
+    assert plan.skipped_file_count == 1
+
+
+def test_catch_up_index_lacks_all_corroboration_detects_empty_index_with_parsed_raw(tmp_path: Path) -> None:
+    """Unit-level pin on the cheap global gate itself, independent of the
+    higher-level planning flow exercised above."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as source_conn, sqlite3.connect(index_db) as index_conn:
+        assert (
+            live_watcher.LiveWatcher._index_lacks_all_corroboration(source_conn=source_conn, index_conn=index_conn)
+            is False
+        ), "no parsed raw material yet -- nothing for the index to corroborate"
+
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw-1", "codex-session", "conv-1", "/tmp/does-not-matter.jsonl", 0, b"a" * 32, 2, 1, 1),
+        )
+        source_conn.commit()
+        assert (
+            live_watcher.LiveWatcher._index_lacks_all_corroboration(source_conn=source_conn, index_conn=index_conn)
+            is True
+        ), "parsed raw exists but index.db has zero sessions -- the post-reset signature"
+
+        index_conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("conv-1", "codex-session", "raw-1", 1, b"b" * 32, 1, 1),
+        )
+        index_conn.commit()
+        assert (
+            live_watcher.LiveWatcher._index_lacks_all_corroboration(source_conn=source_conn, index_conn=index_conn)
+            is False
+        ), "index now shows at least one materialized session -- corroborated again"
