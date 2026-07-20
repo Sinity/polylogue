@@ -3063,40 +3063,18 @@ class ArchiveStore:
                 # quarantined-authority raw (e.g. a browser-capture snapshot of
                 # the same provider conversation). Chain evidence with
                 # source-tier revision governance outranks quarantined capture
-                # evidence at an equal-or-later semantic frontier, so hand the
-                # head over instead of letting the CAS reject the whole
-                # replay. A capture that is content-AHEAD (strictly greater
-                # frontier: the conversation continued after the export was
-                # produced) keeps the head, and this chain cohort defers --
-                # receipted, never silently dropped -- until later evidence
-                # resolves it.
-                if accepted_frontier >= int(existing_head[5]):
-                    self._conn.execute(
-                        "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
-                        (plan.logical_source_key,),
-                    )
-                    existing_head = None
-                else:
-                    deferred_at_ms = int(datetime.now(UTC).timestamp() * 1000)
-                    for application in plan.applications:
-                        deferred_candidate = candidates[application.raw_id]
-                        record_revision_application_sync(
-                            self._conn,
-                            RevisionApplicationReceipt(
-                                raw_id=deferred_candidate.raw_id,
-                                session_id=str(existing_head[0]),
-                                logical_source_key=plan.logical_source_key,
-                                source_revision=deferred_candidate.source_revision,
-                                acquisition_generation=deferred_candidate.acquisition_generation,
-                                decision=ApplicationDecision.DEFERRED,
-                                accepted_raw_id=None,
-                                accepted_source_revision=None,
-                                accepted_content_hash=None,
-                                detail="chain_replay:deferred_behind_content_ahead_quarantined_membership_head",
-                            ),
-                            decided_at_ms=deferred_at_ms,
-                        )
-                    return str(existing_head[0]), ()
+                # evidence unconditionally: a scalar semantic frontier cannot
+                # prove the capture is a content-superset (a divergent capture
+                # with more units is not "ahead"), so no count comparison is
+                # attempted. The capture raw stays in the source tier and its
+                # earlier receipts remain; re-adopting genuinely
+                # content-ahead capture tails needs a real prefix-dominance
+                # proof (follow-up bead), not a unit count.
+                self._conn.execute(
+                    "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                    (plan.logical_source_key,),
+                )
+                existing_head = None
             for position, raw_id in enumerate(plan.accepted_raw_ids):
                 index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
@@ -3272,29 +3250,13 @@ class ArchiveStore:
                         # cohort -- e.g. a byte-proven provider export of the
                         # same conversation this browser capture snapshotted.
                         # Provider-export evidence outranks quarantined capture
-                        # evidence, so the capture cohort yields unless it is
-                        # strictly content-AHEAD on a comparable semantic
-                        # frontier (the conversation continued after the export
-                        # was produced) -- then the newer content takes the
-                        # head. Byte-kind heads are never comparable to a
-                        # semantic capture frontier and always win.
-                        accepted_projection = projections_by_raw_id[accepted_raw_id]
-                        semantic_frontier = (
-                            len(accepted_projection.message_hashes)
-                            + len(accepted_projection.event_hashes)
-                            + len(accepted_projection.attachment_hashes)
-                        )
-                        if (
-                            str(existing_head[2]) == "semantic"
-                            and existing_head[4] is not None
-                            and semantic_frontier > int(existing_head[4])
-                        ):
-                            self._conn.execute(
-                                "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
-                                (logical_source_key,),
-                            )
-                        else:
-                            yield_to_head_raw_id = existing_raw_id
+                        # evidence unconditionally: a scalar semantic frontier
+                        # cannot prove the capture is a content-superset, so
+                        # the cohort always yields (receipted below); the
+                        # capture bytes stay in the source tier. Re-adopting a
+                        # genuinely content-ahead capture tail needs a real
+                        # prefix-dominance proof (follow-up bead).
+                        yield_to_head_raw_id = existing_raw_id
                     else:
                         persisted_session = self._conn.execute(
                             "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
@@ -3307,7 +3269,16 @@ class ArchiveStore:
                             or not isinstance(persisted_session[1], bytes)
                             or bytes(existing_head[1]) != bytes(persisted_session[1])
                         ):
-                            raise RuntimeError("membership replay cannot retire an unrelated accepted head")
+                            raise RuntimeError(
+                                "membership replay cannot retire an unrelated accepted head: "
+                                f"logical_source_key={logical_source_key!r} "
+                                f"existing_head(raw_id={existing_raw_id!r}, session_id={str(existing_head[3])!r}, "
+                                f"authority={chain_head_authority!r}) "
+                                f"cohort(accepted={classification.accepted_raw_ids!r}, "
+                                f"equivalent={classification.equivalent_raw_ids!r}, "
+                                f"ambiguous={classification.ambiguous_raw_ids!r}) "
+                                f"persisted_session_raw={None if persisted_session is None else str(persisted_session[0])!r}"
+                            )
                         existing_is_byte_governed = conn.execute(
                             "SELECT 1 FROM raw_sessions WHERE raw_id = ? AND logical_source_key = ?",
                             (existing_raw_id, logical_source_key),

@@ -848,11 +848,12 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
         assert bytes(stored[0]).hex() == session_content_hash(export_session)
 
 
-def test_chain_replay_defers_behind_content_ahead_quarantined_membership_head(tmp_path: Path) -> None:
-    """A capture that is strictly content-AHEAD keeps the head; the chain
+def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
+    """Chain evidence wins unconditionally: a scalar frontier cannot prove a
 
-    cohort defers with receipts instead of crashing or silently regressing
-    content.
+    capture is a content-superset, so even a capture with MORE semantic units
+    hands the head to chain-governed evidence (the capture raw stays in the
+    source tier; re-adoption needs a real prefix-dominance proof).
     """
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -866,20 +867,13 @@ def test_chain_replay_defers_behind_content_ahead_quarantined_membership_head(tm
         plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 2, size=len("export"))])
         session_id, applied = archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
 
-        assert applied == ()
-        assert _head_row(archive) == (capture, "semantic", 3)
-        deferred = archive._conn.execute(
-            """SELECT decision, detail FROM raw_revision_applications
-               WHERE raw_id = ? AND logical_source_key = 'codex:session'""",
-            (export,),
-        ).fetchall()
-        assert [str(row[0]) for row in deferred] == ["deferred"]
-        assert "content_ahead_quarantined_membership_head" in str(deferred[0][1])
+        assert applied == (export,)
+        assert _head_row(archive) == (export, "semantic", 2)
         stored = archive._conn.execute(
             "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert stored is not None
-        assert bytes(stored[0]).hex() == session_content_hash(capture_session)
+        assert bytes(stored[0]).hex() == session_content_hash(export_session)
 
 
 def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None:
@@ -934,16 +928,11 @@ def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None
         assert bytes(stored[0]).hex() == session_content_hash(export_session)
 
 
-def test_membership_replay_takes_head_when_capture_is_content_ahead(tmp_path: Path) -> None:
-    """A capture strictly ahead of the chain head's semantic frontier carries
-
-    newer content and takes the head over a stale export.
-    """
+def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
+    """A capture cohort with more semantic units still yields to a
+    chain-governed semantic head: unit counts are not a dominance proof."""
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        # Build a SEMANTIC chain-owned head: a capture head first, then a
-        # chain full at equal frontier takes it over (direction-A handoff),
-        # which keeps the head semantic-kind but chain-owned.
         capture1_session = _parsed_session(("m0", "zero"))
         capture1 = _write_quarantined_member(archive, "capture1", capture1_session)
         _apply_membership_head(archive, capture1, capture1_session)
@@ -972,9 +961,16 @@ def test_membership_replay_takes_head_when_capture_is_content_ahead(tmp_path: Pa
             acquired_at_ms=0,
         )
 
-        assert _head_row(archive) == (capture2, "semantic", 2)
+        assert _head_row(archive) == (export, "semantic", 1)
+        receipts = archive._conn.execute(
+            """SELECT decision, detail FROM raw_revision_applications
+               WHERE raw_id = ? AND logical_source_key = 'codex:session'""",
+            (capture2,),
+        ).fetchall()
+        assert [str(row[0]) for row in receipts] == ["superseded"]
+        assert f"superseded_by_chain_governed_head:{export}" in str(receipts[0][1])
         stored = archive._conn.execute(
             "SELECT content_hash FROM sessions WHERE session_id = 'codex-session:session'"
         ).fetchone()
         assert stored is not None
-        assert bytes(stored[0]).hex() == session_content_hash(capture2_session)
+        assert bytes(stored[0]).hex() == session_content_hash(export_session)
