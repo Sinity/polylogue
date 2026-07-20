@@ -205,6 +205,7 @@ async def rebuild_index_from_source(
         max_cached_payload_bytes=_REBUILD_CENSUS_SPILL_CACHE_BYTES,
         ingest_workers=resolved_ingest_workers,
         commit_batch_size=_REBUILD_COMMIT_BATCH_UNITS,
+        replay_commit_batch_size=1,
         bulk_fts=bulk_fts,
         bulk_build=bulk_build,
         prefetch_cache=prefetch_cache,

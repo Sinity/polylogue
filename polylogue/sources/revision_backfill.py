@@ -600,6 +600,7 @@ def backfill_historical_revision_evidence(
     max_cached_payload_bytes: int | None = None,
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
+    replay_commit_batch_size: int | None = None,
     bulk_fts: bool = False,
     bulk_build: bool = False,
     prefetch_cache: RawParsePrefetchCache | None = None,
@@ -669,8 +670,22 @@ def backfill_historical_revision_evidence(
     quarantined = 0
     stage_timings: dict[str, float] = {}
     logical_keys: set[str] = set()
-    replay_batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
-    replay_batched = replay_batch_size is not None
+    # The REPLAY phase's batch size is separately tunable
+    # (``replay_commit_batch_size``; ``None`` inherits ``commit_batch_size``):
+    # each replayed cohort may flush blob-publication receipts on a SEPARATE
+    # source.db connection (a deliberate GC-safety design, see
+    # storage/blob_publication.py), and that connection waits at BEGIN
+    # IMMEDIATE behind the batch's held write lock -- a long replay batch
+    # window therefore deadlocks into 'database is locked' once the 30s busy
+    # timeout expires. Callers that batch aggressively (the full rebuild)
+    # pass ``replay_commit_batch_size=1`` to keep replay at per-cohort
+    # commits while still batching the census phase, which has no separate-
+    # connection writers inside its window.
+    effective_replay_batch = replay_commit_batch_size if replay_commit_batch_size is not None else commit_batch_size
+    replay_batch_size = (
+        effective_replay_batch if effective_replay_batch is not None and effective_replay_batch > 0 else None
+    )
+    replay_batched = replay_batch_size is not None and replay_batch_size > 1
     archive_context = (
         ArchiveStore.open_owned_inactive_generation(
             archive_root,
