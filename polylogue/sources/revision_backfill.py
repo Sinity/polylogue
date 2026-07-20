@@ -784,6 +784,18 @@ def backfill_historical_revision_evidence(
             retained_bytes = 0
             candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
             candidate_raw_ids.update(membership_candidates.get(logical_key, ()))
+            # Cohort absorption: candidate selection is page-dependent, so a
+            # head written by an EARLIER page's membership cohort for this key
+            # may not be in this page's candidate set -- membership replay
+            # would then refuse to retire an "unrelated" quarantined head and
+            # kill the walk. Absorb the current quarantined head raw into the
+            # cohort so the real prefix classifier ranks it against the new
+            # members instead of any scalar comparison. Chain-governed
+            # (non-quarantined) heads are deliberately NOT absorbed --
+            # apply_raw_membership_classification yields to those.
+            head_raw_id = archive.raw_revision_head_raw_id(logical_key)
+            if head_raw_id is not None and archive._raw_revision_authority(head_raw_id) == "quarantined":
+                candidate_raw_ids.add(head_raw_id)
             for raw_id in sorted(candidate_raw_ids):
                 sessions, payload_bytes = spill.for_raw(archive, raw_id)
                 for session in sessions:
