@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.models import Session
 from polylogue.archive.session.session_profile import build_session_analysis, build_session_profile
 from polylogue.core.enums import MaterialOrigin, Provider
@@ -92,9 +94,34 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
 
     assert payload.intent_summary == user_turn_texts(analysis)[0]
     assert payload.outcome_summary == assistant_turn_texts(analysis)[-1]
-    assert payload.blockers == ()
+    # polylogue-37t.23: this session's terminal_state is "unknown" (a clean
+    # structural ending -- no pending tool, no unresolved tool error). Under
+    # the old `_UNRESOLVED_BLOCKER_TERMINAL_STATES` allowlist (which never
+    # included "unknown"), the user's reported blocker text below was
+    # silently suppressed here -- exactly the false-negative case the bead
+    # targets. Blocker-text extraction now gates on the shared
+    # objective_posture mapping instead, which is authoritative for
+    # "unknown" too (structural_inference/"ambiguous", never "none"), so
+    # the blocker text is surfaced.
+    assert payload.blockers == blocker_texts(analysis)
+    assert payload.objective_posture.authority == "structural_inference"
+    assert payload.objective_posture.posture == "ambiguous"
+    assert payload.objective_posture.confidence == pytest.approx(0.2)
+
     unresolved_payload = session_enrichment_payload(replace(profile, terminal_state="error_left"), analysis)
     assert unresolved_payload.blockers == blocker_texts(analysis)
+    assert unresolved_payload.objective_posture.posture == "blocked"
+    assert unresolved_payload.objective_posture.authority == "structural_inference"
+
+    # A terminal_state the structural tier does not recognize at all (never
+    # produced by `_terminal_state` in practice) is the one case where
+    # authority stays "none" and blocker-text extraction is still excluded
+    # -- proves the gate is not simply "always on".
+    no_signal_payload = session_enrichment_payload(replace(profile, terminal_state="not-a-real-state"), analysis)
+    assert no_signal_payload.objective_posture.authority == "none"
+    assert no_signal_payload.objective_posture.posture == "unknown"
+    assert no_signal_payload.blockers == ()
+
     assert payload.input_band_summary == {
         "user_turns": 1,
         "assistant_turns": 1,
