@@ -268,12 +268,24 @@ session yet:
 
 ATIF and ATOF get **distinct** artifact-qualified prefixes (`fs1.14`) — see
 [What Polylogue cannot claim](#what-polylogue-cannot-claim-from-your-hermes-runtime)
-item 1 for the collision this fixed. Read-side helpers cross-reference all
-four without merging them: `hermes_spans.hermes_atif_session_id_for()`,
-`hermes_spans.hermes_atof_session_id_for()`, and
-`hermes_verification.hermes_verification_session_id_for()` each take a
-`state.db`-ingested conversational session id and return the matching
-observer/verification session id, stripping any `@profile-<key>` qualifier.
+item 1 for the collision this fixed. When the acquiring directory (the
+`profile_root` Polylogue derives from the artifact's own source path) is
+known, both ATIF's and ATOF's identity additionally carries the same
+`@profile-<key>` qualifier the `state.db` conversational session uses — two
+separate Hermes installs (profiles) that happen to reuse the same raw
+session id get fully independent archive rows, not just independent
+artifact families (also `fs1.14`; see item 1 below). Read-side helpers
+cross-reference all four without merging them:
+`hermes_spans.hermes_atif_session_id_for()` and
+`hermes_spans.hermes_atof_session_id_for()` each take a `state.db`-ingested
+conversational session id and return the matching observer session id,
+*preserving* whatever `@profile-<key>` qualifier it carries — a reader
+holding the qualified conversational id resolves observer evidence for the
+same install, not merely the same raw session id.
+`hermes_verification.hermes_verification_session_id_for()` is not yet part
+of this fix's scope and still *strips* the `@profile-<key>` qualifier (the
+verification ledger carries no profile-root context of its own); see item 1
+below for why this is a deliberate scoping decision, not an inconsistency.
 `polylogue/insights/hermes_topology_projection.py` composes all four artifact
 classes for one raw Hermes session id into one typed, read-only projection
 (availability, per-artifact fidelity, unpaired-trace debt, and explicit
@@ -288,21 +300,31 @@ read-time lookup, not a stored graph edge.
 This is the section to read before you trust anything above it.
 
 1. **[Fixed, `fs1.14`] ATIF and ATOF used to collide when they shared a
-   session id.** Before `fs1.14`, both mapped to the identical
-   `hermes-session:observer:<hermes_session_id>` archive session, and
-   importing both for the same underlying Hermes session was **not
-   additive**: the second full parse's differing content hash replaced
-   rather than unioned the first's parsed rows, silently discarding whichever
-   artifact was ingested first (verified empirically at the time — importing
-   the checked-in ATIF fixture then the checked-in ATOF fixture into one
-   scratch archive left exactly one `sessions` row carrying only ATIF's
-   evidence). ATIF and ATOF now get artifact-qualified, non-colliding session
-   ids (`observer:atif:<id>` / `observer:atof:<id>`, see table above), so
-   importing both for the same Hermes session retains two independent
-   archive rows — neither replaces the other. This still does **not** mean
-   they are unioned into one queryable session: read both ids (or use
+   session id, on two independent axes.** Before `fs1.14`, both artifact
+   families mapped to the identical `hermes-session:observer:<hermes_session_id>`
+   archive session with no profile qualifier at all, and importing both for
+   the same underlying Hermes session was **not additive**: the second full
+   parse's differing content hash replaced rather than unioned the first's
+   parsed rows, silently discarding whichever artifact was ingested first
+   (verified empirically at the time — importing the checked-in ATIF fixture
+   then the checked-in ATOF fixture into one scratch archive left exactly one
+   `sessions` row carrying only ATIF's evidence). The same unqualified
+   `observer:<id>` identity separately let two different Hermes installs
+   (profiles) reusing the same raw session id collapse onto that one archive
+   row too. Both axes are fixed together: ATIF and ATOF now get
+   artifact-qualified session ids (`observer:atif:<id>` / `observer:atof:<id>`,
+   see table above), and when the acquiring directory is known each of those
+   ids is *additionally* profile-qualified (`observer:atif:<id>@profile-<key>`
+   / `observer:atof:<id>@profile-<key>`) using the exact qualifier the
+   `state.db` conversational session computes for the same install. Importing
+   both artifacts for the same Hermes session, from the same or different
+   installs, now retains fully independent archive rows — nothing replaces
+   anything else. This still does **not** mean they are unioned into one
+   queryable session: read the relevant ids (or use
    `hermes_topology_projection.project_hermes_topology`) to see the combined
-   evidence.
+   evidence. The verification ledger (`hermes_verification.py`) has the
+   identical unqualified-id / profile-stripping pattern but was explicitly
+   left out of this fix's scope — see the "Session identity" section above.
 2. **No physical merge across `state.db` transcript ↔ observer evidence ↔
    verification ledger.** Three logically-related session ids can exist for
    one real Hermes session (conversational, observer, verification). Reading

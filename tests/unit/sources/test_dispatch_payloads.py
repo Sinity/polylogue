@@ -148,10 +148,7 @@ def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stre
     from polylogue.sources.parsers.hermes_identity import profile_key
 
     expected_key = profile_key(HERMES_ATOF_FIXTURE.parent)
-    assert (
-        session.provider_session_id
-        == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"
-    )
+    assert session.provider_session_id == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"
     assert "hermes:atof-observer" in session.ingest_flags
 
 
