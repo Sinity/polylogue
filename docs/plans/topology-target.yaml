@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6518
+    loc: 6560
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -892,7 +892,7 @@ files:
     target: polylogue/cli/commands/init.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
-    loc: 523
+    loc: 585
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/judge.py
@@ -1793,7 +1793,7 @@ files:
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 1320
+    loc: 1337
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/tour.py
@@ -1884,6 +1884,10 @@ files:
   - path: polylogue/insights/feedback.py
     loc: 216
     target: polylogue/insights/feedback.py
+    owner: stable
+  - path: polylogue/insights/hermes_integration_health.py
+    loc: 528
+    target: polylogue/insights/hermes_integration_health.py
     owner: stable
   - path: polylogue/insights/hermes_verification_coverage.py
     loc: 147
@@ -2367,7 +2371,7 @@ files:
     target: polylogue/pipeline/services/acquisition_streams.py
     owner: stable
   - path: polylogue/pipeline/services/archive_ingest.py
-    loc: 458
+    loc: 465
     target: polylogue/pipeline/services/archive_ingest.py
     owner: stable
   - path: polylogue/pipeline/services/indexing.py
@@ -3228,7 +3232,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 1269
+    loc: 1390
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
@@ -4077,7 +4081,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 5021
+    loc: 5189
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
