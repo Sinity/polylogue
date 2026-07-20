@@ -32,6 +32,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
+from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import parallel_threads_effective
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
@@ -1312,7 +1313,14 @@ class _ParsedSessionSpill:
     #: consumes a cohort almost immediately after census parses it, so a
     #: small hot layer turns the common for_raw() into a dict hit instead of
     #: a pickle.loads round-trip. Bounded independently of the sqlite layer.
-    _DECODED_CACHE_PAYLOAD_BYTES: Final[int] = 256 * 1024 * 1024
+    #: Decoded-session RAM layer budget, accounted in ESTIMATED TREE BYTES
+    #: (polylogue-xb4i estimator) rather than raw payload bytes -- parsed
+    #: trees inflate payload 2-14x, so a payload-denominated budget either
+    #: wastes RAM headroom on text-dense sessions or overshoots on
+    #: structure-dense ones. Adaptive: physical RAM / 16, clamped to
+    #: [256 MiB, 2 GiB]; falls back to the floor when RAM is unknown.
+    _DECODED_CACHE_MIN_TREE_BYTES: Final[int] = 256 * 1024 * 1024
+    _DECODED_CACHE_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
 
     def __init__(self, archive_root: Path, *, max_cached_payload_bytes: int | None) -> None:
         # Place the spill beside the RESOLVED index tier, not the archive
@@ -1347,8 +1355,14 @@ class _ParsedSessionSpill:
         self.conn.execute("CREATE INDEX parsed_sessions_logical ON parsed_sessions(logical_key, raw_id)")
         self.max_cached_payload_bytes = max_cached_payload_bytes
         self.cached_payload_bytes = 0
-        self._decoded: dict[str, tuple[list[ParsedSession], int]] = {}
-        self._decoded_payload_bytes = 0
+        self._decoded: dict[str, tuple[list[ParsedSession], int, int]] = {}
+        self._decoded_tree_bytes = 0
+        physical = effective_physical_memory_bytes() or 0
+        self._decoded_budget = (
+            max(self._DECODED_CACHE_MIN_TREE_BYTES, min(self._DECODED_CACHE_MAX_TREE_BYTES, physical // 16))
+            if physical
+            else self._DECODED_CACHE_MIN_TREE_BYTES
+        )
 
     def __enter__(self) -> _ParsedSessionSpill:
         return self
@@ -1385,19 +1399,20 @@ class _ParsedSessionSpill:
         self._retain_decoded(raw_id, sessions, payload_bytes=payload_bytes)
 
     def _retain_decoded(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
-        if payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
+        tree_bytes = estimate_parsed_tree_bytes(sessions)
+        if tree_bytes > self._decoded_budget:
             return
-        while self._decoded and self._decoded_payload_bytes + payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
+        while self._decoded and self._decoded_tree_bytes + tree_bytes > self._decoded_budget:
             oldest_raw = next(iter(self._decoded))
-            _evicted_sessions, evicted_bytes = self._decoded.pop(oldest_raw)
-            self._decoded_payload_bytes -= evicted_bytes
-        self._decoded[raw_id] = (sessions, payload_bytes)
-        self._decoded_payload_bytes += payload_bytes
+            _sessions, _payload, evicted_tree = self._decoded.pop(oldest_raw)
+            self._decoded_tree_bytes -= evicted_tree
+        self._decoded[raw_id] = (sessions, payload_bytes, tree_bytes)
+        self._decoded_tree_bytes += tree_bytes
 
     def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
         decoded = self._decoded.get(raw_id)
         if decoded is not None:
-            return decoded
+            return decoded[0], decoded[1]
         rows = self.conn.execute(
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
         ).fetchall()
