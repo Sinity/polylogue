@@ -856,6 +856,28 @@
                 "rationale": "assertion lifecycle claim"
               },
               {
+                "name": "ontology_candidates",
+                "storage": "assertions",
+                "assertion_kind": "ontology_candidate",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "ontology_governance_receipts",
+                "storage": "assertions",
+                "assertion_kind": "ontology_governance",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
                 "name": "transform_candidates",
                 "storage": "assertions",
                 "assertion_kind": "transform_candidate",
@@ -1011,8 +1033,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 37,
-        "user_version": 37,
+        "expected_user_version": 42,
+        "user_version": 42,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -1041,14 +1063,16 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 2,
-        "user_version": 2,
+        "expected_user_version": 4,
+        "user_version": 4,
         "version_status": "ok",
         "table_counts": {
+          "message_embedding_refs": 0,
           "message_embeddings_meta": 0,
           "embedding_status": 0
         },
         "table_count_precision": {
+          "message_embedding_refs": "exact",
           "message_embeddings_meta": "exact",
           "embedding_status": "exact"
         }
@@ -1057,8 +1081,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 9,
-        "user_version": 9,
+        "expected_user_version": 10,
+        "user_version": 10,
         "version_status": "ok",
         "table_counts": {
           "assertions": 0,
@@ -1127,7 +1151,7 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 38,
+          "sqlite_stat1_rows": 37,
           "planner_stats_present": true
         },
         "embeddings": {
