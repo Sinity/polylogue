@@ -296,6 +296,66 @@ def test_atof_subagent_mark_fails_closed_on_self_reference(tmp_path: Path) -> No
     assert subagent_events[0].payload["delegation_edge_asserted"] is False
 
 
+def test_atof_subagent_mark_fails_closed_when_two_parents_claim_the_same_child(tmp_path: Path) -> None:
+    """A child session id claimed by two DIFFERENT parents in one batch is
+    contested, ambiguous evidence -- neither claim is trusted, so no edge is
+    materialized for that child at all, on either side.
+
+    Mutation: remove the len(parents) == 1 guard in parse_atof_stream (i.e.
+    let a contested child fall through to delegation_targets like an
+    unambiguous one) and this test's session count, delegation_edge_asserted,
+    and topology_edges assertions fail -- the contested child would
+    spuriously get a delegation-evidence stub session and an edge to
+    whichever parent happened to win the dict overwrite.
+    """
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "category": "agent",
+            "uuid": "subagent-start-from-parent-a",
+            "timestamp": "2026-07-18T09:00:08Z",
+            "name": "hermes.subagent.start",
+            "metadata": {"session_id": "parent-a"},
+            "data": {"child_session_id": "contested-child", "child_role": "research"},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "category": "agent",
+            "uuid": "subagent-start-from-parent-b",
+            "timestamp": "2026-07-18T09:00:09Z",
+            "name": "hermes.subagent.start",
+            "metadata": {"session_id": "parent-b"},
+            "data": {"child_session_id": "contested-child", "child_role": "docs"},
+        },
+    ]
+    sessions = hermes_spans.parse_atof_stream(records, "fallback-id", profile_root=tmp_path)
+
+    # Only the two observing parents -- no delegation-evidence stub session
+    # for "contested-child" was materialized, and neither parent's
+    # self-correlation edge was overridden.
+    assert len(sessions) == 2
+    assert {s.provider_session_id.split(":")[-1].split("@")[0] for s in sessions} == {"parent-a", "parent-b"}
+    assert not any(s.branch_type is not None and s.branch_type.value == "subagent" for s in sessions)
+
+    for session in sessions:
+        subagent_events = [e for e in session.session_events if e.event_type == "hermes_subagent_span"]
+        assert len(subagent_events) == 1
+        assert subagent_events[0].payload["child_session_id"] == "contested-child"
+        # Explicit debt: the contested claim is visible, never silently
+        # indistinguishable from "no evidence at all" or from an
+        # unambiguous, successfully-materialized edge.
+        assert subagent_events[0].payload["delegation_edge_asserted"] is False
+
+        fidelity = hermes_spans.import_fidelity_declaration(session)
+        assert fidelity.capabilities["topology_edges"].status == "absent"
+        assert fidelity.capabilities["topology_edges"].observed == 0
+        # The mark shape/field mapping itself is still real, proven evidence
+        # -- only the graph edge is withheld, not the underlying observation.
+        assert fidelity.capabilities["subagent_delegation"].status == "exact"
+
+
 def test_atif_subagent_trajectory_materializes_delegation_edge_with_known_profile(tmp_path: Path) -> None:
     """ATIF mirror of the ATOF real-fixture proof: no real ATIF fixture
     carries subagent_trajectories evidence yet (see module docstring), so
