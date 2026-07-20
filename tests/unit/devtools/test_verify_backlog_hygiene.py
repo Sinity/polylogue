@@ -16,6 +16,24 @@ def _write_jsonl(path: Path, issues: list[dict[str, object]]) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
+def _write_receipt(receipts_dir: Path, payload: dict[str, object], *, name: str) -> Path:
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = receipts_dir / name
+    receipt_path.write_text(json.dumps(payload))
+    return receipt_path
+
+
+def _clean_receipt(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "created_at": "2026-07-20T00:00:00Z",
+        "source": "test",
+        "is_clean": True,
+        "outcomes": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _issue(
     id: str,
     *,
@@ -58,7 +76,9 @@ def test_clean_backlog_has_no_findings(tmp_path: Path) -> None:
             ),
         ],
     )
-    findings = verify_backlog_hygiene.collect_findings(path=path, allow_path=tmp_path / "no-allowlist.txt")
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
     assert findings == []
 
 
@@ -180,9 +200,32 @@ def test_seeded_violation_per_check_class(tmp_path: Path) -> None:
         ],
     )
 
-    findings = verify_backlog_hygiene.collect_findings(path=path, allow_path=tmp_path / "no-allowlist.txt")
+    # S1: seed an unclean sync receipt (a conflicted row) alongside the
+    # per-issue violations, so every check fires from one collect_findings call.
+    receipts_dir = tmp_path / "receipts"
+    _write_receipt(
+        receipts_dir,
+        _clean_receipt(
+            is_clean=False,
+            outcomes=[
+                {
+                    "id": "polylogue-s1",
+                    "outcome": "conflicted",
+                    "current_revision": None,
+                    "candidate_revision": "2026-07-20T00:00:00Z",
+                }
+            ],
+        ),
+        name="20260720T000000Z-test.json",
+    )
+
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+        receipts_path=receipts_dir,
+    )
     fired = {f.check for f in findings}
-    expected = {"D1", "D2", "H1", "H2", "H3", "H4", "P1", "A1", "B1", "E1", "E2", "T1", "X1", "X2", "R1"}
+    expected = {"D1", "D2", "H1", "H2", "H3", "H4", "P1", "A1", "B1", "E1", "E2", "T1", "X1", "X2", "R1", "S1"}
     assert expected <= fired, f"missing checks: {expected - fired}"
 
 
@@ -192,7 +235,9 @@ def test_allowlist_suppresses_matching_finding(tmp_path: Path) -> None:
     allow_path = tmp_path / "allow.txt"
     allow_path.write_text("A1\tpolylogue-noarea\taccepted exception\n")
 
-    findings = verify_backlog_hygiene.collect_findings(path=path, allow_path=allow_path)
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=allow_path, receipts_path=tmp_path / "no-receipts"
+    )
     assert findings == []
 
 
@@ -213,6 +258,7 @@ def test_check_filter_limits_findings_to_requested_classes(tmp_path: Path) -> No
         path=path,
         allow_path=tmp_path / "no-allowlist.txt",
         checks={"D1", "D2"},
+        receipts_path=tmp_path / "no-receipts",
     )
     assert [(finding.check, finding.bead_id) for finding in findings] == [("D1", "polylogue-filtered")]
 
@@ -234,6 +280,7 @@ def test_external_request_id_is_not_parsed_as_truncated_bead_ref(tmp_path: Path)
     findings = verify_backlog_hygiene.collect_findings(
         path=path,
         allow_path=tmp_path / "no-allowlist.txt",
+        receipts_path=tmp_path / "no-receipts",
     )
     assert not [finding for finding in findings if finding.check == "X2"]
 
@@ -272,3 +319,177 @@ def test_main_skips_missing_workspace(
     monkeypatch.setattr(verify_backlog_hygiene, "_get_root", lambda: tmp_path)
     assert verify_backlog_hygiene.main([]) == 0
     assert "does not exist" in capsys.readouterr().out
+
+
+# --- S1: bd JSONL sync receipt consumption (polylogue-8jg9.1 / polylogue-gxjh.1) ---
+
+
+def _clean_backlog(tmp_path: Path) -> Path:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [_issue("polylogue-clean1", acceptance_criteria="Verify: x.", labels=["area:ops"])],
+    )
+    return path
+
+
+def test_sync_receipt_absent_is_not_a_finding(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+        receipts_path=tmp_path / "receipts-that-do-not-exist",
+    )
+    assert findings == []
+
+
+def test_sync_receipt_clean_is_not_a_finding(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    receipts_dir = tmp_path / "receipts"
+    _write_receipt(
+        receipts_dir,
+        _clean_receipt(
+            outcomes=[
+                {
+                    "id": "polylogue-a",
+                    "outcome": "new",
+                    "current_revision": None,
+                    "candidate_revision": "2026-07-20T00:00:00Z",
+                },
+                {
+                    "id": "polylogue-b",
+                    "outcome": "updated",
+                    "current_revision": "2026-07-19T00:00:00Z",
+                    "candidate_revision": "2026-07-20T00:00:00Z",
+                },
+            ]
+        ),
+        name="20260720T000000Z-test.json",
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=receipts_dir
+    )
+    assert findings == []
+
+
+def test_sync_receipt_corrupt_json_is_a_finding(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    receipts_dir = tmp_path / "receipts"
+    receipts_dir.mkdir()
+    (receipts_dir / "20260720T000000Z-test.json").write_text("{not valid json")
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=receipts_dir
+    )
+    assert [f.check for f in findings] == ["S1"]
+    assert "corrupt sync receipt" in findings[0].message
+
+
+def test_sync_receipt_missing_fields_is_a_finding(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    receipts_dir = tmp_path / "receipts"
+    _write_receipt(receipts_dir, {"created_at": "2026-07-20T00:00:00Z"}, name="20260720T000000Z-test.json")
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=receipts_dir
+    )
+    assert [f.check for f in findings] == ["S1"]
+    assert "incomplete sync receipt" in findings[0].message
+
+
+def test_sync_receipt_conflicted_row_is_a_finding(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    receipts_dir = tmp_path / "receipts"
+    _write_receipt(
+        receipts_dir,
+        _clean_receipt(
+            is_clean=False,
+            outcomes=[
+                {
+                    "id": "polylogue-conflicted-one",
+                    "outcome": "conflicted",
+                    "current_revision": None,
+                    "candidate_revision": "2026-07-20T00:00:00Z",
+                }
+            ],
+        ),
+        name="20260720T000000Z-test.json",
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=receipts_dir
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("S1", "polylogue-conflicted-one")]
+    assert "conflicted" in findings[0].message
+
+
+def test_sync_receipt_skipped_downgrade_is_a_finding(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    receipts_dir = tmp_path / "receipts"
+    _write_receipt(
+        receipts_dir,
+        _clean_receipt(
+            is_clean=False,
+            outcomes=[
+                {
+                    "id": "polylogue-downgraded-one",
+                    "outcome": "skipped_downgrade",
+                    "current_revision": "2026-07-20T00:00:00Z",
+                    "candidate_revision": "2026-07-01T00:00:00Z",
+                }
+            ],
+        ),
+        name="20260720T000000Z-test.json",
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=receipts_dir
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("S1", "polylogue-downgraded-one")]
+    assert "downgrade" in findings[0].message
+
+
+def test_sync_receipt_uses_latest_by_filename(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    receipts_dir = tmp_path / "receipts"
+    # Older receipt is unclean; newest receipt (lexicographically last) is clean.
+    _write_receipt(
+        receipts_dir,
+        _clean_receipt(
+            is_clean=False,
+            outcomes=[
+                {
+                    "id": "polylogue-stale-conflict",
+                    "outcome": "conflicted",
+                    "current_revision": None,
+                    "candidate_revision": "2026-07-19T00:00:00Z",
+                }
+            ],
+        ),
+        name="20260719T000000Z-test.json",
+    )
+    _write_receipt(receipts_dir, _clean_receipt(), name="20260720T000000Z-test.json")
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=receipts_dir
+    )
+    assert findings == []
+
+
+def test_sync_receipt_allowlist_suppresses_finding(tmp_path: Path) -> None:
+    path = _clean_backlog(tmp_path)
+    receipts_dir = tmp_path / "receipts"
+    _write_receipt(
+        receipts_dir,
+        _clean_receipt(
+            is_clean=False,
+            outcomes=[
+                {
+                    "id": "polylogue-allowed-conflict",
+                    "outcome": "conflicted",
+                    "current_revision": None,
+                    "candidate_revision": "2026-07-20T00:00:00Z",
+                }
+            ],
+        ),
+        name="20260720T000000Z-test.json",
+    )
+    allow_path = tmp_path / "allow.txt"
+    allow_path.write_text("S1\tpolylogue-allowed-conflict\taccepted exception\n")
+    findings = verify_backlog_hygiene.collect_findings(path=path, allow_path=allow_path, receipts_path=receipts_dir)
+    assert findings == []

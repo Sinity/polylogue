@@ -1117,13 +1117,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
         "devtools.verify_backlog_hygiene",
         use_when=(
-            "Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 15 checks "
+            "Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 16 checks "
             "over the Beads export catching dangling dependency refs, blocks-cycles, missing "
             "horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance "
             "criteria, unlabeled non-epic beads, epics with no members or description, stale "
-            "'adopted' decisions left open, duplicate titles, and bead ids named but never "
-            "created -- catches backlog structure drift before it needs an archaeology sweep "
-            "to recover, instead of only a manually-invoked script."
+            "'adopted' decisions left open, duplicate titles, bead ids named but never "
+            "created, and an unclean/corrupt bd JSONL sync receipt (S1, consuming "
+            "polylogue-gxjh.1's monotonic sync contract) -- catches backlog structure drift "
+            "before it needs an archaeology sweep to recover, instead of only a "
+            "manually-invoked script."
         ),
         examples=(
             "devtools lab policy backlog-hygiene",
