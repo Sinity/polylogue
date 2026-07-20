@@ -668,7 +668,37 @@ def _maybe_recommend_bulk_rebuild(counts: RawMaterializationCounts) -> None:
     )
 
 
-async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> None:
+async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
+    """Whether the daemon's own well-known bulk-rebuild transaction is running.
+
+    Read-only fast path (at most one JSON file read). Used by
+    ``_periodic_raw_materialization_convergence`` to stand its trickle
+    census/drain pass down for the current tick instead of duplicating work
+    the bulk-rebuild engine already subsumes: both walk the SAME
+    ``raw_sessions`` -> index materialization pipeline over the same backlog
+    (see docs/design/convergence-simplification-inventory.md item 5 -- the
+    bulk engine's own paged cursor query is unfiltered by any fixed
+    snapshot, so it naturally absorbs raws that arrive while it runs; there
+    is no work left for the trickle pass to do on the SAME raws in the
+    meantime).
+
+    Mirrors ``_maybe_route_daemon_bulk_rebuild``'s own flag gate exactly:
+    the flag off means never even check. Checking survives a daemon restart
+    via a durable transaction record, so a stale "in flight" read while
+    routing is disabled would wrongly suppress the trickle conveyor -- the
+    ONLY mechanism left materializing raws -- with nothing to replace it.
+    """
+    from polylogue.config import load_polylogue_config
+
+    if not load_polylogue_config().daemon_bulk_rebuild_routing:
+        return False
+    from polylogue.daemon.bulk_rebuild import has_resumable_daemon_bulk_rebuild_transaction
+    from polylogue.paths import archive_root
+
+    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, archive_root())
+
+
+async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> bool:
     """polylogue-gd6v: route a bulk-scale backlog into a daemon-owned blue-green rebuild.
 
     Off by default (``daemon_bulk_rebuild_routing`` config flag). Once a
@@ -679,11 +709,21 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     would waste every page already replayed into it. This runs after the
     trickle pass has already released the writer coordinator, so scheduling
     another writer-coordinated pass here is safe.
+
+    Returns whether a pass was genuinely attempted this call (``True``) or
+    the call was a structural no-op / hit a swallowed failure (``False``).
+    ``_periodic_raw_materialization_convergence``'s trickle-suppression
+    branch (residual of polylogue-gd6v) uses this in place of the trickle
+    pass's own ``made_progress`` signal to decide whether to keep bursting
+    bulk-rebuild passes back-to-back or fall back to the slower outer
+    interval -- a genuine pass failure must not turn into a tight 1s retry
+    storm, matching how a trickle pass failure already falls back to the
+    outer interval via the caller's exception handling.
     """
     from polylogue.config import load_polylogue_config
 
     if not load_polylogue_config().daemon_bulk_rebuild_routing:
-        return
+        return False
     from polylogue.config import Config
     from polylogue.daemon.bulk_rebuild import (
         DAEMON_BULK_REBUILD_OPERATION_ID,
@@ -696,7 +736,7 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     if not _bulk_scale_raw_materialization_backlog(counts) and not await asyncio.to_thread(
         has_resumable_daemon_bulk_rebuild_transaction, root
     ):
-        return
+        return False
     config = Config(archive_root=root, render_root=render_root(), sources=[])
     try:
         receipt = await run_daemon_bulk_rebuild_pass(
@@ -706,9 +746,9 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
         )
     except Exception:
         logger.warning("bulk-rebuild: routed pass failed", exc_info=True)
-        return
+        return False
     if receipt is None:
-        return
+        return True
     transaction_status = str(receipt.transaction["status"]) if receipt.transaction else receipt.status
     processed = receipt.transaction.get("processed_raw_count") if receipt.transaction else None
     logger.info(
@@ -724,6 +764,7 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
             "the trickle conveyor's remaining backlog reflects the new active index from the next tick",
             DAEMON_BULK_REBUILD_OPERATION_ID,
         )
+    return True
 
 
 async def _periodic_raw_materialization_convergence() -> None:
@@ -745,6 +786,43 @@ async def _periodic_raw_materialization_convergence() -> None:
         recover = True
         try:
             while True:
+                # polylogue-gd6v residual: while the daemon's own bulk-rebuild
+                # transaction is in flight, it already subsumes exactly the
+                # raw->index materialization work this pass would do over
+                # the SAME backlog (see
+                # ``_daemon_bulk_rebuild_transaction_in_flight`` and
+                # docs/design/convergence-simplification-inventory.md item 5).
+                # Standing the trickle census/drain pass down here avoids
+                # both mechanisms converging on the same raws every tick --
+                # double parse/replay work plus needless writer-hold
+                # contention between the two. Everything else the trickle
+                # conveyor is NOT responsible for (live-ingest acquisition,
+                # hook-spool drain, embedding catch-up, already-committed
+                # session insights) lives in separate periodic loops and
+                # keeps running unaffected. Driving the bulk pass here
+                # (instead of only from the trickle branch below) also lets
+                # bulk-rebuild progress burst at the same 1s cadence the
+                # trickle conveyor uses, rather than waiting a full quiet
+                # interval between passes.
+                if await _daemon_bulk_rebuild_transaction_in_flight():
+                    logger.debug(
+                        "raw materialization: standing down trickle census/drain -- "
+                        "a daemon bulk-rebuild transaction already subsumes this backlog"
+                    )
+                    from polylogue.product.raw_authority import RawMaterializationCounts
+
+                    bulk_progressed = await _maybe_route_daemon_bulk_rebuild(RawMaterializationCounts())
+                    if not bulk_progressed:
+                        # A swallowed pass failure -- fall back to the slower
+                        # outer interval instead of retrying every burst
+                        # second (mirrors how a trickle pass failure already
+                        # escapes to the outer interval via the exception
+                        # handlers below).
+                        break
+                    if _browser_capture_spool_has_pending_files():
+                        break
+                    await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
+                    continue
                 # While replay planning is paused behind the persisted parser
                 # census, a pass does census-only work: no replay transaction
                 # runs, so the small replay-sized batch limit (which bounds
