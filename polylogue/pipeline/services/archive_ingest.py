@@ -101,7 +101,12 @@ def _parse_source_path_worker(
         publisher.discard_pending()
 
 
-async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> ParseResult:
+async def parse_sources_archive(
+    archive_root: Path,
+    sources: list[Source],
+    *,
+    workers: int | None = None,
+) -> ParseResult:
     """Parse configured sources directly into archive source/index tiers.
 
     Source files are parsed across a process pool (``POLYLOGUE_INGEST_PARSE_WORKERS``)
@@ -109,12 +114,24 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
     not matter: archive writes are idempotent by content hash and session links
     resolve out-of-order. Blob writes from workers are
     content-addressed and atomic, so concurrent worker writes are process-safe.
+
+    ``workers`` overrides the resolved parse worker count for this call only
+    (``None`` keeps the normal env/CPU-derived default). A parallel worker's
+    ``future.result()`` exception -- including a transient process-pool
+    lifecycle failure such as a spawn/fork failure under host resource
+    pressure -- causes that one file's session(s) to be silently skipped
+    (see the ``as_completed`` loop below); this is an intentional isolation
+    guarantee for large, uncontrolled real corpora, but it makes worker
+    count > 1 unsuitable for small, fully-controlled fixture corpora (the
+    demo seeder) where every file's content is required for deterministic
+    construct coverage and a skip is not recoverable within the same call
+    (polylogue-b054.1.1.1).
     """
     result = ParseResult()
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     threshold = _commit_batch_message_threshold()
     batched = threshold > 0
-    workers = _parse_worker_count()
+    workers = _parse_worker_count() if workers is None else workers
     blob_root = archive_root / "blob"
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 

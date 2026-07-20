@@ -1293,7 +1293,21 @@ async def seed_demo_archive(
 
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
-        result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
+        # Force sequential (single-worker) parsing: the demo corpus is a
+        # handful of small, fully-controlled fixture files, so the
+        # process-pool parallel path buys no measurable throughput but
+        # exposes the fixed, small construct set to
+        # ``parse_sources_archive``'s deliberate worker-error-isolation
+        # behavior (one file's parse failure -- including a transient
+        # process-pool lifecycle failure under host resource pressure, e.g.
+        # under an 8-way xdist run -- is silently skipped rather than
+        # failing the whole ingest). A skipped demo fixture file
+        # nondeterministically undercounts a declared construct (e.g. the
+        # 3-variant browser-capture coalescing set) with no visible signal
+        # until an unrelated downstream assertion fails (polylogue-b054.1.1.1).
+        # The demo seeder needs every file every time, so it opts out of
+        # that isolation guarantee entirely instead of tolerating it.
+        result = await parse_sources_archive(archive_root, demo_source_specs(source_root), workers=1)
 
     apply_demo_post_ingest_augmentation(archive_root)
 
