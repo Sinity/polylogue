@@ -15,15 +15,18 @@ Production dependencies exercised here:
 from __future__ import annotations
 
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.config import Config
-from polylogue.core.enums import Provider
-from polylogue.daemon.parse_prefetch import DaemonParseStage
+from polylogue.core.enums import BlockType, Provider
+from polylogue.daemon.parse_prefetch import DaemonParseStage, estimate_parsed_tree_bytes
+from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -255,3 +258,239 @@ def test_max_inflight_bytes_default_is_adaptive_and_clamped(monkeypatch: pytest.
     # Explicit env override always wins.
     monkeypatch.setenv("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES", "123456789")
     assert pp.daemon_parse_stage_max_inflight_bytes() == 123456789
+
+
+# --- polylogue-xb4i: parsed-tree-byte accounting (estimator + eviction) ----
+
+
+def _session_with_text(native_id: str, text_len: int) -> ParsedSession:
+    """One session, one message, one block, all carrying ``text_len`` chars.
+
+    Deliberately constructed directly (not run through a provider parser) so
+    tree size is exactly controlled for size-comparison assertions below.
+    """
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=native_id,
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"{native_id}-m0",
+                role=Role.USER,
+                text="x" * text_len,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="x" * text_len)],
+            )
+        ],
+    )
+
+
+def _deep_size_bytes(obj: object, seen: set[int] | None = None) -> int:
+    """Manual recursive object-graph size walk -- a from-scratch equivalent
+    of ``pympler.asizeof.asizeof`` (not a repo dependency) used ONLY here,
+    to calibrate/verify ``estimate_parsed_tree_bytes``'s cheap structural
+    formula against ground truth. Never used on the production hot path --
+    that is exactly the cost ``estimate_parsed_tree_bytes`` exists to avoid."""
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+    size = sys.getsizeof(obj)
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            size += _deep_size_bytes(key, seen)
+            size += _deep_size_bytes(value, seen)
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        for item in obj:
+            size += _deep_size_bytes(item, seen)
+    elif hasattr(obj, "__dict__"):
+        size += _deep_size_bytes(obj.__dict__, seen)
+    return size
+
+
+def test_estimate_parsed_tree_bytes_is_monotone_in_content_size() -> None:
+    """Production dependency: ``estimate_parsed_tree_bytes`` itself. A
+    mutation that stopped reading ``message.text``/``block.text`` lengths
+    (e.g. hardcoding a fixed per-session constant) would make these three
+    estimates equal instead of strictly increasing, and this would fail."""
+    small = estimate_parsed_tree_bytes([_session_with_text("s", 10)])
+    medium = estimate_parsed_tree_bytes([_session_with_text("s", 1_000)])
+    large = estimate_parsed_tree_bytes([_session_with_text("s", 100_000)])
+
+    assert small < medium < large
+
+    # Also monotone in session COUNT at fixed per-session size.
+    one_session = estimate_parsed_tree_bytes([_session_with_text("s", 500)])
+    two_sessions = estimate_parsed_tree_bytes([_session_with_text("a", 500), _session_with_text("b", 500)])
+    assert two_sessions > one_session
+
+
+def test_estimate_parsed_tree_bytes_within_3x_of_deep_measurement() -> None:
+    """Production dependency: the calibrated constants
+    ``_ESTIMATOR_BYTES_PER_CHAR``/``_ESTIMATOR_OBJECT_OVERHEAD_BYTES`` inside
+    ``estimate_parsed_tree_bytes``. If either constant were set to a wildly
+    wrong value (e.g. 0, or 1000x too small), the estimate would fall
+    outside a 3x band of ``_deep_size_bytes``'s independent ground-truth
+    measurement on the same synthetic session and this would fail -- this is
+    the test that keeps the calibration comment in parse_prefetch.py honest
+    against actual measured memory, not just internally self-consistent."""
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="calibration",
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"m{i}",
+                role=Role.USER,
+                text="x" * 300,
+                blocks=[
+                    ParsedContentBlock(type=BlockType.TEXT, text="y" * 200),
+                    ParsedContentBlock(type=BlockType.TEXT, text="z" * 200),
+                ],
+            )
+            for i in range(50)
+        ],
+    )
+
+    estimate = estimate_parsed_tree_bytes([session])
+    deep = _deep_size_bytes(session)
+
+    assert deep / 3 <= estimate <= deep * 3
+
+
+def test_warm_never_retains_a_tree_exceeding_the_whole_cache_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production dependency: ``DaemonParseStage.warm_raw_ids``'s per-item
+    whale check (compares ``estimate_parsed_tree_bytes(sessions)`` against
+    ``self._max_cached_tree_bytes`` BEFORE calling ``self.cache.try_admit``).
+    Deleting that check (or its ``continue``) would let a whale raw whose
+    payload happens to fit the generous inflight-bytes budget below sail
+    into the cache regardless of its parsed-tree size -- exactly the
+    2026-07-20 earlyoom failure mode -- and every assertion here would flip."""
+    _seed_raws(tmp_path, {"whale.jsonl": _codex_payload("session-whale", "seed")})
+
+    from polylogue.sources import revision_backfill
+
+    def whale_worker(
+        raw_id: str,
+        provider_value: str,
+        blob_hash: str,
+        source_path: str,
+        is_stream: bool,
+        blob_root_str: str,
+        source_db_path_str: str,
+    ) -> object:
+        return raw_id, [_session_with_text("session-whale", 50_000)], None
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", whale_worker)
+
+    whale_tree_bytes = estimate_parsed_tree_bytes([_session_with_text("session-whale", 50_000)])
+    tiny_budget = whale_tree_bytes // 2
+    assert tiny_budget > 0
+
+    stage = DaemonParseStage(
+        max_workers=1,
+        max_inflight_bytes=10_000_000,  # generous: payload bytes are NOT the constraint here
+        max_cached_tree_bytes=tiny_budget,
+    )
+    try:
+        warmed = stage.warm(_config(tmp_path), limit=10, max_payload_bytes=10_000_000)
+    finally:
+        stage.shutdown()
+
+    assert warmed == 0
+    assert len(stage.cache) == 0
+    assert stage.cached_tree_bytes_total == 0
+
+
+def test_cache_evicts_to_stay_within_tree_bytes_budget_under_pressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production dependency: ``DaemonParseStage._register_cached_tree_bytes``'s
+    eviction loop (and the ledger it maintains, ``_tree_bytes_by_raw_id`` /
+    ``_cached_tree_bytes_total``). Two equal-size raws are admitted (each
+    individually well under the whole-cache budget, so the whale check never
+    fires); together they exceed the budget. A mutation that turned the
+    eviction ``while`` loop into a no-op would leave both entries cached with
+    ``cached_tree_bytes_total`` above budget, and the assertions below would
+    fail."""
+    _seed_raws(
+        tmp_path,
+        {
+            "a.jsonl": _codex_payload("session-a", "seed-a"),
+            "b.jsonl": _codex_payload("session-b", "seed-b"),
+        },
+    )
+
+    from polylogue.sources import revision_backfill
+
+    source_path_to_native_id = {"a.jsonl": "session-a", "b.jsonl": "session-b"}
+
+    def equal_size_worker(
+        raw_id: str,
+        provider_value: str,
+        blob_hash: str,
+        source_path: str,
+        is_stream: bool,
+        blob_root_str: str,
+        source_db_path_str: str,
+    ) -> object:
+        native_id = source_path_to_native_id[source_path]
+        return raw_id, [_session_with_text(native_id, 5_000)], None
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", equal_size_worker)
+
+    one_tree_bytes = estimate_parsed_tree_bytes([_session_with_text("session-a", 5_000)])
+    # Fits exactly one tree, not two.
+    budget = int(one_tree_bytes * 1.5)
+
+    stage = DaemonParseStage(
+        max_workers=1,
+        max_inflight_bytes=10_000_000,
+        max_cached_tree_bytes=budget,
+    )
+    try:
+        warmed = stage.warm(_config(tmp_path), limit=10, max_payload_bytes=10_000_000)
+    finally:
+        stage.shutdown()
+
+    # Both raws were individually admitted at the time they were parsed --
+    # eviction is a post-hoc budget correction, not an admission rejection.
+    assert warmed == 2
+    # But only one survives the tree-bytes budget.
+    assert len(stage.cache) == 1
+    assert stage.cached_tree_bytes_total <= budget
+    assert stage.cached_tree_bytes_total == one_tree_bytes
+
+
+def test_max_cached_tree_bytes_default_is_adaptive_and_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production dependency: ``daemon_parse_stage_max_cached_tree_bytes``.
+    Mirrors ``test_max_inflight_bytes_default_is_adaptive_and_clamped`` for
+    the SECOND (tree-bytes, not payload-bytes) budget -- distinct clamp
+    range [256 MiB, 4 GiB] and distinct RAM fraction (1/8, not 1/16). A
+    mutation that swapped in the inflight-bytes clamp/fraction, or dropped
+    the env override, would flip these assertions."""
+    from polylogue.daemon import parse_prefetch as pp
+
+    monkeypatch.delenv("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES", raising=False)
+
+    # 64 GiB machine -> hits the 4 GiB ceiling (64 GiB / 8 = 8 GiB, clamped down).
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: 64 * 1024**3)
+    assert pp.daemon_parse_stage_max_cached_tree_bytes() == 4 * 1024**3
+
+    # 1 GiB machine -> clamped up to the 256 MiB floor (1 GiB / 8 = 128 MiB).
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: 1 * 1024**3)
+    assert pp.daemon_parse_stage_max_cached_tree_bytes() == 256 * 1024**2
+
+    # 16 GiB machine -> proportional (16 GiB / 8 = 2 GiB).
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: 16 * 1024**3)
+    assert pp.daemon_parse_stage_max_cached_tree_bytes() == 2 * 1024**3
+
+    # Unknown physical memory -> conservative floor.
+    monkeypatch.setattr(pp, "_physical_memory_bytes", lambda: None)
+    assert pp.daemon_parse_stage_max_cached_tree_bytes() == 256 * 1024**2
+
+    # Explicit env override always wins, even over an adaptive value that
+    # would otherwise differ.
+    monkeypatch.setenv("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES", "987654321")
+    assert pp.daemon_parse_stage_max_cached_tree_bytes() == 987654321

@@ -33,13 +33,15 @@ turns the same code path into a real speedup.
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+import threading
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.sources import revision_backfill
 from polylogue.sources.dispatch import is_stream_record_provider
+from polylogue.sources.parsers.base_models import ParsedSession
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
 from polylogue.storage.repair import (
     raw_materialization_pending_census_raw_ids,
@@ -128,6 +130,172 @@ def daemon_parse_stage_max_inflight_bytes() -> int:
     return max(_MIN_MAX_INFLIGHT_BYTES, min(_MAX_MAX_INFLIGHT_BYTES, physical // 16))
 
 
+# polylogue-xb4i: the inflight-bytes budget above (and RawParsePrefetchCache's
+# own admission gate) both account raw PAYLOAD bytes, because payload size is
+# the only thing known BEFORE a raw is parsed. But a parsed ``ParsedSession``
+# tree resident in the cache is not the same size as the payload it was
+# parsed from -- Pydantic model instances, per-block dicts, and Python object
+# overhead inflate a compact JSON/JSONL payload substantially. Two earlyoom
+# kills (19.3G and 20.2G RSS peaks, 2026-07-20) happened on a whale-dense
+# page precisely because the cache retained a whole 2000-raw page of PARSED
+# TREES while only the raw payload bytes were budgeted -- clamping the
+# inflight (pre-parse) budget did nothing, since the memory pressure came
+# from trees already sitting in the cache post-parse, not from parses in
+# flight.
+#
+# Floor/ceiling mirror the inflight-bytes budget's adaptive-RAM shape: 1/8 of
+# physical RAM (trees are the bigger of the two budgets since they are what
+# actually sits resident) clamped to [256 MiB, 4 GiB].
+_MIN_MAX_CACHED_TREE_BYTES = 256 * 1024 * 1024  # 256 MiB
+_MAX_MAX_CACHED_TREE_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
+
+# Calibration (measured 2026-07-20, see test_parse_prefetch.py for the exact
+# reproducer): a manual deep-object-graph walk (sys.getsizeof over every
+# reachable dict/list/model instance, the same technique pympler.asizeof
+# uses, without adding a new dependency for one calibration script) against
+# synthetic ParsedSession trees of increasing size gave:
+#
+#   messages=10,  blocks=20,   payload_chars=3_000     deep_bytes=41_165   (13.7x payload chars)
+#   messages=100, blocks=200,  payload_chars=150_000   deep_bytes=368_795  (2.5x payload chars)
+#   messages=500, blocks=1000, payload_chars=1_500_000 deep_bytes=2_521_995 (1.7x payload chars)
+#
+# A single per-char multiplier alone under-fits small/medium trees (fixed
+# per-object overhead dominates there) and a single per-object constant alone
+# under-fits text-heavy trees. A two-term linear fit (bytes_per_char * chars +
+# object_overhead_bytes * object_count, least-squares against the three
+# points above) recovers ~0.39 bytes/char and ~1290 bytes/object. This module
+# rounds BOTH terms up for a deliberate safety margin (favor overestimating
+# resident size, which biases toward eviction/reparse -- always correct --
+# over underestimating, which risks the exact OOM this budget exists to
+# prevent): 2 bytes/char and 1024 bytes/object, which lands within [0.9x,
+# 1.8x] of the measured deep size across the three calibration points.
+_ESTIMATOR_BYTES_PER_CHAR = 2
+_ESTIMATOR_OBJECT_OVERHEAD_BYTES = 1024
+
+
+def _text_len(value: str | None) -> int:
+    return len(value) if value else 0
+
+
+def _mapping_char_len(mapping: Mapping[str, object] | None) -> int:
+    """Cheap, non-recursive-getsizeof approximation of a dict-like field's size.
+
+    ``tool_input``/``metadata``/session-event ``payload`` fields are
+    provider-controlled dicts, occasionally large (a tool call's full JSON
+    args). A single ``repr()`` pass over each value is O(size) but touches
+    every byte, exactly the kind of per-object deep walk this estimator is
+    designed to avoid paying for the WHOLE tree -- so cap what a single
+    mapping field is allowed to contribute by falling back to ``str`` length
+    for string values (the overwhelmingly common case) and only ``repr``ing
+    non-string values, which are typically short (numbers, bools, small
+    nested structures).
+    """
+    if not mapping:
+        return 0
+    total = 0
+    for key, value in mapping.items():
+        total += len(str(key))
+        total += len(value) if isinstance(value, str) else len(repr(value))
+    return total
+
+
+def estimate_parsed_tree_bytes(sessions: Sequence[ParsedSession]) -> int:
+    """Cheap structural estimate of resident bytes for a parsed session tree.
+
+    Deliberately NOT a recursive ``sys.getsizeof``/pympler-style deep walk --
+    that is accurate but O(object graph size) with real per-call overhead,
+    and this runs on ``warm()``'s hot path for every raw in a page (up to a
+    couple thousand). Instead: a single linear pass sums text/content field
+    lengths and counts model-instance nodes (sessions, messages, blocks,
+    attachments, session events, web constructs), then applies two constants
+    calibrated against a real deep-size measurement -- see the constants'
+    docstring/comment above for the calibration data and measured ratio.
+    """
+    total_chars = 0
+    object_count = 0
+    for session in sessions:
+        object_count += 1
+        total_chars += _text_len(session.title)
+        total_chars += _text_len(session.instructions_text)
+        total_chars += _text_len(session.created_at)
+        total_chars += _text_len(session.updated_at)
+        total_chars += _text_len(session.git_branch)
+        total_chars += _text_len(session.git_repository_url)
+        total_chars += _text_len(session.provider_project_ref)
+        total_chars += _text_len(session.git_commit_hash)
+        total_chars += sum(len(value) for value in session.working_directories)
+        total_chars += sum(len(value) for value in session.models_used)
+        total_chars += sum(len(value) for value in session.ingest_flags)
+
+        for message in session.messages:
+            object_count += 1
+            object_count += len(message.paste_spans)
+            total_chars += _text_len(message.text)
+            total_chars += _text_len(message.timestamp)
+            total_chars += _text_len(message.sender_name)
+            total_chars += _text_len(message.recipient)
+            total_chars += _text_len(message.user_context_text)
+            total_chars += _text_len(message.model_name)
+            total_chars += _text_len(message.model_effort)
+            total_chars += _text_len(message.provider_message_id)
+            total_chars += _text_len(message.parent_message_provider_id)
+
+            for block in message.blocks:
+                object_count += 1
+                total_chars += _text_len(block.text)
+                total_chars += _text_len(block.tool_name)
+                total_chars += _text_len(block.tool_id)
+                total_chars += _text_len(block.media_type)
+                total_chars += _mapping_char_len(block.tool_input)
+                total_chars += _mapping_char_len(block.metadata)
+                for construct in block.web_constructs:
+                    object_count += 1
+                    total_chars += _text_len(construct.title)
+                    total_chars += _text_len(construct.text)
+                    total_chars += _text_len(construct.url)
+
+        for attachment in session.attachments:
+            object_count += 1
+            total_chars += _text_len(attachment.name)
+            total_chars += _text_len(attachment.path)
+            total_chars += _text_len(attachment.mime_type)
+            total_chars += _text_len(attachment.source_url)
+            total_chars += _text_len(attachment.caption)
+
+        for event in session.session_events:
+            object_count += 1
+            total_chars += _text_len(event.event_type)
+            total_chars += _mapping_char_len(event.payload)
+
+    return _ESTIMATOR_OBJECT_OVERHEAD_BYTES * object_count + _ESTIMATOR_BYTES_PER_CHAR * total_chars
+
+
+def daemon_parse_stage_max_cached_tree_bytes() -> int:
+    """Whole-cache budget for ESTIMATED parsed-tree bytes (not payload bytes).
+
+    Distinct from :func:`daemon_parse_stage_max_inflight_bytes`, which caps
+    raw PAYLOAD bytes admitted while parses are in flight (the only thing
+    knowable pre-parse). This is the budget that actually bounds what a
+    quiet daemon holds resident in ``DaemonParseStage.cache`` between warm()
+    passes -- see the calibration comment on ``_ESTIMATOR_BYTES_PER_CHAR``
+    above for why the two budgets can diverge by 10x+ on the same page.
+    Adaptive: 1/8 of physical RAM clamped to [256 MiB, 4 GiB]. Override with
+    ``POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES``.
+    """
+    raw = os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES")
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    physical = _physical_memory_bytes()
+    if physical is None:
+        return _MIN_MAX_CACHED_TREE_BYTES
+    return max(_MIN_MAX_CACHED_TREE_BYTES, min(_MAX_MAX_CACHED_TREE_BYTES, physical // 8))
+
+
 def daemon_parse_stage_warm_timeout_seconds() -> float:
     """Bound on how long ``warm()`` waits for its dispatched workers.
 
@@ -164,6 +332,7 @@ class DaemonParseStage:
         max_workers: int | None = None,
         max_inflight_bytes: int | None = None,
         warm_timeout_seconds: float | None = None,
+        max_cached_tree_bytes: int | None = None,
     ) -> None:
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers if max_workers is not None else daemon_parse_stage_worker_count(),
@@ -177,6 +346,86 @@ class DaemonParseStage:
         self._warm_timeout_seconds = (
             warm_timeout_seconds if warm_timeout_seconds is not None else daemon_parse_stage_warm_timeout_seconds()
         )
+        # polylogue-xb4i: a SECOND budget tracked alongside ``self.cache``,
+        # keyed on the same raw_ids but accounting ESTIMATED PARSED-TREE
+        # bytes instead of the raw cache's payload bytes. ``self.cache``
+        # itself is not touched/subclassed (it is a shared type consumed
+        # directly by other callers -- ``bulk_rebuild.py`` hands
+        # ``stage.cache`` straight to ``RebuildIndexRequest.prefetch_cache``
+        # -- so this stays a side ledger that reconciles against the raw
+        # cache's own admission/eviction rather than replacing it.
+        self._max_cached_tree_bytes = (
+            max_cached_tree_bytes if max_cached_tree_bytes is not None else daemon_parse_stage_max_cached_tree_bytes()
+        )
+        self._tree_bytes_lock = threading.Lock()
+        self._tree_bytes_by_raw_id: dict[str, int] = {}
+        self._cached_tree_bytes_total = 0
+
+    @property
+    def cached_tree_bytes_total(self) -> int:
+        """Sum of estimated parsed-tree bytes currently tracked as cached."""
+        with self._tree_bytes_lock:
+            return self._cached_tree_bytes_total
+
+    def _reconcile_stale_tree_tracking_locked(self) -> None:
+        """Drop tracking for any raw_id no longer present in ``self.cache``.
+
+        Consumers outside this class (the writer-held pass, via
+        ``RawParsePrefetchCache.pop``) remove entries from ``self.cache``
+        directly -- this class has no hook into that removal, so the tree-
+        byte ledger can only be reconciled lazily, by checking membership
+        before making an eviction decision. Cheap: proportional to the
+        number of currently-tracked entries, each check a dict lookup under
+        the raw cache's own lock.
+        """
+        stale = [raw_id for raw_id in self._tree_bytes_by_raw_id if not self.cache.contains(raw_id)]
+        for raw_id in stale:
+            self._drop_tree_bytes_locked(raw_id)
+
+    def _drop_tree_bytes_locked(self, raw_id: str) -> None:
+        tree_bytes = self._tree_bytes_by_raw_id.pop(raw_id, None)
+        if tree_bytes is not None:
+            self._cached_tree_bytes_total -= tree_bytes
+
+    def _select_eviction_candidate_locked(self) -> str | None:
+        """Largest entry wins; ties break to the oldest (dict preserves
+        insertion order, and ``>`` -- not ``>=`` -- means the first-seen
+        (oldest) entry at the max size is kept as the running candidate)."""
+        best_id: str | None = None
+        best_bytes = -1
+        for raw_id, tree_bytes in self._tree_bytes_by_raw_id.items():
+            if tree_bytes > best_bytes:
+                best_bytes = tree_bytes
+                best_id = raw_id
+        return best_id
+
+    def _register_cached_tree_bytes(self, raw_id: str, tree_bytes: int) -> None:
+        """Record a newly-admitted raw's estimated tree size and evict
+        largest-or-oldest entries (via ``self.cache.pop``, which releases
+        both the raw cache's own payload-byte budget and this ledger's tree-
+        byte budget) until back under ``self._max_cached_tree_bytes``."""
+        evicted: list[str] = []
+        with self._tree_bytes_lock:
+            self._reconcile_stale_tree_tracking_locked()
+            self._tree_bytes_by_raw_id[raw_id] = tree_bytes
+            self._cached_tree_bytes_total += tree_bytes
+            while self._cached_tree_bytes_total > self._max_cached_tree_bytes and self._tree_bytes_by_raw_id:
+                candidate = self._select_eviction_candidate_locked()
+                if candidate is None:
+                    break
+                self._drop_tree_bytes_locked(candidate)
+                evicted.append(candidate)
+        for evicted_id in evicted:
+            self.cache.pop(evicted_id)
+        if evicted:
+            logger.info(
+                "parse-stage prefetch: evicted %d cached parsed tree(s) to stay within the %d-byte "
+                "estimated-tree-bytes budget after admitting raw_id=%s (%d bytes)",
+                len(evicted),
+                self._max_cached_tree_bytes,
+                raw_id,
+                tree_bytes,
+            )
 
     def warm(self, config: Config, *, limit: int, max_payload_bytes: int) -> int:
         """Pre-parse up to ``limit`` pending census candidates outside any writer hold.
@@ -249,7 +498,29 @@ class DaemonParseStage:
                     # shortcuts the happy path.
                     continue
                 _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
+                # polylogue-xb4i: estimate the PARSED TREE size (not payload
+                # size) before ever admitting to the cache. A tree bigger
+                # than the whole tree-bytes budget is never retained at all
+                # -- it does not even occupy a payload-bytes admission slot
+                # -- so one whale raw can never pin gigabytes of resident
+                # memory regardless of how much inflight-bytes headroom it
+                # happened to fit under pre-parse. This is the fix for the
+                # 2026-07-20 earlyoom kills: the inflight clamp bounded
+                # PAYLOAD bytes in flight, but the cache retained whatever
+                # trees resulted from that payload with no size check at all.
+                tree_bytes = estimate_parsed_tree_bytes(sessions)
+                if tree_bytes > self._max_cached_tree_bytes:
+                    logger.warning(
+                        "parse-stage prefetch: raw_id=%s estimated parsed-tree bytes %d exceed the "
+                        "whole cache budget %d bytes; never retained -- the writer-held pass reparses "
+                        "it normally, identical to any other prefetch miss",
+                        raw_id,
+                        tree_bytes,
+                        self._max_cached_tree_bytes,
+                    )
+                    continue
                 if self.cache.try_admit(raw_id, sessions, payload_bytes=payload_size, revision_kind=kind):
+                    self._register_cached_tree_bytes(raw_id, tree_bytes)
                     warmed += 1
         except TimeoutError:
             # Bounds the CONVEYOR LOOP's wait, not the worker itself -- a
@@ -274,7 +545,9 @@ class DaemonParseStage:
 
 __all__ = [
     "DaemonParseStage",
+    "daemon_parse_stage_max_cached_tree_bytes",
     "daemon_parse_stage_max_inflight_bytes",
     "daemon_parse_stage_warm_timeout_seconds",
     "daemon_parse_stage_worker_count",
+    "estimate_parsed_tree_bytes",
 ]
