@@ -1,70 +1,82 @@
 {
-  "search_call": {
+  "query_call": {
+    "tool": "query",
     "arguments": {
-      "limit": 3,
-      "query": "clock"
-    },
-    "tool": "search"
+      "expression": "clock",
+      "projection": "sessions",
+      "limit": 3
+    }
   },
-  "search_first_hit_session_id": "chatgpt-export:cross-material-duplicate-01",
-  "search_first_hit_snippet": "The fixture used a shared [clock] instance; switching to an isolated clock fixed it.",
-  "search_result_hit_count": 3,
-  "summary_call": {
+  "query_first_hit_session_id": "chatgpt-export:cross-material-duplicate-01",
+  "query_first_hit_snippet": "",
+  "query_result_hit_count": 3,
+  "read_call": {
+    "tool": "read",
     "arguments": {
-      "id": "chatgpt-export:cross-material-duplicate-01"
-    },
-    "tool": "get_session_summary"
+      "ref": "session:chatgpt-export:cross-material-duplicate-01"
+    }
   },
-  "summary_result": {
-    "actions": {
-      "annotate": {
-        "disabled_reason": null,
-        "enabled": true,
-        "inspect_path": null,
-        "repair_path": null,
-        "state": "enabled"
+  "read_result": {
+    "mode": "ref-resolution",
+    "ref": "session:chatgpt-export:cross-material-duplicate-01",
+    "normalized_ref": "session:chatgpt-export:cross-material-duplicate-01",
+    "kind": "session",
+    "resolved": true,
+    "payload_kind": "session-summary",
+    "payload": {
+      "id": "chatgpt-export:cross-material-duplicate-01",
+      "origin": "chatgpt-export",
+      "title": "Flaky clock test fix summary",
+      "message_count": 2,
+      "target_ref": {
+        "target_type": "session",
+        "target_id": "chatgpt-export:cross-material-duplicate-01",
+        "session_id": "chatgpt-export:cross-material-duplicate-01",
+        "message_id": null,
+        "block_index": null,
+        "identity_key": "session:chatgpt-export:cross-material-duplicate-01"
       },
-      "copy_link": {
-        "disabled_reason": null,
-        "enabled": true,
-        "inspect_path": null,
-        "repair_path": null,
-        "state": "enabled"
+      "anchor": "session-chatgpt-export-cross-material-duplicate-01",
+      "actions": {
+        "open": {
+          "enabled": true,
+          "state": "enabled",
+          "disabled_reason": null,
+          "repair_path": null,
+          "inspect_path": null
+        },
+        "copy_link": {
+          "enabled": true,
+          "state": "enabled",
+          "disabled_reason": null,
+          "repair_path": null,
+          "inspect_path": null
+        },
+        "annotate": {
+          "enabled": true,
+          "state": "enabled",
+          "disabled_reason": null,
+          "repair_path": null,
+          "inspect_path": null
+        }
       },
-      "open": {
-        "disabled_reason": null,
-        "enabled": true,
-        "inspect_path": null,
-        "repair_path": null,
-        "state": "enabled"
-      }
-    },
-    "anchor": "session-chatgpt-export-cross-material-duplicate-01",
-    "content_summary": {
-      "counts": {
-        "authored_user_messages": 1,
-        "authored_user_words": 9,
-        "messages": 2,
-        "tool_uses": 0
-      },
-      "first_authored_user_excerpt": "Summarize the one-sentence fix for the flaky clock test.",
-      "last_authored_user_excerpt": "Summarize the one-sentence fix for the flaky clock test.",
-      "phase_count": 1,
-      "top_tools": []
-    },
-    "created_at": "2026-07-04T09:55:00Z",
-    "id": "chatgpt-export:cross-material-duplicate-01",
-    "message_count": 2,
-    "origin": "chatgpt-export",
-    "target_ref": {
-      "block_index": null,
-      "identity_key": "session:chatgpt-export:cross-material-duplicate-01",
-      "message_id": null,
-      "session_id": "chatgpt-export:cross-material-duplicate-01",
-      "target_id": "chatgpt-export:cross-material-duplicate-01",
-      "target_type": "session"
+      "created_at": "2026-07-04T09:55:00Z",
+      "updated_at": "2026-07-04T09:55:03Z"
     },
     "title": "Flaky clock test fix summary",
-    "updated_at": "2026-07-04T09:55:03Z"
+    "summary": "2 messages",
+    "object_refs": [
+      "session:chatgpt-export:cross-material-duplicate-01"
+    ],
+    "evidence_refs": [],
+    "caveats": [],
+    "actions": [
+      {
+        "label": "read",
+        "command": "polylogue find id:chatgpt-export:cross-material-duplicate-01 then read --format json",
+        "href": null,
+        "enabled": true
+      }
+    ]
   }
 }
