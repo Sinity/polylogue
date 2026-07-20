@@ -1588,7 +1588,7 @@ files:
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/judgment_automation.py
-    loc: 390
+    loc: 386
     target: polylogue/daemon/judgment_automation.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
@@ -1889,6 +1889,10 @@ files:
     loc: 216
     target: polylogue/insights/feedback.py
     owner: stable
+  - path: polylogue/insights/hermes_topology_projection.py
+    loc: 341
+    target: polylogue/insights/hermes_topology_projection.py
+    owner: stable
   - path: polylogue/insights/hermes_verification_coverage.py
     loc: 147
     target: polylogue/insights/hermes_verification_coverage.py
@@ -2010,7 +2014,7 @@ files:
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
-    loc: 1301
+    loc: 1305
     target: polylogue/insights/resume.py
     owner: stable
   - path: polylogue/insights/rigor.py
@@ -3112,7 +3116,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1120
+    loc: 1124
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3168,7 +3172,7 @@ files:
     target: polylogue/sources/hooks.py
     owner: stable
   - path: polylogue/sources/import_explain.py
-    loc: 809
+    loc: 811
     target: polylogue/sources/import_explain.py
     owner: stable
   - path: polylogue/sources/import_preflight.py
@@ -3188,7 +3192,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 2511
+    loc: 2512
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -3240,7 +3244,7 @@ files:
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
-    loc: 868
+    loc: 882
     target: polylogue/sources/origin_specs.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -3341,7 +3345,7 @@ files:
     target: polylogue/sources/parsers/hermes_lifecycle.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_spans.py
-    loc: 974
+    loc: 1039
     target: polylogue/sources/parsers/hermes_spans.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
@@ -3349,7 +3353,7 @@ files:
     target: polylogue/sources/parsers/hermes_state.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_verification.py
-    loc: 415
+    loc: 558
     target: polylogue/sources/parsers/hermes_verification.py
     owner: stable
   - path: polylogue/sources/parsers/local_agent.py
@@ -3421,7 +3425,7 @@ files:
     target: polylogue/sources/source_acquisition_components.py
     owner: stable
   - path: polylogue/sources/source_parsing.py
-    loc: 312
+    loc: 316
     target: polylogue/sources/source_parsing.py
     owner: stable
   - path: polylogue/sources/source_walk.py
@@ -3977,7 +3981,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 12582
+    loc: 12600
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py

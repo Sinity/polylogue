@@ -324,14 +324,24 @@ def test_verification_family_prefix_stays_distinguishable_from_atif_atof_observe
     session_1 = next(s for s in sessions if "verify-session-redacted-1" in s.provider_session_id)
 
     from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
-    from polylogue.sources.parsers.hermes_spans import observer_session_provider_id as atof_observer_id
+    from polylogue.sources.parsers.hermes_spans import atif_session_provider_id, atof_session_provider_id
 
     key = profile_key(profile_root)
-    atof_id_for_same_raw_id_and_profile = atof_observer_id("verify-session-redacted-1", key)
+    # fs1.14 (this fix, PR #3225) split the old shared observer:<id> family
+    # into artifact-qualified observer:atif:<id> / observer:atof:<id> --
+    # verification: must stay distinguishable from BOTH, not just one.
+    atif_id_for_same_raw_id_and_profile = atif_session_provider_id("verify-session-redacted-1", key)
+    atof_id_for_same_raw_id_and_profile = atof_session_provider_id("verify-session-redacted-1", key)
 
+    assert session_1.provider_session_id != atif_id_for_same_raw_id_and_profile
     assert session_1.provider_session_id != atof_id_for_same_raw_id_and_profile
     assert session_1.provider_session_id == f"verification:{qualified_session_id('verify-session-redacted-1', key)}"
-    assert atof_id_for_same_raw_id_and_profile == f"observer:{qualified_session_id('verify-session-redacted-1', key)}"
+    assert (
+        atif_id_for_same_raw_id_and_profile == f"observer:atif:{qualified_session_id('verify-session-redacted-1', key)}"
+    )
+    assert (
+        atof_id_for_same_raw_id_and_profile == f"observer:atof:{qualified_session_id('verify-session-redacted-1', key)}"
+    )
 
 
 def test_verification_asserts_profile_qualified_parent_session_link(tmp_path: Path) -> None:

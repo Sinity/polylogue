@@ -262,40 +262,71 @@ session yet:
 | Artifact | Archive session id | Prefix |
 | --- | --- | --- |
 | `state.db` (conversational transcript) | `hermes-session:<hermes_session_id>` | none |
-| ATIF / ATOF (runtime-evidence observer sessions) | `hermes-session:observer:<hermes_session_id>` | `observer:` |
+| ATIF (trajectory export, runtime-evidence observer session) | `hermes-session:observer:atif:<hermes_session_id>` | `observer:atif:` |
+| ATOF (event stream, runtime-evidence observer session) | `hermes-session:observer:atof:<hermes_session_id>` | `observer:atof:` |
 | `verification_evidence.db` (verification ledger) | `hermes-session:verification:<hermes_session_id>` | `verification:` |
 
-Read-side helpers cross-reference these without merging them:
-`hermes_spans.hermes_observer_session_id_for()` and
-`hermes_verification.hermes_verification_session_id_for()` both take a
+ATIF and ATOF get **distinct** artifact-qualified prefixes (`fs1.14`) — see
+[What Polylogue cannot claim](#what-polylogue-cannot-claim-from-your-hermes-runtime)
+item 1 for the collision this fixed. When the acquiring directory (the
+`profile_root` Polylogue derives from the artifact's own source path) is
+known, ATIF's, ATOF's, and the verification ledger's identity all
+additionally carry the same `@profile-<key>` qualifier the `state.db`
+conversational session uses — two separate Hermes installs (profiles) that
+happen to reuse the same raw session id get fully independent archive rows
+on every artifact class, not just independent artifact families (`fs1.14`
+for ATIF/ATOF, `polylogue-y9zx` for the verification ledger; see item 1
+below). Read-side helpers cross-reference all four without merging them:
+`hermes_spans.hermes_atif_session_id_for()`,
+`hermes_spans.hermes_atof_session_id_for()`, and
+`hermes_verification.hermes_verification_session_id_for()` each take a
 `state.db`-ingested conversational session id and return the matching
-observer/verification session id, stripping any `@profile-<key>` qualifier.
-Neither materializes a `topology_edges`/`session_links` relationship between
-them — correlation is a read-time lookup, not a stored graph edge.
+observer/verification session id, *preserving* whatever `@profile-<key>`
+qualifier it carries — a reader holding the qualified conversational id
+resolves that artifact's evidence for the same install, not merely the same
+raw session id.
+`polylogue/insights/hermes_topology_projection.py` composes all four artifact
+classes for one raw Hermes session id into one typed, read-only projection
+(availability, per-artifact fidelity, unpaired-trace debt, and explicit
+producer-conflict detection for disagreeing subagent-session evidence) — but
+like `hermes_verification_coverage`, it is not yet wired into any CLI/MCP
+surface (see item 3 below). None of this materializes a
+`topology_edges`/`session_links` relationship between them — correlation is a
+read-time lookup, not a stored graph edge.
 
 ## What Polylogue cannot claim from your Hermes runtime
 
 This is the section to read before you trust anything above it.
 
-1. **ATIF and ATOF do not compose when they share a session id.** Both map
-   to the identical `hermes-session:observer:<hermes_session_id>` archive
-   session (see table above). Importing both for the same underlying Hermes
-   session is **not additive** — it is verified empirically: importing the
-   checked-in ATIF fixture (`session_id: "real-nemo-relay-session-redacted"`)
-   and the checked-in ATOF fixture (same `session_id` in every event) into
-   one scratch archive left exactly **one** `sessions` row, carrying only
-   ATIF's evidence (`hermes_llm_request_span` ×5, `hermes_tool_execution_span`
-   ×4) — none of ATOF's `decision_points`/`error_taxonomy`/
-   `subagent_delegation`/`context_events` event types survived, because the
-   archive's content-hash revision model treats the second full parse as a
-   differing-hash *update* to the same session id, which replaces rather
-   than unions the prior revision's parsed rows. The raw bytes for both
-   imports remain durably retained in `source.db` under distinct content
-   hashes, but the *queryable* session reflects only the most recently
-   materialized revision. If your Hermes install emits both artifact classes
-   for the same session (a realistic operating mode), do not assume you get
-   the union of their evidence from one session read — check both the
-   `observer:` session and the raw artifacts directly.
+1. **[Fixed, `fs1.14`] ATIF and ATOF used to collide when they shared a
+   session id, on two independent axes.** Before `fs1.14`, both artifact
+   families mapped to the identical `hermes-session:observer:<hermes_session_id>`
+   archive session with no profile qualifier at all, and importing both for
+   the same underlying Hermes session was **not additive**: the second full
+   parse's differing content hash replaced rather than unioned the first's
+   parsed rows, silently discarding whichever artifact was ingested first
+   (verified empirically at the time — importing the checked-in ATIF fixture
+   then the checked-in ATOF fixture into one scratch archive left exactly one
+   `sessions` row carrying only ATIF's evidence). The same unqualified
+   `observer:<id>` identity separately let two different Hermes installs
+   (profiles) reusing the same raw session id collapse onto that one archive
+   row too. Both axes are fixed together: ATIF and ATOF now get
+   artifact-qualified session ids (`observer:atif:<id>` / `observer:atof:<id>`,
+   see table above), and when the acquiring directory is known each of those
+   ids is *additionally* profile-qualified (`observer:atif:<id>@profile-<key>`
+   / `observer:atof:<id>@profile-<key>`) using the exact qualifier the
+   `state.db` conversational session computes for the same install. Importing
+   both artifacts for the same Hermes session, from the same or different
+   installs, now retains fully independent archive rows — nothing replaces
+   anything else. This still does **not** mean they are unioned into one
+   queryable session: read the relevant ids (or use
+   `hermes_topology_projection.project_hermes_topology`) to see the combined
+   evidence. The verification ledger (`hermes_verification.py`) had the
+   identical unqualified-id collapse risk on the profile axis (it was never
+   part of the ATIF/ATOF artifact-family collision, since it already used
+   its own `verification:` prefix) — fixed separately as `polylogue-y9zx`,
+   merged as PR #3227, using the same shared `hermes_identity.py` qualifier
+   scheme; see the "Session identity" section above.
 2. **No physical merge across `state.db` transcript ↔ observer evidence ↔
    verification ledger.** Three logically-related session ids can exist for
    one real Hermes session (conversational, observer, verification). Reading
@@ -326,6 +357,11 @@ This is the section to read before you trust anything above it.
 5. **`subagent_delegation` never reaches `topology_edges`/`session_links`.**
    Even where ATIF/ATOF record subagent evidence, it stays observer-only
    evidence; Polylogue's session-lineage graph does not learn about it.
+   `hermes_topology_projection.project_hermes_topology` surfaces it read-side
+   as `subagent_evidence` (tagged by which artifact reported it) and flags a
+   self-referential or ATIF/ATOF-disagreeing subagent-session id as an
+   explicit `HermesTopologyConflict` rather than silently trusting one side —
+   but this is still evidence composition, not a physical session link.
 6. **The verification ledger is a bounded retention window, not history.**
    `retention_completeness` is structurally `degraded` on every import —
    events older than 30 days, or beyond the producer's 100-per-scope/10,000-
@@ -372,8 +408,8 @@ full `fidelity` block shown in the tables above.
 ```bash
 polylogue --origin hermes-session find "your search terms" then read --all --format json
 polylogue find 'sessions where origin:hermes-session' then read --all --format json
-polylogue find id:hermes-session:observer:<hermes-session-id> then read --view transcript
-polylogue find id:hermes-session:observer:<hermes-session-id> then read --view raw --format json
+polylogue find id:hermes-session:observer:atif:<hermes-session-id> then read --view transcript
+polylogue find id:hermes-session:observer:atof:<hermes-session-id> then read --view raw --format json
 ```
 
 `--origin hermes-session` and `origin:hermes-session` are equivalent (root
