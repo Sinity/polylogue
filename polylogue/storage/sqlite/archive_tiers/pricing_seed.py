@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import time
+from functools import lru_cache
 
 
 def _catalog_id() -> str:
@@ -31,8 +32,20 @@ def _catalog_id() -> str:
     return f"{CATALOG_PROVENANCE}-{CATALOG_EFFECTIVE_DATE}"
 
 
+@lru_cache(maxsize=1)
 def _catalog_hash() -> str:
-    """Stable identity of the current PRICING dict."""
+    """Stable identity of the current PRICING dict.
+
+    ``PRICING`` is a module-level dict built once at import time
+    (``polylogue.archive.semantic.pricing``) and never mutated afterward
+    (verified: no ``PRICING[...] = `` / ``.update`` / ``.pop`` write sites
+    anywhere in the codebase). Re-walking and re-hashing its ~3.5K entries on
+    every session write is pure redundant CPU work -- memoized here for the
+    lifetime of the process. ``lru_cache(maxsize=1)`` is safe across tests
+    that monkeypatch ``PRICING`` between processes/interpreters (each fresh
+    interpreter gets a fresh empty cache); within one process the dict is
+    genuinely constant, so a stale cache is not observable.
+    """
     from polylogue.archive.semantic.pricing import PRICING
 
     parts: list[str] = []
@@ -45,6 +58,7 @@ def _catalog_hash() -> str:
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
+@lru_cache(maxsize=1)
 def _effective_at_ms() -> int | None:
     """Parse CATALOG_EFFECTIVE_DATE to epoch-ms, return None on failure."""
     from polylogue.archive.semantic.pricing import CATALOG_EFFECTIVE_DATE

@@ -786,6 +786,15 @@ CREATE TABLE IF NOT EXISTS paste_spans (
     PRIMARY KEY(message_id, position)
 ) STRICT;
 
+-- polylogue-623q: paste_spans has no index leading with session_id (its PK
+-- is (message_id, position)), so the per-session full-replace DELETE FROM
+-- paste_spans WHERE session_id = ? in _clear_session_projection_rows was a
+-- full table SCAN (verified via EXPLAIN QUERY PLAN) that gets slower every
+-- session as the table grows archive-wide -- every other projection table
+-- cleared there already has session_id as a leading PK/index column.
+CREATE INDEX IF NOT EXISTS idx_paste_spans_session
+ON paste_spans(session_id);
+
 CREATE TABLE IF NOT EXISTS price_catalogs (
     catalog_id       TEXT PRIMARY KEY,
     catalog_hash     TEXT NOT NULL,
