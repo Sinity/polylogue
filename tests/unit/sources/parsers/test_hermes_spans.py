@@ -356,6 +356,78 @@ def test_atof_subagent_mark_fails_closed_when_two_parents_claim_the_same_child(t
         assert fidelity.capabilities["subagent_delegation"].status == "exact"
 
 
+def test_atof_self_referential_mark_stays_unasserted_when_another_session_legitimately_claims_the_same_id(
+    tmp_path: Path,
+) -> None:
+    """CodeRabbit finding (PR #3231, hermes_spans.py:441): the per-mark
+    delegation flag used to be set from membership in ``delegation_targets``
+    alone (``child_session_id in delegation_targets``), without checking
+    WHICH session actually owns that claim. Session S emits a self-
+    referential mark (S names itself as its own child -- correctly excluded
+    from delegation_targets by the self-reference guard, since
+    child_session_id == session_id there). Session P, unrelated, legitimately
+    and unambiguously claims S as ITS OWN child
+    (delegation_targets["S"] == "P"). Under the membership-only check, S's
+    self-referential span would ALSO read delegation_edge_asserted=True
+    merely because "S" happens to be a key in delegation_targets --
+    contradicting the fail-closed self-reference guarantee proved by
+    test_atof_subagent_mark_fails_closed_on_self_reference. The fix requires
+    the flag to additionally check that THIS event's own owning session id
+    equals delegation_targets[child_session_id], not just membership.
+
+    Mutation: replace the owning-session equality check in
+    _mark_delegation_edges_on_subagent_events with membership-only
+    (``bool(delegation_targets.get(child_session_id))``, dropping the
+    ``== owning_session_id`` comparison) and this test's assertion that S's
+    own span stays False fails (it flips to True).
+    """
+    records: list[JSONDocument] = [
+        # Session "S" reports itself as its own subagent -- structurally
+        # impossible self-reference, must never materialize an edge no
+        # matter what any other session in this batch claims about "S".
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "category": "agent",
+            "uuid": "self-mark",
+            "timestamp": "2026-07-18T09:00:08Z",
+            "name": "hermes.subagent.start",
+            "metadata": {"session_id": "S"},
+            "data": {"child_session_id": "S", "child_role": "self"},
+        },
+        # Session "P" legitimately, unambiguously claims "S" as its own
+        # child -- this claim IS producer-positive and must still resolve.
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "category": "agent",
+            "uuid": "p-claims-s",
+            "timestamp": "2026-07-18T09:00:09Z",
+            "name": "hermes.subagent.start",
+            "metadata": {"session_id": "P"},
+            "data": {"child_session_id": "S", "child_role": "research"},
+        },
+    ]
+    sessions = hermes_spans.parse_atof_stream(records, "fallback-id", profile_root=tmp_path)
+
+    session_s = next(s for s in sessions if s.provider_session_id.split(":")[-1].split("@")[0] == "S")
+    session_p = next(s for s in sessions if s.provider_session_id.split(":")[-1].split("@")[0] == "P")
+
+    # S's OWN self-referential span never asserts an edge, regardless of P's
+    # unrelated legitimate claim about "S" existing in the same batch.
+    s_own_event = next(e for e in session_s.session_events if e.event_type == "hermes_subagent_span")
+    assert s_own_event.payload["child_session_id"] == "S"
+    assert s_own_event.payload["delegation_edge_asserted"] is False
+
+    # P's legitimate claim on S still materializes: P's own span reports the
+    # edge as asserted, and S's archive session's parent edge points at P.
+    p_own_event = next(e for e in session_p.session_events if e.event_type == "hermes_subagent_span")
+    assert p_own_event.payload["child_session_id"] == "S"
+    assert p_own_event.payload["delegation_edge_asserted"] is True
+    assert session_s.parent_session_provider_id == session_p.provider_session_id
+    assert session_s.branch_type is not None and session_s.branch_type.value == "subagent"
+
+
 def test_atif_subagent_trajectory_materializes_delegation_edge_with_known_profile(tmp_path: Path) -> None:
     """ATIF mirror of the ATOF real-fixture proof: no real ATIF fixture
     carries subagent_trajectories evidence yet (see module docstring), so

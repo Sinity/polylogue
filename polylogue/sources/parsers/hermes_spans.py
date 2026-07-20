@@ -430,14 +430,31 @@ def _mark_delegation_edges_on_subagent_events(
     *observing parent's own* fidelity declaration can report how many of its
     subagent references actually became real ``session_links`` edges, without
     needing cross-session lookups.
+
+    ``delegation_targets`` is keyed by CHILD session id, so membership alone
+    (``child_session_id in delegation_targets``) is not sufficient here: a
+    session can emit a ``hermes_subagent_span`` whose ``child_session_id``
+    happens to equal a DIFFERENT session's (unambiguously claimed) child --
+    e.g. a self-referential mark from session S (S names itself as its own
+    child, correctly excluded from ``delegation_targets`` by the
+    self-reference guard) coexisting with an unrelated session P that
+    legitimately claims S as ITS child (``delegation_targets["S"] == "P"``).
+    Checking membership alone would mark S's own self-referential span
+    ``delegation_edge_asserted=True`` merely because "S" is a key in the map
+    -- contradicting the fail-closed self-reference guarantee. The owning
+    session id (the record's own ``session_id``, carried in the event's
+    ``session_id`` payload field via ``base_payload``) must match the
+    resolved parent for THIS specific child before the flag is set.
     """
-    for events in grouped.values():
+    for owning_session_id, events in grouped.items():
         for event in events:
             if event.event_type != "hermes_subagent_span":
                 continue
             child_session_id = event.payload.get("child_session_id")
             event.payload["delegation_edge_asserted"] = bool(
-                isinstance(child_session_id, str) and child_session_id and delegation_targets.get(child_session_id)
+                isinstance(child_session_id, str)
+                and child_session_id
+                and delegation_targets.get(child_session_id) == owning_session_id
             )
 
 
