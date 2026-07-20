@@ -654,6 +654,47 @@ class PolylogueConfig:
         """
         return bool(self._data.get("daemon_bulk_rebuild_routing"))
 
+    @property
+    def judgment_automation_enabled(self) -> bool:
+        """Explicit opt-in for the daemon judgment-automation sweep (polylogue-6qjc).
+
+        Off by default: most agent-authored assertion candidates otherwise
+        wait forever for a human judge. Set TOML ``[judgment_automation]
+        enabled = true`` or ``POLYLOGUE_JUDGMENT_AUTOMATION_ENABLED=1`` to
+        schedule the periodic policy sweep. Fails closed on an unrecognized
+        value (raises ``ConfigError``) rather than truthiness-coercing a typo
+        into enabled -- this flag exercises the same ``judge`` write
+        authority as the MCP ``judge`` dispatcher, so it is gated the same
+        way as ``mcp_judge_enabled``. See
+        :mod:`polylogue.daemon.judgment_automation`.
+        """
+        return _require_bool_config_value(self._data, "judgment_automation_enabled")
+
+    @property
+    def judgment_automation_interval_s(self) -> int:
+        """Seconds between judgment-automation sweeps (polylogue-6qjc)."""
+        return int(str(self._data.get("judgment_automation_interval_s", 3600)))
+
+    @property
+    def judgment_automation_batch_limit(self) -> int:
+        """Maximum candidates judged per judgment-automation sweep (polylogue-6qjc)."""
+        return int(str(self._data.get("judgment_automation_batch_limit", 200)))
+
+    @property
+    def judgment_automation_policy(self) -> dict[str, object]:
+        """Raw ``[judgment_automation.policies]`` table from ``polylogue.toml``.
+
+        Returned verbatim (per-kind confidence thresholds) so
+        :mod:`polylogue.daemon.judgment_automation` owns decoding it into a
+        typed policy without the config layer owning the judgment
+        vocabulary -- the same shape as ``health_convergence_debt``.
+        """
+        raw = self._data.get("judgment_automation_policy")
+        if isinstance(raw, Mapping):
+            thawed = _thaw_config_value(raw)
+            return thawed if isinstance(thawed, dict) else {}
+        return {}
+
     def get(self, key: str, default: object = None) -> object:
         value = self._data.get(key, default)
         return _thaw_config_value(value)
@@ -1292,6 +1333,47 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "command remains available regardless of this flag."
         ),
     ),
+    ConfigInventoryEntry(
+        "judgment_automation_enabled",
+        toml_path="judgment_automation.enabled",
+        env_var="POLYLOGUE_JUDGMENT_AUTOMATION_ENABLED",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Opt-in (polylogue-6qjc): schedule the daemon judgment-automation "
+            "sweep that calls the judge dispatcher on auto-judgeable "
+            "assertion candidates per policy, escalating the residue to a "
+            "handoff assertion for human review. Off by default; exercises "
+            "the same authority as the MCP judge dispatcher."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "judgment_automation_interval_s",
+        toml_path="judgment_automation.interval_s",
+        env_var="POLYLOGUE_JUDGMENT_AUTOMATION_INTERVAL_S",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Seconds between judgment-automation sweeps (polylogue-6qjc).",
+    ),
+    ConfigInventoryEntry(
+        "judgment_automation_batch_limit",
+        toml_path="judgment_automation.batch_limit",
+        env_var="POLYLOGUE_JUDGMENT_AUTOMATION_BATCH_LIMIT",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Maximum candidates judged per judgment-automation sweep (polylogue-6qjc).",
+    ),
+    ConfigInventoryEntry(
+        "judgment_automation_policy",
+        toml_path="judgment_automation.policies",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Per-kind auto-accept/auto-reject confidence thresholds for the "
+            "judgment-automation policy engine (polylogue-6qjc)."
+        ),
+        toml_kind="table",
+    ),
 )
 
 _CONFIG_INVENTORY_BY_KEY = {entry.key: entry for entry in _CONFIG_INVENTORY}
@@ -1310,6 +1392,8 @@ _INT_CONFIG_KEYS = frozenset(
         "ingest_commit_batch_messages",
         "ingest_parse_workers",
         "live_full_ingest_workers",
+        "judgment_automation_interval_s",
+        "judgment_automation_batch_limit",
     }
 )
 _FLOAT_CONFIG_KEYS = frozenset({"embedding_max_cost_usd", "slow_query_notice_seconds", "watch_debounce_s"})
@@ -1330,6 +1414,7 @@ _BOOL_CONFIG_KEYS = frozenset(
         "mcp_write_enabled",
         "mcp_judge_enabled",
         "mcp_maintenance_enabled",
+        "judgment_automation_enabled",
     }
 )
 
@@ -1531,6 +1616,10 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,
         "mcp_maintenance_enabled": False,
+        "judgment_automation_enabled": False,
+        "judgment_automation_interval_s": 3600,
+        "judgment_automation_batch_limit": 200,
+        "judgment_automation_policy": {},
     }
 
 

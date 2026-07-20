@@ -489,6 +489,7 @@ These run automatically inside the daemon process:
 | FTS convergence | Every 10 minutes | Verifies FTS coverage, rebuilds if messages are unindexed |
 | Health checks | Configurable (default 5 min) | Runs bounded FAST health checks by default, sends notifications on non-OK status. MEDIUM and EXPENSIVE checks are explicit operator diagnostics. |
 | FTS startup check | Once at startup | Rebuilds the FTS index if messages exist but aren't indexed (covers gaps from pre-daemon data) |
+| Judgment automation | Configurable (default 1 hour), off by default | Judges auto-judgeable assertion candidates per policy and escalates the residue; see [Judgment Automation](#judgment-automation) below. |
 
 Health check tier and interval are configurable via `polylogue.toml`:
 
@@ -497,6 +498,45 @@ Health check tier and interval are configurable via `polylogue.toml`:
 health_check_interval_s = 300
 health_check_tiers = "fast"
 ```
+
+### Judgment Automation
+
+`polylogue/daemon/judgment_automation.py` (polylogue-6qjc) is the automated
+actor for the `judge` MCP dispatcher's candidate queue: most agent-authored
+assertion candidates (pathology findings, ontology/transform candidates,
+findings, ...) will never be manually judged by a human, so this periodic
+sweep applies a small per-kind confidence policy to decide which candidates
+are auto-judgeable and calls the same `judge_assertion_candidates` storage
+chokepoint the MCP `judge` dispatcher uses. Every candidate the policy can't
+decide (no policy configured for its kind, no `confidence` value, or a
+confidence inside the undecided band) is escalated: the sweep writes a
+`handoff`-kind assertion pointing at the candidate so the residue is an
+explicit, queryable review queue instead of silent limbo.
+
+Off by default, and gated by **two** independent flags because it exercises
+judge write authority: `judgment_automation_enabled` (its own opt-in) AND
+`mcp_judge_enabled` (the same capability boundary the MCP `judge` dispatcher
+uses, polylogue-800m). Both must be true for the sweep to judge anything;
+either can be flipped back off in `polylogue.toml` without a daemon restart
+since the loop re-reads config every tick.
+
+```toml
+[judgment_automation]
+enabled = true
+interval_s = 3600
+batch_limit = 200
+
+[judgment_automation.policies.pathology]
+auto_accept_min_confidence = 0.9
+auto_reject_max_confidence = 0.1
+
+[mcp]
+judge_enabled = true
+```
+
+See `polylogue/config.py` (`judgment_automation_enabled`/`_interval_s`/
+`_batch_limit`/`_policy`) and [configuration.md](configuration.md) for the
+full key reference.
 
 ### Operator-Owned Tasks
 
