@@ -43,6 +43,7 @@ def _index_db_path_sync(conn: sqlite3.Connection) -> Path | None:
     try:
         rows = conn.execute("PRAGMA database_list").fetchall()
     except sqlite3.Error:
+        logger.debug("fts drift sampling: PRAGMA database_list failed", exc_info=True)
         return None
     for row in rows:
         if str(row[1]) == "main" and row[2]:
