@@ -36,13 +36,18 @@ _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?\s?(?:ms|µs|us|s)\b")
 _HEX_HASH_RE = re.compile(r"\b[a-f0-9]{12,}\b")
 _SIZE_BYTES_FIELD_RE = re.compile(r'("(?:db_)?size_bytes": )\d+')
+_ELAPSED_FIELD_RE = re.compile(r'("elapsed_s": )(?:null|-?\d+(?:\.\d+)?)')
 # Match path-like sequences (anything with a "/" between segments).
 _PATH_RE = re.compile(r"(/[A-Za-z0-9_.\-]+){2,}")
 
 
 def _redact(text: str) -> str:
     """Strip ephemeral content that is not part of the rendering contract."""
-    out = _PATH_RE.sub("<PATH>", text)
+    # Elapsed-seconds JSON fields first: their high-precision fractional
+    # digits (e.g. "0.0002548002998273611") can otherwise look like a hex
+    # hash to _HEX_HASH_RE and get redacted into an invalid-JSON fragment.
+    out = _ELAPSED_FIELD_RE.sub(r'\1"<DURATION>"', text)
+    out = _PATH_RE.sub("<PATH>", out)
     out = _TIMESTAMP_RE.sub("<TIMESTAMP>", out)
     out = _DURATION_RE.sub("<DURATION>", out)
     out = _HEX_HASH_RE.sub("<HASH>", out)
@@ -456,6 +461,70 @@ def test_analyze_facets_default_marks_detail_families_deferred_not_authoritative
     assert payload["material_origins"] == {}
     assert "not authoredness" in payload["family_status"]["role_counts"]["canonicalization"]
     assert "omit archive/path tokens" in payload["family_status"]["repos"]["canonicalization"]
+
+
+def test_analyze_facets_declares_readiness_cost_and_budget(
+    runner: CliRunner,
+    seeded_db_env: Path,
+) -> None:
+    """Default facets declares its cost class/deadline and stays within budget (polylogue-duti AC #1/#3)."""
+    import json as _json
+
+    # Deliberately bypass ``_invoke_json``'s redaction here: this test asserts
+    # ``elapsed_s`` is a real measured number, and the shared redaction turns
+    # it into a stable placeholder for the other (snapshot) facets tests.
+    result = runner.invoke(cli, ["analyze", "--facets", "--format", "json"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.output)
+
+    assert payload["cost_class"] == "cheap"
+    assert payload["deadline_s"] == 2.0
+    assert isinstance(payload["elapsed_s"], (int, float))
+    assert payload["budget_exceeded"] is False
+    availability = payload["availability"]
+    assert availability["projection"] == "facets"
+    assert availability["state"] == "ready"
+    assert availability["cost_class"] == "cheap"
+    assert availability["deadline_s"] == 2.0
+    assert availability["budget_exceeded"] is False
+
+
+def test_analyze_facets_reports_degraded_when_it_misses_its_declared_budget(
+    runner: CliRunner,
+    seeded_db_env: Path,
+) -> None:
+    """A slow default-family read must self-report as degraded, not a silent success (polylogue-duti AC #1/#3).
+
+    Regression/mutation coverage: if the budget check in
+    ``polylogue.insights.projection_contracts.facets_availability`` (or its
+    wiring in ``Polylogue.facets``) is removed, this test fails because the
+    JSON envelope stops reporting ``budget_exceeded``/``state: degraded`` for
+    an execution that overran the declared 2s interactive deadline -- the
+    exact production smoke (17.8s facets) that motivated this bead.
+    """
+    import itertools
+    import json as _json
+    import time as _time
+    from unittest.mock import patch
+
+    # Two monotonically increasing values 100s apart, well past the 2s
+    # declared facets deadline, regardless of how many other timers the
+    # request path happens to touch.
+    fake_clock = itertools.count(0.0, 100.0)
+
+    with patch.object(_time, "perf_counter", side_effect=lambda: next(fake_clock)):
+        result = runner.invoke(
+            cli,
+            ["--plain", "analyze", "--facets", "--format", "json"],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.output)
+
+    assert payload["budget_exceeded"] is True
+    assert payload["availability"]["state"] == "degraded"
+    assert payload["availability"]["reason"] == "budget_exceeded"
+    assert "interactive budget" in payload["availability"]["detail"]
 
 
 def test_json_status_snapshot(

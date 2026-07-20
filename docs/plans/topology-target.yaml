@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6508
+    loc: 6518
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -1088,7 +1088,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 2468
+    loc: 2520
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -1500,7 +1500,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2486
+    loc: 2564
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1984,6 +1984,10 @@ files:
   - path: polylogue/insights/postmortem.py
     loc: 521
     target: polylogue/insights/postmortem.py
+    owner: stable
+  - path: polylogue/insights/projection_contracts.py
+    loc: 241
+    target: polylogue/insights/projection_contracts.py
     owner: stable
   - path: polylogue/insights/provenance.py
     loc: 130
@@ -3945,7 +3949,7 @@ files:
     target: polylogue/storage/sqlite/action_pairs.py
     owner: stable
   - path: polylogue/storage/sqlite/action_relation.py
-    loc: 108
+    loc: 123
     target: polylogue/storage/sqlite/action_relation.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/__init__.py
@@ -4385,7 +4389,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 3810
+    loc: 3858
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py

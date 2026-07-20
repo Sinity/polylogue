@@ -261,6 +261,21 @@
     "stale": false,
     "stale_age_s": null,
     "budget_exceeded": false,
+    "cost_class": "cheap",
+    "deadline_s": 2.0,
+    "elapsed_s": "<DURATION>",
+    "availability": {
+      "projection": "facets",
+      "state": "ready",
+      "cost_class": "cheap",
+      "reason": null,
+      "detail": null,
+      "remediation": null,
+      "deadline_s": 2.0,
+      "elapsed_s": "<DURATION>",
+      "budget_exceeded": false,
+      "prerequisites": []
+    },
     "complete_families": [
       "total_counts",
       "origins",
