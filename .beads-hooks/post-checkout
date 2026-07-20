@@ -7,8 +7,10 @@
 # sharing the same live Dolt DB. This wraps the normal hook: snapshot
 # live state before it runs, let it run unmodified, then restore
 # anything it clobbered with an older value. See
-# .agent/scripts/bd-reimport-guard.py docstring for full rationale.
-_bd_guard="$(dirname "$0")/../.agent/scripts/bd-reimport-guard.py"
+# devtools/bd_reimport_guard.py docstring for full rationale. Invoked by
+# direct file path (not `python3 -m devtools ...`) so it keeps working
+# even when the devshell/venv is not active.
+_bd_guard="$(dirname "$0")/../devtools/bd_reimport_guard.py"
 if [ -f "$_bd_guard" ] && command -v python3 >/dev/null 2>&1; then
   python3 "$_bd_guard" snapshot post-checkout 2>/dev/null || true
 fi

@@ -13,6 +13,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab graph",
     "lab lanes",
     "lab policy backlog-hygiene",
+    "lab policy bead-graph",
     "lab policy demo-packet-registry",
     "lab policy demo-tour-freshness",
     "lab policy docs-drift",
@@ -564,6 +565,53 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace bead-batch-show",
+        "workspace",
+        "Batch-show beads: id, status, prio, title, desc head, deps, notes tail.",
+        "devtools.bead_batch_show",
+        use_when=(
+            "Skim several beads at once (e.g. a fanout cluster or a discovered-follow-up batch) "
+            "without a separate `bd show` round-trip per id."
+        ),
+        examples=("devtools workspace bead-batch-show polylogue-kapb polylogue-2yax",),
+    ),
+    CommandSpec(
+        "workspace bead-reimport-guard",
+        "workspace",
+        "Timestamp-aware guard restoring beads clobbered by bd's post-checkout/post-merge reimport.",
+        "devtools.bd_reimport_guard",
+        use_when=(
+            "Invoked by .beads-hooks/post-checkout and .beads-hooks/post-merge (outside the "
+            "BEGIN/END BEADS INTEGRATION markers) around bd's own reimport step -- not normally "
+            "run by hand. bd's reimport is a blind upsert with no timestamp comparison, so an "
+            "ordinary checkout/pull can silently revert a bead closed-but-uncommitted in a "
+            "different worktree sharing the same live Dolt DB; this snapshots live state before "
+            "the hook runs and restores anything the hook clobbered with older data."
+        ),
+        examples=(
+            "devtools workspace bead-reimport-guard snapshot post-checkout",
+            "devtools workspace bead-reimport-guard check-and-repair post-checkout",
+        ),
+    ),
+    CommandSpec(
+        "workspace delivery-gate-status",
+        "workspace",
+        "Per-release-gate progress board over .beads/issues.jsonl (delivery:<release> / lane:<lane> overlay).",
+        "devtools.delivery_gate_status",
+        use_when=(
+            "Check overall delivery-gate progress (R0-normalize through N-horizon) -- percent "
+            "complete, ready/blocked/in-progress counts, and the active frontier gate's exit "
+            "criterion. --fresh re-exports .beads/issues.jsonl first since bd updates do not "
+            "immediately re-export."
+        ),
+        examples=(
+            "devtools workspace delivery-gate-status",
+            "devtools workspace delivery-gate-status --fresh",
+            "devtools workspace delivery-gate-status --json",
+            "devtools workspace delivery-gate-status --gate delivery:A-trust-floor",
+        ),
+    ),
+    CommandSpec(
         "demo real-slice-screen",
         "workspace",
         "Read-only extraction + privacy screening of a candidate real-archive session slice.",
@@ -1073,6 +1121,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools lab policy backlog-hygiene --json",
             "devtools lab policy backlog-hygiene --fresh",
         ),
+    ),
+    CommandSpec(
+        "lab policy bead-graph",
+        "verification lab",
+        "Bead-graph invariant lint over live `bd` state (cycles, wave labels/inversions, missing AC).",
+        "devtools.verify_bead_graph",
+        use_when=(
+            "Run right before shipping a bead-state delta (matches the sinex bead-graph-lint "
+            "convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than "
+            "the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. "
+            "INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged "
+            "(polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here)."
+        ),
+        examples=("devtools lab policy bead-graph",),
     ),
     CommandSpec(
         "lab policy demo-packet-registry",

@@ -20,15 +20,19 @@ fresh clone will not have it.)
 .agent/
   README.md          # orientation (tracked)
   CONVENTIONS.md     # this file (tracked)
-  scripts/           # small repo-agent helpers, non-devloop (tracked)
   demos/             # curated demo shelf (tracked)
   handoffs/          # external-agent handoff corpora (tracked)
   reports/           # report artifacts — gitignored, local-only
   task-history/      # historical task notes — gitignored, local-only
   scratch/           # gitignored thinking space
-  tools/             # helper tooling (tracked)
   archive/           # retired scaffolds kept as evidence — gitignored, local-only
 ```
+
+Repo-agent helper scripts (bead-graph lint, delivery-gate board, reimport
+guard, batch-show) live under `devtools/` as proper commands, not under
+`.agent/scripts/`/`.agent/tools/` (polylogue-kapb retired both as tracked
+tooling dirs — see `devtools status` / `devtools --list-commands` for the
+full catalog).
 
 ## Beads Task Substrate
 
@@ -50,7 +54,7 @@ discovered follow-ups. Run `bd prime` for workflow context.
   `bd dep cycles` clean.
 - No Dolt remote: `.beads/issues.jsonl` in git IS the sync surface; ship
   bead-state deltas in PRs (`chore(beads):`).
-- Graph lint: run `.agent/scripts/bd-graph-lint` before shipping bead deltas
+- Graph lint: run `devtools lab policy bead-graph` before shipping bead deltas
   (cycles, missing acceptance criteria, duplicate `wave:`/`area:` labels,
   wave inversions). INTENTIONAL DIVERGENCE from sinex: polylogue does not
   (yet) enforce exactly-one-wave/exactly-one-area — its label taxonomy
