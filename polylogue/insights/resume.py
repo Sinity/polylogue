@@ -25,12 +25,15 @@ from polylogue.insights.archive import (
 )
 from polylogue.insights.archive_models import ArchiveInsightModel, ObjectivePosturePayload
 from polylogue.insights.objective_posture import resolve_session_objective_posture
+from polylogue.logging import get_logger
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
     from polylogue.core.enums import AssertionKind, AssertionStatus
     from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
+
+logger = get_logger(__name__)
 
 
 RESUME_BRIEF_MATERIALIZER_VERSION = 2
@@ -1049,6 +1052,7 @@ async def build_resume_brief(
         inferences = inferences.model_copy(update={"objective_posture": blended_posture})
     except Exception as exc:  # degrade, never break the brief
         uncertainties.append(ResumeUncertainty(source="objective_posture", detail=f"{type(exc).__name__}: {exc}"))
+        logger.warning("resume brief: objective-posture assertion overlay failed for %s: %s", session_id, exc)
 
     related_sessions = await _related_sessions(
         operations,
