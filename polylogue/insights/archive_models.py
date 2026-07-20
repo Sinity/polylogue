@@ -198,6 +198,25 @@ class SessionPhaseInferencePayload(ArchiveInsightModel):
     fallback_reasons: tuple[FallbackReason, ...] = ()
 
 
+class ObjectivePosturePayload(ArchiveInsightModel):
+    """Session objective-posture projection (polylogue-37t.23).
+
+    Whether the session's underlying objective remains open, derived from
+    authority-bearing evidence rather than *how the process terminated*
+    (``SessionInferencePayload.terminal_state``). See
+    ``polylogue.insights.objective_posture`` for the authority order,
+    the blending contract, and why ``posture`` never becomes
+    ``"completed"`` at the ``structural_inference`` authority tier.
+    """
+
+    posture: str = "unknown"
+    confidence: float = 0.0
+    authority: str = "none"
+    as_of: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+    contradictions: tuple[str, ...] = ()
+
+
 class SessionEnrichmentPayload(ArchiveInsightModel):
     intent_summary: str | None = None
     outcome_summary: str | None = None
@@ -212,6 +231,12 @@ class SessionEnrichmentPayload(ArchiveInsightModel):
     goal_text: str | None = None
     # Boundary-derived posture, not task-success judgment.
     goal_outcome: str | None = None
+    # polylogue-37t.23: resumability projection over open obligations, not
+    # terminal process text. Materialization bakes in only the
+    # `structural_inference` authority tier (index.db-only inputs); readers
+    # that need the full authority order overlay the `assertion` tier at
+    # read time via `polylogue.insights.objective_posture`.
+    objective_posture: ObjectivePosturePayload = Field(default_factory=ObjectivePosturePayload)
 
 
 def _normalize_timed_documents(value: object) -> object:
@@ -317,6 +342,7 @@ __all__ = [
     "ArchiveInsightProvenance",
     "DaySessionSummaryPayload",
     "FallbackReason",
+    "ObjectivePosturePayload",
     "SessionEnrichmentPayload",
     "SessionEvidencePayload",
     "SessionInferencePayload",

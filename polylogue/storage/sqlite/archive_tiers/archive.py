@@ -115,6 +115,7 @@ from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditRe
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.confidence import from_score as confidence_from_score
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
+from polylogue.insights.objective_posture import structural_objective_posture
 from polylogue.insights.readiness import (
     InsightOriginCoverage,
     InsightReadinessEntry,
@@ -10166,6 +10167,23 @@ def _session_profile_components_from_archive_row(
     enrichment = parse_payload_model(
         row, "enrichment_payload_json", record_id=session_id, model=SessionEnrichmentPayload
     )
+    if enrichment is not None:
+        # polylogue-37t.23: same reconciliation as `inference.terminal_state`
+        # above -- the structural_inference tier of `objective_posture` is a
+        # pure function of terminal_state, so it is recomputed onto the
+        # authoritative native columns rather than trusted from the
+        # enrichment JSON (which may have been materialized before a
+        # native-column repair/backfill).
+        enrichment = enrichment.model_copy(
+            update={
+                "objective_posture": structural_objective_posture(
+                    terminal_state=inference.terminal_state,
+                    terminal_state_confidence=inference.terminal_state_confidence,
+                    terminal_state_evidence=dict(evidence.terminal_state_evidence),
+                    as_of=_iso_from_ms(materialization.source_updated_at_ms),
+                )
+            }
+        )
     return _SessionProfileComponents(
         materialization=materialization,
         evidence=evidence,

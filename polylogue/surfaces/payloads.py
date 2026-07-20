@@ -3580,6 +3580,11 @@ class ContextPreambleSession(SurfacePayloadModel):
     title: str | None = None
     date: str | None = None
     terminal_state: str | None = None
+    # polylogue-37t.23: structural_inference-tier resumability posture for
+    # this related session (see `polylogue.insights.objective_posture`) --
+    # distinct from `terminal_state`, which only describes how the process
+    # ended.
+    objective_posture: str | None = None
     summary: str | None = None
     origin: str | None = None
     overlap_basis: ContextPreambleOverlapBasis | None = None

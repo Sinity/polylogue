@@ -35,6 +35,7 @@ from polylogue.insights.archive_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.insights.objective_posture import structural_objective_posture
 from polylogue.insights.temporal_source import (
     TemporalSource,
     TimeConfidence,
@@ -273,6 +274,25 @@ class SessionProfileInsight(ArchiveInsightModel):
                     "workflow_shape_confidence": record.workflow_shape_confidence,
                 }
             )
+        enrichment = record.enrichment_payload if include_enrichment else None
+        if enrichment is not None and inference is not None:
+            # polylogue-37t.23: same reconciliation as `terminal_state` above
+            # -- the native `session_profiles` columns are authoritative, so
+            # the structural_inference tier of `objective_posture` (which is
+            # a pure function of terminal_state) is recomputed onto the
+            # reconciled `inference.terminal_state` rather than trusted from
+            # the enrichment JSON, which may have been materialized before a
+            # native-column repair/backfill.
+            enrichment = enrichment.model_copy(
+                update={
+                    "objective_posture": structural_objective_posture(
+                        terminal_state=inference.terminal_state,
+                        terminal_state_confidence=inference.terminal_state_confidence,
+                        terminal_state_evidence=dict(record.evidence_payload.terminal_state_evidence),
+                        as_of=record.source_updated_at,
+                    )
+                }
+            )
         return cls(
             semantic_tier=tier,
             session_id=str(record.session_id),
@@ -284,7 +304,7 @@ class SessionProfileInsight(ArchiveInsightModel):
             inference_provenance=(_record_inference_provenance(record) if include_inference else None),
             inference=inference,
             enrichment_provenance=(_record_enrichment_provenance(record) if include_enrichment else None),
-            enrichment=(record.enrichment_payload if include_enrichment else None),
+            enrichment=enrichment,
         )
 
 

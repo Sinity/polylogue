@@ -24,6 +24,7 @@ def _make_candidate(
     title: str = "Test Session",
     date: str = "2026-05-01T10:00:00Z",
     terminal_state: str = "completed",
+    objective_posture: str | None = "unknown",
     summary: str | None = None,
     origin: str = "claude-code-session",
 ) -> MagicMock:
@@ -34,6 +35,7 @@ def _make_candidate(
     c.title = title
     c.date = date
     c.terminal_state = terminal_state
+    c.objective_posture = objective_posture
     c.summary = summary
     c.origin = origin
     c.overlap_basis = None
@@ -168,6 +170,7 @@ class TestComposeContextPreambleHappyPath:
         c.title = None
         c.date = None
         c.terminal_state = None
+        c.objective_posture = None
         c.summary = None
         c.origin = None
         c.overlap_basis = None

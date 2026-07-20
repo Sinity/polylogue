@@ -1291,7 +1291,7 @@ files:
     target: polylogue/context/hermes_lifecycle_reconciliation.py
     owner: stable
   - path: polylogue/context/preamble.py
-    loc: 194
+    loc: 195
     target: polylogue/context/preamble.py
     owner: stable
   - path: polylogue/context/selection.py
@@ -1821,11 +1821,11 @@ files:
     target: polylogue/insights/affordance_usage.py
     owner: stable
   - path: polylogue/insights/archive.py
-    loc: 705
+    loc: 725
     target: polylogue/insights/archive.py
     owner: stable
   - path: polylogue/insights/archive_models.py
-    loc: 330
+    loc: 356
     target: polylogue/insights/archive_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -1969,6 +1969,10 @@ files:
     loc: 174
     target: polylogue/insights/measurement/uncertainty.py
     owner: stable
+  - path: polylogue/insights/objective_posture.py
+    loc: 287
+    target: polylogue/insights/objective_posture.py
+    owner: stable
   - path: polylogue/insights/otlp_correlation.py
     loc: 509
     target: polylogue/insights/otlp_correlation.py
@@ -1998,15 +2002,15 @@ files:
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
-    loc: 753
+    loc: 772
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
-    loc: 1202
+    loc: 1301
     target: polylogue/insights/resume.py
     owner: stable
   - path: polylogue/insights/rigor.py
-    loc: 1067
+    loc: 1074
     target: polylogue/insights/rigor.py
     owner: stable
   - path: polylogue/insights/run_projection.py
@@ -3649,7 +3653,7 @@ files:
     target: polylogue/storage/insights/session/latency_profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/profiles.py
-    loc: 824
+    loc: 833
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
@@ -4401,7 +4405,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 3858
+    loc: 3863
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py

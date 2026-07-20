@@ -257,6 +257,10 @@ async def test_resume_candidates_rank_and_dedupe_logical_sessions(cli_workspace:
     assert candidates[0].logical_session_id == ROOT_ID
     assert [candidate.logical_session_id for candidate in candidates].count(ROOT_ID) == 1
     assert candidates[0].terminal_state == "question_left"
+    # polylogue-37t.23: structural_inference tier maps "question_left" to the
+    # honest "ambiguous" posture -- never "completed" -- distinct from
+    # terminal_state itself.
+    assert candidates[0].objective_posture == "ambiguous"
     assert candidates[0].workflow_shape == "agentic_loop"
     assert candidates[0].file_overlap == ("/workspace/polylogue/polylogue/cli/click_app.py",)
     assert set(candidates[0].score_breakdown) == {
@@ -264,6 +268,7 @@ async def test_resume_candidates_rank_and_dedupe_logical_sessions(cli_workspace:
         "file_overlap",
         "cwd_match",
         "terminal_state",
+        "objective_posture",
         "workflow_shape",
     }
 

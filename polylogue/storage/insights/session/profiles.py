@@ -32,6 +32,7 @@ from polylogue.insights.archive_models import (
 )
 from polylogue.insights.confidence import ConfidenceBand, from_signals
 from polylogue.insights.fallback import FallbackReason
+from polylogue.insights.objective_posture import structural_objective_posture
 from polylogue.insights.temporal_source import classify_profile_hwm_source
 from polylogue.storage.runtime import (
     SESSION_ENRICHMENT_FAMILY,
@@ -111,6 +112,7 @@ def profile_enrichment_search_text(
         enrichment_payload.outcome_summary or "",
         enrichment_payload.goal_text or "",
         enrichment_payload.goal_outcome or "",
+        enrichment_payload.objective_posture.posture,
         *profile.repo_names,
         *profile.repo_paths,
         *blockers,
@@ -132,7 +134,22 @@ def session_enrichment_payload(
     text_bands = _collect_enrichment_text_bands(analysis)
     user_turns = text_bands.user_turns
     assistant_turns = text_bands.assistant_turns
-    blockers_val = text_bands.blockers if profile.terminal_state in _UNRESOLVED_BLOCKER_TERMINAL_STATES else ()
+    objective_posture = structural_objective_posture(
+        terminal_state=profile.terminal_state,
+        terminal_state_confidence=profile.terminal_state_confidence,
+        terminal_state_evidence=dict(profile.terminal_state_evidence),
+        as_of=profile.updated_at.isoformat() if profile.updated_at else None,
+    )
+    # polylogue-37t.23: blocker-text extraction is gated on the SAME shared
+    # objective-posture mapping used everywhere else -- not a second,
+    # parallel terminal-state heuristic. `authority != "none"` covers every
+    # terminal_state the structural tier can say anything about, including
+    # "unknown" (mapped to "ambiguous"): a session with no structural
+    # error/pending signal is exactly the false-negative case polylogue-37t.23
+    # exists to fix -- it must not be silently excluded from blocker
+    # evidence the way the old `_UNRESOLVED_BLOCKER_TERMINAL_STATES`
+    # allowlist (which never included "unknown") did.
+    blockers_val = text_bands.blockers if objective_posture.authority != "none" else ()
     support_signals_val = enrichment_support_signals(profile, analysis, text_bands=text_bands)
     input_band_summary = {
         "user_turns": len(user_turns),
@@ -201,6 +218,7 @@ def session_enrichment_payload(
         is_goal_session=is_goal_session,
         goal_text=goal_text,
         goal_outcome=goal_outcome,
+        objective_posture=objective_posture,
     )
 
 
@@ -713,15 +731,6 @@ _BLOCKER_MARKERS = (
     "exception",
     "traceback",
     "panic",
-)
-
-_UNRESOLVED_BLOCKER_TERMINAL_STATES = frozenset(
-    {
-        "error_left",
-        "question_left",
-        "tool_left",
-        "agent_hanging",
-    }
 )
 
 

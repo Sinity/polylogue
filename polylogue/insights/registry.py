@@ -187,6 +187,21 @@ def _nested(outer: str, inner: str, default: str = "-") -> InsightAccessor:
     return accessor
 
 
+def _nested2(outer: str, mid: str, inner: str, default: str = "-") -> InsightAccessor:
+    """Create an accessor that gets a doubly-nested attribute."""
+
+    def accessor(item: ArchiveInsightModel) -> str:
+        outer_value = getattr(item, outer, None)
+        if outer_value is None:
+            return default
+        mid_value = getattr(outer_value, mid, None)
+        if mid_value is None:
+            return default
+        return _stringify(getattr(mid_value, inner, None), default)
+
+    return accessor
+
+
 def _nested_ms_as_seconds(outer: str, inner: str, default: str = "-") -> InsightAccessor:
     """Create an accessor that renders a nested millisecond field as seconds."""
 
@@ -364,6 +379,10 @@ register(
             InsightField("tool_active_min", _nested("inference", "tool_active_minutes", "0"), group=1),
             InsightField("shape", _nested("inference", "workflow_shape", "unknown"), group=1),
             InsightField("state", _nested("inference", "terminal_state", "unknown"), group=1),
+            InsightField("posture", _nested2("enrichment", "objective_posture", "posture", "unknown"), group=1),
+            InsightField(
+                "posture_authority", _nested2("enrichment", "objective_posture", "authority", "none"), group=1
+            ),
             InsightField("think_s", _nested_ms_as_seconds("evidence", "thinking_duration_ms", "0"), group=1),
             InsightField("tool_s", _nested_ms_as_seconds("evidence", "tool_duration_ms", "0"), group=1),
             InsightField("tpm", _nested("evidence", "tool_calls_per_minute", "-"), group=1),
