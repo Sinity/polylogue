@@ -1,12 +1,14 @@
 """Bead-graph invariant lint (polylogue variant).
 
 Run before shipping bead-state deltas. Universal invariants: no cycles; no
-open bead without acceptance criteria; no duplicate ``wave:``/``area:``
-labels; no wave inversions where both sides carry waves.
+open bead without acceptance criteria; no duplicate ``wave:`` labels; no
+malformed (non-numeric) ``wave:`` labels; no wave inversions where both
+sides carry waves.
 
 INTENTIONAL DIVERGENCE from sinex: multi-area labels are polylogue
-convention; only duplicate ``wave:`` labels are flagged (the
-``lane:``/``delivery:``/``horizon:`` taxonomy is local to this repo).
+convention, so ``area:`` duplicates are NOT flagged here -- only duplicate
+``wave:`` labels are (the ``lane:``/``delivery:``/``horizon:`` taxonomy is
+local to this repo).
 
 This checks *live* ``bd`` query state (``bd dep cycles`` / ``bd list --all
 --json``), not the exported ``.beads/issues.jsonl`` snapshot that
@@ -38,14 +40,25 @@ class Finding:
     detail: str
 
 
-def _wave(issue: dict[str, Any]) -> int | None:
+def _wave(issue: dict[str, Any]) -> tuple[int | None, Finding | None]:
+    """Parse the issue's ``wave:`` label.
+
+    Returns ``(value, malformed_finding)``: ``value`` is the parsed wave
+    number, or ``None`` if there is no ``wave:`` label *or* the label's
+    suffix isn't a plain integer (e.g. ``wave:later``). In the malformed
+    case a ``Finding`` is also returned so the caller can surface it as a
+    policy failure -- a bead carrying a `wave:` label the lint cannot
+    parse is a lint bug, not a silently-ignorable non-participant in wave
+    ordering.
+    """
     for label in issue.get("labels") or []:
         if label.startswith("wave:"):
+            raw = label[len("wave:") :]
             try:
-                return int(label[len("wave:") :])
+                return int(raw), None
             except ValueError:
-                return None
-    return None
+                return None, Finding("malformed-wave", issue["id"], f"non-numeric wave label: {label!r}")
+    return None, None
 
 
 def _run_bd_dep_cycles() -> tuple[bool, str]:
@@ -68,6 +81,19 @@ def _run_bd_list_all() -> list[dict[str, Any]]:
 def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
     by_id = {issue["id"]: issue for issue in issues}
     findings: list[Finding] = []
+
+    # Parse each open issue's wave exactly once: a malformed `wave:` label
+    # becomes a policy finding here, not a silent skip re-triggered on every
+    # dependent that happens to reference the bead.
+    waves: dict[str, int | None] = {}
+    for issue in issues:
+        if issue.get("status") == "closed":
+            continue
+        wave_value, malformed = _wave(issue)
+        waves[issue["id"]] = wave_value
+        if malformed is not None:
+            findings.append(malformed)
+
     for issue in issues:
         if issue.get("status") == "closed":
             continue
@@ -77,14 +103,14 @@ def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
             findings.append(Finding("duplicate-wave", issue["id"], f"labels={wave_labels}"))
         if not (issue.get("acceptance_criteria") or "").strip():
             findings.append(Finding("missing-ac", issue["id"], str(issue.get("title", ""))[:60]))
-        wv = _wave(issue)
+        wv = waves.get(issue["id"])
         for dep in issue.get("dependencies") or []:
             if dep.get("type") != "blocks":
                 continue
             dep_issue = by_id.get(dep.get("depends_on_id"))
             if dep_issue is None or dep_issue.get("status") == "closed":
                 continue
-            dw = _wave(dep_issue)
+            dw = waves.get(dep_issue["id"])
             if wv is not None and dw is not None and dw > wv:
                 findings.append(
                     Finding(
@@ -112,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     dup = sum(1 for f in findings if f.kind == "duplicate-wave")
     inv = sum(1 for f in findings if f.kind == "wave-inversion")
     noac = sum(1 for f in findings if f.kind == "missing-ac")
+    malformed = sum(1 for f in findings if f.kind == "malformed-wave")
     for f in findings:
         if f.kind == "duplicate-wave":
             print(f"duplicate-wave: {f.bead_id} {f.detail}")
@@ -119,9 +146,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"missing-AC: {f.bead_id} {f.detail}")
         elif f.kind == "wave-inversion":
             print(f"wave-inversion: {f.bead_id} {f.detail}")
+        elif f.kind == "malformed-wave":
+            print(f"malformed-wave: {f.bead_id} {f.detail}")
 
-    print(f"violations: dup_labels={dup} inversions={inv} missing_ac={noac}")
-    return 1 if (dup or inv or noac) else 0
+    print(f"violations: dup_labels={dup} inversions={inv} missing_ac={noac} malformed_wave={malformed}")
+    return 1 if (dup or inv or noac or malformed) else 0
 
 
 if __name__ == "__main__":
