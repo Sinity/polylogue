@@ -38,17 +38,20 @@ from urllib.request import urlopen
 
 import pytest
 
+from polylogue.demo.seed import demo_source_specs
 from polylogue.scenarios import DEMO_CHATGPT_SESSION_ID, DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 EXPECTED_SESSION_IDS = frozenset(DEMO_SESSION_IDS)
 
-# The direct seeder's full demo world converges to 62 messages (see
-# tests/unit/demo/test_demo_seed_verify.py). The live daemon path currently
-# loses up to two of those on ``DEMO_CHATGPT_SESSION_ID`` to the still-open
-# cross-material coalescing gap described in the module docstring, so the
-# floor here is 60, not 62.
+# The direct seeder's full demo world converges to well over 60 messages
+# (see tests/unit/demo/test_demo_seed_verify.py, which floors at 35 for a
+# smaller, pre-#3182 corpus). The live daemon path currently loses up to two
+# messages on ``DEMO_CHATGPT_SESSION_ID`` to the still-open cross-material
+# coalescing gap described in the module docstring; 60 is a conservative
+# floor that tolerates that one loss without pinning an exact total that
+# every future demo-corpus addition would have to keep updating here too.
 _MIN_EXPECTED_MESSAGES = 60
 
 
@@ -243,14 +246,9 @@ async def test_import_demo_converges_through_live_daemon_path(
                 assert not unexpected_problems, combined_output
 
             staged = inbox / "demo-fixture-world-source"
-            assert sorted(path.name for path in staged.iterdir()) == [
-                "browser-capture",
-                "chatgpt",
-                "claude-ai",
-                "claude-code",
-                "codex",
-                "gemini",
-            ]
+            assert sorted(path.name for path in staged.iterdir()) == sorted(
+                source.name for source in demo_source_specs(staged)
+            )
 
             await _wait_for_demo_archive(archive_root, daemon_log=daemon_log)
             assert _session_ids(archive_root) == EXPECTED_SESSION_IDS
