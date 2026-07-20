@@ -130,8 +130,7 @@ records. `_lower_payload_specs` then recursively lowers a payload into typed
 `LoweredPayloadSpec`s (handling bundles, grouped JSONL split by `sessionId`,
 drive-like nesting, single-document providers), and `_parse_lowered_spec` routes
 each to a concrete parser. A memory-bounded streaming path exists for multi-GiB
-Claude Code JSONL. `grok-export` is a reserved origin token with no wired parser
-yet.
+Claude Code JSONL.
 
 ---
 

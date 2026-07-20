@@ -192,6 +192,17 @@ def test_dispatch_ordering(payload: object, expected_provider: Provider, rationa
             ],
             Provider.CODEX,
         ),
+        (
+            {
+                "conversations": [
+                    {
+                        "conversation": {"title": "hi"},
+                        "responses": [{"response": {"sender": "human", "message": "hi"}}],
+                    }
+                ]
+            },
+            Provider.GROK,
+        ),
     ],
 )
 def test_unambiguous_payloads_still_work(payload: object, expected_provider: Provider) -> None:

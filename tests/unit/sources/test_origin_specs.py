@@ -43,8 +43,9 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert claude.detector_tightness == 60
     assert chatgpt.detector_tightness == 70
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")
-    assert grok.lifecycle == "reserved"
-    assert not grok.parser_paths
+    assert grok.lifecycle == "executable"
+    assert grok.parser_paths == ("polylogue/sources/parsers/grok.py",)
+    assert grok.detector_tightness == 85
     assert set(by_origin) == set(Origin)
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
