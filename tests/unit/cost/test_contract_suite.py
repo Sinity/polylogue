@@ -509,8 +509,9 @@ async def test_mcp_cost_outlook_tool_uses_shared_envelope() -> None:
 
     _asyncio.set_event_loop_policy(None)
     from polylogue.mcp.server import build_server
+    from tests.infra.mcp import ALL_CAPABILITIES
 
-    server = build_server(role="admin")
+    server = build_server(capabilities=ALL_CAPABILITIES)
     assert isinstance(server, MCPServerUnderTest)
 
     outlook = _outlook_fixture()

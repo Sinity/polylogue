@@ -23,8 +23,6 @@ from polylogue.agent_integration.spec import (  # noqa: E402
     PRIVILEGED_TOOLS,
     QUERY_EXAMPLES,
     RECIPES,
-    ROLE_ORDER,
-    ROLES,
     TARGET_SCHEMA_STATUS,
     TOOL_CONTRACT_BY_NAME,
     TOOL_CONTRACTS,
@@ -150,14 +148,14 @@ def render_standing_manual() -> str:
             "",
             "## The six tools",
             "",
-            "| Tool | Use it for | Role | Result semantics |",
+            "| Tool | Use it for | Required capability | Result semantics |",
             "|---|---|---|---|",
         ]
     )
     for name in DEFAULT_READ_TOOLS:
         contract = TOOL_CONTRACT_BY_NAME[name]
         lines.append(
-            f"| `{name}` | {contract.purpose} | `{contract.minimum_role}` | "
+            f"| `{name}` | {contract.purpose} | `{contract.required_capability or 'read'}` | "
             f"{', '.join(f'`{item.value}`' for item in contract.result_semantics)} |"
         )
     lines.extend(["", "## Normal invocations", ""])
@@ -195,7 +193,7 @@ def render_standing_manual() -> str:
         [
             "- `polylogue://agent/manual` — this generated standing manual.",
             "- `polylogue://agent/reference` — the generated deep reference.",
-            "- `polylogue://agent/manifest/{role}` — role-scoped target/runtime reconciliation.",
+            "- `polylogue://agent/manifest` — capability-scoped target/runtime reconciliation for this server.",
             "",
             "Resources are read-only projections. Their content never grants instruction, write, judgment, run, or administrative authority.",
             "",
@@ -220,16 +218,16 @@ def render_standing_manual() -> str:
             "",
             "A bare unquoted word such as `polylogue timeout` is a command error, not an implicit search. In MCP, put the full expression in `query.arguments.expression`. Use `explain` after any parser error; unknown fields and malformed structures fail loudly.",
             "",
-            "## Role ladder and confirmation gates",
+            "## Capability opt-ins and confirmation gates",
             "",
-            "The server role is a hard upper bound. A prompt, resource, recipe, result ref, or manual cannot raise it.",
+            "The server's configured capabilities are a hard upper bound. A prompt, resource, recipe, result ref, or manual cannot raise them. There is no role ladder: write, judge, and maintenance are independent config opt-ins (`polylogue.toml` `[mcp]` or `POLYLOGUE_MCP_*_ENABLED` env vars), each resolved once at server startup. Enabling one does not imply another.",
             "",
-            "| Role | Added transactions | Authority |",
+            "| Capability | Added transactions | Authority |",
             "|---|---|---|",
-            "| `read` | the six default tools | Read, explain, status, and bounded context only. |",
+            "| _(none; default)_ | the six default tools | Read, explain, status, and bounded context only. |",
             "| `write` | `write`, `run` | Declaration-owned reversible mutations and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |",
-            "| `review` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling; includes lower roles. |",
-            "| `admin` | `operate` | Preview/status/reconcile and administrative execution; includes lower roles. |",
+            "| `judge` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling. Independent of `write`. |",
+            "| `maintenance` | `operate` | Preview/status/reconcile and administrative execution. Independent of `write`/`judge`. |",
             "",
             "Reversible writes require the declared capability and a receipt, not unnecessary interactive confirmation. Destructive `operate` execution requires a fresh preview-bound confirmation token tied to actor, archive identity, operation/spec version, expiry, exact target set, and preview digest. Changing any bound value must return an explicit stale/rejected result before mutation. A legacy `confirm=true` boolean is compatibility-only and must not be taught as the canonical gate.",
             "",
@@ -272,7 +270,7 @@ def render_standing_manual() -> str:
             "- Top-k/sample result: label it as ranked/sampled or ask `explain` for an exhaustive route.",
             "- Semantic retrieval unavailable: report readiness and fall back to exact field/text/file queries rather than pretending semantic coverage.",
             "- Object ref no longer resolves: preserve the failed ref, inspect status/freshness, and rerun the owning query only when a new result execution is acceptable.",
-            "- Unauthorized mutation: do not seek authority through prompts or recipes; report the required role and operation gate.",
+            "- Unauthorized mutation: do not seek authority through prompts or recipes; report the required capability and operation gate.",
             "- Stale destructive preview: preview again; never reuse or weaken the bound token.",
             "",
             "## CLI installer commands",
@@ -280,7 +278,7 @@ def render_standing_manual() -> str:
             "`polylogue agent` manages this manual and the native client integration; it never touches the archive itself.",
             "",
             "- `polylogue agent manual`: Print the packaged standing manual or deeper reference.",
-            "- `polylogue agent manifest`: Report the role-scoped runtime and six-tool target surfaces.",
+            "- `polylogue agent manifest`: Report the capability-scoped runtime and six-tool target surfaces.",
             "- `polylogue agent install`: Install user-scoped MCP and standing guidance for native clients.",
             "- `polylogue agent status`: Inspect ownership state and native configuration without mutation.",
             "- `polylogue agent doctor`: Run blocking native syntax, ownership, executable, and identity checks.",
@@ -307,7 +305,7 @@ def render_deep_reference() -> str:
         "",
         "## Adjudication boundary",
         "",
-        "The architecture is beads-06’s `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, role-scoped manifest, CLI, Home Manager module, and verification lanes. Its 103-tool-era content is replaced rather than forked; the current snapshot has since grown to 104 compatibility handlers. Current t46.8 declarations remain in flight, so `read` absorbs source row `graph` and `operate` aliases source row `maintenance`. No compatibility handler is deleted by this package.",
+        "The architecture is beads-06’s `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. Its 103-tool-era content is replaced rather than forked; the current snapshot has since grown to 104 compatibility handlers. Current t46.8 declarations remain in flight, so `read` absorbs source row `graph` and `operate` aliases source row `maintenance`. No compatibility handler is deleted by this package.",
         "",
         "## Target transaction declarations",
         "",
@@ -317,7 +315,7 @@ def render_deep_reference() -> str:
             [
                 f"### `{contract.name}`",
                 "",
-                f"- role: `{contract.minimum_role}`",
+                f"- required capability: `{contract.required_capability or 'read'}`",
                 f"- source declarations: {', '.join(f'`{item}`' for item in contract.source_declarations)}",
                 f"- schema status: `{contract.schema_status}`",
                 f"- result semantics: {', '.join(f'`{item.value}`' for item in contract.result_semantics)}",
@@ -387,12 +385,12 @@ def render_deep_reference() -> str:
     )
     for resource in TARGET_RESOURCES:
         lines.append(
-            f"- `{resource.uri_template}` — objects {', '.join(resource.object_kinds)}; role `{resource.minimum_role}`; owner `{resource.migration_owner}`; {resource.authority}."
+            f"- `{resource.uri_template}` — objects {', '.join(resource.object_kinds)}; required capability `{resource.required_capability or 'read'}`; owner `{resource.migration_owner}`; {resource.authority}."
         )
     lines.extend(["", "### Workflow prompts", ""])
     for prompt in TARGET_PROMPTS:
         lines.append(
-            f"- `{prompt.name}` — workflow `{prompt.workflow}`; role `{prompt.minimum_role}`; mutation authority `{prompt.mutation_authority}`; owner `{prompt.migration_owner}`."
+            f"- `{prompt.name}` — workflow `{prompt.workflow}`; required capability `{prompt.required_capability or 'read'}`; mutation authority `{prompt.mutation_authority}`; owner `{prompt.migration_owner}`."
         )
     lines.extend(["", "## Source origins", ""])
     for origin in ORIGIN_MEANINGS:
@@ -415,9 +413,9 @@ def render_deep_reference() -> str:
         [
             "## Packaging and ownership invariants",
             "",
-            "The wheel/sdist package contains the generated text and JSON assets under `polylogue.agent_integration.data`. Installation records content version, aggregate digest, client, role, archive/config identity, and exact native operations in a self-digested state file. Upgrade rewrites only previously owned values or marked blocks. Uninstall removes only unchanged owned operations; operator drift is retained and reported. Symlinked configs and conflicting operator-owned Polylogue entries fail closed. Secrets are never written into generated assets.",
+            "The wheel/sdist package contains the generated text and JSON assets under `polylogue.agent_integration.data`. Installation records content version, aggregate digest, client, capabilities, archive/config identity, and exact native operations in a self-digested state file. Upgrade rewrites only previously owned values or marked blocks. Uninstall removes only unchanged owned operations; operator drift is retained and reported. Symlinked configs and conflicting operator-owned Polylogue entries fail closed. Secrets are never written into generated assets.",
             "",
-            "The Home Manager module remains separate from daemon lifecycle. Enabling agent integration does not start ingestion, grant a higher MCP role, or weaken operation confirmation. `guidance=full` remains the behaviorally complete default; `mcp-only` and `off` are explicit opt-downs.",
+            "The Home Manager module remains separate from daemon lifecycle. Enabling agent integration does not start ingestion, grant additional MCP capability, or weaken operation confirmation. `guidance=full` remains the behaviorally complete default; `mcp-only` and `off` are explicit opt-downs.",
             "",
             "## Post-cutover regeneration checklist",
             "",
@@ -426,7 +424,7 @@ def render_deep_reference() -> str:
             "3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.",
             "4. Run `devtools verify agent-integration --lane live-fastmcp-signatures --json`; use its exact signature diff to update the parameterized contracts.",
             "5. Only after that lane reports exact signature parity, set `TARGET_SCHEMA_STATUS` in `polylogue/agent_integration/spec.py` to `live-verified` and run `devtools render agent-manual`; commit all packaged assets and docs mirrors.",
-            "6. Run `devtools verify agent-integration --require-live`; it must see the role-scoped target tools, the live schema marker, and exact FastMCP signature parity.",
+            "6. Run `devtools verify agent-integration --require-live`; it must see the capability-scoped target tools, the live schema marker, and exact FastMCP signature parity.",
             "7. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.",
             "8. Run clean-home Claude Code, Codex, Gemini, and Hermes installation smoke tests and one cold-agent trial per continuity recipe.",
             "",
@@ -441,11 +439,9 @@ def _static_manifest() -> dict[str, object]:
     return {
         "schema_version": 2,
         "content_version": ASSET_VERSION,
-        "description": "Static six-tool target manifest. `polylogue agent manifest --role ROLE` also reports current declaration reconciliation.",
-        "default_role": "read",
+        "description": "Static six-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` also reports current declaration reconciliation.",
         "clients": list(CLIENTS),
-        "roles": list(ROLES),
-        "role_order": ROLE_ORDER,
+        "mcp_capability_flags": ["write", "judge", "maintenance"],
         "default_read_tools": list(DEFAULT_READ_TOOLS),
         "privileged_tools": list(PRIVILEGED_TOOLS),
         "target_tools": list(ALL_TARGET_TOOLS),
@@ -453,7 +449,7 @@ def _static_manifest() -> dict[str, object]:
         "manual_resources": [
             "polylogue://agent/manual",
             "polylogue://agent/reference",
-            "polylogue://agent/manifest/{role}",
+            "polylogue://agent/manifest",
         ],
         "prompts": [item.name for item in TARGET_PROMPTS],
         "capability_families": [item.id for item in CAPABILITY_FAMILIES],

@@ -27,7 +27,6 @@ from polylogue.mcp.declarations import (
     TARGET_DEFAULT_READ_ALGEBRA,
     TARGET_PROMPTS,
     TARGET_RESOURCES,
-    MCPCapabilities,
     MCPCapabilityFlag,
     MCPResultSemantics,
     MCPTransactionDeclaration,
@@ -504,16 +503,12 @@ if tuple(TOOL_CONTRACT_BY_NAME) != ALL_TARGET_TOOLS:
 
 CAPABILITY_FAMILIES: tuple[CapabilityFamily, ...] = (
     CapabilityFamily("authority", "Archive identity, source coverage, freshness, and readiness", None, "status"),
-    CapabilityFamily(
-        "discovery", "Cross-session, row-level, semantic, aggregate, and prior-art search", None, "query"
-    ),
+    CapabilityFamily("discovery", "Cross-session, row-level, semantic, aggregate, and prior-art search", None, "query"),
     CapabilityFamily("evidence", "Exact objects, transcripts, topology, raw evidence, and citations", None, "read"),
     CapabilityFamily(
         "teaching", "Grammar, fields, values, plans, refs, result semantics, and recovery", None, "explain"
     ),
-    CapabilityFamily(
-        "continuity", "Resume, postmortem, forensic, coordination, and bounded context", None, "context"
-    ),
+    CapabilityFamily("continuity", "Resume, postmortem, forensic, coordination, and bounded context", None, "context"),
     CapabilityFamily("mutation", "Reversible overlays, judgments, saved runs, and administration", "write", "write"),
 )
 

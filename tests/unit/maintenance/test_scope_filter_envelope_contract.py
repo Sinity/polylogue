@@ -195,6 +195,7 @@ def _invoke_daemon_plan(body: dict[str, Any]) -> tuple[dict[str, Any], Maintenan
 def _invoke_mcp_preview() -> tuple[dict[str, Any], MaintenanceScopeFilter]:
     """Drive ``maintenance(operation="preview")`` with the canonical filter args."""
     from polylogue.mcp.server import build_server
+    from tests.infra.mcp import ALL_CAPABILITIES
 
     captured: dict[str, MaintenanceScopeFilter] = {}
 
@@ -202,7 +203,7 @@ def _invoke_mcp_preview() -> tuple[dict[str, Any], MaintenanceScopeFilter]:
         captured["filter"] = scope_filter
         return _operation_for(scope_filter)
 
-    server = build_server(role="admin")
+    server = build_server(capabilities=ALL_CAPABILITIES)
     fn = server._tool_manager._tools["maintenance"].fn
 
     with patch("polylogue.maintenance.planner.preview_backfill", side_effect=_capture):

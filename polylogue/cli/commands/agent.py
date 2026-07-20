@@ -83,9 +83,7 @@ def manual_command(kind: str, output_format: str) -> None:
 @click.option("--enable-judge", is_flag=True, help="Report the surface with judge capability enabled.")
 @click.option("--enable-maintenance", is_flag=True, help="Report the surface with maintenance capability enabled.")
 @click.option("-f", "--format", "output_format", type=_FORMAT, default="json", show_default=True)
-def manifest_command(
-    enable_write: bool, enable_judge: bool, enable_maintenance: bool, output_format: str
-) -> None:
+def manifest_command(enable_write: bool, enable_judge: bool, enable_maintenance: bool, output_format: str) -> None:
     """Report the capability-scoped runtime and six-tool target surfaces.
 
     Read-only by default (no flags). These flags describe the manifest to

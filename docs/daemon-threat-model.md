@@ -72,16 +72,19 @@ The daemon HTTP API exposes archive reads plus explicit user-overlay writes.
 Those overlay writes require either the machine bearer or the scoped
 first-party cookie and an exact-origin request. Archive reset, ingest, and
 maintenance controls are separate machine-bearer capabilities when auth is
-configured. MCP write operations remain gated by the server's `--role write`
-flag.
+configured. MCP write operations remain gated by the server's
+`mcp_write_enabled` config opt-in (`polylogue.toml` `[mcp]` or
+`POLYLOGUE_MCP_WRITE_ENABLED`).
 
-The MCP server has three roles:
+The MCP server has no role ladder (polylogue-800m); each privileged dispatcher
+is its own independent config opt-in, off by default:
 
-| Role | Capabilities |
-|------|-------------|
-| `read` | Query, search, list, get, stats, insights — all safe operations |
-| `write` | Tag management, metadata mutations, session deletion |
-| `admin` | Maintenance operations, index rebuilds, insight refresh |
+| Capability | Enables |
+|------------|---------|
+| _(none; default)_ | Query, read, get, explain, context, status — all safe read operations |
+| `mcp_write_enabled` | `write`/`run`: tag management, metadata mutations, session deletion, saved-query/recipe execution |
+| `mcp_judge_enabled` | `judge`: assertion-candidate judgment |
+| `mcp_maintenance_enabled` | `maintenance`: maintenance operations, index rebuilds, insight refresh |
 
 ## Future Considerations
 

@@ -47,6 +47,11 @@ from polylogue.mcp.declarations import (
 
 LaneStatus = Literal["pass", "fail", "unverified"]
 
+#: Every privileged capability enabled -- used by lanes that want the full
+#: ten-tool declared surface rather than one resolved server config
+#: (polylogue-800m: no role ladder, independent boolean opt-ins).
+_ALL_CAPABILITIES = MCPCapabilities(write=True, judge=True, maintenance=True)
+
 
 class _ToolSurface(Protocol):
     fn: Callable[..., object]

@@ -66,9 +66,9 @@
           "title": "Select a recent provider cohort for a cost audit"
         }
       ],
-      "minimum_role": "read",
       "name": "query",
       "purpose": "Execute the real expression DSL or a declared typed plan and return a bounded, semantics-labelled result set.",
+      "required_capability": null,
       "result_semantics": [
         "exhaustive_page",
         "top_k",
@@ -121,9 +121,9 @@
           "title": "Read a session chronicle"
         }
       ],
-      "minimum_role": "read",
       "name": "read",
       "purpose": "Read a stable URI/object/evidence ref through a declared view, including topology that the in-flight declarations still call graph.",
+      "required_capability": null,
       "result_semantics": [
         "single_object",
         "exhaustive_page",
@@ -162,9 +162,9 @@
           "title": "Resolve the exact evidence block behind a claim"
         }
       ],
-      "minimum_role": "read",
       "name": "get",
       "purpose": "Resolve one exact stable identity without search or ranking ambiguity.",
+      "required_capability": null,
       "result_semantics": [
         "single_object"
       ],
@@ -207,9 +207,9 @@
           "title": "Inspect parser and lowering behavior"
         }
       ],
-      "minimum_role": "read",
       "name": "explain",
       "purpose": "Explain query grammar, fields, values, lowering, result semantics, refs, capabilities, or recovery before guessing.",
+      "required_capability": null,
       "result_semantics": [
         "single_object"
       ],
@@ -259,9 +259,9 @@
           "title": "Compile a resume packet"
         }
       ],
-      "minimum_role": "read",
       "name": "context",
       "purpose": "Compile a bounded, policy-gated context image with receipts and evidence refs for resumption or investigation.",
+      "required_capability": null,
       "result_semantics": [
         "bounded_context"
       ],
@@ -309,9 +309,9 @@
           "title": "Establish archive authority before making a broad claim"
         }
       ],
-      "minimum_role": "read",
       "name": "status",
       "purpose": "Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.",
+      "required_capability": null,
       "result_semantics": [
         "single_object",
         "aggregate"
@@ -364,9 +364,9 @@
           "title": "Add a review tag through the governed write chokepoint"
         }
       ],
-      "minimum_role": "write",
       "name": "write",
       "purpose": "Apply one declaration-owned reversible mutation with actor, target, conflict policy, and receipt.",
+      "required_capability": "write",
       "result_semantics": [
         "mutation"
       ],
@@ -416,9 +416,9 @@
           "title": "Defer a candidate pending stronger evidence"
         }
       ],
-      "minimum_role": "review",
       "name": "judge",
       "purpose": "Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance.",
+      "required_capability": "judge",
       "result_semantics": [
         "mutation"
       ],
@@ -464,9 +464,9 @@
           "title": "Run a saved read-only cost audit"
         }
       ],
-      "minimum_role": "write",
       "name": "run",
-      "purpose": "Execute a saved query or governed recipe ref; any nested mutation inherits its own role and confirmation policy.",
+      "purpose": "Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.",
+      "required_capability": "write",
       "result_semantics": [
         "exhaustive_page",
         "mutation"
@@ -525,9 +525,9 @@
           "title": "Preview an index rebuild before authorization"
         }
       ],
-      "minimum_role": "admin",
       "name": "operate",
       "purpose": "Preview, authorize, execute, inspect, and reconcile administrative maintenance through preview-bound confirmation.",
+      "required_capability": "maintenance",
       "result_semantics": [
         "maintenance"
       ],

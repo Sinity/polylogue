@@ -12,13 +12,13 @@
   },
   "compatibility_surface": {
     "governed_python_absence_count": 4,
-    "minimum_role_counts": {
-      "admin": 1,
+    "python_binding_count": 6,
+    "required_capability_counts": {
+      "judge": 1,
+      "maintenance": 1,
       "read": 6,
-      "review": 1,
       "write": 2
     },
-    "python_binding_count": 6,
     "tool_count": 10,
     "tool_names": [
       "query",
@@ -72,13 +72,13 @@
     "default_read_transactions": [
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "name": "query",
         "object_kinds": [
           "query",
           "result-set"
         ],
         "purpose": "Execute a declared DSL or typed plan with explicit result semantics and continuation.",
+        "required_capability": "read",
         "result_semantics": [
           "exhaustive_page",
           "top_k",
@@ -89,13 +89,13 @@
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "name": "read",
         "object_kinds": [
           "object-ref",
           "evidence-ref"
         ],
         "purpose": "Read any stable archive ref through a declared projection/view.",
+        "required_capability": "read",
         "result_semantics": [
           "single_object",
           "exhaustive_page",
@@ -105,12 +105,12 @@
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "name": "get",
         "object_kinds": [
           "object-ref"
         ],
         "purpose": "Resolve one exact object identity when a generic read would add ambiguity.",
+        "required_capability": "read",
         "result_semantics": [
           "single_object"
         ],
@@ -118,7 +118,6 @@
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "name": "explain",
         "object_kinds": [
           "query",
@@ -126,6 +125,7 @@
           "capability"
         ],
         "purpose": "Discover grammar, fields, values, plans, authority, and recovery routes.",
+        "required_capability": "read",
         "result_semantics": [
           "single_object"
         ],
@@ -133,13 +133,13 @@
       },
       {
         "migration_owner": "polylogue-t46.8.3",
-        "minimum_role": "read",
         "name": "context",
         "object_kinds": [
           "context-snapshot",
           "context-delivery"
         ],
         "purpose": "Compile and retrieve policy-gated bounded context plus receipts.",
+        "required_capability": "read",
         "result_semantics": [
           "bounded_context"
         ],
@@ -147,13 +147,13 @@
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "name": "status",
         "object_kinds": [
           "status",
           "receipt"
         ],
         "purpose": "Read archive, source, embedding, coordination, and operation status.",
+        "required_capability": "read",
         "result_semantics": [
           "single_object",
           "aggregate"
@@ -164,13 +164,13 @@
     "privileged_transactions": [
       {
         "migration_owner": "polylogue-t46.8.3",
-        "minimum_role": "write",
         "name": "write",
         "object_kinds": [
           "object-ref",
           "assertion"
         ],
         "purpose": "Apply a declaration-owned mutation after shared authorization.",
+        "required_capability": "write",
         "result_semantics": [
           "mutation"
         ],
@@ -178,13 +178,13 @@
       },
       {
         "migration_owner": "polylogue-t46.8.3",
-        "minimum_role": "review",
         "name": "judge",
         "object_kinds": [
           "assertion-candidate",
           "judgment"
         ],
         "purpose": "Accept, reject, defer, or supersede candidates without collapsing candidate state.",
+        "required_capability": "judge",
         "result_semantics": [
           "mutation"
         ],
@@ -192,7 +192,6 @@
       },
       {
         "migration_owner": "polylogue-t46.8.3",
-        "minimum_role": "write",
         "name": "run",
         "object_kinds": [
           "saved-query",
@@ -200,6 +199,7 @@
           "result-set"
         ],
         "purpose": "Execute a saved query or governed recipe ref.",
+        "required_capability": "write",
         "result_semantics": [
           "exhaustive_page",
           "mutation"
@@ -208,13 +208,13 @@
       },
       {
         "migration_owner": "polylogue-t46.8.3",
-        "minimum_role": "admin",
         "name": "maintenance",
         "object_kinds": [
           "maintenance-plan",
           "maintenance-operation"
         ],
         "purpose": "Preview, authorize, execute, inspect, and reconcile maintenance operations.",
+        "required_capability": "maintenance",
         "result_semantics": [
           "maintenance"
         ],
@@ -224,51 +224,51 @@
     "prompts": [
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "mutation_authority": "none",
         "name": "resume_context",
+        "required_capability": null,
         "workflow": "resume"
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "mutation_authority": "none",
         "name": "postmortem_last",
+        "required_capability": null,
         "workflow": "postmortem"
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "mutation_authority": "none",
         "name": "decisions_about",
+        "required_capability": null,
         "workflow": "decision-recovery"
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "mutation_authority": "none",
         "name": "unacknowledged_failures",
+        "required_capability": null,
         "workflow": "failure-recovery"
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "mutation_authority": "none",
         "name": "sessions_touching_file",
+        "required_capability": null,
         "workflow": "file-touch"
       },
       {
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "mutation_authority": "none",
         "name": "cost_of",
+        "required_capability": null,
         "workflow": "cost-analysis"
       },
       {
         "migration_owner": "polylogue-t46.8.3",
-        "minimum_role": "read",
         "mutation_authority": "none",
         "name": "agent_coordination_brief",
+        "required_capability": null,
         "workflow": "coordination"
       }
     ],
@@ -276,84 +276,84 @@
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "object_kinds": [
           "session"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://session/{id}"
       },
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "object_kinds": [
           "message"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://message/{id}"
       },
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "object_kinds": [
           "block"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://block/{id}"
       },
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "object_kinds": [
           "action"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://action/{id}"
       },
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "object_kinds": [
           "file"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://file/{id}"
       },
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "object_kinds": [
           "query"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://query/{id}"
       },
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.2",
-        "minimum_role": "read",
         "object_kinds": [
           "result-set"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://result-set/{id}"
       },
       {
         "authority": "read-only object projection; resources never acquire instruction or mutation authority",
         "migration_owner": "polylogue-t46.8.3",
-        "minimum_role": "read",
         "object_kinds": [
           "recall-pack"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://recall-pack/{id}"
       },
       {
         "authority": "executable query vocabulary and recovery guidance; no mutation authority",
         "migration_owner": "polylogue-z9gh.3",
-        "minimum_role": "read",
         "object_kinds": [
           "capability",
           "query",
           "result-set"
         ],
+        "required_capability": null,
         "uri_template": "polylogue://capabilities/query"
       }
     ]
@@ -391,7 +391,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "query:exhaustive_page:envelope",
-          "authority": "mcp-role:read",
+          "authority": "mcp-capability:read",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:query,result-set",
           "lifecycle": "registered-handler-retained"
@@ -439,13 +439,12 @@
         "producer": "polylogue.api.Polylogue.query_units",
         "public_name": "query",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
+        "role_gate": "mcp.capability:read",
         "schema_ref": "polylogue.mcp.server_cutover.query:inspect.signature"
       },
       "minimal_arguments": {
         "expression": "messages where text:needle"
       },
-      "minimum_role": "read",
       "name": "query",
       "object_kinds": [
         "query",
@@ -474,6 +473,7 @@
         "registrar": "register_cutover_read_tools",
         "symbol": "query"
       },
+      "required_capability": null,
       "resource_alternatives": [
         "polylogue://capabilities/query"
       ],
@@ -521,7 +521,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "read:exhaustive_page:envelope",
-          "authority": "mcp-role:read",
+          "authority": "mcp-capability:read",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:object-ref,evidence-ref",
           "lifecycle": "registered-handler-retained"
@@ -569,13 +569,12 @@
         "producer": "polylogue.api.Polylogue.resolve_ref",
         "public_name": "read",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
+        "role_gate": "mcp.capability:read",
         "schema_ref": "polylogue.mcp.server_cutover.read:inspect.signature"
       },
       "minimal_arguments": {
         "ref": "session:codex-session:demo"
       },
-      "minimum_role": "read",
       "name": "read",
       "object_kinds": [
         "object-ref",
@@ -601,6 +600,7 @@
         "registrar": "register_cutover_read_tools",
         "symbol": "read"
       },
+      "required_capability": null,
       "resource_alternatives": [
         "polylogue://capabilities/query"
       ],
@@ -648,7 +648,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "get:single_object:single_object",
-          "authority": "mcp-role:read",
+          "authority": "mcp-capability:read",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:object-ref",
           "lifecycle": "registered-handler-retained"
@@ -696,13 +696,12 @@
         "producer": "polylogue.api.Polylogue.resolve_ref",
         "public_name": "get",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
+        "role_gate": "mcp.capability:read",
         "schema_ref": "polylogue.mcp.server_cutover.get:inspect.signature"
       },
       "minimal_arguments": {
         "ref": "session:codex-session:demo"
       },
-      "minimum_role": "read",
       "name": "get",
       "object_kinds": [
         "object-ref"
@@ -727,6 +726,7 @@
         "registrar": "register_cutover_read_tools",
         "symbol": "get"
       },
+      "required_capability": null,
       "resource_alternatives": [
         "polylogue://capabilities/query"
       ],
@@ -774,7 +774,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "explain:single_object:single_object",
-          "authority": "mcp-role:read",
+          "authority": "mcp-capability:read",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:query,capability,object-ref",
           "lifecycle": "registered-handler-retained"
@@ -822,13 +822,12 @@
         "producer": "polylogue.api.Polylogue.explain_query_expression",
         "public_name": "explain",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
+        "role_gate": "mcp.capability:read",
         "schema_ref": "polylogue.mcp.server_cutover.explain:inspect.signature"
       },
       "minimal_arguments": {
         "subject": "capability"
       },
-      "minimum_role": "read",
       "name": "explain",
       "object_kinds": [
         "query",
@@ -855,6 +854,7 @@
         "registrar": "register_cutover_read_tools",
         "symbol": "explain"
       },
+      "required_capability": null,
       "resource_alternatives": [
         "polylogue://capabilities/query"
       ],
@@ -902,7 +902,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "context:bounded_context:single_object",
-          "authority": "mcp-role:read",
+          "authority": "mcp-capability:read",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:context-snapshot",
           "lifecycle": "registered-handler-retained"
@@ -950,13 +950,12 @@
         "producer": "polylogue.api.Polylogue.context_image_payload",
         "public_name": "context",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
+        "role_gate": "mcp.capability:read",
         "schema_ref": "polylogue.mcp.server_cutover.context:inspect.signature"
       },
       "minimal_arguments": {
         "intent": "resume"
       },
-      "minimum_role": "read",
       "name": "context",
       "object_kinds": [
         "context-snapshot"
@@ -981,6 +980,7 @@
         "registrar": "register_cutover_read_tools",
         "symbol": "context"
       },
+      "required_capability": null,
       "resource_alternatives": [
         "polylogue://capabilities/query"
       ],
@@ -1028,7 +1028,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "status:single_object:single_object",
-          "authority": "mcp-role:read",
+          "authority": "mcp-capability:read",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:status",
           "lifecycle": "registered-handler-retained"
@@ -1076,13 +1076,12 @@
         "producer": "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.stats",
         "public_name": "status",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:read",
+        "role_gate": "mcp.capability:read",
         "schema_ref": "polylogue.mcp.server_cutover.status:inspect.signature"
       },
       "minimal_arguments": {
         "scope": "archive"
       },
-      "minimum_role": "read",
       "name": "status",
       "object_kinds": [
         "status"
@@ -1107,6 +1106,7 @@
         "registrar": "register_cutover_read_tools",
         "symbol": "status"
       },
+      "required_capability": null,
       "resource_alternatives": [
         "polylogue://capabilities/query"
       ],
@@ -1148,7 +1148,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "write:mutation:operation_result",
-          "authority": "mcp-role:write",
+          "authority": "mcp-capability:write",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:object-ref,assertion",
           "lifecycle": "registered-handler-retained"
@@ -1204,7 +1204,7 @@
         "producer": "mutate-write",
         "public_name": "write",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:write",
+        "role_gate": "mcp.capability:write",
         "schema_ref": "polylogue.mcp.server_cutover.write:inspect.signature"
       },
       "minimal_arguments": {
@@ -1212,7 +1212,6 @@
         "session_id": "test:conv-mutation",
         "tag": "review"
       },
-      "minimum_role": "write",
       "name": "write",
       "object_kinds": [
         "object-ref",
@@ -1236,6 +1235,7 @@
         "registrar": "register_cutover_privileged_tools",
         "symbol": "write"
       },
+      "required_capability": "write",
       "resource_alternatives": [],
       "result_semantics": "mutation",
       "retirement_owner": "polylogue-t46.8.3",
@@ -1249,7 +1249,7 @@
     {
       "canonical_plan": "polylogue.api.Polylogue.judge_assertion_candidates",
       "canonical_projection": "envelope:root",
-      "capability": "review:judge",
+      "capability": "judge:judge",
       "compatibility_route": "judge",
       "continuation": {
         "continuation_ref": null,
@@ -1270,7 +1270,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "judge:mutation:envelope",
-          "authority": "mcp-role:review",
+          "authority": "mcp-capability:judge",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:assertion-candidate,judgment",
           "lifecycle": "registered-handler-retained"
@@ -1322,14 +1322,13 @@
         "producer": "polylogue.api.Polylogue.judge_assertion_candidates",
         "public_name": "judge",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:review",
+        "role_gate": "mcp.capability:judge",
         "schema_ref": "polylogue.mcp.server_cutover.judge:inspect.signature"
       },
       "minimal_arguments": {
         "candidate_ref": "assertion:contract-candidate",
         "decision": "accept"
       },
-      "minimum_role": "review",
       "name": "judge",
       "object_kinds": [
         "assertion-candidate",
@@ -1357,6 +1356,7 @@
         "registrar": "register_cutover_privileged_tools",
         "symbol": "judge"
       },
+      "required_capability": "judge",
       "resource_alternatives": [],
       "result_semantics": "mutation",
       "retirement_owner": "polylogue-t46.8.3",
@@ -1393,7 +1393,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "run:exhaustive_page:envelope",
-          "authority": "mcp-role:write",
+          "authority": "mcp-capability:write",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:saved-query,recipe,result-set",
           "lifecycle": "registered-handler-retained"
@@ -1441,13 +1441,12 @@
         "producer": "mutate-run",
         "public_name": "run",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:write",
+        "role_gate": "mcp.capability:write",
         "schema_ref": "polylogue.mcp.server_cutover.run:inspect.signature"
       },
       "minimal_arguments": {
         "ref": "saved-view:contract-view"
       },
-      "minimum_role": "write",
       "name": "run",
       "object_kinds": [
         "saved-query",
@@ -1472,6 +1471,7 @@
         "registrar": "register_cutover_privileged_tools",
         "symbol": "run"
       },
+      "required_capability": "write",
       "resource_alternatives": [],
       "result_semantics": "exhaustive_page",
       "retirement_owner": "polylogue-t46.8.3",
@@ -1485,7 +1485,7 @@
     {
       "canonical_plan": "polylogue.maintenance.planner.preview_backfill",
       "canonical_projection": "operation_result:root",
-      "capability": "admin:maintenance",
+      "capability": "maintenance:maintenance",
       "compatibility_route": "maintenance",
       "continuation": {
         "continuation_ref": null,
@@ -1508,7 +1508,7 @@
       "kernel": {
         "compatibility": {
           "access_result_shape": "maintenance:maintenance:operation_result",
-          "authority": "mcp-role:admin",
+          "authority": "mcp-capability:maintenance",
           "durability": "transport-adapter; domain-owner-controls-durability",
           "identity": "mcp-tool:maintenance-plan,maintenance-operation",
           "lifecycle": "registered-handler-retained"
@@ -1556,13 +1556,12 @@
         "producer": "polylogue.maintenance.planner.preview_backfill",
         "public_name": "maintenance",
         "repair_command": "devtools render mcp-equivalence",
-        "role_gate": "mcp.role:admin",
+        "role_gate": "mcp.capability:maintenance",
         "schema_ref": "polylogue.mcp.server_cutover.maintenance:inspect.signature"
       },
       "minimal_arguments": {
         "operation": "list"
       },
-      "minimum_role": "admin",
       "name": "maintenance",
       "object_kinds": [
         "maintenance-plan",
@@ -1586,6 +1585,7 @@
         "registrar": "register_cutover_privileged_tools",
         "symbol": "maintenance"
       },
+      "required_capability": "maintenance",
       "resource_alternatives": [],
       "result_semantics": "maintenance",
       "retirement_owner": "polylogue-t46.8.3",

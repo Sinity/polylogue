@@ -151,6 +151,7 @@ class TestMCPRealRepositoryPaths:
         assert len(parsed["items"]) == 1
 
     def test_add_list_remove_tag_roundtrip(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from polylogue.mcp.declarations.models import MCPCapabilities
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
@@ -163,7 +164,7 @@ class TestMCPRealRepositoryPaths:
             native_id="real-tag",
             text="tag me",
         )
-        server = build_server(role="write")
+        server = build_server(capabilities=MCPCapabilities(write=True))
 
         initial_tags = json.loads(invoke_surface(server._tool_manager._tools["list_tags"].fn, origin="chatgpt-export"))
         assert initial_tags.get("important", 0) == 0

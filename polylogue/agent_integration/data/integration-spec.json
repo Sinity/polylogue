@@ -3,37 +3,37 @@
     {
       "first_tool": "status",
       "id": "authority",
-      "minimum_role": "read",
+      "required_capability": null,
       "title": "Archive identity, source coverage, freshness, and readiness"
     },
     {
       "first_tool": "query",
       "id": "discovery",
-      "minimum_role": "read",
+      "required_capability": null,
       "title": "Cross-session, row-level, semantic, aggregate, and prior-art search"
     },
     {
       "first_tool": "read",
       "id": "evidence",
-      "minimum_role": "read",
+      "required_capability": null,
       "title": "Exact objects, transcripts, topology, raw evidence, and citations"
     },
     {
       "first_tool": "explain",
       "id": "teaching",
-      "minimum_role": "read",
+      "required_capability": null,
       "title": "Grammar, fields, values, plans, refs, result semantics, and recovery"
     },
     {
       "first_tool": "context",
       "id": "continuity",
-      "minimum_role": "read",
+      "required_capability": null,
       "title": "Resume, postmortem, forensic, coordination, and bounded context"
     },
     {
       "first_tool": "write",
       "id": "mutation",
-      "minimum_role": "write",
+      "required_capability": "write",
       "title": "Reversible overlays, judgments, saved runs, and administration"
     }
   ],
@@ -44,7 +44,7 @@
       "reference_delivery": "Install the generated deep reference as an owned local file.",
       "six_tool_delta": "Only the generated content, target manifest, six-tool vocabulary, continuation recipe, and cache digest change.",
       "standing_delivery": "Install a SessionStart hook whose additionalContext is the complete generated standing manual.",
-      "unchanged": "Hook ownership, idempotent merge, role/env selection, drift detection, and lossless uninstall are unchanged."
+      "unchanged": "Hook ownership, idempotent merge, capability/env selection, drift detection, and lossless uninstall are unchanged."
     },
     {
       "client": "codex",
@@ -66,7 +66,7 @@
       "client": "hermes",
       "mcp_config": "Merge only mcp_servers.polylogue in Hermes YAML.",
       "reference_delivery": "Include the generated deep reference in the owned skill directory.",
-      "six_tool_delta": "The skill body, recipes, role ladder, and cache digest are regenerated for the six-tool surface.",
+      "six_tool_delta": "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the six-tool surface.",
       "standing_delivery": "Install the complete generated manual inside the owned productivity/polylogue SKILL.md.",
       "unchanged": "YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged."
     }
@@ -94,7 +94,12 @@
   "manual_resources": [
     "polylogue://agent/manual",
     "polylogue://agent/reference",
-    "polylogue://agent/manifest/{role}"
+    "polylogue://agent/manifest"
+  ],
+  "mcp_capability_flags": [
+    "write",
+    "judge",
+    "maintenance"
   ],
   "origins": [
     {
@@ -154,63 +159,57 @@
     "run",
     "operate"
   ],
-  "roles": [
-    "read",
-    "write",
-    "review",
-    "admin"
-  ],
   "schema_status": "cutover-parameterized",
   "schema_version": 2,
   "state_schema_version": 1,
   "target_prompts": [
     {
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "mutation_authority": "none",
       "name": "resume_context",
+      "required_capability": null,
       "workflow": "resume"
     },
     {
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "mutation_authority": "none",
       "name": "postmortem_last",
+      "required_capability": null,
       "workflow": "postmortem"
     },
     {
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "mutation_authority": "none",
       "name": "decisions_about",
+      "required_capability": null,
       "workflow": "decision-recovery"
     },
     {
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "mutation_authority": "none",
       "name": "unacknowledged_failures",
+      "required_capability": null,
       "workflow": "failure-recovery"
     },
     {
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "mutation_authority": "none",
       "name": "sessions_touching_file",
+      "required_capability": null,
       "workflow": "file-touch"
     },
     {
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "mutation_authority": "none",
       "name": "cost_of",
+      "required_capability": null,
       "workflow": "cost-analysis"
     },
     {
       "migration_owner": "polylogue-t46.8.3",
-      "minimum_role": "read",
       "mutation_authority": "none",
       "name": "agent_coordination_brief",
+      "required_capability": null,
       "workflow": "coordination"
     }
   ],
@@ -218,84 +217,84 @@
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "object_kinds": [
         "session"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://session/{id}"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "object_kinds": [
         "message"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://message/{id}"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "object_kinds": [
         "block"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://block/{id}"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "object_kinds": [
         "action"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://action/{id}"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "object_kinds": [
         "file"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://file/{id}"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "object_kinds": [
         "query"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://query/{id}"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.2",
-      "minimum_role": "read",
       "object_kinds": [
         "result-set"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://result-set/{id}"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "migration_owner": "polylogue-t46.8.3",
-      "minimum_role": "read",
       "object_kinds": [
         "recall-pack"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://recall-pack/{id}"
     },
     {
       "authority": "executable query vocabulary and recovery guidance; no mutation authority",
       "migration_owner": "polylogue-z9gh.3",
-      "minimum_role": "read",
       "object_kinds": [
         "capability",
         "query",
         "result-set"
       ],
+      "required_capability": null,
       "uri_template": "polylogue://capabilities/query"
     }
   ],

@@ -73,12 +73,20 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 ### Daemon convergence: explicit stages, no implicit storage upgrade
 - **Chosen**: Daemon runs named convergence stages (FTS freshness, insight refresh, embedding) on a schedule.
 - **Rejected**: Event-driven cascade — harder to reason about, harder to test.
-- **Constraint**: Local HTTP API is read-only by default; write/mutation requires explicit role.
+- **Constraint**: Local HTTP API is read-only by default; write/mutation requires explicit config opt-in.
 
-### MCP server: read/write/admin role split
-- **Chosen**: Three MCP roles. Read tools always available. Write tools require `--role write`. Admin tools require `--role admin`.
-- **Rejected**: Single unrestricted MCP server — unsafe for automated agent use.
-- **Constraint**: `polylogue-mcp` CLI entry point with `--role` flag.
+### MCP server: independent capability opt-ins, no role ladder
+- **Chosen** (polylogue-800m, superseding the earlier three-role-ladder design below): the
+  six read tools are always available. Write (`write`/`run`), judge (`judge`), and
+  maintenance (`maintenance`) are each an independent boolean config opt-in
+  (`polylogue.toml` `[mcp]` or `POLYLOGUE_MCP_*_ENABLED`), resolved once at server startup.
+  Enabling one does not imply another.
+- **Rejected**: Single unrestricted MCP server — unsafe for automated agent use. Also
+  rejected on revisit: the original ordered role ladder (`read < write < review < admin`,
+  each tier including the previous) — a role ladder is not a product concept the operator
+  wants; independent flags avoid a tier silently granting an unrelated capability.
+- **Constraint**: `polylogue-mcp` CLI entry point takes no capability flags; config is the
+  sole authority.
 
 ### Browser capture: unpacked extension + local receiver
 - **Chosen**: MV3 browser extension captures provider-native page/app evidence

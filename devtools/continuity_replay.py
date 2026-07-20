@@ -196,7 +196,7 @@ class MCPContinuityRoute:
         services = RuntimeServices(config=config, db_path=config.db_path)
         _set_runtime_services(services)
         self._services = services
-        self._server = build_server(role="read", services=services)
+        self._server = build_server(services=services)
         self._discovery = _registered_discovery(self._server, self.transport_name)
         if self.discovery_mutator is not None:
             self._discovery = require_json_document(
@@ -335,7 +335,7 @@ class StdioMCPContinuityRoute:
         )
         parameters = StdioServerParameters(
             command=sys.executable,
-            args=["-c", "from polylogue.mcp.cli import main; main()", "--role", "read"],
+            args=["-c", "from polylogue.mcp.cli import main; main()"],
             env=environment,
             cwd=str(Path.cwd()),
         )

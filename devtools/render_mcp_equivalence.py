@@ -39,7 +39,9 @@ def _transaction_payload(item: MCPTransactionDeclaration) -> dict[str, object]:
 def build_equivalence_payload() -> dict[str, object]:
     """Return the stable generated map consumed by drift checks and operators."""
 
-    capability_counts = Counter(declaration.required_capability or "read" for declaration in MCP_TOOL_DECLARATIONS)
+    capability_counts: Counter[str] = Counter(
+        declaration.required_capability or "read" for declaration in MCP_TOOL_DECLARATIONS
+    )
     read_retirements = sorted(
         declaration.name for declaration in MCP_TOOL_DECLARATIONS if declaration.retirement_owner == "polylogue-t46.8.2"
     )
@@ -53,7 +55,7 @@ def build_equivalence_payload() -> dict[str, object]:
         declaration.name for declaration in MCP_TOOL_DECLARATIONS if declaration.python_parity.binding is None
     )
 
-    capability_order = ("read", "write", "judge", "maintenance")
+    capability_order: tuple[str, ...] = ("read", "write", "judge", "maintenance")
 
     return {
         "schema_version": SCHEMA_VERSION,

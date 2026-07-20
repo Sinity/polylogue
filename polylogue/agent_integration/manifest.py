@@ -11,7 +11,7 @@ from polylogue.agent_integration.spec import (
     TARGET_SCHEMA_STATUS,
     TOOL_CONTRACTS,
 )
-from polylogue.mcp.declarations import MCPCapabilities, TARGET_PROMPTS, TARGET_RESOURCES, declared_tool_names
+from polylogue.mcp.declarations import TARGET_PROMPTS, TARGET_RESOURCES, MCPCapabilities, declared_tool_names
 from polylogue.version import POLYLOGUE_VERSION
 
 _MANUAL_RESOURCES = (
