@@ -975,7 +975,11 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         if spec.provider is Provider.HERMES and hermes_state.looks_like_state_db_payload(record):
             return hermes_state.parse_state_db_payload(record, spec.fallback_id)
         if spec.provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_payload(record):
-            return hermes_verification.parse_verification_evidence_db_payload(record, spec.fallback_id)
+            return hermes_verification.parse_verification_evidence_db_payload(
+                record,
+                spec.fallback_id,
+                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+            )
         if spec.provider is Provider.HERMES and hermes_spans.looks_like_atif_payload(record):
             return [
                 hermes_spans.parse_atif_document(

@@ -274,6 +274,132 @@ def test_parse_is_idempotent_across_repeated_reads(tmp_path: Path) -> None:
     assert [s.model_dump(mode="json") for s in first] == [s.model_dump(mode="json") for s in second]
 
 
+def test_two_profiles_with_the_same_raw_session_id_do_not_collapse(tmp_path: Path) -> None:
+    """The actual collapse bug polylogue-y9zx fixes (mirrors fs1.14 / PR #3224
+    for hermes_spans.py): two separate Hermes installs (profiles) reusing the
+    same raw session id must produce two distinct verification-ledger archive
+    sessions with two distinct parent edges, never one silently overwriting
+    the other."""
+
+    profile_a = tmp_path / "install-a"
+    profile_b = tmp_path / "install-b"
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+
+    sessions_a = hermes_verification.parse_verification_evidence_db(path, profile_root=profile_a)
+    sessions_b = hermes_verification.parse_verification_evidence_db(path, profile_root=profile_b)
+
+    ids_a = {session.provider_session_id for session in sessions_a}
+    ids_b = {session.provider_session_id for session in sessions_b}
+    assert ids_a.isdisjoint(ids_b)
+
+    parents_a = {session.parent_session_provider_id for session in sessions_a}
+    parents_b = {session.parent_session_provider_id for session in sessions_b}
+    assert parents_a.isdisjoint(parents_b)
+
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    session_a = next(
+        s for s in sessions_a if s.provider_session_id.startswith("verification:verify-session-redacted-1")
+    )
+    expected_key = profile_key(profile_a)
+    assert (
+        session_a.provider_session_id
+        == f"verification:{qualified_session_id('verify-session-redacted-1', expected_key)}"
+    )
+    assert session_a.parent_session_provider_id == qualified_session_id("verify-session-redacted-1", expected_key)
+
+
+def test_verification_family_prefix_stays_distinguishable_from_atif_atof_observer_family(tmp_path: Path) -> None:
+    """The ``verification:`` family prefix must remain distinguishable from
+    ATIF/ATOF's ``observer:`` family even when both qualify the same raw
+    session id against the same profile -- these are independently-acquired
+    evidence classes that must never collide on archive session identity."""
+
+    profile_root = tmp_path / "hermes-install"
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+
+    sessions = hermes_verification.parse_verification_evidence_db(path, profile_root=profile_root)
+    session_1 = next(s for s in sessions if "verify-session-redacted-1" in s.provider_session_id)
+
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+    from polylogue.sources.parsers.hermes_spans import observer_session_provider_id as atof_observer_id
+
+    key = profile_key(profile_root)
+    atof_id_for_same_raw_id_and_profile = atof_observer_id("verify-session-redacted-1", key)
+
+    assert session_1.provider_session_id != atof_id_for_same_raw_id_and_profile
+    assert session_1.provider_session_id == f"verification:{qualified_session_id('verify-session-redacted-1', key)}"
+    assert atof_id_for_same_raw_id_and_profile == f"observer:{qualified_session_id('verify-session-redacted-1', key)}"
+
+
+def test_verification_asserts_profile_qualified_parent_session_link(tmp_path: Path) -> None:
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+    profile_root = tmp_path / "hermes-install"
+
+    sessions = hermes_verification.parse_verification_evidence_db(path, profile_root=profile_root)
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    expected_key = profile_key(profile_root)
+    for session in sessions:
+        raw_id = session.provider_session_id.removeprefix("verification:").split("@profile-", 1)[0]
+        assert session.parent_session_provider_id == qualified_session_id(raw_id, expected_key)
+
+    fidelity = hermes_verification.import_fidelity_declaration(sessions)
+    assert fidelity.capabilities["parent_session_link"].status == "inferred"
+
+
+def test_verification_fails_closed_without_a_known_profile_root(tmp_path: Path) -> None:
+    """No profile_root means no parent edge -- a guessed edge is worse than
+    no edge; the (unqualified) session identity itself must still be stable."""
+
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+
+    sessions_unknown_profile = hermes_verification.parse_verification_evidence_db(path)
+    assert {s.provider_session_id for s in sessions_unknown_profile} == {
+        "verification:verify-session-redacted-1",
+        "verification:verify-session-redacted-2",
+    }
+    assert all(s.parent_session_provider_id is None for s in sessions_unknown_profile)
+
+    fidelity = hermes_verification.import_fidelity_declaration(sessions_unknown_profile)
+    assert fidelity.capabilities["parent_session_link"].status == "absent"
+
+
+def test_dispatch_wires_profile_root_from_source_path_for_verification_marker(tmp_path: Path) -> None:
+    """Mirrors the ATIF dispatch wiring: the dispatch call site derives
+    profile_root from the source path's parent directory, so two installs
+    whose marker payloads are dispatched from different source paths get
+    distinct, non-colliding session identity without the caller having to
+    know about profile qualification at all."""
+
+    install_a = tmp_path / "install-a"
+    install_b = tmp_path / "install-b"
+    install_a.mkdir()
+    install_b.mkdir()
+    path_a = install_a / "verification_evidence.db"
+    path_b = install_b / "verification_evidence.db"
+    _write_verification_evidence_db(path_a)
+    _write_verification_evidence_db(path_b)
+
+    from polylogue.core.enums import Provider
+
+    payload_a = hermes_verification.marker_payload(path_a)
+    payload_b = hermes_verification.marker_payload(path_b)
+
+    sessions_a = parse_payload(Provider.HERMES, payload_a, "fallback-id", source_path=str(path_a))
+    sessions_b = parse_payload(Provider.HERMES, payload_b, "fallback-id", source_path=str(path_b))
+
+    ids_a = {session.provider_session_id for session in sessions_a}
+    ids_b = {session.provider_session_id for session in sessions_b}
+    assert ids_a.isdisjoint(ids_b)
+    assert all(session.parent_session_provider_id for session in sessions_a)
+    assert all(session.parent_session_provider_id for session in sessions_b)
+
+
 def test_empty_verification_evidence_db_produces_no_sessions_not_a_crash(tmp_path: Path) -> None:
     path = tmp_path / "verification_evidence.db"
     with sqlite3.connect(path) as conn:

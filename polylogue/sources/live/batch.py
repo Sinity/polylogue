@@ -1726,6 +1726,7 @@ class LiveBatchProcessor:
                         sessions = hermes_verification.parse_verification_evidence_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
+                            profile_root=Path(record.source_path).parent,
                         )
                     elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None:
