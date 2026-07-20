@@ -38,6 +38,10 @@ ObjectRefKind: TypeAlias = Literal[
     "github-issue",
     "github-pr",
     "github-review",
+    # Beads issue identity as an independently-observed repository effect
+    # (polylogue-1vpm.6.2). Distinct from ``github-issue``: a Beads issue is
+    # never a GitHub-hosted identity even when both trackers exist in one repo.
+    "beads-issue",
     # Analysis-provenance object kinds (polylogue-rxdo epic). Most refs land
     # here before their backing storage tiers exist; annotation-batch now
     # resolves through durable user.db storage (polylogue-rxdo.7.1). Do not append a
@@ -123,6 +127,7 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "github-issue": "github-issue",
     "github-pr": "github-pr",
     "github-review": "github-review",
+    "beads-issue": "beads-issue",
     "query": "query",
     "query-run": "query-run",
     "result-set": "result-set",

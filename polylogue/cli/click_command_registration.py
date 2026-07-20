@@ -110,6 +110,7 @@ _SHORT_HELP: dict[str, str] = {
     "note": "Capture a terminal memory candidate.",
     "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
+    "reconcile_work_effects": "Reconcile a work-evidence graph against observed git/Beads effects.",
     "reset": "Reset local archive state.",
     "scan_secrets": "Scan a session for credential-shaped content (polylogue-27m).",
     "status": "Show daemon and archive status.",
@@ -139,6 +140,7 @@ _GROUP_ATTRS: dict[str, str] = {
 _COMMAND_ATTRS: dict[str, str] = {
     "import_command": "import_command",
     "judge": "judge_command",
+    "reconcile_work_effects": "reconcile_work_effects_command",
 }
 
 
@@ -186,6 +188,7 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("excise"),
     _L("insights"),
     _L("maintenance"),
+    _L("reconcile_work_effects"),
     _L("reset"),
     _L("scan_secrets"),
     _L("status"),
