@@ -3393,6 +3393,81 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
         ).fetchone() == (accepted_raw_id,)
 
 
+def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_path: Path) -> None:
+    """Pins the exact narrow scoping of the polylogue-emx2 fix (de0b2df7a regression, polylogue-lvz6 triage).
+
+    ``raw_membership_authority_complete()`` collapses three distinct
+    membership-decision states into one boolean: ``decision IS NULL``
+    (genuinely async-pending -- censused but not yet arbitrated by the
+    raw-materialization conveyor, ``sources/revision_backfill.py``) and
+    ``decision IN ('ambiguous', 'deferred')`` (arbitration already ran and
+    concluded a real conflict that needs new evidence, not time, to
+    resolve). Only the first is a legitimate "not a failure, hand off to the
+    conveyor" hand-off; the second is a decided outcome that must surface as
+    a failure -- ``LiveBatchProcessor._ingest_full_records_archive`` uses
+    ``raw_membership_decision_pending`` (not the coarse boolean alone) at
+    both of its full-ingest injection points to make exactly this
+    distinction (batch.py, the membership-governed branch and the
+    classify_raw_revision_cohort branch).
+
+    This is an archive-tier predicate test rather than a full watcher
+    end-to-end scenario because, by construction,
+    ``LiveBatchProcessor._apply_membership_sessions`` always resolves the
+    raw it just censused synchronously within the same call (both of its
+    current call sites pass ``allow_current_complete_raw=True``) -- so a
+    raw's own decision is never observed as NULL immediately after that
+    call returns. Genuinely NULL decisions persist only across the
+    conveyor's own two-phase census-then-classify split
+    (``census_historical_revision_evidence`` /
+    ``backfill_historical_revision_evidence``), which this test reproduces
+    directly against the archive tier: census without classification (NULL,
+    pending) versus census with an ambiguous classification (decided,
+    unresolved).
+    """
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="pending-vs-ambiguous",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="hello")],
+    )
+    projection = session_revision_projection(session)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"native_id":"pending-vs-ambiguous"}\n',
+            source_path=str(tmp_path / "pending-vs-ambiguous.jsonl"),
+            acquired_at_ms=1,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [session],
+            parser_fingerprint="test-parser",
+            censused_at_ms=1,
+        )
+
+        # Census complete, classification never run: decision IS NULL. This
+        # is the genuinely async-pending state -- not a failure.
+        assert archive.raw_membership_authority_complete(raw_id) is False
+        assert archive.raw_membership_decision_pending(raw_id) is True
+
+        # Arbitration now runs and concludes ambiguous (a decided conflict,
+        # e.g. the conveyor found no unique growth chain). This is no longer
+        # pending -- it must surface as a failure, not defer forever.
+        archive.apply_raw_membership_classification(
+            "codex:pending-vs-ambiguous",
+            MembershipClassification((), (), (raw_id,)),
+            {raw_id: session},
+            {raw_id: projection},
+            acquired_at_ms=2,
+        )
+        assert archive.raw_membership_authority_complete(raw_id) is False
+        assert archive.raw_membership_decision_pending(raw_id) is False
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute(
+                "SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)
+            ).fetchone() == ("ambiguous",)
+
+
 def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_head(tmp_path: Path) -> None:
     """A current parse of the accepted raw is authority, even after parser drift.
 

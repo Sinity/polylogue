@@ -1653,22 +1653,35 @@ def _browser_capture_payload(*, provider_session_id: str, assistant_turn_id: str
 
 
 @pytest.mark.asyncio
-async def test_live_full_ingest_over_ambiguous_membership_defers_instead_of_failing(
+async def test_live_full_ingest_over_ambiguous_membership_fails_closed_with_diagnostic(
     workspace_env: dict[str, Path],
 ) -> None:
-    """Regression test for polylogue-emx2 (adoption idempotency). Live
-    evidence 2026-07-18: 24,626/25,324 complete-census raws in the production
-    archive had a pending (NULL/'ambiguous') membership decision --
-    classify_membership_revisions correctly refuses to pick a winner between
-    two genuinely conflicting browser-capture snapshots of the same session,
-    but before this fix the watcher's full-ingest aggregation
-    (_ingest_full_paths_sync) silently counted that outcome as a FAILED
-    file: no exception was ever raised, no log line was ever written, yet
-    the cursor was marked failed and the file was retried on every
-    subsequent catch-up sweep with no progress. This proves the fix: a raw
-    whose census completed but whose authority decision is legitimately
-    deferred to async arbitration is treated as succeeded/idempotent, not
-    failed.
+    """Regression test for polylogue-emx2 (adoption idempotency), corrected.
+
+    The original polylogue-emx2 fix (PR #3129) shipped as
+    ``raw_membership_authority_complete()``, a boolean that collapses three
+    distinct membership-decision states: ``decision IS NULL`` (genuinely
+    async-pending, arbitrated later by the raw-materialization conveyor --
+    the true motivating production scenario, 24,626/25,324 complete-census
+    raws mid-restore), and ``decision IN ('ambiguous', 'deferred')``
+    (arbitration already ran and concluded a real, byte-level conflict that
+    needs new evidence, not time, to resolve). This test's own scenario --
+    two genuinely conflicting browser-capture snapshots of one session, where
+    identity is not preserved and the content frontier does not strictly
+    grow -- produces the latter: ``classify_membership_revisions`` returns
+    ``ambiguous``, not ``accepted``, synchronously, with no exception raised.
+    The original version of this test asserted that outcome must defer
+    (not fail); that was wrong -- an ``ambiguous`` decision is a *decided*
+    conflict, not pending state, and correctly regressed 5 other watcher
+    tests (polylogue-lvz6 triage, bisected to commit de0b2df7a) that pin the
+    opposite fail-closed invariant for the same decision value
+    (#2684/#2716/#2718/#2837). This corrected version proves: the ambiguous
+    outcome now surfaces as a failed file, with a diagnostic log line (unlike
+    the pre-#3129 silence), while the first accepted snapshot's content is
+    untouched. The genuinely-NULL-must-defer case emx2 actually motivates is
+    covered separately by
+    ``test_raw_membership_decision_pending_distinguishes_null_from_ambiguous``
+    in ``tests/unit/sources/test_live_batch_support.py``.
     """
     root = workspace_env["data_root"] / "browser-capture"
     chatgpt_dir = root / "chatgpt"
@@ -1702,7 +1715,8 @@ async def test_live_full_ingest_over_ambiguous_membership_defers_instead_of_fail
         # Second snapshot: same message count/shape but a genuinely
         # different assistant turn identity -- classify_membership_revisions
         # cannot pick a winner (identity not preserved, frontier doesn't
-        # strictly grow) and correctly returns ambiguous, not accepted.
+        # strictly grow) and correctly returns ambiguous, not accepted. This
+        # is a decided conflict, not async-pending state, so it must fail.
         source_path.write_text(
             json.dumps(
                 _browser_capture_payload(
@@ -1714,20 +1728,33 @@ async def test_live_full_ingest_over_ambiguous_membership_defers_instead_of_fail
             encoding="utf-8",
         )
         second = await processor.ingest_files([source_path], emit_event=False)
-        assert second.failed_file_count == 0, "ambiguous membership decision must defer, not fail"
-        assert second.succeeded_file_count == 1
+        assert second.succeeded_file_count == 0
+        assert second.failed_file_count == 1, "a decided ambiguous membership conflict must fail closed"
 
         record = cursor.get_record(source_path)
         assert record is not None
-        assert record.failure_count == 0
+        assert record.failure_count == 1
 
-        # Idempotent re-observation: identical bytes must not be reprocessed
-        # as a fresh failure/retry.
-        third = await processor.ingest_files([source_path], emit_event=False)
-        assert third.failed_file_count == 0
-        record_after_replay = cursor.get_record(source_path)
-        assert record_after_replay is not None
-        assert record_after_replay.failure_count == 0
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+            decisions = conn.execute(
+                "SELECT decision FROM raw_session_memberships WHERE logical_source_key = 'chatgpt:conv-emx2' "
+                "ORDER BY raw_id"
+            ).fetchall()
+            assert decisions == [("ambiguous",), ("ambiguous",)]
+
+        # The first accepted snapshot's content remains queryable; the
+        # ambiguous second observation has no deletion authority over it.
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            assert conn.execute(
+                """
+                SELECT b.search_text
+                FROM sessions AS s
+                JOIN messages AS m USING (session_id)
+                JOIN blocks AS b USING (message_id)
+                WHERE s.native_id = 'conv-emx2'
+                ORDER BY m.position, b.position
+                """
+            ).fetchall() == [("hello",), ("hi",)]
     finally:
         await archive.close()
 

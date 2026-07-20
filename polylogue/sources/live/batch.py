@@ -1822,8 +1822,21 @@ class LiveBatchProcessor:
                             )
                             plan = archive.classify_raw_revision_cohort(logical_source_key)
                             if not plan.accepted_raw_ids:
-                                # No candidate accepted yet -- deferred, not failed.
-                                result.deferred_raw_ids[record.raw_id] = record_raw_id
+                                # classify_raw_revision_cohort is a synchronous,
+                                # purely byte-level classification (no async
+                                # conveyor revisits it) -- an empty cohort here
+                                # is a genuine, terminal rewrite/divergence
+                                # conflict, not a pending hand-off. Leave this
+                                # raw out of both raw_ids and deferred_raw_ids so
+                                # the caller's aggregation counts it as a real
+                                # failure (fail-closed), with a log line so the
+                                # cause is diagnosable.
+                                logger.warning(
+                                    "live.watcher: no unique byte-revision candidate accepted for %s "
+                                    "(logical_source_key=%s) -- surfacing as failed",
+                                    record.source_path,
+                                    logical_source_key,
+                                )
                                 continue
                             parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
                             session_id, applied_raw_ids = archive.apply_raw_revision_replay(
@@ -1862,11 +1875,27 @@ class LiveBatchProcessor:
                         )
                     if raw_authority_complete:
                         result.raw_ids[record.raw_id] = record_raw_id
-                    else:
-                        # Census recorded, no exception -- the raw-authority
-                        # protocol's own async classification hasn't decided
-                        # this raw yet. Not a failure; see deferred_raw_ids.
+                    elif archive.raw_membership_decision_pending(source_raw_id):
+                        # Census recorded, no exception, decision IS NULL -- the
+                        # raw-authority protocol's own async classification (the
+                        # raw-materialization conveyor) hasn't arbitrated this
+                        # raw yet. Not a failure; see deferred_raw_ids.
                         result.deferred_raw_ids[record.raw_id] = record_raw_id
+                    else:
+                        # Decision is 'ambiguous'/'deferred' -- arbitration
+                        # already ran and concluded a genuine, unresolved
+                        # conflict. That is a decided outcome, not pending
+                        # state, so it must surface as a failure (fail-closed).
+                        # Leave this raw out of both raw_ids and
+                        # deferred_raw_ids so the caller's aggregation counts
+                        # it as a real failure, with a log line so the cause is
+                        # diagnosable (unlike the pre-fix silent mismark).
+                        logger.warning(
+                            "live.watcher: membership decision unresolved (ambiguous/deferred) for %s "
+                            "raw=%s -- surfacing as failed, not deferred",
+                            record.source_path,
+                            source_raw_id,
+                        )
                     result.session_ids.extend(record_session_ids)
                     result.session_count += record_session_count
                     result.message_count += record_message_count
