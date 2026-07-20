@@ -303,6 +303,68 @@ def insights_status_command(
     _render_status_plain(report)
 
 
+@ops_insights_command.command("hermes-health")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.pass_context
+def insights_hermes_health_command(ctx: click.Context, output_format: str | None) -> None:
+    """Report the bounded Hermes-to-Polylogue integration health rollup (fs1.15).
+
+    Composes existing per-source freshness, dry-run parser/fidelity,
+    convergence debt, lifecycle-event, and context-delivery-correlation
+    evidence into one read-only view. Reports an explicit
+    disabled/unavailable/degraded/healthy verdict rather than a silent zero.
+    """
+    env: AppEnv = ctx.obj
+    health = run_coroutine_sync(env.polylogue.hermes_integration_health())
+    if _status_wants_json(ctx, output_format=output_format):
+        emit_success(health.to_dict())
+        return
+    _render_hermes_health_plain(health)
+
+
+def _render_hermes_health_plain(health: object) -> None:
+    from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
+
+    assert isinstance(health, HermesIntegrationHealth)
+    click.echo(f"Hermes integration: {health.verdict} (enabled={health.enabled})")
+    click.echo(f"  {health.enabled_reason}")
+    if not health.enabled:
+        return
+    click.echo("")
+    click.echo(f"Sources ({len(health.sources)}):")
+    for source in health.sources:
+        click.echo(
+            f"  {source.source_ref} [{source.source_class}] stage={source.stage} "
+            f"state={source.operational_state} parse={source.parse_state}"
+        )
+    if health.parser_failures:
+        click.echo("")
+        click.echo(f"Parser failures ({len(health.parser_failures)}):")
+        for failure in health.parser_failures:
+            click.echo(f"  {failure.source_ref}: {failure.reason}")
+    click.echo("")
+    click.echo(
+        f"Convergence debt: failed={health.convergence_debt_failed_count} "
+        f"retry_due={health.convergence_debt_retry_due_count}"
+    )
+    click.echo(
+        f"Lifecycle debt: sessions_checked={health.lifecycle_debt.sessions_checked} "
+        f"unpaired={health.lifecycle_debt.unpaired_event_count} "
+        f"unknown_refs={health.lifecycle_debt.unknown_message_reference_count}"
+    )
+    click.echo(
+        f"Delivery correlation: sessions_checked={health.delivery_correlation.sessions_checked} "
+        f"available={health.delivery_correlation.available_count} "
+        f"unavailable={health.delivery_correlation.unavailable_count}"
+    )
+    if health.caveats:
+        click.echo("")
+        click.echo("Caveats:")
+        for caveat in health.caveats:
+            click.echo(f"  - {caveat}")
+
+
 @ops_insights_command.command("export")
 @click.option("--out", "output_path", required=True, type=click.Path(path_type=Path), help="Output bundle directory.")
 @click.option("--insight", "insights", multiple=True, help="Insight to include. Defaults to all exportable insights.")

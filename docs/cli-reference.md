@@ -538,9 +538,10 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  audit   Report per-product rigor profile across materialized insights...
-  export  Export versioned archive-insight bundles.
-  status  Report insight materialization coverage and readiness.
+  audit          Report per-product rigor profile across materialized...
+  export         Export versioned archive-insight bundles.
+  hermes-health  Report the bounded Hermes-to-Polylogue integration...
+  status         Report insight materialization coverage and readiness.
 ```
 
 ## Operations

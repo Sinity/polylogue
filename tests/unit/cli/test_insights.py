@@ -523,6 +523,36 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     assert "session_profiles: degraded" in result.output
 
 
+def test_insights_hermes_health_json_reports_disabled_without_a_hermes_root(
+    cli_workspace: CliWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No Hermes runtime root discovered on this host is an explicit disabled verdict (fs1.15)."""
+
+    monkeypatch.setenv("HOME", str(cli_workspace["data_root"] / "no-hermes-home"))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["ops", "insights", "hermes-health", "--format", "json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    assert payload["enabled"] is False
+    assert payload["verdict"] == "disabled"
+    assert payload["sources"] == []
+    assert payload["parser_failures"] == []
+
+
+def test_insights_hermes_health_plain_reports_disabled_without_a_hermes_root(
+    cli_workspace: CliWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(cli_workspace["data_root"] / "no-hermes-home"))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["ops", "insights", "hermes-health"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "Hermes integration: disabled" in result.output
+
+
 def test_insights_audit_json(cli_workspace: CliWorkspace) -> None:
     """``insights audit`` returns the per-product rigor profile (#1275)."""
 
