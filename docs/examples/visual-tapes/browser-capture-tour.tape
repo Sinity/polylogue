@@ -10,9 +10,9 @@ Set Width 1320
 Set Height 680
 Set Padding 20
 
-Type "devtools workspace dev-loop --isolated-ports --browser-provider-live-follow --json > browser-capture-tour.json"
+Type "devtools workspace dev-loop --isolated-ports --browser-provider-live-follow --json > browser-capture-tour.json && printf 'CAP''TURED\n'"
 Enter
-Sleep 24s
+Wait+Screen@180s /CAPTURED/
 Type "python - <<'PY'"
 Enter
 Type "import json"

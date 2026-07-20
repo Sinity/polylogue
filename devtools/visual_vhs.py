@@ -77,7 +77,13 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
             # "\[\]> \[\]", into the committed PNG).
             "Type \"PS1='> '\"",
             "Enter",
-            "Type \"mkdir -p evidence-receipt && cd evidence-receipt && polylogue demo receipts --compact >/dev/null && printf 'READY\\n'\"",
+            # The completion marker is split ('REA''DY', adjacent bash
+            # single-quotes that concatenate at parse time) so the literal
+            # substring "READY" never appears in the *typed* command line
+            # itself -- otherwise Wait+Screen matches the terminal's own
+            # echo of the not-yet-executed command instantly, before the
+            # command has actually run (polylogue-93cp).
+            "Type \"mkdir -p evidence-receipt && cd evidence-receipt && polylogue demo receipts --compact >/dev/null && printf 'REA''DY\\n'\"",
             "Enter",
             "Wait+Screen /READY/",
             'Type "clear"',
@@ -95,16 +101,30 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
             "Sleep 3s",
         ),
         output_width=132,
-        output_height=34,
+        output_height=29,
     ),
     VHSTapeSpec(
         name="reader-evidence-tour",
         description="Browserless local reader evidence lane against synthetic fixtures",
         display_command=("devtools", "lab", "smoke", "run", "reader-visual-smoke"),
         capture_steps=(
-            'Type "devtools lab smoke run reader-visual-smoke --json --report-dir reader-evidence-tour"',
+            # Run the slow part (pytest collection over tests/visual, ~20s+
+            # and highly load-dependent) off-camera with a completion marker,
+            # mirroring the evidence-receipt pattern -- the previous "Sleep
+            # 5s" budget was nowhere near long enough, which committed a
+            # frame with only the bare command line and no output at all
+            # (polylogue-93cp). The marker is split ('REA''DY') so the
+            # literal substring never appears in the typed command line
+            # itself -- otherwise Wait+Screen matches the terminal's own
+            # echo of the not-yet-executed command instantly.
+            "Hide",
+            "Type \"devtools lab smoke run reader-visual-smoke --json --report-dir reader-evidence-tour >/dev/null 2>&1 && printf 'REA''DY\\n'\"",
             "Enter",
-            "Sleep 5s",
+            "Wait+Screen@150s /READY/",
+            'Type "clear"',
+            "Enter",
+            "Sleep 200ms",
+            "Show",
             "Type \"python -m json.tool reader-evidence-tour/reader-visual-smoke.json | sed -n '1,80p'\"",
             "Enter",
             "Sleep 2s",
@@ -117,9 +137,18 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
         description="Browser-backed deterministic ChatGPT/Claude live-follow proof",
         display_command=("devtools", "workspace", "dev-loop", "--browser-provider-live-follow"),
         capture_steps=(
-            'Type "devtools workspace dev-loop --isolated-ports --browser-provider-live-follow --json > browser-capture-tour.json"',
+            # Wait for a completion marker instead of a fixed "Sleep 24s" --
+            # real headless-Chrome browser-capture automation is highly
+            # load-dependent and a fixed 24s budget let the later heredoc
+            # get typed as pending input while the command was still
+            # running, committing a frame with no printed results
+            # (polylogue-93cp). The marker is split ('CAP''TURED') so the
+            # literal substring never appears in the typed command line
+            # itself -- otherwise Wait+Screen matches the terminal's own
+            # echo of the not-yet-executed command instantly.
+            "Type \"devtools workspace dev-loop --isolated-ports --browser-provider-live-follow --json > browser-capture-tour.json && printf 'CAP''TURED\\n'\"",
             "Enter",
-            "Sleep 24s",
+            "Wait+Screen@180s /CAPTURED/",
             "Type \"python - <<'PY'\"",
             "Enter",
             'Type "import json"',
@@ -146,6 +175,12 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
             "Enter",
             "Sleep 2s",
         ),
+        # NOTE: not tightened to match its measured ~228px content height
+        # (like evidence-receipt and reader-evidence-tour were) -- this
+        # capture is real headless-Chrome browser automation and this
+        # session could not get a clean re-render to visually verify a
+        # smaller frame doesn't clip content (see polylogue-93cp follow-up).
+        # Left at the original size; only the Wait mechanism above changed.
         output_width=132,
         output_height=34,
     ),
