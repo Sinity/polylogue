@@ -17,6 +17,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
 from polylogue.sources.parsers.base import (
@@ -26,6 +27,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.live_ingest import ingest_session
 
@@ -458,6 +460,131 @@ def test_message_native_id_divergence_raises_fk_error_naming_the_session(
     message = str(exc_info.value)
     assert "unknown-export:conv-forced-divergence" in message
     assert "conv-forced-divergence" in message
+
+
+def test_duplicate_message_coordinates_raise_loud_value_error(test_db: Path) -> None:
+    """A parser bug that assigns the same (position, variant_index) pair to
+    two distinct messages must fail loudly with a ``ValueError`` naming the
+    session and both colliding native ids -- not reach ``INSERT OR REPLACE``
+    and silently drop one message row while its blocks are still written
+    against its own (now-orphaned) message_id.
+
+    This is the writer's own safety net (independent of the parser-level
+    fix): see ``tests/property/test_claude_variant_position_uniqueness.py``
+    and ``tests/unit/sources/test_claude_web_normalization.py`` for the
+    parser-level regression coverage that the sibling-variant continuation
+    collision (operation ab5bad1f / claude-ai-export:d24081f5) can no longer
+    happen through the real Claude parser; this test proves that even a
+    hand-built ``ParsedSession`` violating the invariant is caught before any
+    row is written, rather than manifesting minutes later as a bare
+    ``sqlite3.IntegrityError``/FK mystery.
+    """
+    from tests.infra.live_ingest import write_session_sync
+
+    session = ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id="conv-forced-coordinate-collision",
+        title="Test",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="continuation-a",
+                role=Role.USER,
+                text="a",
+                timestamp="2024-01-01T00:00:00Z",
+                position=5,
+                variant_index=0,
+            ),
+            ParsedMessage(
+                provider_message_id="continuation-b",
+                role=Role.USER,
+                text="b",
+                timestamp="2024-01-01T00:00:01Z",
+                position=5,
+                variant_index=0,
+            ),
+        ],
+        attachments=[],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        write_session_sync(test_db, session)
+
+    assert not isinstance(exc_info.value, sqlite3.IntegrityError)
+    message = str(exc_info.value)
+    assert "conv-forced-coordinate-collision" in message
+    assert "continuation-a" in message
+    assert "continuation-b" in message
+    assert "position=5" in message
+    assert "variant_index=0" in message
+
+
+def test_merge_append_duplicate_message_coordinates_also_guarded(test_db: Path) -> None:
+    """The merge-append write path (incremental extend of a live session)
+    must guard the same invariant as the full-replace path, using the
+    position_offset it computes from the existing archive state.
+    """
+    from tests.infra.live_ingest import write_session_sync
+
+    base_session = ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id="conv-merge-append-collision",
+        title="Test",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(provider_message_id="m0", role=Role.USER, text="hi", timestamp="2024-01-01T00:00:00Z"),
+        ],
+        attachments=[],
+    )
+    write_session_sync(test_db, base_session)
+
+    # Both appended messages request the same relative position=0; the
+    # merge-append path offsets by the existing max position + 1, so both
+    # land on the exact same absolute (position, variant_index) coordinate.
+    appended_session = base_session.model_copy(
+        update={
+            "messages": [
+                ParsedMessage(
+                    provider_message_id="continuation-a",
+                    role=Role.USER,
+                    text="a",
+                    timestamp="2024-01-01T00:00:01Z",
+                    position=0,
+                    variant_index=0,
+                ),
+                ParsedMessage(
+                    provider_message_id="continuation-b",
+                    role=Role.USER,
+                    text="b",
+                    timestamp="2024-01-01T00:00:02Z",
+                    position=0,
+                    variant_index=0,
+                ),
+            ]
+        }
+    )
+
+    conn = sqlite3.connect(str(test_db))
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(ValueError) as exc_info:
+            write_parsed_session_to_archive(
+                conn,
+                appended_session,
+                content_hash=session_content_hash(appended_session),
+                merge_append=True,
+            )
+    finally:
+        conn.close()
+
+    assert not isinstance(exc_info.value, sqlite3.IntegrityError)
+    message = str(exc_info.value)
+    assert "conv-merge-append-collision" in message
+    assert "continuation-a" in message
+    assert "continuation-b" in message
 
 
 async def test_stores_typed_origin_on_session(async_backend: SQLiteBackend) -> None:

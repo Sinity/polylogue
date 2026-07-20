@@ -14,7 +14,7 @@ import json
 import re
 import sqlite3
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
@@ -434,6 +434,7 @@ def write_parsed_session_to_archive(
                     (session_id,),
                 ).fetchone()
                 position_offset = int(row[0] or 0) if row is not None else 0
+                _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
                 conn.execute(
                     """
                     UPDATE messages
@@ -1776,6 +1777,7 @@ def _replace_full_session_messages_and_blocks(
 
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
+    _assert_unique_message_coordinates(session_id, messages)
     t0 = time.perf_counter()
     use_scoped_fts_rebuild = not bulk_build and message_fts_triggers_present_sync(conn)
     add_timing("fts_probe", t0)
@@ -3571,6 +3573,60 @@ def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
         message.model_copy(update={"is_active_leaf": message.provider_message_id == active_leaf_message_id})
         for message in messages
     ]
+
+
+def _duplicate_message_coordinates(
+    messages: Sequence[ParsedMessage],
+    *,
+    position_offset: int = 0,
+) -> dict[tuple[int, int], list[str]]:
+    """Group native message ids by effective (position, variant_index).
+
+    Mirrors the exact position/variant_index fallback ``_write_messages``
+    uses to build INSERT rows (``position_offset + (message.position or
+    fallback_position)``, ``message.variant_index or 0``), so this reports
+    precisely the coordinate pairs that would collide against the messages
+    table's ``PRIMARY KEY(session_id, position, variant_index)``. Only
+    coordinates shared by two or more messages are returned.
+    """
+    coordinates: dict[tuple[int, int], list[str]] = defaultdict(list)
+    for fallback_position, message in enumerate(messages):
+        position = position_offset + (message.position if message.position is not None else fallback_position)
+        variant_index = message.variant_index if message.variant_index is not None else 0
+        coordinates[(position, variant_index)].append(message.provider_message_id or "<no native id>")
+    return {key: native_ids for key, native_ids in coordinates.items() if len(native_ids) > 1}
+
+
+def _assert_unique_message_coordinates(
+    session_id: str,
+    messages: Sequence[ParsedMessage],
+    *,
+    position_offset: int = 0,
+) -> None:
+    """Fail loudly, before any row is written, on a (position, variant_index) collision.
+
+    ``messages`` is unique on exactly ``(session_id, position, variant_index)``
+    (see ``storage/sqlite/archive_tiers/index.py``). If a parser bug assigns
+    that same pair to two distinct native message ids, ``INSERT OR REPLACE``
+    silently drops one message row while ``_write_blocks`` still computes
+    distinct Python-side ``message_id`` values for both -- the dropped
+    message's blocks then fail their foreign key days later, far from the
+    actual bug. Raising here turns that into an immediate, loud error naming
+    the session and the exact colliding native ids instead.
+    """
+    duplicates = _duplicate_message_coordinates(messages, position_offset=position_offset)
+    if not duplicates:
+        return
+    detail = "; ".join(
+        f"(position={position}, variant_index={variant_index}) <- {native_ids!r}"
+        for (position, variant_index), native_ids in sorted(duplicates.items())
+    )
+    raise ValueError(
+        f"duplicate message coordinates in session {session_id!r}: {detail}. "
+        "A parser assigned the same (position, variant_index) pair to distinct "
+        "native message ids; writing this batch would silently drop one "
+        "message (and orphan its blocks) via INSERT OR REPLACE."
+    )
 
 
 def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
