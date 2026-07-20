@@ -27,6 +27,22 @@ class TestGenerateTape:
         assert "Set Height" in tape
         assert "Set Padding" in tape
 
+    def test_tape_pins_shell_and_font_family(self) -> None:
+        """Every generated tape pins Shell and FontFamily explicitly.
+
+        A prior evidence-receipt render leaked an unexpanded bash
+        prompt-escape sequence into the committed PNG because the tape did
+        not pin which shell rendered it; pinning both keeps the rendered
+        frame independent of whatever shell/dotfiles are active on the
+        machine that runs the capture (polylogue-93cp).
+        """
+        spec = VHSTapeSpec(name="test-flow", description="Test flow", display_command=("polylogue", "--help"))
+
+        tape = generate_tape(spec)
+
+        assert 'Set Shell "bash"' in tape
+        assert 'Set FontFamily "DejaVu Sans Mono"' in tape
+
     def test_tape_includes_correct_command(self) -> None:
         spec = VHSTapeSpec(name="test-cmd", description="Test", display_command=("polylogue", "ops", "status"))
 
@@ -174,6 +190,24 @@ class TestDefaultTapeContent:
         assert (
             tape.index("Hide") < tape.index("Show") < tape.index('Type "polylogue demo receipts --compact --no-seed"')
         )
+
+    def test_evidence_receipt_forces_deterministic_prompt_and_native_screenshot(self) -> None:
+        """The hero README frame pins PS1 and captures a native PNG.
+
+        Regression coverage for polylogue-93cp: the committed frame must not
+        depend on an ambient shell prompt (previously leaked literal
+        ``\\[``/``\\]`` bash escape bytes into the image) and must come from
+        VHS's native ``Screenshot`` command rather than a lossy,
+        palette-quantized GIF frame extracted after the fact.
+        """
+        spec = next(spec for spec in default_tape_specs() if spec.name == "evidence-receipt")
+
+        tape = generate_tape(spec)
+
+        assert "Type \"PS1='> '\"" in tape
+        assert "Screenshot evidence-receipt.png" in tape
+        assert tape.index("Type \"PS1='> '\"") < tape.index('Type "mkdir -p evidence-receipt && cd evidence-receipt')
+        assert tape.index("Wait+Screen /verdict:") < tape.index("Screenshot evidence-receipt.png")
 
     def test_reader_evidence_tour_uses_visual_smoke_lane(self) -> None:
         spec = next(spec for spec in default_tape_specs() if spec.name == "reader-evidence-tour")
