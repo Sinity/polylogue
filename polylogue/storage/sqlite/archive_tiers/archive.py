@@ -2164,6 +2164,14 @@ class ArchiveStore:
             if not changed:
                 return
 
+    def _raw_revision_authority(self, raw_id: str) -> str | None:
+        row = (
+            self._ensure_source_conn()
+            .execute("SELECT revision_authority FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()
+        )
+        return None if row is None or row[0] is None else str(row[0])
+
     def raw_revision_replay_plan(self, logical_source_key: str) -> RevisionReplayPlan:
         return plan_revision_replay(self._raw_revision_candidates(logical_source_key))
 
@@ -3044,6 +3052,51 @@ class ArchiveStore:
                 )
             else:
                 accepted_frontier = None
+            if (
+                existing_head is not None
+                and accepted_frontier_kind == "semantic"
+                and accepted_frontier is not None
+                and str(existing_head[4]) == "semantic"
+                and self._raw_revision_authority(str(existing_head[1])) == "quarantined"
+            ):
+                # The current head was written by membership replay for a
+                # quarantined-authority raw (e.g. a browser-capture snapshot of
+                # the same provider conversation). Chain evidence with
+                # source-tier revision governance outranks quarantined capture
+                # evidence at an equal-or-later semantic frontier, so hand the
+                # head over instead of letting the CAS reject the whole
+                # replay. A capture that is content-AHEAD (strictly greater
+                # frontier: the conversation continued after the export was
+                # produced) keeps the head, and this chain cohort defers --
+                # receipted, never silently dropped -- until later evidence
+                # resolves it.
+                if accepted_frontier >= int(existing_head[5]):
+                    self._conn.execute(
+                        "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                        (plan.logical_source_key,),
+                    )
+                    existing_head = None
+                else:
+                    deferred_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+                    for application in plan.applications:
+                        deferred_candidate = candidates[application.raw_id]
+                        record_revision_application_sync(
+                            self._conn,
+                            RevisionApplicationReceipt(
+                                raw_id=deferred_candidate.raw_id,
+                                session_id=str(existing_head[0]),
+                                logical_source_key=plan.logical_source_key,
+                                source_revision=deferred_candidate.source_revision,
+                                acquisition_generation=deferred_candidate.acquisition_generation,
+                                decision=ApplicationDecision.DEFERRED,
+                                accepted_raw_id=None,
+                                accepted_source_revision=None,
+                                accepted_content_hash=None,
+                                detail="chain_replay:deferred_behind_content_ahead_quarantined_membership_head",
+                            ),
+                            decided_at_ms=deferred_at_ms,
+                        )
+                    return str(existing_head[0]), ()
             for position, raw_id in enumerate(plan.accepted_raw_ids):
                 index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
@@ -3192,106 +3245,175 @@ class ArchiveStore:
             with self._conn if manage_transaction else nullcontext():
                 existing_head = self._conn.execute(
                     """
-                    SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id
+                    SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id,
+                           accepted_frontier
                     FROM raw_revision_heads WHERE logical_source_key = ?
                     """,
                     (logical_source_key,),
                 ).fetchone()
+                yield_to_head_raw_id: str | None = None
                 if existing_head is not None:
                     existing_raw_id = str(existing_head[0])
                     classified_raw_ids = {
                         *classification.accepted_raw_ids,
                         *classification.equivalent_raw_ids,
                     }
-                    persisted_session = self._conn.execute(
-                        "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
-                        (str(existing_head[3]),),
-                    ).fetchone()
-                    if (
-                        existing_raw_id not in classified_raw_ids
-                        or persisted_session is None
-                        or str(persisted_session[0]) != existing_raw_id
-                        or not isinstance(persisted_session[1], bytes)
-                        or bytes(existing_head[1]) != bytes(persisted_session[1])
+                    chain_head_authority = (
+                        self._raw_revision_authority(existing_raw_id)
+                        if existing_raw_id not in classified_raw_ids
+                        else None
+                    )
+                    if existing_raw_id not in classified_raw_ids and chain_head_authority not in (
+                        None,
+                        "quarantined",
                     ):
-                        raise RuntimeError("membership replay cannot retire an unrelated accepted head")
-                    existing_is_byte_governed = conn.execute(
-                        "SELECT 1 FROM raw_sessions WHERE raw_id = ? AND logical_source_key = ?",
-                        (existing_raw_id, logical_source_key),
+                        # The head is owned by chain-governed (non-quarantined)
+                        # source evidence outside this quarantined membership
+                        # cohort -- e.g. a byte-proven provider export of the
+                        # same conversation this browser capture snapshotted.
+                        # Provider-export evidence outranks quarantined capture
+                        # evidence, so the capture cohort yields unless it is
+                        # strictly content-AHEAD on a comparable semantic
+                        # frontier (the conversation continued after the export
+                        # was produced) -- then the newer content takes the
+                        # head. Byte-kind heads are never comparable to a
+                        # semantic capture frontier and always win.
+                        accepted_projection = projections_by_raw_id[accepted_raw_id]
+                        semantic_frontier = (
+                            len(accepted_projection.message_hashes)
+                            + len(accepted_projection.event_hashes)
+                            + len(accepted_projection.attachment_hashes)
+                        )
+                        if (
+                            str(existing_head[2]) == "semantic"
+                            and existing_head[4] is not None
+                            and semantic_frontier > int(existing_head[4])
+                        ):
+                            self._conn.execute(
+                                "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                                (logical_source_key,),
+                            )
+                        else:
+                            yield_to_head_raw_id = existing_raw_id
+                    else:
+                        persisted_session = self._conn.execute(
+                            "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
+                            (str(existing_head[3]),),
+                        ).fetchone()
+                        if (
+                            existing_raw_id not in classified_raw_ids
+                            or persisted_session is None
+                            or str(persisted_session[0]) != existing_raw_id
+                            or not isinstance(persisted_session[1], bytes)
+                            or bytes(existing_head[1]) != bytes(persisted_session[1])
+                        ):
+                            raise RuntimeError("membership replay cannot retire an unrelated accepted head")
+                        existing_is_byte_governed = conn.execute(
+                            "SELECT 1 FROM raw_sessions WHERE raw_id = ? AND logical_source_key = ?",
+                            (existing_raw_id, logical_source_key),
+                        ).fetchone()
+                        if existing_is_byte_governed is not None and accepted_raw_id != existing_raw_id:
+                            raise RuntimeError("membership replay cannot replace an unconvertible byte head")
+                        self._conn.execute(
+                            "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                            (logical_source_key,),
+                        )
+                if yield_to_head_raw_id is not None:
+                    assert existing_head is not None
+                    session_id = str(existing_head[3])
+                    cohort_raw_ids = (
+                        *classification.accepted_raw_ids,
+                        *classification.equivalent_raw_ids,
+                        *classification.ambiguous_raw_ids,
+                    )
+                    for generation, raw_id in enumerate(cohort_raw_ids):
+                        projection = projections_by_raw_id[raw_id]
+                        decisions[raw_id] = "superseded_equivalent"
+                        record_revision_application_sync(
+                            self._conn,
+                            RevisionApplicationReceipt(
+                                raw_id=raw_id,
+                                session_id=session_id,
+                                logical_source_key=logical_source_key,
+                                source_revision=projection.session_hash.hex(),
+                                acquisition_generation=generation,
+                                decision=ApplicationDecision.SUPERSEDED,
+                                accepted_raw_id=None,
+                                accepted_source_revision=None,
+                                accepted_content_hash=None,
+                                detail=f"membership:superseded_by_chain_governed_head:{yield_to_head_raw_id}",
+                            ),
+                            decided_at_ms=decided_at_ms,
+                        )
+                else:
+                    index_started = time.perf_counter()
+                    result = self._index_parsed_for_retained_raw(
+                        accepted_session,
+                        raw_id=accepted_raw_id,
+                        source_index=0,
+                        stage_timings_s=stage_timings_s,
+                        stage_timing_prefix=stage_timing_prefix,
+                        manage_transaction=False,
+                        preacquired_attachment_blobs=attachments,
+                        finalize_raw_parse=False,
+                        revision_authoritative=True,
+                        bulk_fts=bulk_fts,
+                        bulk_build=bulk_build,
+                    )
+                    if stage_timings_s is not None:
+                        key = f"{stage_timing_prefix}.index_parsed_write"
+                        stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
+                    session_id = result.session_id
+                    if not bulk_build:
+                        repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
+                    assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
+                    stored = self._conn.execute(
+                        "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
                     ).fetchone()
-                    if existing_is_byte_governed is not None and accepted_raw_id != existing_raw_id:
-                        raise RuntimeError("membership replay cannot replace an unconvertible byte head")
-                    self._conn.execute(
-                        "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
-                        (logical_source_key,),
+                    if stored is None or not isinstance(stored[0], bytes):
+                        raise RuntimeError("accepted membership did not produce a hashed session")
+                    accepted_projection = projections_by_raw_id[accepted_raw_id]
+                    semantic_frontier = (
+                        len(accepted_projection.message_hashes)
+                        + len(accepted_projection.event_hashes)
+                        + len(accepted_projection.attachment_hashes)
                     )
-                index_started = time.perf_counter()
-                result = self._index_parsed_for_retained_raw(
-                    accepted_session,
-                    raw_id=accepted_raw_id,
-                    source_index=0,
-                    stage_timings_s=stage_timings_s,
-                    stage_timing_prefix=stage_timing_prefix,
-                    manage_transaction=False,
-                    preacquired_attachment_blobs=attachments,
-                    finalize_raw_parse=False,
-                    revision_authoritative=True,
-                    bulk_fts=bulk_fts,
-                    bulk_build=bulk_build,
-                )
-                if stage_timings_s is not None:
-                    key = f"{stage_timing_prefix}.index_parsed_write"
-                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
-                session_id = result.session_id
-                if not bulk_build:
-                    repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
-                assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
-                stored = self._conn.execute(
-                    "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
-                ).fetchone()
-                if stored is None or not isinstance(stored[0], bytes):
-                    raise RuntimeError("accepted membership did not produce a hashed session")
-                accepted_projection = projections_by_raw_id[accepted_raw_id]
-                semantic_frontier = (
-                    len(accepted_projection.message_hashes)
-                    + len(accepted_projection.event_hashes)
-                    + len(accepted_projection.attachment_hashes)
-                )
-                cohort_raw_ids = (
-                    *classification.accepted_raw_ids,
-                    *classification.equivalent_raw_ids,
-                    *classification.ambiguous_raw_ids,
-                )
-                for generation, raw_id in enumerate(cohort_raw_ids):
-                    projection = projections_by_raw_id[raw_id]
-                    decision = decisions.get(raw_id, "applied")
-                    record_revision_application_sync(
-                        self._conn,
-                        RevisionApplicationReceipt(
-                            raw_id=raw_id,
-                            session_id=session_id,
-                            logical_source_key=logical_source_key,
-                            source_revision=projection.session_hash.hex(),
-                            acquisition_generation=generation,
-                            decision=(
-                                ApplicationDecision.AMBIGUOUS
-                                if decision == "ambiguous"
-                                else ApplicationDecision.SUPERSEDED
-                                if decision.startswith("superseded")
-                                else ApplicationDecision.SELECTED_BASELINE
-                            ),
-                            accepted_raw_id=accepted_raw_id if decision != "ambiguous" else None,
-                            accepted_source_revision=(
-                                accepted_projection.session_hash.hex() if decision != "ambiguous" else None
-                            ),
-                            accepted_content_hash=stored[0] if decision != "ambiguous" else None,
-                            accepted_frontier_kind="semantic" if decision != "ambiguous" else None,
-                            accepted_frontier=semantic_frontier if decision != "ambiguous" else None,
-                            detail=f"membership:{decision}",
-                        ),
-                        decided_at_ms=decided_at_ms,
+                    cohort_raw_ids = (
+                        *classification.accepted_raw_ids,
+                        *classification.equivalent_raw_ids,
+                        *classification.ambiguous_raw_ids,
                     )
-            decisions[accepted_raw_id] = "applied"
+                    for generation, raw_id in enumerate(cohort_raw_ids):
+                        projection = projections_by_raw_id[raw_id]
+                        decision = decisions.get(raw_id, "applied")
+                        record_revision_application_sync(
+                            self._conn,
+                            RevisionApplicationReceipt(
+                                raw_id=raw_id,
+                                session_id=session_id,
+                                logical_source_key=logical_source_key,
+                                source_revision=projection.session_hash.hex(),
+                                acquisition_generation=generation,
+                                decision=(
+                                    ApplicationDecision.AMBIGUOUS
+                                    if decision == "ambiguous"
+                                    else ApplicationDecision.SUPERSEDED
+                                    if decision.startswith("superseded")
+                                    else ApplicationDecision.SELECTED_BASELINE
+                                ),
+                                accepted_raw_id=accepted_raw_id if decision != "ambiguous" else None,
+                                accepted_source_revision=(
+                                    accepted_projection.session_hash.hex() if decision != "ambiguous" else None
+                                ),
+                                accepted_content_hash=stored[0] if decision != "ambiguous" else None,
+                                accepted_frontier_kind="semantic" if decision != "ambiguous" else None,
+                                accepted_frontier=semantic_frontier if decision != "ambiguous" else None,
+                                detail=f"membership:{decision}",
+                            ),
+                            decided_at_ms=decided_at_ms,
+                        )
+            if yield_to_head_raw_id is None:
+                decisions[accepted_raw_id] = "applied"
 
         with conn if manage_transaction else nullcontext():
             for raw_id, decision in decisions.items():
