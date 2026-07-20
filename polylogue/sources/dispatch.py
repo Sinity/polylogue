@@ -24,6 +24,7 @@ from .parsers import (
     claude,
     codex,
     drive,
+    grok,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -55,6 +56,7 @@ RECORD_DETECTOR_PROVIDER_ORDER = (
     Provider.CLAUDE_CODE,
     Provider.CHATGPT,
     Provider.CLAUDE_AI,
+    Provider.GROK,
     Provider.GEMINI,
 )
 _MAX_PARSE_DEPTH = 10
@@ -185,6 +187,8 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         return Provider.CHATGPT
     if claude.looks_like_ai(record):
         return Provider.CLAUDE_AI
+    if grok.looks_like_export(record):
+        return Provider.GROK
     if _looks_like_gemini_mapping(record):
         return Provider.GEMINI
     return None
@@ -212,6 +216,8 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
             return Provider.CHATGPT
         if isinstance(first_record.get("chat_messages"), list):
             return Provider.CLAUDE_AI
+        if grok.looks_like_export(first_record):
+            return Provider.GROK
         if _looks_like_gemini_mapping(first_record):
             return Provider.GEMINI
 
@@ -699,6 +705,43 @@ def _lower_drive_like_payload(
     return []
 
 
+def _lower_grok_export_payload(payload: object, fallback_id: str) -> list[LoweredPayloadSpec]:
+    """Unwrap a Grok account-data export document into per-conversation specs.
+
+    Unlike ``BUNDLE_PROVIDERS`` (ChatGPT/Claude AI), whose bundle payload is
+    already list-shaped at the point dispatch sees it, a Grok export document
+    is a single JSON object wrapping its conversations under a
+    ``"conversations"`` key -- one physical file, N logical sessions. Grok is
+    a document-style provider like gemini-cli/hermes/antigravity (one JSON
+    object per file), so ``_single_document_record`` unwraps the one-element
+    list the full-ingest stream path wraps a lone document in.
+    """
+    record = _single_document_record(payload)
+    if record is None:
+        return []
+    conversations = record.get("conversations")
+    if not isinstance(conversations, list):
+        return []
+    specs: list[LoweredPayloadSpec] = []
+    for index, item in enumerate(conversations):
+        item_record = _payload_record(item)
+        # A malformed entry (missing "conversation"/"responses", wrong types)
+        # is skipped rather than admitted as a zero-message phantom session --
+        # matching how _bundle_record_specs silently drops non-record bundle
+        # entries for ChatGPT/Claude AI rather than emitting an empty session
+        # per malformed item.
+        if item_record is None or not grok.looks_like_conversation(item_record):
+            continue
+        specs.append(
+            _single_record_spec(
+                Provider.GROK,
+                item_record,
+                fallback_id if len(conversations) == 1 else f"{fallback_id}-{index}",
+            )
+        )
+    return specs
+
+
 def _lower_fallback_payload(
     provider: Provider,
     shaped_payload: object,
@@ -837,6 +880,8 @@ def _lower_payload_specs(
                 )
             ]
         return []
+    if runtime_provider is Provider.GROK:
+        return _lower_grok_export_payload(shaped_payload, fallback_id)
     return _lower_fallback_payload(runtime_provider, shaped_payload, fallback_id)
 
 
@@ -884,6 +929,10 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
     if spec.provider is Provider.CLAUDE_AI:
         record = _payload_record(spec.payload)
         return [claude.parse_ai(record, spec.fallback_id)] if record is not None else []
+
+    if spec.provider is Provider.GROK:
+        record = _payload_record(spec.payload)
+        return [grok.parse_conversation(record, spec.fallback_id)] if record is not None else []
 
     if spec.provider is Provider.CLAUDE_CODE:
         payloads = _payload_sequence(spec.payload)

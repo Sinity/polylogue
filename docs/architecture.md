@@ -156,6 +156,7 @@ convergence stages.
 | Hermes | state-db payload or hermes agent document | `sources/parsers/hermes_state.py`, `sources/parsers/local_agent.py` |
 | Hermes ATIF trajectory ⚠️ | NeMo Relay Agent Trajectory Interchange Format export (`schema_version`/`session_id`/`steps`) | `sources/parsers/hermes_spans.py` |
 | Antigravity | Brain artifact metadata (`*.metadata.json`) or language-server Markdown export envelope | `sources/parsers/antigravity.py` |
+| Grok | `conversations` list of `{conversation, responses}` account-data export documents | `sources/parsers/grok.py` |
 | Browser capture | capture envelope wrapping a native provider payload | `sources/parsers/browser_capture.py` |
 
 ⚠️ **Hermes ATIF importer fidelity boundary**: a redacted ATIF-v1.7 fixture
@@ -172,9 +173,8 @@ read `inferred` as verified against a live Hermes wire sample.
 tightness order, not filename order: structural/document detectors first
 (browser-capture, gemini-cli, hermes, antigravity), then Pydantic-validated
 record checks (Codex, Claude Code), then loose dict-key checks (ChatGPT,
-Claude web, Gemini). Insert a new check at the tightness level it deserves or an
-earlier parser will claim its records. `Provider.GROK`/`grok-export` is a
-reserved origin token with no wired parser yet.
+Claude web, Grok, Gemini). Insert a new check at the tightness level it
+deserves or an earlier parser will claim its records.
 
 ## Provider and Origin Vocabulary
 

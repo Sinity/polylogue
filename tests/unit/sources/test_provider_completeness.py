@@ -22,7 +22,7 @@ def test_provider_completeness_reports_representative_modes() -> None:
     chatgpt = by_ref["provider-package:chatgpt-export/takeout-json@v1"]
     browser = by_ref["provider-package:browser-capture/live-receiver@v1"]
     hermes = by_ref["provider-package:hermes-session/state-db@v1"]
-    grok = by_ref["provider-package:grok-export/reserved@v1"]
+    grok = by_ref["provider-package:grok-export/export-json@v1"]
 
     assert codex.origin == "codex-session"
     assert codex.capture_mode == "session-jsonl"
@@ -40,8 +40,15 @@ def test_provider_completeness_reports_representative_modes() -> None:
 
     assert hermes.schema_package.owner_path == ("polylogue/schemas/providers/hermes/state_db_v16.contract.json")
     assert hermes.schema_package.status == "complete"
-    assert grok.maturity == "reserved"
-    assert grok.status == "reserved"
+    # Grok has a real, admitted detector/parser (unlike the reserved-origin
+    # era) but no schema-discovery harvesting pass against a real xAI sample
+    # yet, so it stays "proposed" -- "accepted" would require schema_package
+    # evidence it does not have and would fail `--check` (see origin_specs.py).
+    assert grok.maturity == "proposed"
+    assert grok.status == "proposed"
+    assert grok.parser.status == "complete"
+    assert grok.schema_package.status == "missing"
+    assert not grok.blockers
 
 
 def test_provider_completeness_is_a_projection_of_every_origin_spec() -> None:

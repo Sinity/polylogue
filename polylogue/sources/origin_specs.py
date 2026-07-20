@@ -368,24 +368,23 @@ def _chatgpt_spec() -> OriginSpec:
 
 
 def _grok_spec() -> OriginSpec:
-    origin = Origin.GROK_EXPORT
-    return OriginSpec(
-        origin=origin,
-        declaration=_declaration(
-            origin, lifecycle="reserved", discovery="Reserved Grok export origin; no parser is admitted."
+    return _executable_spec(
+        Origin.GROK_EXPORT,
+        provider=Provider.GROK,
+        tightness=85,
+        discovery="Grok account-data export document admission.",
+        acquisition_modes=("export-json",),
+        parser_paths=("polylogue/sources/parsers/grok.py",),
+        fixture_paths=(
+            "tests/unit/sources/parsers/test_grok.py",
+            "tests/unit/sources/parsers/test_origin_regression_pack.py",
         ),
-        lifecycle="reserved",
-        acquisition_modes=("export-unknown",),
-        provider_wires=(Provider.GROK,),
-        collision_policy=None,
-        detector_tightness=None,
-        parser_paths=(),
-        stream_parser_path=None,
-        assembly_paths=(),
-        fixture_paths=("tests/unit/sources/test_origin_specs.py",),
-        coverage_refs=("origin:grok-export:reserved",),
-        fidelity_notes=("No parser is wired; discovery must report reserved status rather than infer completeness.",),
-        semantic_reparse="admission requires a separate parser and fixture contract",
+        assembly_paths=("polylogue/sources/dispatch.py:_lower_grok_export_payload",),
+        fidelity_notes=(
+            "No native conversation or response id is present in any confirmed export shape; "
+            "provider_session_id/provider_message_id are synthesized from file-relative position.",
+            "The export drops attachments/images by xAI's own documentation; only text turns are recoverable.",
+        ),
     )
 
 
@@ -691,18 +690,34 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
     ),
     Origin.GROK_EXPORT: (
         _completeness_mode(
-            "provider-package:grok-export/reserved@v1",
-            "reserved",
+            "provider-package:grok-export/export-json@v1",
+            "export-json",
             Provider.GROK,
-            "reserved",
-            detector_paths=(),
-            raw_model_paths=(),
-            parser_paths=(),
-            normalizer_paths=(),
-            fixture_paths=("tests/unit/sources/test_origin_specs.py",),
+            # Kept "proposed" (not "accepted") deliberately: the detector and
+            # parser are real and admitted (OriginSpec.lifecycle="executable"
+            # above), but no schema-discovery harvesting pass has run against
+            # a real xAI export sample -- the wire shape is reconstructed from
+            # independent secondary sources (see polylogue/sources/parsers/
+            # grok.py), not a harvested provider-package catalog. "accepted"
+            # would require schema_package evidence this origin does not yet
+            # have, and would fail `devtools provider-completeness --check`.
+            "proposed",
+            detector_paths=("polylogue/sources/parsers/grok.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/grok.py",),
+            parser_paths=("polylogue/sources/parsers/grok.py",),
+            normalizer_paths=("polylogue/sources/parsers/grok.py",),
+            fixture_paths=(
+                "tests/unit/sources/parsers/test_grok.py",
+                "tests/unit/sources/parsers/test_origin_regression_pack.py",
+            ),
             schema_paths=(),
-            docs_paths=("docs/provider-origin-identity.md",),
-            caveats=("Reserved origin: parser admission has not been declared.",),
+            docs_paths=("docs/provider-origin-identity.md", "docs/architecture.md"),
+            caveats=(
+                "No schema-discovery harvesting pass has run against a real xAI export; the wire shape is "
+                "reconstructed from independent secondary sources (see polylogue/sources/parsers/grok.py), "
+                "not a harvested provider-package catalog. Promote to accepted once real-sample schema "
+                "evidence exists.",
+            ),
         ),
     ),
     Origin.CHATGPT_EXPORT: (

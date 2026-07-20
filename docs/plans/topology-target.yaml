@@ -1088,7 +1088,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 2520
+    loc: 2528
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -3100,7 +3100,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1053
+    loc: 1097
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3228,7 +3228,7 @@ files:
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
-    loc: 853
+    loc: 859
     target: polylogue/sources/origin_specs.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -3315,6 +3315,10 @@ files:
   - path: polylogue/sources/parsers/drive_support_text.py
     loc: 57
     target: polylogue/sources/parsers/drive_support_text.py
+    owner: stable
+  - path: polylogue/sources/parsers/grok.py
+    loc: 178
+    target: polylogue/sources/parsers/grok.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_lifecycle.py
     loc: 228

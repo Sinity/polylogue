@@ -16,6 +16,7 @@ Origins covered
 * aistudio-drive        — Provider.DRIVE / Provider.GEMINI (chunkedPrompt)
 * antigravity-session   — Provider.ANTIGRAVITY  (markdown-export path)
 * hermes-session        — Provider.HERMES
+* grok-export           — Provider.GROK
 
 Origins skipped
 ---------------
@@ -78,6 +79,8 @@ from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as codex_parse
 from polylogue.sources.parsers.drive import looks_like as drive_looks_like
 from polylogue.sources.parsers.drive import parse_chunked_prompt
+from polylogue.sources.parsers.grok import looks_like_conversation as grok_looks_like
+from polylogue.sources.parsers.grok import parse_conversation as grok_parse
 from polylogue.sources.parsers.local_agent import (
     looks_like_gemini_cli,
     looks_like_hermes,
@@ -499,6 +502,32 @@ def _ag_looks_like(payload: Any) -> bool:
     return bool(summary.cascade_id)
 
 
+def _grok_payload() -> dict[str, Any]:
+    """Minimal Grok export conversation entry (nested ``response`` shape)."""
+    return {
+        "conversation": {
+            "title": "Grok regression fixture",
+            "create_time": {"$date": {"$numberLong": "1750000000000"}},
+        },
+        "responses": [
+            {
+                "response": {
+                    "sender": "human",
+                    "message": "Summarize the repository layout.",
+                    "create_time": {"$date": {"$numberLong": "1750000001000"}},
+                }
+            },
+            {
+                "response": {
+                    "sender": "assistant",
+                    "message": "It has sources, storage, and insights packages.",
+                    "create_time": {"$date": {"$numberLong": "1750000002000"}},
+                }
+            },
+        ],
+    }
+
+
 def _beads_issue_payload() -> list[JSONDocument]:
     return [
         {
@@ -707,6 +736,28 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         expected_title=_NA,  # hermes titles session_id
         has_tool_use=True,
         has_thinking=True,
+        has_paste=False,
+        has_attachment=False,
+        has_working_dir=False,
+        has_git_branch=False,
+        has_git_repo=False,
+    ),
+    # ------------------------------------------------------------------
+    # grok-export  (xAI account-data export document)
+    # ------------------------------------------------------------------
+    OriginFixture(
+        label="grok-export",
+        provider=Provider.GROK,
+        session_id="grok-session-reg-1",
+        min_messages=2,
+        expected_origin=Origin.GROK_EXPORT,
+        looks_like_fn=grok_looks_like,
+        payload=_grok_payload(),
+        parse_fn=grok_parse,
+        dispatch_payload={"conversations": [_grok_payload()]},
+        expected_title="Grok regression fixture",
+        has_tool_use=False,
+        has_thinking=False,
         has_paste=False,
         has_attachment=False,
         has_working_dir=False,
