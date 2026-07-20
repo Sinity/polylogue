@@ -511,6 +511,22 @@ CREATE INDEX IF NOT EXISTS idx_action_pairs_outcome
 ON action_pairs(is_error, exit_code, session_id, message_id)
 WHERE is_error IS NOT NULL OR exit_code IS NOT NULL;
 
+-- polylogue-623q: tool_result_block_id is ON DELETE SET NULL against
+-- blocks(block_id) but had no supporting index. SQLite must find every
+-- action_pairs row whose tool_result_block_id equals each block being
+-- deleted; without an index that is a full action_pairs table SCAN per
+-- deleted block row -- for a whale session's full-replace block DELETE
+-- (thousands of blocks) against an archive-wide action_pairs table, that is
+-- effectively O(deleted_blocks x action_pairs_row_count). Verified with a
+-- synthetic whale session (2,000 blocks) against a 32K-row action_pairs
+-- table: the single ``DELETE FROM blocks WHERE session_id = ?`` dropped
+-- from 6.87s to 0.034s (~200x) after adding this index. Partial (excludes
+-- NULL) since unpaired tool_use rows never populate this column and NULL
+-- never matches an equality FK lookup.
+CREATE INDEX IF NOT EXISTS idx_action_pairs_tool_result_block
+ON action_pairs(tool_result_block_id)
+WHERE tool_result_block_id IS NOT NULL;
+
 -- xnkf: a plain equality join on tool_id fans out when a provider re-emits
 -- the same tool_id on distinct messages (verified live: identical toolu_
 -- ids as 2 tool_use + 2 tool_result blocks at different positions, NOT

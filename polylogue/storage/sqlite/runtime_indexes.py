@@ -44,6 +44,11 @@ _RUNTIME_INDEX_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_paste_spans_session
     ON paste_spans(session_id)
     """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_action_pairs_tool_result_block
+    ON action_pairs(tool_result_block_id)
+    WHERE tool_result_block_id IS NOT NULL
+    """,
 )
 
 
