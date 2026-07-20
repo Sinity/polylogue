@@ -83,11 +83,73 @@ def test_query_spec_param_builder_uses_canonical_query_fields() -> None:
 
     result = _build_query_spec_params(params, _QueryParamBuilderHandler())  # type: ignore[arg-type]
 
-    assert result["origin"] == "codex-session"
-    assert result["exclude_origin"] == "chatgpt-export"
+    assert result["origin"] == ("codex-session",)
+    assert result["exclude_origin"] == ("chatgpt-export",)
     assert result["max_words"] == 100
     assert result["similar_session_id"] == "codex-session:seed"
     assert result["filter_has_tool_use"] is True
+
+
+def test_query_spec_param_builder_collects_repeated_csv_fields() -> None:
+    """polylogue-4p1.1: repeated ``?origin=a&origin=b`` must not lose values.
+
+    Before the split-archive fast path was collapsed onto the shared
+    ``SessionQuerySpec.from_params`` builder, ``_build_query_spec_params``
+    only read the first occurrence of a repeated query-string param
+    (``handler._get_param`` returns ``values[0]``) for origin/tag/repo/etc,
+    silently dropping every subsequent value. Removing the ``_csv_values``
+    collection in ``_build_query_spec_params`` (reverting to
+    ``handler._get_param``) reproduces that drop and fails this test.
+    """
+    from polylogue.daemon.http import _build_query_spec_params
+
+    params = {
+        "origin": ["codex-session", "claude-code-session"],
+        "tag": ["alpha", "beta,gamma"],
+        "repo": ["polylogue"],
+    }
+
+    result = _build_query_spec_params(params, _QueryParamBuilderHandler())  # type: ignore[arg-type]
+
+    assert result["origin"] == ("codex-session", "claude-code-session")
+    assert result["tag"] == ("alpha", "beta", "gamma")
+    assert result["repo"] == ("polylogue",)
+
+
+def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> None:
+    """polylogue-4p1.1: the split-archive fast path must not drop a filter.
+
+    ``ArchiveStore.list_summaries``/``search_summaries``/``count_sessions``/
+    ``count_search_sessions`` accept an identical filter-kwarg surface (proven
+    below). ``_archive_filter_kwargs_from_spec`` is what
+    ``_do_archive_session_list`` calls to build that kwarg dict from the
+    merged ``SessionQuerySpec`` -- if a field is ever added to (or dropped
+    from) that storage-layer signature without also updating
+    ``_archive_filter_kwargs_from_spec``, this test fails. This is the
+    "silently absent until someone edits both sites" regression the bead
+    describes, made mechanically unrepeatable: deleting any one line from
+    ``_archive_filter_kwargs_from_spec``'s return dict (e.g. dropping
+    ``"project_refs"``) fails this assertion.
+    """
+    import inspect
+
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.daemon.http import _archive_filter_kwargs_from_spec
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    non_filter_params = {"self", "limit", "offset", "session_id", "sample", "sort", "reverse", "query"}
+    storage_methods = ("list_summaries", "search_summaries", "count_sessions", "count_search_sessions")
+    storage_filter_params = {
+        frozenset(inspect.signature(getattr(ArchiveStore, name)).parameters) - non_filter_params
+        for name in storage_methods
+    }
+    # All four SQL entry points must agree on one filter surface -- otherwise
+    # "the filter kwargs ArchiveStore accepts" is not a single well-defined set.
+    assert len(storage_filter_params) == 1, storage_filter_params
+    (expected_filter_params,) = storage_filter_params
+
+    produced = _archive_filter_kwargs_from_spec(SessionQuerySpec(), since_ms=None, until_ms=None)
+    assert expected_filter_params == set(produced)
 
 
 def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path) -> None:

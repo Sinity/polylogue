@@ -477,16 +477,6 @@ def _web_reader_archive_root() -> Path | None:
     return root
 
 
-def _archive_origin_filter(params: dict[str, list[str]]) -> tuple[str | None, tuple[str, ...]]:
-    origin_values = params.get("origin") or []
-    if origin_values and origin_values[0]:
-        origins = tuple(
-            dict.fromkeys(token.strip() for value in origin_values for token in value.split(",") if token.strip())
-        )
-        return (origins[0] if len(origins) == 1 else None), origins
-    return None, ()
-
-
 def _utc_timestamp_json() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -578,14 +568,6 @@ def _facet_requested_optional_families(params: dict[str, list[str]]) -> set[str]
     return {family for family in requested if family in _FACET_EXPENSIVE_FAMILIES}
 
 
-def _archive_tag_filter(params: dict[str, list[str]]) -> tuple[str, ...]:
-    """Collect ``?tag=`` filters (repeated and/or comma-separated)."""
-    tags: list[str] = []
-    for value in params.get("tag") or []:
-        tags.extend(token.strip() for token in value.split(",") if token.strip())
-    return tuple(dict.fromkeys(tags))
-
-
 def _csv_values(params: dict[str, list[str]], key: str) -> tuple[str, ...]:
     """Collect repeated and/or comma-separated query-string values."""
     values: list[str] = []
@@ -598,6 +580,58 @@ def _archive_datetime_to_ms(value: datetime | None) -> int | None:
     if value is None:
         return None
     return int(value.timestamp() * 1000)
+
+
+def _archive_filter_kwargs_from_spec(
+    spec: SessionQuerySpec,
+    *,
+    since_ms: int | None,
+    until_ms: int | None,
+) -> dict[str, object]:
+    """Storage-layer filter kwargs derived from one merged ``SessionQuerySpec``.
+
+    Every key here is accepted identically by ``ArchiveStore.list_summaries``/
+    ``search_summaries``/``count_sessions``/``count_search_sessions`` — the
+    complete filter surface those four SQL entry points share (polylogue-4p1.1
+    parity test: ``tests/unit/daemon/test_web_reader.py::
+    test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field``).
+    ``session_id`` is deliberately NOT included: it is passed as a separate
+    keyword by the caller because ``count_sessions`` does not accept it.
+    """
+    origins = spec.origins
+    origin = origins[0] if len(origins) == 1 else None
+    return {
+        "origin": origin,
+        "origins": origins,
+        "excluded_origins": spec.excluded_origins,
+        "tags": spec.tags,
+        "excluded_tags": spec.excluded_tags,
+        "repo_names": spec.repo_names,
+        "project_refs": spec.project_refs,
+        "has_types": spec.has_types,
+        "has_tool_use": spec.filter_has_tool_use,
+        "has_thinking": spec.filter_has_thinking,
+        "has_paste": spec.filter_has_paste,
+        "tool_terms": spec.tool_terms,
+        "excluded_tool_terms": spec.excluded_tool_terms,
+        "action_terms": spec.action_terms,
+        "excluded_action_terms": spec.excluded_action_terms,
+        "action_sequence": spec.action_sequence,
+        "action_text_terms": spec.action_text_terms,
+        "referenced_paths": spec.referenced_path,
+        "cwd_prefix": spec.cwd_prefix,
+        "typed_only": spec.typed_only,
+        "message_type": spec.message_type,
+        "title": spec.title,
+        "min_messages": spec.min_messages,
+        "max_messages": spec.max_messages,
+        "min_words": spec.min_words,
+        "max_words": spec.max_words,
+        "since_ms": since_ms,
+        "until_ms": until_ms,
+        "since_session_id": spec.since_session_id,
+        "boolean_predicate": spec.boolean_predicate,
+    }
 
 
 _SCOPE_FILTER_KEYS = frozenset(
@@ -1051,7 +1085,13 @@ def _build_query_spec_params(
     params: dict[str, list[str]],
     handler: DaemonAPIHandler,
 ) -> dict[str, object]:
-    """Build SessionQuerySpec-compatible params from HTTP query string."""
+    """Build SessionQuerySpec-compatible params from HTTP query string.
+
+    Shared by every ``/api/sessions``-style fast path (both the full-backend
+    ``_do_list`` and the split-archive ``_do_archive_session_list``,
+    polylogue-4p1.1) so a filter param is parsed once, in one place, instead
+    of being hand-mirrored per route.
+    """
     spec_params: dict[str, object] = {}
 
     for key in (
@@ -1075,12 +1115,16 @@ def _build_query_spec_params(
         if val is not None:
             spec_params[key] = val
 
-    origin = handler._get_param(params, "origin")
-    if origin is not None:
-        spec_params["origin"] = origin
-    exclude_origin = handler._get_param(params, "exclude_origin")
-    if exclude_origin is not None:
-        spec_params["exclude_origin"] = exclude_origin
+    # CSV/repeated-value fields: collect every occurrence of ``?key=a&key=b``
+    # as well as comma-joined values (``?key=a,b``) rather than only the
+    # first query-string occurrence, matching the archive route's historical
+    # ``_csv_values``/``_archive_origin_filter`` behavior.
+    origins = _csv_values(params, "origin")
+    if origins:
+        spec_params["origin"] = origins
+    excluded_origins = _csv_values(params, "exclude_origin")
+    if excluded_origins:
+        spec_params["exclude_origin"] = excluded_origins
 
     for key in (
         "tag",
@@ -1094,9 +1138,9 @@ def _build_query_spec_params(
         "tool",
         "exclude_tool",
     ):
-        val = handler._get_param(params, key)
-        if val is not None:
-            spec_params[key] = val
+        values = _csv_values(params, key)
+        if values:
+            spec_params[key] = values
 
     for key in (
         "latest",
@@ -1108,6 +1152,17 @@ def _build_query_spec_params(
     ):
         if handler._get_bool(params, key):
             spec_params[key] = True
+
+    # Public HTTP aliases for the same booleans (``has_tool_use`` /
+    # ``has_thinking`` / ``has_paste_evidence`` are the names the split-archive
+    # route and its tests use; ``filter_has_*`` are the SessionQuerySpec field
+    # names). Accept both so either param name compiles to the same filter.
+    if "filter_has_tool_use" not in spec_params and handler._get_bool(params, "has_tool_use"):
+        spec_params["filter_has_tool_use"] = True
+    if "filter_has_thinking" not in spec_params and handler._get_bool(params, "has_thinking"):
+        spec_params["filter_has_thinking"] = True
+    if "filter_has_paste" not in spec_params and handler._get_bool(params, "has_paste_evidence"):
+        spec_params["filter_has_paste"] = True
 
     for key in ("min_messages", "max_messages", "min_words", "max_words", "sample"):
         val = handler._get_param(params, key)
@@ -2930,155 +2985,82 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         offset: int,
         route: str = "/api/sessions",
     ) -> object:
-        from polylogue.archive.query.expression import compile_expression
+        from polylogue.archive.query.expression import compile_expression_into
         from polylogue.archive.query.search_hits import search_query_text
-        from polylogue.archive.query.spec import QuerySpecError, parse_query_date
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, parse_query_date
 
-        # Parse/lower only the ``query`` param through the shared expression path
+        # Build one SessionQuerySpec from every accepted HTTP query param via
+        # the shared builder (_build_query_spec_params), then route the free
+        # text ``query`` param through the shared expression parser/lowerer
         # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
-        # correct ArchiveStore filter arguments rather than being passed as
-        # literal FTS text (#1860).  The ``contains`` param is a literal
-        # content-substring filter that must NOT be parsed as DSL — routing it through
-        # compile_expression() causes ExpressionCompileError when the value
-        # contains spaces or field-like tokens (#1873 Bug 7).
-        query_str = self._get_param(params, "query") or ""
-        contains_param = self._get_param(params, "contains")
-        fts_terms: tuple[str, ...]
-        if query_str:
-            spec = compile_expression(query_str)
-            # Bare words / quoted phrases become the FTS query; field clauses
-            # (origin:, tag:, since:, etc.) become structured filter args.
-            fts_terms = spec.query_terms + spec.contains_terms
-        else:
-            spec = None
-            fts_terms = ()
-        # ``?contains=`` is the literal content filter. It must still
-        # filter results, but must NOT be compiled as DSL (a value with spaces or
-        # field-like tokens would raise ExpressionCompileError, #1873 Bug 7). Wire
-        # it as a literal FTS term so ``GET /api/sessions?contains=foo`` with no
-        # ``query`` filters instead of returning the unfiltered first page.
-        if contains_param:
-            fts_terms = fts_terms + (contains_param,)
+        # correct filter fields instead of being passed as literal FTS text
+        # (#1860). This is the single spec construction path for both this
+        # split-archive fast path and the full-backend ``_do_list`` — a
+        # filter field added to SessionQuerySpec.from_params is honored here
+        # automatically instead of silently missing until this function is
+        # separately edited (polylogue-4p1.1). ``contains`` reaches
+        # ``contains_terms`` as a literal term via ``from_params`` itself, so
+        # it never risks the ExpressionCompileError a DSL-parsed value with
+        # spaces or field-like tokens would raise (#1873 Bug 7).
+        spec_query_params = _build_query_spec_params(params, self)
+        query_str = str(spec_query_params.pop("query", "") or "").strip()
+        base = SessionQuerySpec.from_params(spec_query_params)
+        spec = compile_expression_into(query_str, base) if query_str else base
+
+        fts_terms = spec.query_terms + spec.contains_terms
         fts_query = search_query_text(fts_terms)
 
-        # HTTP-param-based origin/tag filters — still honoured for backwards
-        # compatibility with callers passing ``?origin=...`` or ``?tag=...``
-        # as separate query-string parameters.
-        _, http_origins = _archive_origin_filter(params)
-        http_tags = _archive_tag_filter(params)
-
-        # Merge DSL-compiled spec filters with HTTP-param-based filters.
-        origins = tuple(dict.fromkeys((spec.origins if spec else ()) + http_origins))
-        excluded_origins = tuple(
-            dict.fromkeys((spec.excluded_origins if spec else ()) + _csv_values(params, "exclude_origin"))
-        )
-        tags = tuple(dict.fromkeys((spec.tags if spec else ()) + http_tags))
-        excluded_tags = tuple(dict.fromkeys((spec.excluded_tags if spec else ()) + _csv_values(params, "exclude_tag")))
-        origin = origins[0] if len(origins) == 1 else None
-
-        # Date filters: DSL spec takes precedence over bare HTTP params.
-        since_str = (spec.since if spec else None) or self._get_param(params, "since")
-        until_str = (spec.until if spec else None) or self._get_param(params, "until")
         # parse_query_date raises QuerySpecError (a PolylogueError carrying
         # http_status_code=400) for unparseable dates; daemon_safe_handler maps
         # it to the QueryErrorPayload-shaped 400 the other surfaces return.
-        since_dt = parse_query_date("since", since_str)
-        until_dt = parse_query_date("until", until_str)
+        since_dt = parse_query_date("since", spec.since)
+        until_dt = parse_query_date("until", spec.until)
         since_ms = _archive_datetime_to_ms(since_dt)
         until_ms = _archive_datetime_to_ms(until_dt)
 
-        # Remaining structured filters come from the compiled spec plus the
-        # stable HTTP query parameters accepted by the shared query builder.
-        # The split-archive fast path does not construct a SessionQuerySpec
-        # directly, so it must mirror those public params here.
-        has_paste = (spec.filter_has_paste if spec else False) or self._get_bool(params, "has_paste_evidence")
-        has_tool_use = (spec.filter_has_tool_use if spec else False) or self._get_bool(params, "has_tool_use")
-        has_thinking = (spec.filter_has_thinking if spec else False) or self._get_bool(params, "has_thinking")
-        repo_names = tuple(dict.fromkeys((spec.repo_names if spec else ()) + _csv_values(params, "repo")))
-        has_types = tuple(dict.fromkeys((spec.has_types if spec else ()) + _csv_values(params, "has_type")))
-        tool_terms = tuple(dict.fromkeys((spec.tool_terms if spec else ()) + _csv_values(params, "tool")))
-        excluded_tool_terms = tuple(
-            dict.fromkeys((spec.excluded_tool_terms if spec else ()) + _csv_values(params, "exclude_tool"))
-        )
-        action_terms = tuple(dict.fromkeys((spec.action_terms if spec else ()) + _csv_values(params, "action")))
-        excluded_action_terms = tuple(
-            dict.fromkeys((spec.excluded_action_terms if spec else ()) + _csv_values(params, "exclude_action"))
-        )
-        action_sequence = tuple(
-            dict.fromkeys((spec.action_sequence if spec else ()) + _csv_values(params, "action_sequence"))
-        )
-        action_text_terms = tuple(
-            dict.fromkeys((spec.action_text_terms if spec else ()) + _csv_values(params, "action_text"))
-        )
-        referenced_paths = tuple(
-            dict.fromkeys((spec.referenced_path if spec else ()) + _csv_values(params, "referenced_path"))
-        )
-        cwd_prefix = (spec.cwd_prefix if spec else None) or self._get_param(params, "cwd_prefix")
-        title = (spec.title if spec else None) or self._get_param(params, "title")
-        min_messages = (spec.min_messages if spec else None) or self._get_int(params, "min_messages", 0) or None
-        max_messages = (spec.max_messages if spec else None) or self._get_int(params, "max_messages", 0) or None
-        min_words = (spec.min_words if spec else None) or self._get_int(params, "min_words", 0) or None
-        max_words = (spec.max_words if spec else None) or self._get_int(params, "max_words", 0) or None
+        origins = spec.origins
+        origin = origins[0] if len(origins) == 1 else None
         # session_id is passed separately to list_summaries/search_summaries
         # (count_sessions does not accept this param, so it cannot go in _filter_kw).
-        spec_session_id = spec.session_id if spec else None
+        spec_session_id = spec.session_id
 
-        # Shared filter kwargs forwarded to every ArchiveStore call.
-        _filter_kw: dict[str, object] = {
-            "origin": origin,
-            "origins": origins,
-            "excluded_origins": excluded_origins,
-            "tags": tags,
-            "excluded_tags": excluded_tags,
-            "repo_names": repo_names,
-            "has_types": has_types,
-            "has_tool_use": has_tool_use,
-            "has_thinking": has_thinking,
-            "has_paste": has_paste,
-            "tool_terms": tool_terms,
-            "excluded_tool_terms": excluded_tool_terms,
-            "action_terms": action_terms,
-            "excluded_action_terms": excluded_action_terms,
-            "action_sequence": action_sequence,
-            "action_text_terms": action_text_terms,
-            "referenced_paths": referenced_paths,
-            "cwd_prefix": cwd_prefix,
-            "title": title,
-            "min_messages": min_messages,
-            "max_messages": max_messages,
-            "min_words": min_words,
-            "max_words": max_words,
-            "since_ms": since_ms,
-            "until_ms": until_ms,
-        }
+        # Every remaining structured filter is read directly off the merged
+        # spec — no per-field HTTP-param re-read for anything SessionQuerySpec
+        # already models (polylogue-4p1.1).
+        _filter_kw = _archive_filter_kwargs_from_spec(spec, since_ms=since_ms, until_ms=until_ms)
         filtered = bool(
             fts_query
             or spec_session_id
             or origin
             or origins
-            or excluded_origins
-            or tags
-            or excluded_tags
-            or repo_names
-            or has_types
-            or tool_terms
-            or excluded_tool_terms
-            or action_terms
-            or excluded_action_terms
-            or action_sequence
-            or action_text_terms
-            or referenced_paths
-            or cwd_prefix
-            or title
-            or min_messages is not None
-            or max_messages is not None
-            or min_words is not None
-            or max_words is not None
+            or spec.excluded_origins
+            or spec.tags
+            or spec.excluded_tags
+            or spec.repo_names
+            or spec.project_refs
+            or spec.has_types
+            or spec.tool_terms
+            or spec.excluded_tool_terms
+            or spec.action_terms
+            or spec.excluded_action_terms
+            or spec.action_sequence
+            or spec.action_text_terms
+            or spec.referenced_path
+            or spec.cwd_prefix
+            or spec.typed_only
+            or spec.message_type
+            or spec.title
+            or spec.min_messages is not None
+            or spec.max_messages is not None
+            or spec.min_words is not None
+            or spec.max_words is not None
             or since_dt is not None
             or until_dt is not None
-            or has_paste
-            or has_tool_use
-            or has_thinking
+            or spec.since_session_id
+            or spec.boolean_predicate is not None
+            or spec.filter_has_paste
+            or spec.filter_has_tool_use
+            or spec.filter_has_thinking
         )
 
         with archive_read_context(
@@ -3218,7 +3200,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         for label in (
                             f"query={fts_query!r}",
                             f"origin={origin}" if origin else None,
-                            f"tags={list(tags)}" if tags else None,
+                            f"tags={list(spec.tags)}" if spec.tags else None,
                         )
                         if label is not None
                     )
@@ -4023,18 +4005,48 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         much worse place to block on that than a CLI call a human can
         interrupt (polylogue-dlmv). Callers that want the full
         diagnostics can still request ``?detail=full`` explicitly.
+
+        A missing/unopenable ``index.db`` used to propagate a raw
+        ``sqlite3.OperationalError`` as an unhandled 500 (polylogue-d07y).
+        Sibling read endpoints (``/api/archive-debt``, the split-archive
+        ``/api/sessions`` fast path) degrade gracefully instead — this route
+        now returns the same typed ``route_state: degraded`` envelope shape,
+        privacy-projected like every other archive-path-bearing payload here.
         """
         origin = self._get_param(params, "origin")
         limit = self._get_int(params, "limit", 25)
         detail = self._get_param(params, "detail", "headline") or "headline"
         from polylogue.paths import archive_root as configured_archive_root
 
+        archive_root = configured_archive_root()
+
         async def _get(poly: Polylogue) -> object:
             report = await poly.provider_usage_report(origin=origin, limit=limit, detail=detail)
             return report.to_dict()
 
-        result = _web_privacy_safe_projection(self._sync_run(_get), configured_archive_root())
-        self._send_json(HTTPStatus.OK, result)
+        try:
+            result = self._sync_run(_get)
+        except (DatabaseError, sqlite3.Error) as exc:
+            logger.warning("provider-usage archive read degraded: %s", exc)
+            reason = f"Provider usage accounting is unavailable: archive index could not be read ({exc})."
+            degraded: dict[str, object] = {
+                "archive_root": str(archive_root),
+                "origin": origin,
+                "detail_level": detail,
+                "origins": [],
+                "caveats": [reason],
+                "route_state": _route_readiness_payload(
+                    "degraded",
+                    "/api/provider-usage",
+                    reason=reason,
+                    component="index_db",
+                    stale_available=False,
+                ),
+            }
+            self._send_json(HTTPStatus.OK, _web_privacy_safe_projection(degraded, archive_root))
+            return
+
+        self._send_json(HTTPStatus.OK, _web_privacy_safe_projection(result, archive_root))
 
     @daemon_safe_handler
     def _handle_query_units(self, params: dict[str, list[str]]) -> None:
