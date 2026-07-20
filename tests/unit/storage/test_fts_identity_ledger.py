@@ -1,0 +1,463 @@
+"""Exact identity-ledger reconciliation for messages_fts (polylogue-1xc.12).
+
+``messages_fts`` is a CONTENTLESS FTS5 table: its ``block_id`` UNINDEXED
+column is write-only and never retrievable by a later ``SELECT`` (see
+``storage/fts/sql.py``). SQLite reuses freed rowids -- deleting the
+highest-rowid block then inserting a new one commonly gets the SAME rowid
+back, exactly what a full-session-replace does -- so a bare rowid comparison
+cannot prove which block a ``messages_fts`` row currently represents, and
+count-only reconciliation (``source_rows == indexed_rows``) cannot see a
+stale rowid that has silently rebound to a different block: both sides still
+balance. These tests exercise the real block triggers (never a mock) and
+prove the ``messages_fts_identity`` ledger + exact reconciliation actually
+catch that class of drift, not merely that happy-path counts agree.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+
+from polylogue.storage.fts.freshness import (
+    READY,
+    ensure_fts_freshness_table_sync,
+    freshness_ready_record_trusted,
+    record_fts_surface_state_sync,
+)
+from polylogue.storage.fts.fts_lifecycle import (
+    fts_invariant_snapshot_sync,
+    restore_fts_triggers_sync,
+)
+from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID, message_identity_mismatch_sql
+from polylogue.storage.sqlite.archive_tiers.ops_write import list_fts_drift_samples, record_fts_drift_sample
+
+
+def _seed_block(
+    conn: sqlite3.Connection,
+    *,
+    native_session_id: str,
+    native_message_id: str,
+    text: str,
+    content_hash: bytes = b"x" * 32,
+) -> str:
+    """Insert one minimal session/message/block row and return the block_id."""
+    origin = "unknown-export"
+    session_id = f"{origin}:{native_session_id}"
+    message_id = f"{session_id}:{native_message_id}"
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
+        (native_session_id, origin, "Identity ledger test", content_hash),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+        VALUES (?, ?, 0, 'user', 'message', ?)
+        """,
+        (session_id, native_message_id, content_hash),
+    )
+    conn.execute(
+        """
+        INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash)
+        VALUES (?, ?, 0, 'text', ?, ?)
+        """,
+        (message_id, session_id, text, content_hash),
+    )
+    return f"{message_id}:0"
+
+
+def _block_rowid(conn: sqlite3.Connection, block_id: str) -> int:
+    row = conn.execute("SELECT rowid FROM blocks WHERE block_id = ?", (block_id,)).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _identity_row(conn: sqlite3.Connection, rowid: int) -> tuple[str, bytes | None, str] | None:
+    row = conn.execute(
+        "SELECT block_id, source_hash, recipe_id FROM messages_fts_identity WHERE rowid = ?",
+        (rowid,),
+    ).fetchone()
+    return None if row is None else (str(row[0]), row[1], str(row[2]))
+
+
+def _identity_mismatch_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute(message_identity_mismatch_sql()).fetchone()[0] or 0)
+
+
+class TestIdentityLedgerHappyPath:
+    """Real triggers correctly maintain the ledger, including rowid reuse."""
+
+    def test_insert_populates_identity_ledger(self, test_conn: sqlite3.Connection) -> None:
+        restore_fts_triggers_sync(test_conn)
+        content_hash = b"a" * 32
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-insert",
+            native_message_id="msg-identity-insert",
+            text="hello identity ledger",
+            content_hash=content_hash,
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        identity = _identity_row(test_conn, rowid)
+        assert identity == (block_id, content_hash, FTS_MESSAGES_IDENTITY_RECIPE_ID)
+        assert _identity_mismatch_count(test_conn) == 0
+
+    def test_rowid_reuse_after_delete_rebinds_identity_to_new_block(self, test_conn: sqlite3.Connection) -> None:
+        """The keystone case: a freed rowid must never keep the old block's identity.
+
+        Mutation this proves fails without the trigger's identity DELETE+INSERT
+        pair: if the ``messages_fts_ad``/``messages_fts_ai`` bodies stopped
+        touching ``messages_fts_identity``, the ledger row for the reused
+        rowid would still say ``block_id_a`` after block B was inserted at
+        the same rowid, and this test's final assertion would fail.
+        """
+        restore_fts_triggers_sync(test_conn)
+        block_id_a = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-reuse",
+            native_message_id="msg-identity-reuse-a",
+            text="first block occupying the rowid",
+            content_hash=b"a" * 32,
+        )
+        rowid = _block_rowid(test_conn, block_id_a)
+        assert _identity_row(test_conn, rowid) is not None
+
+        # Deleting the only (highest-rowid) block frees that exact rowid --
+        # SQLite's default rowid allocator reuses it on the very next insert.
+        test_conn.execute("DELETE FROM blocks WHERE block_id = ?", (block_id_a,))
+        assert _identity_row(test_conn, rowid) is None
+
+        block_id_b = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-reuse",
+            native_message_id="msg-identity-reuse-b",
+            text="second block reusing the same rowid",
+            content_hash=b"b" * 32,
+        )
+        reused_rowid = _block_rowid(test_conn, block_id_b)
+        assert reused_rowid == rowid, "test setup expected SQLite to reuse the freed rowid"
+
+        identity = _identity_row(test_conn, reused_rowid)
+        assert identity is not None
+        bound_block_id, bound_source_hash, _recipe = identity
+        assert bound_block_id == block_id_b
+        assert bound_block_id != block_id_a
+        assert bound_source_hash == b"b" * 32
+        assert _identity_mismatch_count(test_conn) == 0
+
+        snapshot = fts_invariant_snapshot_sync(test_conn)
+        assert snapshot.messages.identity_mismatch_rows == 0
+        assert snapshot.messages.ready
+
+    def test_text_change_refreshes_source_hash(self, test_conn: sqlite3.Connection) -> None:
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-textchange",
+            native_message_id="msg-identity-textchange",
+            text="original text",
+            content_hash=b"c" * 32,
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        test_conn.execute(
+            "UPDATE blocks SET text = ?, content_hash = ? WHERE block_id = ?",
+            ("edited text", b"d" * 32, block_id),
+        )
+        identity = _identity_row(test_conn, rowid)
+        assert identity is not None
+        assert identity[1] == b"d" * 32
+        assert _identity_mismatch_count(test_conn) == 0
+
+    def test_empty_text_transition_removes_identity_row(self, test_conn: sqlite3.Connection) -> None:
+        """Text going to empty must drop both messages_fts AND its identity row."""
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-emptytransition",
+            native_message_id="msg-identity-emptytransition",
+            text="will become empty",
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert _identity_row(test_conn, rowid) is not None
+
+        test_conn.execute("UPDATE blocks SET text = NULL WHERE block_id = ?", (block_id,))
+        assert _identity_row(test_conn, rowid) is None
+        docsize_row = test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = ?", (rowid,)).fetchone()
+        assert docsize_row is None
+        assert _identity_mismatch_count(test_conn) == 0
+
+
+class TestIdentityMismatchDetection:
+    """Anti-vacuity: prove the exact check actually flags corruption, not just 0/0."""
+
+    def test_corrupted_ledger_row_is_detected_as_mismatch(self, test_conn: sqlite3.Connection) -> None:
+        """Simulate the historical bug directly: hand-write a stale identity row.
+
+        This bypasses the trigger entirely to reproduce exactly what a
+        missing/broken identity trigger arm would leave behind -- a
+        ``messages_fts_identity`` row whose ``block_id`` does not match the
+        block currently bound to that rowid. Count-only reconciliation
+        (source_rows == indexed_rows) would report this archive as fully
+        healthy; the identity check must not.
+        """
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-corrupt",
+            native_message_id="msg-identity-corrupt",
+            text="genuine current block",
+            content_hash=b"e" * 32,
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert _identity_mismatch_count(test_conn) == 0
+
+        # Hand-corrupt the ledger to point at a block_id that never existed
+        # at this rowid -- the exact rowid-reuse-gone-wrong shape.
+        test_conn.execute(
+            "UPDATE messages_fts_identity SET block_id = 'stale:ghost:0' WHERE rowid = ?",
+            (rowid,),
+        )
+        assert _identity_mismatch_count(test_conn) == 1
+
+        snapshot = fts_invariant_snapshot_sync(test_conn)
+        assert snapshot.messages.identity_mismatch_rows == 1
+        assert not snapshot.messages.ready
+
+    def test_stale_source_hash_is_detected_as_mismatch(self, test_conn: sqlite3.Connection) -> None:
+        """A block's content_hash moved on but the ledger row didn't -- caught."""
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-stalehash",
+            native_message_id="msg-identity-stalehash",
+            text="content that will diverge from its ledgered hash",
+            content_hash=b"f" * 32,
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert _identity_mismatch_count(test_conn) == 0
+
+        test_conn.execute(
+            "UPDATE messages_fts_identity SET source_hash = ? WHERE rowid = ?",
+            (b"0" * 32, rowid),
+        )
+        assert _identity_mismatch_count(test_conn) == 1
+
+    def test_stale_recipe_id_is_detected_as_mismatch(self, test_conn: sqlite3.Connection) -> None:
+        """An archive that never rebuilt after a tokenizer/fold recipe bump."""
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-stalerecipe",
+            native_message_id="msg-identity-stalerecipe",
+            text="indexed under an old recipe",
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert _identity_mismatch_count(test_conn) == 0
+
+        test_conn.execute(
+            "UPDATE messages_fts_identity SET recipe_id = 'messages_fts.v0:legacy' WHERE rowid = ?",
+            (rowid,),
+        )
+        assert _identity_mismatch_count(test_conn) == 1
+
+    def test_orphan_identity_row_without_docsize_is_detected(self, test_conn: sqlite3.Connection) -> None:
+        """An identity row surviving after its messages_fts row vanished."""
+        restore_fts_triggers_sync(test_conn)
+        _seed_block(
+            test_conn,
+            native_session_id="conv-identity-orphan",
+            native_message_id="msg-identity-orphan",
+            text="will be deleted from messages_fts only",
+        )
+        block_id = "unknown-export:conv-identity-orphan:msg-identity-orphan:0"
+        rowid = _block_rowid(test_conn, block_id)
+        assert _identity_mismatch_count(test_conn) == 0
+
+        # Remove only the FTS row (as if a partial/interrupted repair left
+        # the identity ledger behind) -- never do this outside a test.
+        test_conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
+        assert _identity_mismatch_count(test_conn) == 1
+
+
+class TestIdentityMismatchGatesReadiness:
+    """Wired into the same readiness contract missing_rows/excess_rows use."""
+
+    def test_freshness_ready_record_trusted_rejects_nonzero_identity_mismatch(self) -> None:
+        assert not freshness_ready_record_trusted(
+            state=READY,
+            source_rows=10,
+            indexed_rows=10,
+            missing_rows=0,
+            excess_rows=0,
+            duplicate_rows=0,
+            identity_mismatch_rows=1,
+            source_has_rows=True,
+        )
+
+    def test_freshness_ready_record_trusted_defaults_identity_mismatch_to_zero(self) -> None:
+        """Backward compatibility: callers that never computed it still pass."""
+        assert freshness_ready_record_trusted(
+            state=READY,
+            source_rows=10,
+            indexed_rows=10,
+            missing_rows=0,
+            excess_rows=0,
+            duplicate_rows=0,
+            source_has_rows=True,
+        )
+
+    def test_record_fts_surface_state_round_trips_identity_mismatch_column(self, test_conn: sqlite3.Connection) -> None:
+        ensure_fts_freshness_table_sync(test_conn)
+        record_fts_surface_state_sync(
+            test_conn,
+            surface="messages_fts",
+            state=READY,
+            source_rows=5,
+            indexed_rows=5,
+            identity_mismatch_rows=2,
+        )
+        row = test_conn.execute(
+            "SELECT identity_mismatch_rows FROM fts_freshness_state WHERE surface = 'messages_fts'"
+        ).fetchone()
+        assert row is not None
+        assert int(row[0]) == 2
+
+    def test_upgraded_freshness_table_defaults_identity_mismatch_to_zero(self, test_conn: sqlite3.Connection) -> None:
+        """A row written before this column existed reads back as 0, not NULL."""
+        test_conn.execute("DROP TABLE IF EXISTS fts_freshness_state")
+        test_conn.execute(
+            """
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                checked_at TEXT NOT NULL
+            )
+            """
+        )
+        test_conn.execute(
+            "INSERT INTO fts_freshness_state (surface, state, checked_at) VALUES ('messages_fts', 'ready', 'x')"
+        )
+        ensure_fts_freshness_table_sync(test_conn)
+        row = test_conn.execute(
+            "SELECT identity_mismatch_rows FROM fts_freshness_state WHERE surface = 'messages_fts'"
+        ).fetchone()
+        assert row is not None
+        assert int(row[0]) == 0
+
+
+class TestFtsDriftSamples:
+    """Bounded ops.db drift-magnitude history (polylogue-1xc.12)."""
+
+    def test_record_and_list_round_trip(self, tmp_path: object) -> None:
+        import sqlite3 as _sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        ops_path = tmp_path / "ops.db"  # type: ignore[operator]
+        conn = _sqlite3.connect(str(ops_path))
+        try:
+            initialize_archive_tier(conn, ArchiveTier.OPS)
+            record_fts_drift_sample(
+                conn,
+                surface="messages_fts",
+                state="ready",
+                source_rows=100,
+                indexed_rows=100,
+                missing_rows=0,
+                excess_rows=0,
+                duplicate_rows=0,
+                identity_mismatch_rows=0,
+                sampled_at_ms=1_000,
+            )
+            record_fts_drift_sample(
+                conn,
+                surface="messages_fts",
+                state="stale",
+                source_rows=100,
+                indexed_rows=97,
+                missing_rows=3,
+                excess_rows=0,
+                duplicate_rows=0,
+                identity_mismatch_rows=1,
+                sampled_at_ms=2_000,
+            )
+            samples = list_fts_drift_samples(conn, surface="messages_fts")
+            assert len(samples) == 2
+            newest = samples[0]
+            assert newest.sampled_at_ms == 2_000
+            assert newest.missing_rows == 3
+            assert newest.identity_mismatch_rows == 1
+        finally:
+            conn.close()
+
+    def test_retention_prunes_old_samples(self, tmp_path: object) -> None:
+        import sqlite3 as _sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+        from polylogue.storage.sqlite.archive_tiers.ops_write import FTS_DRIFT_SAMPLE_RETENTION_MS
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        ops_path = tmp_path / "ops.db"  # type: ignore[operator]
+        conn = _sqlite3.connect(str(ops_path))
+        try:
+            initialize_archive_tier(conn, ArchiveTier.OPS)
+            record_fts_drift_sample(
+                conn,
+                surface="messages_fts",
+                state="ready",
+                source_rows=1,
+                indexed_rows=1,
+                missing_rows=0,
+                excess_rows=0,
+                duplicate_rows=0,
+                identity_mismatch_rows=0,
+                sampled_at_ms=0,
+            )
+            # A sample recorded well beyond the retention window must prune
+            # the ancient row on the next write -- this is the mutation that
+            # fails without the DELETE ... WHERE sampled_at_ms < ? pruning
+            # statement in record_fts_drift_sample.
+            record_fts_drift_sample(
+                conn,
+                surface="messages_fts",
+                state="ready",
+                source_rows=1,
+                indexed_rows=1,
+                missing_rows=0,
+                excess_rows=0,
+                duplicate_rows=0,
+                identity_mismatch_rows=0,
+                sampled_at_ms=FTS_DRIFT_SAMPLE_RETENTION_MS * 2,
+            )
+            samples = list_fts_drift_samples(conn, surface="messages_fts", limit=100)
+            assert len(samples) == 1
+            assert samples[0].sampled_at_ms == FTS_DRIFT_SAMPLE_RETENTION_MS * 2
+        finally:
+            conn.close()
+
+    def test_drift_sample_writer_never_stores_negative_counts(self, tmp_path: object) -> None:
+        import sqlite3 as _sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        ops_path = tmp_path / "ops.db"  # type: ignore[operator]
+        conn = _sqlite3.connect(str(ops_path))
+        try:
+            initialize_archive_tier(conn, ArchiveTier.OPS)
+            record_fts_drift_sample(
+                conn,
+                surface="messages_fts",
+                state="ready",
+                source_rows=-5,
+                indexed_rows=-1,
+                missing_rows=-1,
+                excess_rows=-1,
+                duplicate_rows=-1,
+                identity_mismatch_rows=-1,
+                sampled_at_ms=1,
+            )
+            sample = list_fts_drift_samples(conn, surface="messages_fts")[0]
+            assert sample.source_rows == 0
+            assert sample.identity_mismatch_rows == 0
+        finally:
+            conn.close()

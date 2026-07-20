@@ -15,6 +15,12 @@ from polylogue.core.enums import Origin
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
 ROUTE_OBSERVATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 ROUTE_OBSERVATION_ROW_CAP = 20_000
+# polylogue-1xc.12: bounded like ROUTE_OBSERVATION_* above -- a 30 day window
+# (long enough to see week-over-week drift trend) capped at 5,000 rows (one
+# sample per surface per convergence/startup pass keeps this table tiny in
+# practice; the cap is a hard backstop against a runaway sampling loop).
+FTS_DRIFT_SAMPLE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+FTS_DRIFT_SAMPLE_ROW_CAP = 5_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +146,132 @@ class ArchiveRouteObservation:
     archive_epoch: str | None
     attributes: dict[str, object]
     sampled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveFtsDriftSample:
+    """One bounded drift-magnitude sample for an FTS-backed surface."""
+
+    sample_id: str
+    surface: str
+    state: str
+    source_rows: int
+    indexed_rows: int
+    missing_rows: int
+    excess_rows: int
+    duplicate_rows: int
+    identity_mismatch_rows: int
+    sampled_at_ms: int
+
+
+def record_fts_drift_sample(
+    conn: sqlite3.Connection,
+    *,
+    surface: str,
+    state: str,
+    source_rows: int,
+    indexed_rows: int,
+    missing_rows: int,
+    excess_rows: int,
+    duplicate_rows: int,
+    identity_mismatch_rows: int,
+    sampled_at_ms: int,
+    sample_id: str | None = None,
+) -> str:
+    """Record one bounded FTS drift-magnitude sample and return its id.
+
+    polylogue-1xc.12: the ``fts_freshness_state`` ledger in index.db (see
+    ``storage/fts/freshness.py``) is O(1) current state, not history -- this
+    writer appends a time-series snapshot of the same counters to ops.db (a
+    separate database file/connection) so an operator can see drift
+    MAGNITUDE trend, not just today's boolean ready/stale. Best-effort
+    telemetry like ``record_route_observation``: a plain direct INSERT,
+    pruned by both time (``FTS_DRIFT_SAMPLE_RETENTION_MS``) and row count
+    (``FTS_DRIFT_SAMPLE_ROW_CAP``) so it cannot grow unbounded.
+    """
+    if sample_id is None:
+        sample_id = str(uuid.uuid4())
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO fts_drift_samples (
+                sample_id, surface, state, source_rows, indexed_rows,
+                missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, sampled_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sample_id,
+                surface,
+                state,
+                max(0, int(source_rows)),
+                max(0, int(indexed_rows)),
+                max(0, int(missing_rows)),
+                max(0, int(excess_rows)),
+                max(0, int(duplicate_rows)),
+                max(0, int(identity_mismatch_rows)),
+                sampled_at_ms,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM fts_drift_samples WHERE sampled_at_ms < ?",
+            (sampled_at_ms - FTS_DRIFT_SAMPLE_RETENTION_MS,),
+        )
+        row_count = int(conn.execute("SELECT COUNT(*) FROM fts_drift_samples").fetchone()[0])
+        if row_count > FTS_DRIFT_SAMPLE_ROW_CAP:
+            excess = row_count - FTS_DRIFT_SAMPLE_ROW_CAP
+            conn.execute(
+                """
+                DELETE FROM fts_drift_samples WHERE sample_id IN (
+                    SELECT sample_id FROM fts_drift_samples
+                    ORDER BY sampled_at_ms ASC LIMIT ?
+                )
+                """,
+                (excess,),
+            )
+    return sample_id
+
+
+def list_fts_drift_samples(
+    conn: sqlite3.Connection,
+    *,
+    surface: str | None = None,
+    since_ms: int | None = None,
+    limit: int = 1000,
+) -> tuple[ArchiveFtsDriftSample, ...]:
+    """Return FTS drift samples newest-first, optionally filtered."""
+    query = """
+        SELECT sample_id, surface, state, source_rows, indexed_rows,
+               missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, sampled_at_ms
+        FROM fts_drift_samples
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if surface is not None:
+        clauses.append("surface = ?")
+        params.append(surface)
+    if since_ms is not None:
+        clauses.append("sampled_at_ms >= ?")
+        params.append(since_ms)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY sampled_at_ms DESC, sample_id DESC LIMIT ?"
+    params.append(limit)
+    return tuple(_fts_drift_sample_from_row(row) for row in conn.execute(query, tuple(params)).fetchall())
+
+
+def _fts_drift_sample_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveFtsDriftSample:
+    return ArchiveFtsDriftSample(
+        sample_id=str(row[0]),
+        surface=str(row[1]),
+        state=str(row[2]),
+        source_rows=_int_value(row[3]),
+        indexed_rows=_int_value(row[4]),
+        missing_rows=_int_value(row[5]),
+        excess_rows=_int_value(row[6]),
+        duplicate_rows=_int_value(row[7]),
+        identity_mismatch_rows=_int_value(row[8]),
+        sampled_at_ms=_int_value(row[9]),
+    )
 
 
 def record_query_run(
@@ -1297,11 +1429,15 @@ __all__ = [
     "ArchiveDaemonLifecycle",
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
+    "ArchiveFtsDriftSample",
     "ArchiveOtlpSpan",
     "ArchiveRouteObservation",
+    "FTS_DRIFT_SAMPLE_RETENTION_MS",
+    "FTS_DRIFT_SAMPLE_ROW_CAP",
     "OpsCompactState",
     "add_convergence_debt",
     "list_cursor_lag_samples",
+    "list_fts_drift_samples",
     "latest_daemon_lifecycle",
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
@@ -1318,6 +1454,7 @@ __all__ = [
     "record_daemon_lifecycle_start",
     "record_daemon_lifecycle_stop",
     "record_daemon_stage_event",
+    "record_fts_drift_sample",
     "record_ingest_attempt",
     "record_query_run",
     "record_route_observation",

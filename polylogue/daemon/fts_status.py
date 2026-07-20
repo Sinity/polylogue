@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from polylogue.logging import get_logger
 from polylogue.storage.fts.freshness import STALE, UNKNOWN, freshness_ready_record_trusted
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
+from polylogue.storage.fts.sql import message_identity_mismatch_sql
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
@@ -89,6 +90,7 @@ def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str |
         "missing_rows",
         "excess_rows",
         "duplicate_rows",
+        "identity_mismatch_rows",
     )
     selected = ["surface", "state"]
     selected.extend(name for name in numeric_columns if name in columns)
@@ -105,6 +107,7 @@ def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str |
             "missing_rows": _int_or_zero(record.get("missing_rows")),
             "excess_rows": _int_or_zero(record.get("excess_rows")),
             "duplicate_rows": _int_or_zero(record.get("duplicate_rows")),
+            "identity_mismatch_rows": _int_or_zero(record.get("identity_mismatch_rows")),
             "detail": None if "detail" not in record or record["detail"] is None else str(record["detail"]),
         }
     return records
@@ -129,6 +132,7 @@ def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str
         "missing_rows": surface.missing_rows,
         "excess_rows": surface.excess_rows,
         "duplicate_rows": surface.duplicate_rows,
+        "identity_mismatch_rows": surface.identity_mismatch_rows,
         "ready": surface.ready,
         "exact": True,
     }
@@ -178,6 +182,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             "missing_rows": 0,
             "excess_rows": 0,
             "duplicate_rows": 0,
+            "identity_mismatch_rows": 0,
             "ready": ready,
             "exact": True,
         }
@@ -198,6 +203,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             "missing_rows": source_rows,
             "excess_rows": 0,
             "duplicate_rows": 0,
+            "identity_mismatch_rows": 0,
             "ready": False,
             "exact": True,
         }
@@ -227,11 +233,17 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
         or 0
     )
     duplicate_rows = 0
+    identity_mismatch_rows = (
+        int(conn.execute(message_identity_mismatch_sql()).fetchone()[0] or 0)
+        if _table_exists(conn, "messages_fts_identity")
+        else 0
+    )
     ready = (
         triggers_present
         and missing_rows == 0
         and excess_rows == 0
         and duplicate_rows == 0
+        and identity_mismatch_rows == 0
         and source_rows == indexed_rows
     )
     return {
@@ -243,6 +255,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
         "missing_rows": missing_rows,
         "excess_rows": excess_rows,
         "duplicate_rows": duplicate_rows,
+        "identity_mismatch_rows": identity_mismatch_rows,
         "ready": ready,
         "exact": True,
     }
@@ -259,6 +272,7 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
     missing_rows = 0 if freshness is None else _int_or_zero(freshness.get("missing_rows"))
     excess_rows = 0 if freshness is None else _int_or_zero(freshness.get("excess_rows"))
     duplicate_rows = 0 if freshness is None else _int_or_zero(freshness.get("duplicate_rows"))
+    identity_mismatch_rows = 0 if freshness is None else _int_or_zero(freshness.get("identity_mismatch_rows"))
     recorded_state = None if freshness is None else str(freshness.get("state"))
     source_has_rows = (
         _source_has_rows(conn, "blocks")
@@ -275,6 +289,7 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
             missing_rows=missing_rows,
             excess_rows=excess_rows,
             duplicate_rows=duplicate_rows,
+            identity_mismatch_rows=identity_mismatch_rows,
             source_has_rows=source_has_rows,
         )
     )
@@ -292,6 +307,7 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
         "missing_rows": missing_rows,
         "excess_rows": excess_rows,
         "duplicate_rows": duplicate_rows,
+        "identity_mismatch_rows": identity_mismatch_rows,
         "ready": ready,
         "exact": False,
         "freshness_known": freshness_records is not None,
@@ -428,6 +444,9 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                 missing_rows = 0 if freshness is None else _int_or_zero(freshness.get("missing_rows"))
                 excess_rows = 0 if freshness is None else _int_or_zero(freshness.get("excess_rows"))
                 duplicate_rows = 0 if freshness is None else _int_or_zero(freshness.get("duplicate_rows"))
+                identity_mismatch_rows = (
+                    0 if freshness is None else _int_or_zero(freshness.get("identity_mismatch_rows"))
+                )
                 recorded_state = None if freshness is None else str(freshness.get("state"))
                 source_has_rows = (
                     _source_has_rows(conn, source_table)
@@ -444,6 +463,7 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                         missing_rows=missing_rows,
                         excess_rows=excess_rows,
                         duplicate_rows=duplicate_rows,
+                        identity_mismatch_rows=identity_mismatch_rows,
                         source_has_rows=source_has_rows,
                     )
                 )
@@ -462,6 +482,7 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                     "missing_rows": missing_rows,
                     "excess_rows": excess_rows,
                     "duplicate_rows": duplicate_rows,
+                    "identity_mismatch_rows": identity_mismatch_rows,
                     "ready": ready,
                     "exact": False,
                     "freshness_known": freshness_records is not None,

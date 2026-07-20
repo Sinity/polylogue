@@ -175,7 +175,14 @@ def _freshness_record(conn: sqlite3.Connection, surface: str) -> dict[str, objec
         return None
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(fts_freshness_state)").fetchall()}
     selected = ["state"]
-    for name in ("source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"):
+    for name in (
+        "source_rows",
+        "indexed_rows",
+        "missing_rows",
+        "excess_rows",
+        "duplicate_rows",
+        "identity_mismatch_rows",
+    ):
         if name in columns:
             selected.append(name)
     row = conn.execute(f"SELECT {', '.join(selected)} FROM fts_freshness_state WHERE surface=?", (surface,)).fetchone()
@@ -213,6 +220,7 @@ def _ready_freshness_marker(conn: sqlite3.Connection, surface: str, triggers: tu
         missing_rows=_int_or_zero(record.get("missing_rows")),
         excess_rows=_int_or_zero(record.get("excess_rows")),
         duplicate_rows=_int_or_zero(record.get("duplicate_rows")),
+        identity_mismatch_rows=_int_or_zero(record.get("identity_mismatch_rows")),
         source_has_rows=_source_has_rows(conn, surface) if source_rows == 0 and indexed_rows == 0 else False,
     )
 

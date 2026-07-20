@@ -188,6 +188,51 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 43 adds `messages_fts_identity`, a rowid-keyed shadow
+  ledger binding each `messages_fts` rowid to the `block_id` it was populated
+  from (polylogue-1xc.12). `messages_fts` is a contentless FTS5 table
+  (`content=''`): its `UNINDEXED` columns (including `block_id`) are
+  write-only and never retrievable by a later `SELECT`. SQLite reuses freed
+  rowids (deleting the highest-rowid block then inserting a new one commonly
+  gets the same rowid back — exactly what a full-session-replace does), so a
+  bare rowid cannot prove which block a `messages_fts` row currently
+  represents; count-only reconciliation (`source_rows == indexed_rows`) is
+  blind to this because both sides still balance even when a stale rowid has
+  silently rebound to a different block. The ledger's `source_hash` column
+  reuses the existing `blocks.content_hash` evidence hash as the
+  source-identity component and `recipe_id` is the versioned
+  `FTS_MESSAGES_IDENTITY_RECIPE_ID` constant as the recipe-identity
+  component — the same subject/source/recipe separation
+  `storage/derivation_identity.py` formalizes for polylogue-wmsc's
+  `DerivationKey`, applied here as a lightweight per-row ledger (not a full
+  `DerivationKey` digest — too expensive per trigger-fired row) and never as
+  a shared cross-domain table: FTS keeps its own ledger and repair lifecycle.
+  The `messages_fts_ai`/`ad`/`au` trigger bodies gain a paired
+  insert/delete/upsert against `messages_fts_identity` in the SAME trigger
+  body as their `messages_fts` write, so the two tables can never observe a
+  different rowid/block_id binding for the same event. Exact reconciliation
+  (`fts_invariant_snapshot_sync`, `storage/fts/sql.py:message_identity_mismatch_sql`)
+  now also joins `blocks`/`messages_fts_docsize`/`messages_fts_identity` on
+  rowid AND `block_id`/`source_hash`/`recipe_id`, catching rowid-reuse,
+  changed-text, and changed-recipe drift that a count-only or rowid-only
+  check cannot see. Bulk paths outside the per-row triggers (full rebuild,
+  batched missing/excess repair, session-scoped repair in
+  `storage/fts/fts_lifecycle.py`) pair their `messages_fts` writes with the
+  matching identity companion SQL. The one exception is
+  `storage/sqlite/archive_tiers/write.py`'s non-bulk full-session-replace
+  fast path (`delete_session_rows_sql`/`insert_session_rows_sql` called
+  directly, bypassing the suspended block triggers): it does not yet call
+  the identity companions inline, so a session re-ingested through that path
+  transiently shows as identity-incomplete until the next repair/reconciliation
+  pass backfills it (`dangling_repair.py`'s missing-row repair now also
+  upserts identity rows for any indexed rowid lacking one) — the same
+  eventually-consistent contract `missing_rows`/`excess_rows` already had
+  before this change, not a new weaker guarantee. Existing index tiers must
+  be rebuilt from source evidence (`polylogue ops reset --index && polylogued
+  run`) to populate the new ledger for already-indexed rows; a declared
+  clone-safe fast-forward exists (`IndexDeltaDeclaration` v43 in
+  `polylogue/storage/sqlite/lifecycle.py`) since every ledgered field is
+  re-derivable from already-persisted `blocks` columns with no raw reparse.
 - Index schema version 42 stops materializing `session_events` rows for four
   event types that are fully redundant with a sibling typed table
   (`token_count`, `message_usage`, `agent_policy`, `agent_message`;

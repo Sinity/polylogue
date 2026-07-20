@@ -79,6 +79,10 @@ def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> None:
         return
     record_fts_invariant_snapshot_sync(conn, snapshot)
 
+    from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
+
+    sample_fts_drift_to_ops_sync(conn)
+
 
 def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
     """Return the FTS triggers that should exist given the schema present."""
@@ -277,7 +281,7 @@ def _record_optional_fts_surface_debt(db_path: Path | None, error: str) -> None:
 
 def _message_fts_freshness_row_sync(
     conn: sqlite3.Connection,
-) -> tuple[object, object, object, object, object, object] | None:
+) -> tuple[object, object, object, object, object, object, object] | None:
     from polylogue.storage.fts.freshness import (
         MESSAGE_SURFACE,
         ensure_fts_freshness_table_sync,
@@ -287,7 +291,8 @@ def _message_fts_freshness_row_sync(
         ensure_fts_freshness_table_sync(conn)
         row = conn.execute(
             """
-            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows,
+                   identity_mismatch_rows
             FROM fts_freshness_state
             WHERE surface = ?
             """,
@@ -295,7 +300,7 @@ def _message_fts_freshness_row_sync(
         ).fetchone()
         if row is None:
             return None
-        return (row[0], row[1], row[2], row[3], row[4], row[5])
+        return (row[0], row[1], row[2], row[3], row[4], row[5], row[6])
     except sqlite3.Error:
         return None
 
@@ -312,7 +317,7 @@ def _message_fts_docsize_has_rows_sync(conn: sqlite3.Connection) -> bool:
 
 
 def _message_fts_freshness_row_ready_sync(
-    conn: sqlite3.Connection, row: tuple[object, object, object, object, object, object] | None
+    conn: sqlite3.Connection, row: tuple[object, object, object, object, object, object, object] | None
 ) -> bool:
     if row is None:
         return False
@@ -324,6 +329,7 @@ def _message_fts_freshness_row_ready_sync(
     missing_rows = _int_or_zero(row[3])
     excess_rows = _int_or_zero(row[4])
     duplicate_rows = _int_or_zero(row[5])
+    identity_mismatch_rows = _int_or_zero(row[6])
     source_has_rows: bool | None = None
     if source_rows == 0 and indexed_rows == 0:
         source_has_rows = _blocks_search_text_has_rows_sync(conn)
@@ -334,12 +340,13 @@ def _message_fts_freshness_row_ready_sync(
         missing_rows=missing_rows,
         excess_rows=excess_rows,
         duplicate_rows=duplicate_rows,
+        identity_mismatch_rows=identity_mismatch_rows,
         source_has_rows=source_has_rows,
     )
 
 
 def _message_fts_freshness_row_stale_sync(
-    row: tuple[object, object, object, object, object, object] | None,
+    row: tuple[object, object, object, object, object, object, object] | None,
 ) -> bool:
     if row is None:
         return False

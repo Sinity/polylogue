@@ -257,6 +257,29 @@ ON route_observations(trace_id, started_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_route_observations_started
 ON route_observations(started_at_ms);
+
+-- polylogue-1xc.12: bounded drift-magnitude history for the fts_freshness_state
+-- ledger (index.db). ops.db is disposable, so this is a plain freeform-
+-- additive table, pruned by time and row count the same shape as
+-- route_observations -- a snapshot of the SAME per-surface counters
+-- fts_freshness_state already carries (source/indexed/missing/excess/
+-- duplicate/identity_mismatch rows), sampled across time so an operator can
+-- see drift MAGNITUDE trend, not just the current boolean ready/stale state.
+CREATE TABLE IF NOT EXISTS fts_drift_samples (
+    sample_id               TEXT PRIMARY KEY,
+    surface                 TEXT NOT NULL,
+    state                   TEXT NOT NULL,
+    source_rows             INTEGER NOT NULL DEFAULT 0 CHECK(source_rows >= 0),
+    indexed_rows            INTEGER NOT NULL DEFAULT 0 CHECK(indexed_rows >= 0),
+    missing_rows            INTEGER NOT NULL DEFAULT 0 CHECK(missing_rows >= 0),
+    excess_rows             INTEGER NOT NULL DEFAULT 0 CHECK(excess_rows >= 0),
+    duplicate_rows          INTEGER NOT NULL DEFAULT 0 CHECK(duplicate_rows >= 0),
+    identity_mismatch_rows  INTEGER NOT NULL DEFAULT 0 CHECK(identity_mismatch_rows >= 0),
+    sampled_at_ms           INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_fts_drift_samples_surface_time
+ON fts_drift_samples(surface, sampled_at_ms DESC);
 """
 
 __all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]

@@ -14,7 +14,11 @@ from polylogue.core.enums import (
     SessionKind,
     WebConstructType,
 )
-from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD, FTS_TRIGGER_DDL
+from polylogue.storage.fts.sql import (
+    FTS_BULK_SESSION_WRITE_GUARD,
+    FTS_MESSAGES_IDENTITY_TABLE_SQL,
+    FTS_TRIGGER_DDL,
+)
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -24,7 +28,11 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-INDEX_SCHEMA_VERSION = 42
+# polylogue-1xc.12: v43 adds the messages_fts_identity rowid/block_id ledger
+# and its trigger-body writes. index.db is a rebuildable derived tier (no
+# migration chain) -- an archive still on v42 needs `polylogue ops reset
+# --index && polylogued run`, not an in-place upgrade helper.
+INDEX_SCHEMA_VERSION = 43
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -405,6 +413,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     contentless_delete=1,
     tokenize='unicode61 remove_diacritics 2'
 );
+
+-- polylogue-1xc.12: rowid-to-block_id identity ledger for the contentless
+-- messages_fts table above -- see FTS_MESSAGES_IDENTITY_TABLE_SQL in
+-- storage/fts/sql.py (single source of truth, imported here) for the full
+-- rationale. Declared as a plain f-string field (not `{{}}`-escaped) because
+-- FTS_MESSAGES_IDENTITY_TABLE_SQL is a Python constant substituted at
+-- INDEX_DDL build time, not a SQL brace literal.
+{FTS_MESSAGES_IDENTITY_TABLE_SQL}
 
 -- FTS triggers for messages_fts table are now dynamically composed from sql.py
 -- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
