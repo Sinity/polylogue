@@ -171,6 +171,7 @@ def test_equal_frontier_cas_rejects_cross_raw_conflict_without_fold_authorizatio
     with pytest.raises(RuntimeError, match="conflicting accepted head") as excinfo:
         record_revision_application_sync(conn, conflicting, decided_at_ms=20)
     message = str(excinfo.value)
+    assert receipt.accepted_raw_id is not None
     assert receipt.accepted_raw_id in message
     assert "raw-conflict" in message
 
