@@ -154,11 +154,13 @@ Verified live against the checked-in real fixture
 
 ```
 "capabilities": {
-  "llm_request_spans":    {"status": "exact",  "observed": 5, "expected": 9},
-  "tool_execution_spans": {"status": "exact",  "observed": 4, "expected": 9},
-  "subagent_delegation":  {"status": "absent",  "observed": 0, "expected": 9},
-  "decision_points":      {"status": "absent",  "observed": 0, "expected": 9},
-  "error_taxonomy":       {"status": "absent",  "observed": 0, "expected": 9}
+  "llm_request_spans":    {"status": "exact",    "observed": 5, "expected": 9},
+  "tool_execution_spans": {"status": "exact",    "observed": 4, "expected": 9},
+  "subagent_delegation":  {"status": "absent",   "observed": 0, "expected": 9},
+  "decision_points":      {"status": "absent",   "observed": 0, "expected": 9},
+  "error_taxonomy":       {"status": "absent",   "observed": 0, "expected": 9},
+  "topology_edges":       {"status": "absent",   "observed": 0, "expected": 1},
+  "parent_session_link":  {"status": "inferred", "observed": 1, "expected": 1}
 }
 ```
 
@@ -167,10 +169,16 @@ carries no approval-hook or error-hook vocabulary at all, so
 `decision_points`/`error_taxonomy` are honestly `absent` for ATIF-only
 imports — that evidence exists only in the raw ATOF stream (see below), never
 backfilled by assumption. `subagent_delegation` is recorded from
-`subagent_trajectories` entries when present, but **not** materialized into
-`topology_edges`/`session_links` — no real trajectory sampled so far has a
-non-empty `subagent_trajectories` list, so this capability stays `absent` on
-every fixture observed to date (`hermes_spans.py:35-38`).
+`subagent_trajectories` entries when present. Since `fs1.14`, a
+`subagent_trajectories` entry with a producer-positive `session_id` (distinct
+from the parent's own id) **is** materialized as a real child ATIF session
+with a `topology_edges`/`session_links` parent edge (`branch_type=subagent`),
+provided the acquiring profile root is known — but no real ATIF fixture
+sampled so far has a non-empty `subagent_trajectories` list, so
+`subagent_delegation`/`topology_edges` stay `absent` on every fixture
+observed to date, and even when materialized from a synthetic document the
+mapping stays `inferred`, never `exact`, until real bytes prove it
+(`hermes_spans.py:parse_atif_document`).
 
 Payload hygiene: unlike the verification ledger below, ATIF/ATOF never copy
 prompt or tool-argument text. A tool-call step records only ids, argument
@@ -184,13 +192,14 @@ Verified the same way against
 
 ```
 "capabilities": {
-  "llm_request_spans":    {"status": "exact", "observed": 3, "expected": 13},
-  "tool_execution_spans": {"status": "exact", "observed": 2, "expected": 13},
-  "decision_points":      {"status": "exact", "observed": 2, "expected": 13},
-  "error_taxonomy":       {"status": "exact", "observed": 1, "expected": 13},
-  "subagent_delegation":  {"status": "exact", "observed": 1, "expected": 13},
-  "context_events":       {"status": "exact", "observed": 3, "expected": 13},
-  "topology_edges":       {"status": "absent", "observed": 0, "expected": 1},
+  "llm_request_spans":    {"status": "exact",    "observed": 3, "expected": 13},
+  "tool_execution_spans": {"status": "exact",    "observed": 2, "expected": 13},
+  "decision_points":      {"status": "exact",    "observed": 2, "expected": 13},
+  "error_taxonomy":       {"status": "exact",    "observed": 1, "expected": 13},
+  "subagent_delegation":  {"status": "exact",    "observed": 1, "expected": 13},
+  "context_events":       {"status": "exact",    "observed": 3, "expected": 13},
+  "topology_edges":       {"status": "exact",    "observed": 1, "expected": 1},
+  "parent_session_link":  {"status": "inferred", "observed": 1, "expected": 1},
   "unpaired_scope_debt":  {"status": "degraded", "observed": 1, "expected": 13}
 }
 ```
@@ -203,6 +212,21 @@ intentionally-surfaced fact: a scope UUID that never saw both its start and
 end phase (crashed request, or a file rotation cutting a pending scope in
 half) is recorded as explicit acquisition debt rather than silently treated
 as equivalent to a completed pair (`hermes_spans.py`, `import_explain.py`).
+
+Since `fs1.14`, this real fixture's `hermes.subagent.start` mark (reporting
+`data.child_session_id: "child-session-redacted"`) **is** materialized as a
+real `session_links` parent edge (`branch_type=subagent`) — `topology_edges`
+reads `exact` because the field mapping and the edge materialization are
+both confirmed end-to-end against this real fixture, not just declared. The
+importer produces **two** archive sessions from this one file: the observing
+session (`observer:atof:real-nemo-relay-session-redacted@profile-<key>`) and
+a minimal delegation-evidence session for the child
+(`observer:atof:child-session-redacted@profile-<key>`, `branch_type=subagent`,
+`ingest_flags` includes `hermes:atof-subagent-delegation-stub`) — the child's
+own trace records were not present in this batch, so only the edge itself is
+materialized, never fabricated content. If the child's own ATOF/ATIF records
+are separately ingested later, the archive's content-hash full-replace rule
+updates this same computed session id in place rather than duplicating it.
 
 One real live-ingestion detail worth knowing if you watch a growing Hermes
 install: the real ATOF producer writes **one shared `events.jsonl` file
@@ -290,9 +314,26 @@ classes for one raw Hermes session id into one typed, read-only projection
 (availability, per-artifact fidelity, unpaired-trace debt, and explicit
 producer-conflict detection for disagreeing subagent-session evidence) — but
 like `hermes_verification_coverage`, it is not yet wired into any CLI/MCP
-surface (see item 3 below). None of this materializes a
-`topology_edges`/`session_links` relationship between them — correlation is a
+surface (see item 3 below). This artifact-class correlation (conversational ↔
+ATIF ↔ ATOF ↔ verification, all for the same raw Hermes session id) remains a
 read-time lookup, not a stored graph edge.
+
+**Subagent delegation is the one exception (`fs1.14`):** when an ATIF
+`subagent_trajectories` entry or an ATOF `hermes.subagent.*` mark reports a
+producer-positive, non-self-referential child session id *and* the acquiring
+profile root is known, `hermes_spans.parse_atif_document`/`parse_atof_stream`
+**do** assert a real `session_links` parent edge (`branch_type=subagent`)
+from the child's own observer session to the delegating parent's observer
+session at parse time — a real stored graph edge, not a read-time lookup.
+Each observing session's own `hermes_subagent_span` event records whether
+that materialization actually happened via a `delegation_edge_asserted`
+flag (`false` is real acquisition debt — unknown profile, missing/self-
+referential/contested child id — never silently indistinguishable from "no
+evidence"), and `hermes_topology_projection.HermesSubagentEvidenceRef.
+delegation_edge_materialized` surfaces the same fact read-side without
+re-deriving it. This narrow edge is the only case where the archive stores a
+subagent-delegation graph relationship; everything else in this section (the
+four artifact classes above) is still correlate-on-read only.
 
 ## What Polylogue cannot claim from your Hermes runtime
 
@@ -354,14 +395,23 @@ This is the section to read before you trust anything above it.
    same as any other origin, because none of them branch on origin. But
    there is no single command that packages all five forensic sections for
    a Hermes session yet.
-5. **`subagent_delegation` never reaches `topology_edges`/`session_links`.**
-   Even where ATIF/ATOF record subagent evidence, it stays observer-only
-   evidence; Polylogue's session-lineage graph does not learn about it.
-   `hermes_topology_projection.project_hermes_topology` surfaces it read-side
-   as `subagent_evidence` (tagged by which artifact reported it) and flags a
+5. **[Narrowed, `fs1.14`] `subagent_delegation` reaches `topology_edges`/
+   `session_links` only when the evidence is unambiguous and profile-qualified.**
+   A `subagent_trajectories` entry or `hermes.subagent.*` mark with a
+   producer-positive, non-self-referential, unambiguous (not contested by two
+   different parents) child session id, acquired with a known profile root,
+   **is** materialized as a real `session_links` parent edge
+   (`branch_type=subagent`) — see the "Session identity" section above. Any
+   other case (unknown profile, missing/self-referential/contested child id)
+   stays observer-only evidence with no edge, visible as
+   `delegation_edge_asserted: false` on the reporting session's own
+   `hermes_subagent_span` event rather than silently indistinguishable from
+   "no evidence at all". `hermes_topology_projection.project_hermes_topology`
+   still surfaces every piece of subagent evidence read-side as
+   `subagent_evidence` (tagged by which artifact reported it, plus whether it
+   was materialized via `delegation_edge_materialized`) and flags a
    self-referential or ATIF/ATOF-disagreeing subagent-session id as an
-   explicit `HermesTopologyConflict` rather than silently trusting one side —
-   but this is still evidence composition, not a physical session link.
+   explicit `HermesTopologyConflict` rather than silently trusting one side.
 6. **The verification ledger is a bounded retention window, not history.**
    `retention_completeness` is structurally `degraded` on every import —
    events older than 30 days, or beyond the producer's 100-per-scope/10,000-

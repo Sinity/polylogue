@@ -31,6 +31,16 @@ Provenance rules this module enforces:
 - **Never merge.** The projection only ever references session ids and
   counts; it never returns message/event bodies from one artifact class
   labelled as another's.
+- **Read-only, but reports real writes.** This module performs no writes
+  itself. ``hermes_spans.parse_atif_document``/``parse_atof_stream`` (fs1.14
+  residual scope) DO materialize a real ``session_links`` parent edge
+  (``branch_type=subagent``) for a subagent reference when the child session
+  id is producer-positive, unambiguous, non-self-referential, and a profile
+  root is known. ``HermesSubagentEvidenceRef.delegation_edge_materialized``
+  reports that parser-time decision (read straight from the event's own
+  ``delegation_edge_asserted`` payload flag), so a caller can tell "evidence
+  exists" from "evidence exists AND a real graph edge was asserted for it"
+  without re-deriving the materialization rule here.
 - **Unpaired traces are visible debt.** An ATIF session with no sibling ATOF
   session (or vice versa) for the same raw Hermes session id is a partial
   acquisition, not silently treated as "no observer evidence at all" --
@@ -91,17 +101,29 @@ class HermesArtifactObservation(ArchiveInsightModel):
 
 
 class HermesSubagentEvidenceRef(ArchiveInsightModel):
-    """One producer-reported subagent-session reference, never physically linked.
+    """One producer-reported subagent-session reference.
 
     ``source_artifact`` states exactly which independently-acquired artifact
     reported this reference (ATIF's ``subagent_trajectories`` or ATOF's
     ``hermes.subagent.*`` marks) -- field-level provenance, per the design.
+
+    ``delegation_edge_materialized`` (fs1.14 residual scope) states whether
+    the parser that produced this evidence actually asserted a real
+    ``session_links`` parent edge (``branch_type=subagent``) for it at parse
+    time -- ``hermes_spans.parse_atif_document``/``parse_atof_stream`` only do
+    so when the child session id is producer-positive, non-self-referential,
+    unambiguous, and a profile root is known (see their docstrings); this
+    field is read directly from the underlying event's own
+    ``delegation_edge_asserted`` payload flag, never re-derived or guessed by
+    this projection. ``False`` is real acquisition debt (evidence exists, no
+    edge was safe to assert), not an error.
     """
 
     source_artifact: Literal["atif", "atof"]
     subagent_session_id: str
     agent_name: str | None = None
     status: str | None = None
+    delegation_edge_materialized: bool = False
 
 
 class HermesTopologyConflict(ArchiveInsightModel):
@@ -203,6 +225,7 @@ def _atif_subagent_refs(events: Sequence[SessionEventRecord]) -> list[HermesSuba
                 source_artifact="atif",
                 subagent_session_id=subagent_session_id,
                 agent_name=agent_name if isinstance(agent_name, str) and agent_name else None,
+                delegation_edge_materialized=event.payload.get("delegation_edge_asserted") is True,
             )
         )
     return refs
@@ -222,6 +245,7 @@ def _atof_subagent_refs(events: Sequence[SessionEventRecord]) -> list[HermesSuba
                 source_artifact="atof",
                 subagent_session_id=child_session_id,
                 status=status if isinstance(status, str) and status else None,
+                delegation_edge_materialized=event.payload.get("delegation_edge_asserted") is True,
             )
         )
     return refs

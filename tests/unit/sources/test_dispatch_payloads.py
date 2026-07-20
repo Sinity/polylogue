@@ -137,8 +137,18 @@ def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stre
     """
     source = Source(name="hermes", path=HERMES_ATOF_FIXTURE.parent)
     pairs = list(iter_source_sessions_with_raw(source, capture_raw=True))
-    assert len(pairs) == 1
-    raw, session = pairs[0]
+    # fs1.14 residual scope: the real fixture's hermes.subagent.start mark
+    # (data.child_session_id="child-session-redacted") now materializes a
+    # second, minimal delegation-evidence session sharing the same retained
+    # raw whole-file evidence -- see
+    # test_hermes_spans.test_real_atof_fixture_subagent_mark_materializes_
+    # delegation_edge for the dedicated proof of that edge.
+    assert len(pairs) == 2
+    raw, session = next(
+        (raw, session)
+        for raw, session in pairs
+        if session.provider_session_id.startswith("observer:atof:real-nemo-relay-session")
+    )
     assert raw is not None
     assert raw.source_path == str(HERMES_ATOF_FIXTURE)
     assert raw.source_index is None

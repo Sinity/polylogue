@@ -147,7 +147,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
@@ -169,6 +169,7 @@ HermesSpanEventType: TypeAlias = Literal[
     "hermes_context_span",
     "hermes_observer_span",
     "hermes_atof_unpaired_scope",
+    "hermes_subagent_delegation_evidence",
 ]
 
 
@@ -330,11 +331,33 @@ def parse_atof_stream(
     edge is asserted: a wrong guess would silently correlate this evidence
     with the wrong install's conversational session, which is worse than
     leaving the correlation unresolved.
+
+    SUBAGENT DELEGATION (polylogue-fs1.14 residual scope): a real
+    ``hermes.subagent.start``/``hermes.subagent.stop`` mark carries a
+    producer-positive ``data.child_session_id`` -- the raw Hermes session id
+    Hermes itself assigned to the spawned subagent. When that child id is
+    known AND ``profile_root`` is known AND the child is not the delegating
+    session itself (a structurally impossible self-reference), this function
+    materializes a real ``session_links`` parent edge (``branch_type=subagent``)
+    from the child's own ATOF observer session to the delegating parent's ATOF
+    observer session (its *composed* ``observer:atof:<id>[@profile-<key>]``
+    identity, not the generic conversational-session correlation edge every
+    other ATOF session asserts). If the child's own records also appear in
+    this same shared stream (fs1.14's confirmed one-shared-``events.jsonl``-
+    per-install shape), the delegation edge supersedes that session's routine
+    self-correlation edge; otherwise a minimal delegation-evidence-only
+    session is materialized so the edge exists in the archive even before the
+    child's own trace evidence is separately ingested. Ambiguous evidence
+    (unknown profile, missing/self-referential child id, or the same child id
+    claimed by two different parents in one batch) asserts no edge -- visible
+    as ``delegation_edge_asserted: false`` on the observing parent's own
+    ``hermes_subagent_span`` event, never a guessed link.
     """
     grouped: dict[str, list[ParsedSessionEvent]] = {}
     seen: dict[str, set[tuple[str, str | None]]] = {}
     skipped: dict[str, int] = {}
     scope_phases: dict[str, dict[str, dict[str, tuple[str | None, str | None]]]] = {}
+    delegation_claims: dict[str, set[str]] = {}
 
     for raw_record in records:
         record = json_document(raw_record)
@@ -351,6 +374,12 @@ def parse_atof_stream(
         if record.get("kind") == "scope" and scope_category in {"start", "end"}:
             phases = scope_phases.setdefault(session_id, {}).setdefault(uuid, {})
             phases[scope_category] = (_optional_str(record.get("category")), _optional_str(record.get("timestamp")))
+        name = _optional_str(record.get("name")) or ""
+        if name.startswith("hermes.subagent."):
+            data = json_document(record.get("data")) or {}
+            child_session_id = _optional_str(data.get("child_session_id"))
+            if child_session_id and child_session_id != session_id:
+                delegation_claims.setdefault(child_session_id, set()).add(session_id)
         event = _atof_event(record)
         if event is None:
             skipped[session_id] = skipped.get(session_id, 0) + 1
@@ -360,15 +389,73 @@ def parse_atof_stream(
     unpaired_events = {session_id: _unpaired_scope_events(phases) for session_id, phases in scope_phases.items()}
     session_ids = sorted(set(grouped) | set(unpaired_events))
     profile_key_value = _profile_key(profile_root) if profile_root is not None else None
-    return [
+
+    # Only a producer-positive, unambiguous (single-parent) child id with a
+    # known profile qualifies for edge materialization -- fail closed on a
+    # conflicting or unqualified claim rather than guessing which parent (if
+    # any) is correct.
+    delegation_targets: dict[str, str] = (
+        {child: next(iter(parents)) for child, parents in delegation_claims.items() if len(parents) == 1}
+        if profile_key_value is not None
+        else {}
+    )
+    _mark_delegation_edges_on_subagent_events(grouped, delegation_targets)
+
+    sessions = [
         _atof_session(
             session_id,
             [*grouped.get(session_id, []), *unpaired_events.get(session_id, [])],
             skipped.get(session_id, 0),
             profile_key=profile_key_value,
+            delegation_parent_raw_id=delegation_targets.get(session_id),
         )
         for session_id in session_ids
     ]
+    stub_children = sorted(child for child in delegation_targets if child not in session_ids)
+    sessions.extend(
+        _atof_subagent_delegation_stub_session(child, delegation_targets[child], profile_key_value)
+        for child in stub_children
+    )
+    return sessions
+
+
+def _mark_delegation_edges_on_subagent_events(
+    grouped: dict[str, list[ParsedSessionEvent]], delegation_targets: dict[str, str]
+) -> None:
+    """Record whether each observed subagent mark actually materialized an edge.
+
+    Mutates the already-built ``hermes_subagent_span`` events in place (the
+    per-mark materialization decision -- unambiguous single parent, known
+    profile -- is only known after every record has been scanned), so the
+    *observing parent's own* fidelity declaration can report how many of its
+    subagent references actually became real ``session_links`` edges, without
+    needing cross-session lookups.
+
+    ``delegation_targets`` is keyed by CHILD session id, so membership alone
+    (``child_session_id in delegation_targets``) is not sufficient here: a
+    session can emit a ``hermes_subagent_span`` whose ``child_session_id``
+    happens to equal a DIFFERENT session's (unambiguously claimed) child --
+    e.g. a self-referential mark from session S (S names itself as its own
+    child, correctly excluded from ``delegation_targets`` by the
+    self-reference guard) coexisting with an unrelated session P that
+    legitimately claims S as ITS child (``delegation_targets["S"] == "P"``).
+    Checking membership alone would mark S's own self-referential span
+    ``delegation_edge_asserted=True`` merely because "S" is a key in the map
+    -- contradicting the fail-closed self-reference guarantee. The owning
+    session id (the record's own ``session_id``, carried in the event's
+    ``session_id`` payload field via ``base_payload``) must match the
+    resolved parent for THIS specific child before the flag is set.
+    """
+    for owning_session_id, events in grouped.items():
+        for event in events:
+            if event.event_type != "hermes_subagent_span":
+                continue
+            child_session_id = event.payload.get("child_session_id")
+            event.payload["delegation_edge_asserted"] = bool(
+                isinstance(child_session_id, str)
+                and child_session_id
+                and delegation_targets.get(child_session_id) == owning_session_id
+            )
 
 
 def _unpaired_scope_events(phases: dict[str, dict[str, tuple[str | None, str | None]]]) -> list[ParsedSessionEvent]:
@@ -492,6 +579,12 @@ def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
                     "child_session_id": _optional_str(data.get("child_session_id")),
                     "child_role": _optional_str(data.get("child_role")),
                     "status": _optional_str(data.get("status")) or _optional_str(metadata.get("status")),
+                    # Overwritten by _mark_delegation_edges_on_subagent_events once every
+                    # record in the batch has been scanned -- an unambiguous, profile-known
+                    # child session_id materializes a real session_links edge; anything else
+                    # (unknown profile, missing/self-referential id, contested by two
+                    # different parents) leaves this False, visible acquisition debt.
+                    "delegation_edge_asserted": False,
                 },
             )
         ]
@@ -535,6 +628,7 @@ def _atof_session(
     skipped: int,
     *,
     profile_key: str | None,
+    delegation_parent_raw_id: str | None = None,
 ) -> ParsedSession:
     del skipped  # counts live in session_events/import_fidelity_declaration, never in message text
     # Deliberately stable across every replay/revision of this session (never
@@ -547,14 +641,38 @@ def _atof_session(
     # silently discarding them.
     summary_text = f"Hermes ATOF observer stream: {session_id}"
     provider_session_id = atof_session_provider_id(session_id, profile_key)
-    # The parent join key: asserting it makes the generic session_links write
-    # path (archive_tiers/write.py::_write_session_link, unchanged by this
-    # parser) resolve this observer session against the profile-qualified
-    # state-db conversational session sharing the same raw id -- resolvable
-    # once that session is ingested, visible as unresolved debt otherwise.
-    # Only asserted when the profile is known (see parse_atof_stream
-    # docstring): an unqualified raw id is not a safe cross-profile join key.
-    parent_session_provider_id = _qualified_session_id(session_id, profile_key) if profile_key else None
+    branch_type: BranchType | None = None
+    if delegation_parent_raw_id and profile_key:
+        # Subagent-delegation edge (fs1.14 residual scope): a real
+        # hermes.subagent.* mark named this session as a child of another
+        # session in the same batch. That edge supersedes the routine
+        # self-correlation edge below -- both remain read-side derivable via
+        # hermes_atof_session_id_for, so nothing is lost, only the single
+        # session_links parent slot is spent on the more specific claim.
+        parent_session_provider_id: str | None = atof_session_provider_id(delegation_parent_raw_id, profile_key)
+        branch_type = BranchType.SUBAGENT
+        correlation_note = (
+            "ATOF runtime evidence is stored as its own observer session (observer:atof:<id>"
+            "[@profile-<key>]), not merged into the transcript. A real hermes.subagent.* mark named "
+            "this session as a subagent delegated from the parent observer session referenced above; "
+            "correlate with that parent's own conversational/ATIF/ATOF evidence and this session's own "
+            "state-db conversational counterpart (hermes_atof_session_id_for) separately."
+        )
+    else:
+        # The parent join key: asserting it makes the generic session_links write
+        # path (archive_tiers/write.py::_write_session_link, unchanged by this
+        # parser) resolve this observer session against the profile-qualified
+        # state-db conversational session sharing the same raw id -- resolvable
+        # once that session is ingested, visible as unresolved debt otherwise.
+        # Only asserted when the profile is known (see parse_atof_stream
+        # docstring): an unqualified raw id is not a safe cross-profile join key.
+        parent_session_provider_id = _qualified_session_id(session_id, profile_key) if profile_key else None
+        correlation_note = (
+            "ATOF runtime evidence is stored as its own observer session (observer:atof:<id>"
+            "[@profile-<key>]), not merged into the transcript; correlate with the "
+            "state-db-ingested conversational session and any ATIF observer session "
+            "(observer:atif:<id>[@profile-<key>]) sharing this raw Hermes session id."
+        )
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
@@ -579,18 +697,69 @@ def _atof_session(
                     "join_key": "sessions.native_id",
                     "profile_qualified": profile_key is not None,
                     "asserted_parent_session_provider_id": parent_session_provider_id,
-                    "note": (
-                        "ATOF runtime evidence is stored as its own observer session (observer:atof:<id>"
-                        "[@profile-<key>]), not merged into the transcript; correlate with the "
-                        "state-db-ingested conversational session and any ATIF observer session "
-                        "(observer:atif:<id>[@profile-<key>]) sharing this raw Hermes session id."
-                    ),
+                    "delegated_from_session_id": delegation_parent_raw_id,
+                    "note": correlation_note,
                 },
             ),
             *events,
         ],
         parent_session_provider_id=parent_session_provider_id,
+        branch_type=branch_type,
         ingest_flags=["hermes:atof-observer"],
+    )
+
+
+def _atof_subagent_delegation_stub_session(
+    child_session_id: str, parent_raw_id: str, profile_key: str | None
+) -> ParsedSession:
+    """Materialize a minimal delegation-evidence session for a subagent whose
+    own ATOF/ATIF records were not present in this batch.
+
+    The edge itself -- a real ``hermes.subagent.start`` mark naming this raw
+    session id as a child of ``parent_raw_id`` -- is producer-positive
+    evidence even without the child's own trace content, so this session
+    exists purely to carry the ``session_links`` parent edge into the
+    archive. If the child's own trace evidence is separately ingested later
+    (a different ATOF/ATIF batch), the archive's content-hash full-replace
+    rule updates this same computed session id in place rather than
+    duplicating it -- ``provider_session_id`` is identical either way.
+    """
+    provider_session_id = atof_session_provider_id(child_session_id, profile_key)
+    parent_session_provider_id = atof_session_provider_id(parent_raw_id, profile_key)
+    summary_text = f"Hermes ATOF subagent delegation evidence: {child_session_id}"
+    return ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id=provider_session_id,
+        title=summary_text,
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"{provider_session_id}:atof-delegation-summary",
+                role=Role.SYSTEM,
+                text=summary_text,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="hermes_subagent_delegation_evidence",
+                payload={
+                    "child_session_id": child_session_id,
+                    "parent_session_id": parent_raw_id,
+                    "note": (
+                        "This session's own ATOF/ATIF trace records were not present in the batch "
+                        "that observed the delegation mark; only the delegation edge itself is "
+                        "materialized here, never fabricated content."
+                    ),
+                },
+            )
+        ],
+        parent_session_provider_id=parent_session_provider_id,
+        branch_type=BranchType.SUBAGENT,
+        ingest_flags=["hermes:atof-observer", "hermes:atof-subagent-delegation-stub"],
     )
 
 
@@ -599,8 +768,9 @@ def parse_atif_document(
     fallback_id: str,
     *,
     profile_root: Path | None = None,
-) -> ParsedSession:
-    """Parse one Hermes ATIF trajectory document into a session.
+) -> list[ParsedSession]:
+    """Parse one Hermes ATIF trajectory document into a parent session plus
+    any materialized subagent-delegation child sessions.
 
     Ambiguous input is handled deterministically: a step with none of the
     documented shapes (``tool_calls``, ``message``, ``observation``) becomes
@@ -618,6 +788,22 @@ def parse_atif_document(
     and the ``session_links`` parent edge asserted back to the matching
     state-db conversational session. ``None`` fails closed -- no parent edge
     is asserted rather than guessing.
+
+    SUBAGENT DELEGATION (polylogue-fs1.14 residual scope): each
+    ``subagent_trajectories`` entry with a producer-positive, non-empty
+    ``session_id`` distinct from this document's own ``session_id`` (a
+    structurally impossible self-reference is never materialized) becomes a
+    real child :class:`ParsedSession`, parsed from that entry's own ``steps``
+    the same way the parent document's ``steps`` are, with a
+    ``session_links`` parent edge (``branch_type=subagent``) back to this
+    document's composed ATIF observer identity -- only asserted when
+    ``profile_root`` is also known, the same fail-closed rule
+    :func:`parse_atof_stream` uses. No real ATIF fixture observed so far
+    carries any ``subagent_trajectories`` evidence (every live trajectory
+    sampled has an empty/absent list -- see module docstring), so this is
+    implemented and unit-tested against the documented schema, but the
+    fidelity capability stays ``inferred``, never ``exact``, until real bytes
+    prove it (see :func:`import_fidelity_declaration`).
     """
     session_id = str(payload.get("session_id") or fallback_id)
     agent = json_document(payload.get("agent")) or {}
@@ -643,13 +829,6 @@ def parse_atif_document(
         events.extend(step_events)
         skipped += step_skipped
 
-    for index, raw_subagent in enumerate(raw_subagents):
-        subagent = json_document(raw_subagent)
-        if not subagent:
-            skipped += 1
-            continue
-        events.append(_subagent_span_event(subagent, index))
-
     # Deliberately stable across every replay/revision of this session (never
     # embeds live step/event counts): see _atof_session's identical note --
     # the archive's membership classifier requires message content to be an
@@ -660,7 +839,27 @@ def parse_atif_document(
     profile_key_value = _profile_key(profile_root) if profile_root is not None else None
     provider_session_id = atif_session_provider_id(session_id, profile_key_value)
     parent_session_provider_id = _qualified_session_id(session_id, profile_key_value) if profile_key_value else None
-    return ParsedSession(
+
+    child_sessions: list[ParsedSession] = []
+    for index, raw_subagent in enumerate(raw_subagents):
+        subagent = json_document(raw_subagent)
+        if not subagent:
+            skipped += 1
+            continue
+        subagent_session_id = _optional_str(subagent.get("session_id"))
+        delegation_edge_asserted = bool(profile_key_value and subagent_session_id and subagent_session_id != session_id)
+        events.append(_subagent_span_event(subagent, index, delegation_edge_asserted=delegation_edge_asserted))
+        if delegation_edge_asserted and subagent_session_id is not None:
+            child_sessions.append(
+                _atif_subagent_child_session(
+                    subagent,
+                    subagent_session_id,
+                    parent_provider_session_id=provider_session_id,
+                    profile_key=profile_key_value,
+                )
+            )
+
+    parent_session = ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
         title=f"Hermes ATIF trajectory: {session_id}",
@@ -696,6 +895,77 @@ def parse_atif_document(
         ],
         parent_session_provider_id=parent_session_provider_id,
         ingest_flags=["hermes:atif-trajectory"],
+    )
+    return [parent_session, *child_sessions]
+
+
+def _atif_subagent_child_session(
+    subagent: JSONDocument,
+    subagent_session_id: str,
+    *,
+    parent_provider_session_id: str,
+    profile_key: str | None,
+) -> ParsedSession:
+    """Materialize one ``subagent_trajectories`` entry as its own ATIF child session.
+
+    Parsed from the entry's own ``steps`` with the exact same step-shape
+    handling :func:`parse_atif_document` uses for the top-level document
+    (ambiguous/malformed steps skipped-and-counted, never dropped silently),
+    so a real subagent trajectory's evidence is retained with the same
+    fidelity as its parent's, never a bare summary stub.
+    """
+    agent = json_document(subagent.get("agent")) or {}
+    model_name = _optional_str(agent.get("model_name"))
+    steps_value = subagent.get("steps")
+    raw_steps: list[JSONValue] = steps_value if isinstance(steps_value, list) else []
+
+    events: list[ParsedSessionEvent] = []
+    for index, raw_step in enumerate(raw_steps):
+        step = json_document(raw_step)
+        if not step:
+            continue
+        step_events, _skipped = _events_for_step(step, index, model_name)
+        events.extend(step_events)
+
+    summary_text = f"Hermes ATIF subagent trajectory: {subagent_session_id}"
+    provider_session_id = atif_session_provider_id(subagent_session_id, profile_key)
+    return ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id=provider_session_id,
+        title=summary_text,
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"{provider_session_id}:trace-summary",
+                role=Role.SYSTEM,
+                text=summary_text,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="hermes_observer_trace_correlation",
+                payload={
+                    "hermes_conversation_session_id_prefix": subagent_session_id,
+                    "join_key": "sessions.native_id",
+                    "profile_qualified": profile_key is not None,
+                    "asserted_parent_session_provider_id": parent_provider_session_id,
+                    "note": (
+                        "This session carries ATIF subagent-trajectory evidence delegated from the "
+                        "parent observer session referenced above (a subagent_trajectories entry); "
+                        "correlate with that parent's own conversational/ATOF evidence and this "
+                        "session's own state-db conversational counterpart separately."
+                    ),
+                },
+            ),
+            *events,
+        ],
+        parent_session_provider_id=parent_provider_session_id,
+        branch_type=BranchType.SUBAGENT,
+        ingest_flags=["hermes:atif-trajectory", "hermes:atif-subagent-child"],
     )
 
 
@@ -764,7 +1034,9 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
     return events, skipped
 
 
-def _subagent_span_event(subagent: JSONDocument, index: int) -> ParsedSessionEvent:
+def _subagent_span_event(
+    subagent: JSONDocument, index: int, *, delegation_edge_asserted: bool = False
+) -> ParsedSessionEvent:
     agent = json_document(subagent.get("agent")) or {}
     steps = subagent.get("steps")
     return ParsedSessionEvent(
@@ -774,6 +1046,13 @@ def _subagent_span_event(subagent: JSONDocument, index: int) -> ParsedSessionEve
             "subagent_session_id": _optional_str(subagent.get("session_id")),
             "subagent_agent_name": _optional_str(agent.get("name")),
             "subagent_step_count": len(steps) if isinstance(steps, list) else None,
+            # Whether this subagent_trajectories entry's own session_id was
+            # producer-positive, distinct from this document's own id, and
+            # backed by a known profile root -- the exact conditions under
+            # which parse_atif_document materialized a real session_links
+            # child session for it. False is visible acquisition debt, never
+            # silently indistinguishable from "no evidence at all".
+            "delegation_edge_asserted": delegation_edge_asserted,
         },
     )
 
@@ -802,6 +1081,13 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
     tool_spans = sum(1 for event in span_events if event.event_type == "hermes_tool_execution_span")
     subagent_spans = sum(1 for event in span_events if event.event_type == "hermes_subagent_span")
     generic_spans = sum(1 for event in span_events if event.event_type == "hermes_observer_span")
+    materialized_delegation_edges = sum(
+        1
+        for event in span_events
+        if event.event_type == "hermes_subagent_span" and event.payload.get("delegation_edge_asserted") is True
+    )
+    is_delegated_child_session = session.branch_type == BranchType.SUBAGENT
+    topology_edges_observed = materialized_delegation_edges + (1 if is_delegated_child_session else 0)
 
     def capability(
         observed: int,
@@ -831,9 +1117,11 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
         ),
         "subagent_delegation": capability(
             subagent_spans,
-            "subagent_trajectories entries recorded as delegation evidence and surfaced read-side by "
-            "insights.hermes_topology_projection; NOT materialized into topology_edges/session_links "
-            "(a physical child-session write) in this pass -- deferred, see module docstring.",
+            "subagent_trajectories entries recorded as delegation evidence and, when a "
+            "producer-positive child session_id and a known profile root are both present, "
+            "materialized as a real child ATIF session with a session_links parent edge "
+            "(branch_type=subagent, see topology_edges) -- also surfaced read-side by "
+            "insights.hermes_topology_projection.",
         ),
         "decision_points": HermesFidelityCapability(
             status="absent",
@@ -852,11 +1140,19 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
             "exists only in the raw ATOF event stream, not ingested by this pass (see fs1.2.1).",
         ),
         "topology_edges": HermesFidelityCapability(
-            status="absent",
-            observed=0,
-            expected=max(subagent_spans, 1),
+            status="inferred" if topology_edges_observed else "absent",
+            observed=topology_edges_observed,
+            expected=max(subagent_spans, 1) if not is_delegated_child_session else 1,
             counts={},
-            detail="Physical topology_edges materialization from subagent_trajectories is out of scope for this pass.",
+            detail=(
+                "subagent_trajectories entries with a producer-positive session_id, distinct from "
+                "this session's own id, and a known profile root are materialized as real "
+                "session_links parent edges (branch_type=subagent) on the child's own ATIF observer "
+                "session. No real ATIF fixture observed so far carries any subagent_trajectories "
+                "evidence, so this mapping remains unverified against real bytes -- inferred, never "
+                "exact, until proven (unlike the ATOF hermes.subagent.* route, see "
+                "_atof_import_fidelity_declaration)."
+            ),
         ),
         "parent_session_link": _parent_session_link_capability(session),
     }
@@ -907,9 +1203,18 @@ def _atof_import_fidelity_declaration(session: ParsedSession) -> HermesImportFid
     tool = observed("hermes_tool_execution_span")
     decisions = observed("hermes_decision_span")
     errors = observed("hermes_error_span")
-    subagents = observed("hermes_subagent_span")
+    subagent_marks = observed("hermes_subagent_span")
+    delegation_stub_evidence = observed("hermes_subagent_delegation_evidence")
+    subagents = subagent_marks + delegation_stub_evidence
     context = observed("hermes_context_span")
     generic = observed("hermes_observer_span")
+    materialized_delegation_edges = sum(
+        1
+        for event in events
+        if event.event_type == "hermes_subagent_span" and event.payload.get("delegation_edge_asserted") is True
+    )
+    is_delegated_child_session = session.branch_type == BranchType.SUBAGENT
+    topology_edges_observed = materialized_delegation_edges + (1 if is_delegated_child_session else 0)
     capabilities = {
         "llm_request_spans": exact_if_observed(
             llm,
@@ -937,11 +1242,19 @@ def _atof_import_fidelity_declaration(session: ParsedSession) -> HermesImportFid
             "start/end pair retain context-event identity without duplicating context content.",
         ),
         "topology_edges": HermesFidelityCapability(
-            status="absent",
-            observed=0,
-            expected=max(subagents, 1),
+            status="exact" if topology_edges_observed else "absent",
+            observed=topology_edges_observed,
+            expected=max(subagent_marks, 1) if not is_delegated_child_session else 1,
             counts={},
-            detail="Subagent ATOF marks are observer evidence only; session_links materialization remains deferred.",
+            detail=(
+                "A real hermes.subagent.* mark's producer-positive child_session_id, with a known "
+                "profile root and no conflicting parent claim, is materialized as a real session_links "
+                "parent edge (branch_type=subagent) on the child's own ATOF observer session -- "
+                "confirmed end-to-end against the real NeMo Relay ATOF fixture's hermes.subagent.start "
+                "mark. Ambiguous evidence (unknown profile, missing/self-referential/contested child id) "
+                "asserts no edge, visible as delegation_edge_asserted=false on the observing session's "
+                "own hermes_subagent_span event."
+            ),
         ),
         "parent_session_link": _parent_session_link_capability(session),
     }
@@ -994,6 +1307,19 @@ def _parent_session_link_capability(session: ParsedSession) -> HermesFidelityCap
     session was actually ingested; that confirmation is the generic
     ``session_links`` resolution machinery's job, not this parser's.
     """
+    if session.parent_session_provider_id and session.branch_type == BranchType.SUBAGENT:
+        return HermesFidelityCapability(
+            status="inferred",
+            observed=1,
+            expected=1,
+            counts={},
+            detail=(
+                "A profile-qualified session_links parent edge was asserted to the DELEGATING "
+                "session's own observer evidence (subagent delegation), superseding the routine "
+                "conversational-session correlation edge for this child session; resolution against "
+                "an actually-ingested session happens generically at write time."
+            ),
+        )
     if session.parent_session_provider_id:
         return HermesFidelityCapability(
             status="inferred",
