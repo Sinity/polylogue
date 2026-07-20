@@ -1045,6 +1045,33 @@ def _pool_dispatch_amortizes(pool_raw_ids: list[str], payload_sizes: dict[str, i
     return total >= _parse_pool_min_aggregate_bytes()
 
 
+#: Providers whose parsed session identity is derived purely from payload
+#: bytes, never from ``source_path`` -- safe to dedup census parse ACROSS
+#: source paths sharing a ``blob_hash`` (polylogue-869u). Excluded
+#: deliberately: ``Provider.BEADS`` derives workspace-scoped native ids from
+#: ``source_path`` (``sources/parsers/beads.py:_repository_root``);
+#: ``Provider.ANTIGRAVITY``'s brain-metadata mode derives its
+#: ``profile_root``/artifact path from ``source_path``
+#: (``sources/dispatch.py``'s ``antigravity.parse_brain_metadata`` call);
+#: ``Provider.HERMES``'s ATOF/ATIF/verification-evidence modes likewise
+#: derive ``profile_root`` from ``source_path``. Those three keep the
+#: conservative same-path-only dedup below. ``Provider.UNKNOWN`` (browser
+#: capture / unclassified) is also excluded out of caution -- its identity
+#: derivation is not centrally audited here.
+_PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
+    {
+        Provider.CHATGPT,
+        Provider.CLAUDE_AI,
+        Provider.CLAUDE_CODE,
+        Provider.CODEX,
+        Provider.GEMINI,
+        Provider.GEMINI_CLI,
+        Provider.GROK,
+        Provider.DRIVE,
+    }
+)
+
+
 def _parse_retained_raws(
     archive: ArchiveStore,
     raw_ids: list[str],
@@ -1056,15 +1083,22 @@ def _parse_retained_raws(
 
     Returns each outcome keyed by raw_id: either the parsed
     ``(sessions, payload_bytes, revision_kind)`` tuple or the caught
-    exception. Rows sharing the same ``(blob_hash, source_path)`` are parsed
-    exactly once and the outcome fanned out: identical bytes at an identical
-    path decode deterministically identically, so re-parsing them is pure
-    waste (measured live 2026-07-19: 17% of newest-only bytes — e.g. one
-    442MB codex rollout stored under 8 raw rows — were byte-identical
-    duplicates each paying a full parse). ``source_path`` stays in the key
-    because some parsers derive identity from the path (e.g. beads workspace
-    ids), so cross-path duplicates are deliberately NOT deduplicated.
-    Per-row ``revision_kind`` is re-attached from each row's own descriptor.
+    exception. Rows sharing the same ``blob_hash`` for a
+    ``_PATH_INDEPENDENT_PARSE_PROVIDERS`` provider are parsed exactly once
+    and the outcome fanned out, regardless of ``source_path``: identical
+    bytes decode deterministically identically for those providers, so
+    re-parsing them per row (even under a DIFFERENT acquired path -- a
+    common re-acquisition/re-export shape) is pure waste. For every other
+    provider the dedup key still includes ``source_path`` (some parsers
+    derive identity from the path, e.g. beads workspace ids -- see
+    ``_PATH_INDEPENDENT_PARSE_PROVIDERS``'s docstring for the excluded
+    providers), so cross-path duplicates for those stay deliberately NOT
+    deduplicated. Live evidence (polylogue-869u, 2026-07-19): 87,177
+    newest-revision raws / 52.1 GiB but only 85,066 distinct blob hashes /
+    43.4 GiB -- the same bytes (e.g. one 442 MB codex rollout) recur under
+    up to 8 different ``logical_source_key``s / source paths and, before
+    this cross-path widening, paid a full parse each time. Per-row
+    ``revision_kind`` is re-attached from each row's own descriptor.
 
     ``prefetch_cache`` (polylogue-m6tp phase (a)) is consulted BEFORE any of
     the above: a raw_id already popped from the cache is used directly and
@@ -1084,10 +1118,11 @@ def _parse_retained_raws(
                 remaining_raw_ids.append(raw_id)
             else:
                 results[raw_id] = cached
-    grouped: dict[tuple[str, str], list[str]] = {}
+    grouped: dict[tuple[Provider, str, str], list[str]] = {}
     for raw_id in remaining_raw_ids:
-        _provider, blob_hash, source_path, _kind, _size = descriptors[raw_id]
-        grouped.setdefault((blob_hash, source_path), []).append(raw_id)
+        provider, blob_hash, source_path, _kind, _size = descriptors[raw_id]
+        dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
+        grouped.setdefault((provider, blob_hash, dedup_path), []).append(raw_id)
     representatives = [members[0] for members in grouped.values()]
     unique = _parse_unique_retained_raws(
         archive, representatives, descriptors=descriptors, ingest_workers=ingest_workers
