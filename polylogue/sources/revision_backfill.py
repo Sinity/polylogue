@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pickle
 import sqlite3
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -37,6 +39,8 @@ from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "native"] | None:
@@ -663,6 +667,7 @@ def backfill_historical_revision_evidence(
     """
     adoption_deferred = 0
     quarantined = 0
+    stage_timings: dict[str, float] = {}
     logical_keys: set[str] = set()
     replay_batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
     replay_batched = replay_batch_size is not None
@@ -680,6 +685,7 @@ def backfill_historical_revision_evidence(
         archive_context as archive,
         _ParsedSessionSpill(archive_root, max_cached_payload_bytes=spill_cache_bytes) as spill,
     ):
+        census_started = time.perf_counter()
         census = _census_historical_revision_evidence(
             archive,
             spill,
@@ -689,6 +695,7 @@ def backfill_historical_revision_evidence(
             commit_batch_size=commit_batch_size,
             prefetch_cache=prefetch_cache,
         )
+        stage_timings["census"] = time.perf_counter() - census_started
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         # The direct backfill entry point must publish the same current-parser
         # receipt as the census-only entry point before it assigns or applies
@@ -740,7 +747,11 @@ def backfill_historical_revision_evidence(
             parsed_by_raw_id: dict[str, ParsedSession] = {}
             retained_bytes = 0
             for raw_id in plan.accepted_raw_ids:
+                spill_started = time.perf_counter()
                 sessions, payload_bytes = spill.for_raw(archive, raw_id)
+                stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                    time.perf_counter() - spill_started
+                )
                 if len(sessions) != 1:
                     raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
                 parsed_by_raw_id[raw_id] = sessions[0]
@@ -761,6 +772,7 @@ def backfill_historical_revision_evidence(
                     plan,
                     parsed_by_raw_id,
                     acquired_at_ms=0,
+                    stage_timings_s=stage_timings,
                     manage_transaction=not replay_batched,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
@@ -797,7 +809,11 @@ def backfill_historical_revision_evidence(
             if head_raw_id is not None and archive._raw_revision_authority(head_raw_id) == "quarantined":
                 candidate_raw_ids.add(head_raw_id)
             for raw_id in sorted(candidate_raw_ids):
+                spill_started = time.perf_counter()
                 sessions, payload_bytes = spill.for_raw(archive, raw_id)
+                stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                    time.perf_counter() - spill_started
+                )
                 for session in sessions:
                     session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
                     if session_logical_key != logical_key:
@@ -839,6 +855,7 @@ def backfill_historical_revision_evidence(
                     member_sessions,
                     projections,
                     acquired_at_ms=0,
+                    stage_timings_s=stage_timings,
                     manage_transaction=not replay_batched,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
@@ -854,6 +871,11 @@ def backfill_historical_revision_evidence(
                 commit_replay_unit()
         if replay_batched:
             archive.commit()
+        if stage_timings:
+            _LOGGER.info(
+                "backfill stage timings: %s",
+                " ".join(f"{key}={value:.1f}s" for key, value in sorted(stage_timings.items(), key=lambda kv: -kv[1])),
+            )
     return RevisionBackfillResult(
         census.scanned,
         census.classified,
