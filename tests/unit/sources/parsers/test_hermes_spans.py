@@ -113,8 +113,13 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
         "fallback-id",
         source_path=str(REAL_ATOF_FIXTURE),
     )
-    assert len(sessions) == 1
-    session = sessions[0]
+    # fs1.14 residual scope: the real fixture's hermes.subagent.start mark
+    # (record with data.child_session_id="child-session-redacted") is now
+    # materialized as a second, minimal delegation-evidence session -- see
+    # test_real_atof_fixture_subagent_mark_materializes_delegation_edge for
+    # the dedicated proof of that edge.
+    assert len(sessions) == 2
+    session = next(s for s in sessions if s.provider_session_id.startswith("observer:atof:real-nemo-relay-session"))
     # fs1.14: dispatch derives profile_root from source_path's parent
     # directory (production route, not a bespoke test-only call), so a real
     # source_path now yields an artifact- AND profile-qualified identity and
@@ -160,7 +165,172 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     assert fidelity.capabilities["error_taxonomy"].status == "exact"
     assert fidelity.capabilities["subagent_delegation"].status == "exact"
     assert fidelity.capabilities["context_events"].status == "exact"
+    # fs1.14 residual scope: the real hermes.subagent.start mark's
+    # producer-positive child_session_id, with dispatch's real
+    # source_path-derived profile root, materialized a real session_links
+    # delegation edge -- confirmed end-to-end, "exact" not "inferred".
+    assert fidelity.capabilities["topology_edges"].status == "exact"
+    assert fidelity.capabilities["topology_edges"].observed == 1
     assert "unrecognized_atof_events" not in fidelity.capabilities
+
+
+def test_real_atof_fixture_subagent_mark_materializes_delegation_edge() -> None:
+    """Anti-vacuity proof for fs1.14 subagent-delegation topology materialization.
+
+    The real NeMo Relay ATOF fixture's ``hermes.subagent.start`` mark reports
+    a producer-positive ``data.child_session_id`` ("child-session-redacted")
+    for a child whose own trace records are not present in this batch. That
+    is exactly the fail-closed materialization case: no content can be
+    fabricated for the child, but the delegation edge itself is real
+    evidence and must not be silently dropped -- a minimal delegation-only
+    session carries the real ``session_links`` parent edge into the archive.
+
+    Mutation: remove the delegation-edge materialization in
+    ``parse_atof_stream``/``_atof_subagent_delegation_stub_session`` (or the
+    ``delegation_edge_asserted`` marking on the observing session's own
+    ``hermes_subagent_span`` event) and this test's session count, parent
+    link, or branch_type assertions fail.
+    """
+    records = [json.loads(line) for line in REAL_ATOF_FIXTURE.read_text().splitlines()]
+    sessions = parse_stream_payload(
+        Provider.HERMES,
+        iter(records),
+        "fallback-id",
+        source_path=str(REAL_ATOF_FIXTURE),
+    )
+    assert len(sessions) == 2
+
+    from polylogue.sources.parsers.hermes_identity import profile_key
+
+    expected_key = profile_key(REAL_ATOF_FIXTURE.parent)
+    parent = next(s for s in sessions if s.provider_session_id.startswith("observer:atof:real-nemo-relay-session"))
+    child = next(s for s in sessions if s.provider_session_id.startswith("observer:atof:child-session-redacted"))
+
+    assert child.provider_session_id == f"observer:atof:child-session-redacted@profile-{expected_key}"
+    assert child.parent_session_provider_id == parent.provider_session_id
+    assert child.branch_type is not None and child.branch_type.value == "subagent"
+    assert "hermes:atof-subagent-delegation-stub" in child.ingest_flags
+
+    # The observing (parent) session's own mark event records whether the
+    # edge it reported was actually materialized -- true here.
+    subagent_events = [e for e in parent.session_events if e.event_type == "hermes_subagent_span"]
+    assert len(subagent_events) == 1
+    assert subagent_events[0].payload["child_session_id"] == "child-session-redacted"
+    assert subagent_events[0].payload["delegation_edge_asserted"] is True
+
+    parent_fidelity = hermes_spans.import_fidelity_declaration(parent)
+    assert parent_fidelity.capabilities["topology_edges"].status == "exact"
+    child_fidelity = hermes_spans.import_fidelity_declaration(child)
+    assert child_fidelity.capabilities["parent_session_link"].status == "inferred"
+    assert "DELEGATING" in child_fidelity.capabilities["parent_session_link"].detail
+
+
+def test_atof_subagent_mark_fails_closed_without_profile_root() -> None:
+    """Unknown profile root: the delegation edge must not be asserted -- fail
+    closed rather than guessing an unqualified, potentially cross-profile
+    join key (same rule as the routine self-correlation edge)."""
+
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "category": "agent",
+            "uuid": "subagent-start-1",
+            "timestamp": "2026-07-18T09:00:08Z",
+            "name": "hermes.subagent.start",
+            "metadata": {"session_id": "parent-session"},
+            "data": {"child_session_id": "child-session", "child_role": "research"},
+        },
+    ]
+    sessions = hermes_spans.parse_atof_stream(records, "fallback-id")
+    assert len(sessions) == 1
+    subagent_events = [e for e in sessions[0].session_events if e.event_type == "hermes_subagent_span"]
+    assert subagent_events[0].payload["delegation_edge_asserted"] is False
+    fidelity = hermes_spans.import_fidelity_declaration(sessions[0])
+    assert fidelity.capabilities["topology_edges"].status == "absent"
+
+
+def test_atof_subagent_mark_fails_closed_on_self_reference(tmp_path: Path) -> None:
+    """A session reported as its own subagent is a structurally impossible
+    self-reference -- never materialized as an edge."""
+
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "mark",
+            "category": "agent",
+            "uuid": "subagent-start-1",
+            "timestamp": "2026-07-18T09:00:08Z",
+            "name": "hermes.subagent.start",
+            "metadata": {"session_id": "self-session"},
+            "data": {"child_session_id": "self-session", "child_role": "research"},
+        },
+    ]
+    sessions = hermes_spans.parse_atof_stream(records, "fallback-id", profile_root=tmp_path)
+    assert len(sessions) == 1
+    subagent_events = [e for e in sessions[0].session_events if e.event_type == "hermes_subagent_span"]
+    assert subagent_events[0].payload["delegation_edge_asserted"] is False
+
+
+def test_atif_subagent_trajectory_materializes_delegation_edge_with_known_profile(tmp_path: Path) -> None:
+    """ATIF mirror of the ATOF real-fixture proof: no real ATIF fixture
+    carries subagent_trajectories evidence yet (see module docstring), so
+    this is a synthetic, documented-schema proof, not a real-fixture proof --
+    the fidelity capability must stay 'inferred', never 'exact'."""
+
+    subagents: list[JSONValue] = [
+        {
+            "session_id": "docs-child-session",
+            "agent": {"name": "Hermes Agent E2E"},
+            "steps": [{"source": "agent", "message": "child agent response"}],
+        }
+    ]
+    payload = hermes_spans.marker_payload("hermes-session-1", [], subagent_trajectories=subagents)
+    sessions = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=tmp_path)
+    assert len(sessions) == 2
+    parent, child = sessions
+
+    from polylogue.sources.parsers.hermes_identity import profile_key
+
+    expected_key = profile_key(tmp_path)
+    assert child.provider_session_id == f"observer:atif:docs-child-session@profile-{expected_key}"
+    assert child.parent_session_provider_id == parent.provider_session_id
+    assert child.branch_type is not None and child.branch_type.value == "subagent"
+    assert "hermes:atif-subagent-child" in child.ingest_flags
+    llm_events = [e for e in child.session_events if e.event_type == "hermes_llm_request_span"]
+    assert len(llm_events) == 1
+    assert llm_events[0].payload["message_char_len"] == len("child agent response")
+    assert "child agent response" not in repr([e.payload for e in child.session_events])
+
+    parent_fidelity = hermes_spans.import_fidelity_declaration(parent)
+    assert parent_fidelity.capabilities["topology_edges"].status == "inferred"
+    assert parent_fidelity.capabilities["topology_edges"].observed == 1
+
+
+def test_atif_subagent_trajectory_fails_closed_without_profile_root() -> None:
+    """No profile root known: the delegation edge is not asserted, but the
+    parent-side summary evidence is still recorded (never silently dropped)."""
+
+    subagents: list[JSONValue] = [{"session_id": "docs-child-session", "steps": []}]
+    payload = hermes_spans.marker_payload("hermes-session-1", [], subagent_trajectories=subagents)
+    sessions = hermes_spans.parse_atif_document(payload, "fallback-id")
+    assert len(sessions) == 1
+    subagent_events = [e for e in sessions[0].session_events if e.event_type == "hermes_subagent_span"]
+    assert subagent_events[0].payload["delegation_edge_asserted"] is False
+    fidelity = hermes_spans.import_fidelity_declaration(sessions[0])
+    assert fidelity.capabilities["topology_edges"].status == "absent"
+
+
+def test_atif_subagent_trajectory_fails_closed_on_self_reference(tmp_path: Path) -> None:
+    """A subagent_trajectories entry naming its own parent's session id is a
+    structurally impossible self-reference -- never materialized as an edge."""
+
+    subagents: list[JSONValue] = [{"session_id": "hermes-session-1", "steps": []}]
+    payload = hermes_spans.marker_payload("hermes-session-1", [], subagent_trajectories=subagents)
+    sessions = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=tmp_path)
+    assert len(sessions) == 1
+    subagent_events = [e for e in sessions[0].session_events if e.event_type == "hermes_subagent_span"]
+    assert subagent_events[0].payload["delegation_edge_asserted"] is False
 
 
 def test_atof_stream_is_idempotent_across_append_replay_and_keeps_scope_edges() -> None:
@@ -321,7 +491,9 @@ def test_import_explain_uses_atof_stream_fidelity_for_a_real_fixture() -> None:
     entry = explain_import_path(REAL_ATOF_FIXTURE, source_name="hermes").entries[0]
     assert entry.detected_provider == "hermes"
     assert entry.parser == "hermes"
-    assert entry.produced.sessions == 1
+    # fs1.14 residual scope: the real fixture's hermes.subagent.start mark
+    # materializes a second, minimal delegation-evidence session.
+    assert entry.produced.sessions == 2
     assert entry.fidelity is not None
     assert entry.fidelity.acquisition_method == "jsonl_stream"
 
@@ -341,7 +513,7 @@ def test_atif_parse_is_idempotent_and_deterministic() -> None:
     payload = hermes_spans.marker_payload("hermes-session-1", _steps())
     first = hermes_spans.parse_atif_document(payload, "fallback-id")
     second = hermes_spans.parse_atif_document(payload, "fallback-id")
-    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+    assert [s.model_dump(mode="json") for s in first] == [s.model_dump(mode="json") for s in second]
 
 
 def test_tool_call_steps_become_tool_execution_spans_without_copying_arguments() -> None:
@@ -350,7 +522,7 @@ def test_tool_call_steps_become_tool_execution_spans_without_copying_arguments()
     evidence (see module docstring)."""
 
     payload = hermes_spans.marker_payload("hermes-session-1", _steps())
-    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")[0]
 
     tool_events = [event for event in session.session_events if event.event_type == "hermes_tool_execution_span"]
     assert len(tool_events) == 1
@@ -368,7 +540,7 @@ def test_message_only_steps_become_llm_response_evidence_without_copying_text() 
     payload = hermes_spans.marker_payload(
         "hermes-session-1", _steps(), agent={"name": "hermes", "version": "1", "model_name": "claude-example"}
     )
-    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")[0]
 
     llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
     assert len(llm_events) == 1
@@ -387,7 +559,7 @@ def test_subagent_trajectories_become_subagent_span_events() -> None:
         }
     ]
     payload = hermes_spans.marker_payload("hermes-session-1", [], subagent_trajectories=subagents)
-    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")[0]
 
     subagent_events = [event for event in session.session_events if event.event_type == "hermes_subagent_span"]
     assert len(subagent_events) == 1
@@ -398,7 +570,11 @@ def test_subagent_trajectories_become_subagent_span_events() -> None:
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.capabilities["subagent_delegation"].status == "inferred"
-    # Physical topology_edges materialization remains explicitly out of scope.
+    # No profile_root was given, so the fail-closed rule leaves the edge
+    # unasserted here -- see test_atif_subagent_trajectory_materializes_
+    # delegation_edge_with_known_profile for the case where it IS
+    # materialized, and test_atif_subagent_trajectory_fails_closed_without_
+    # profile_root for this exact fail-closed case in isolation.
     assert fidelity.capabilities["topology_edges"].status == "absent"
 
 
@@ -408,7 +584,7 @@ def test_unrecognized_step_shape_becomes_generic_observer_span_not_dropped() -> 
 
     steps: list[JSONValue] = [{"source": "agent", "unexpected_field": "future-shape"}]
     payload = hermes_spans.marker_payload("hermes-session-1", steps)
-    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")[0]
 
     generic_events = [event for event in session.session_events if event.event_type == "hermes_observer_span"]
     assert len(generic_events) == 1
@@ -426,7 +602,7 @@ def test_malformed_steps_and_tool_calls_are_skipped_and_counted_not_crashing() -
         {"source": "agent", "tool_calls": ["not-a-dict"]},  # tool_calls entry not even a document
     ]
     payload = hermes_spans.marker_payload("hermes-session-1", steps)
-    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")[0]
     real_events = [
         event
         for event in session.session_events
@@ -458,7 +634,7 @@ def test_decision_points_and_error_taxonomy_are_honestly_absent_not_fabricated()
     from a schema that doesn't carry them."""
 
     payload = hermes_spans.marker_payload("hermes-session-1", _steps())
-    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")[0]
     fidelity = hermes_spans.import_fidelity_declaration(session)
 
     assert fidelity.capabilities["decision_points"].status == "absent"
@@ -510,7 +686,7 @@ def test_atif_asserts_profile_qualified_parent_session_link_when_profile_root_kn
 
     profile_root = tmp_path / "hermes-install"
     payload = hermes_spans.marker_payload("hermes-session-1", _steps())
-    session = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_root)
+    session = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_root)[0]
 
     from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
 
@@ -532,7 +708,7 @@ def test_atif_fails_closed_on_unknown_profile_root() -> None:
     than guessing an unqualified, potentially cross-profile-colliding join key."""
 
     payload = hermes_spans.marker_payload("hermes-session-1", _steps())
-    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")[0]
 
     assert session.parent_session_provider_id is None
     assert session.provider_session_id == "observer:atif:hermes-session-1"
@@ -551,8 +727,8 @@ def test_two_profiles_with_the_same_raw_session_id_do_not_collapse(tmp_path: Pat
     profile_b = tmp_path / "install-b"
     payload = hermes_spans.marker_payload("hermes-session-1", _steps())
 
-    session_a = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_a)
-    session_b = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_b)
+    session_a = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_a)[0]
+    session_b = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_b)[0]
 
     assert session_a.provider_session_id != session_b.provider_session_id
     assert session_a.parent_session_provider_id != session_b.parent_session_provider_id
@@ -713,8 +889,8 @@ def test_two_profiles_times_two_artifact_families_compose_to_four_distinct_sessi
             }
         ]
 
-    atif_a = hermes_spans.parse_atif_document(atif_payload, "fallback-id", profile_root=profile_a_root)
-    atif_b = hermes_spans.parse_atif_document(atif_payload, "fallback-id", profile_root=profile_b_root)
+    atif_a = hermes_spans.parse_atif_document(atif_payload, "fallback-id", profile_root=profile_a_root)[0]
+    atif_b = hermes_spans.parse_atif_document(atif_payload, "fallback-id", profile_root=profile_b_root)[0]
     atof_a = hermes_spans.parse_atof_stream(
         atof_records_for(hermes_session_id), "fallback-id", profile_root=profile_a_root
     )[0]
