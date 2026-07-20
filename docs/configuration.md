@@ -350,6 +350,7 @@ A few keys not shown in the full example above, with their TOML path:
 | `ingest_parse_workers` | `sources.ingest_parse_workers` | Parallel parse workers during ingest (default 1). |
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
 | `daemon_parse_stage_split` | `daemon.raw_materialization.parse_stage_split` | Opt-in (polylogue-m6tp phase (a), default off): pre-parse raw-materialization census candidates in a bounded daemon-owned thread pool before the writer hold, instead of parsing inside the writer-held pass. |
+| `daemon_bulk_rebuild_routing` | `daemon.raw_materialization.bulk_rebuild_routing` | Opt-in (polylogue-m6tp phase (c) / polylogue-gd6v, default off): once a raw backlog is bulk-scale, route it into a daemon-owned resumable blue-green index generation build instead of the trickle conveyor, promoting it once exact-ready. |
 
 ## Environment Policy
 

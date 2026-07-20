@@ -3911,3 +3911,121 @@ def test_periodic_schema_preflight_recheck_exits_on_recovery(
 
     assert schedule == []
     assert sleeps == 2
+
+
+def test_bulk_rebuild_routing_flag_off_never_checks_or_drives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-gd6v: off by default. The flag-off path must not even
+    consult ``has_resumable_daemon_bulk_rebuild_transaction`` -- checking
+    survives a restart via a durable transaction record, so a false
+    "resumable" read while the flag is off would incorrectly promote one."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    class FakeResolved:
+        daemon_bulk_rebuild_routing = False
+
+    def fail_has_resumable(_root: object) -> bool:
+        pytest.fail("must not check for a resumable transaction while the flag is off")
+
+    def fail_run_pass(**_kwargs: object) -> object:
+        pytest.fail("must not drive a bulk-rebuild pass while the flag is off")
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr(
+        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fail_has_resumable
+    )
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
+
+    counts = RawMaterializationCounts(candidate_count=999_999, pending_blob_bytes=0)
+    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))
+
+
+def test_bulk_rebuild_routing_below_threshold_and_not_resumable_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A small, steady-state backlog with no bulk-rebuild already in flight
+    must never start one -- bulk routing is for bulk-scale backlogs only."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    class FakeResolved:
+        daemon_bulk_rebuild_routing = True
+
+    def fail_run_pass(**_kwargs: object) -> object:
+        pytest.fail("must not drive a pass when below threshold and nothing is resumable")
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: False
+    )
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
+
+    counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
+    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))
+
+
+def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An in-flight bulk-rebuild operation keeps being driven every tick even
+    once the instantaneous trickle backlog reading has dipped below the
+    bulk-scale threshold -- abandoning a partially-built generation would
+    waste every page already replayed into it."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    class FakeResolved:
+        daemon_bulk_rebuild_routing = True
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_run_pass(**kwargs: object) -> None:
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
+    )
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fake_run_pass)
+
+    counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
+    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))
+
+    assert len(calls) == 1
+    called_config = cast(Config, calls[0]["config"])
+    assert called_config.archive_root == tmp_path
+
+
+def test_bulk_rebuild_routing_pass_failure_never_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed bulk-rebuild pass must not crash the periodic convergence
+    loop it is called from -- the next tick simply tries again."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    class FakeResolved:
+        daemon_bulk_rebuild_routing = True
+
+    async def fail_run_pass(**_kwargs: object) -> object:
+        raise RuntimeError("simulated bulk-rebuild pass failure")
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
+    )
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
+
+    counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
+    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))  # must not raise

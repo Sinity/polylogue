@@ -40,12 +40,15 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, dumps, json_document, loads
 from polylogue.core.protocols import ProgressCallback as StageProgressCallback
 from polylogue.logging import get_logger
+
+if TYPE_CHECKING:
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
 from polylogue.maintenance.failure_routing import resolve_maintenance_failures, route_failure_sample
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import (
@@ -147,6 +150,7 @@ async def rebuild_index_from_source(
     owned_inactive_generation: tuple[str, str] | None = None,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    prefetch_cache: RawParsePrefetchCache | None = None,
 ) -> dict[str, object]:
     """Replay retained bytes through typed revision authority.
 
@@ -165,6 +169,11 @@ async def rebuild_index_from_source(
     refresh during replay, deferred to one archive-wide repopulate at
     readiness. The offline ``rebuild-index`` maintenance command passes
     ``True``.
+
+    ``prefetch_cache`` (polylogue-gd6v, default ``None``) lets a caller
+    substitute parse output already computed off the writer hold (the
+    daemon's ``DaemonParseStage``) for this pass's census phase; see
+    ``backfill_historical_revision_evidence``.
     """
     if raw_batch_size <= 0:
         raise ValueError("raw_batch_size must be positive")
@@ -189,6 +198,7 @@ async def rebuild_index_from_source(
         ingest_workers=resolved_ingest_workers,
         bulk_fts=bulk_fts,
         bulk_build=bulk_build,
+        prefetch_cache=prefetch_cache,
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")
