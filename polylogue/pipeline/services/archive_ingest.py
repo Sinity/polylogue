@@ -101,7 +101,9 @@ def _parse_source_path_worker(
         publisher.discard_pending()
 
 
-async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> ParseResult:
+async def parse_sources_archive(
+    archive_root: Path, sources: list[Source], *, parse_workers: int | None = None
+) -> ParseResult:
     """Parse configured sources directly into archive source/index tiers.
 
     Source files are parsed across a process pool (``POLYLOGUE_INGEST_PARSE_WORKERS``)
@@ -109,12 +111,17 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
     not matter: archive writes are idempotent by content hash and session links
     resolve out-of-order. Blob writes from workers are
     content-addressed and atomic, so concurrent worker writes are process-safe.
+
+    ``parse_workers`` overrides the ambient/env-resolved worker count for this
+    call only (used by the demo seeder to force sequential parsing -- see
+    ``polylogue/demo/seed.py``). ``None`` preserves the normal
+    ``POLYLOGUE_INGEST_PARSE_WORKERS``/cpu-count resolution.
     """
     result = ParseResult()
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     threshold = _commit_batch_message_threshold()
     batched = threshold > 0
-    workers = _parse_worker_count()
+    workers = _parse_worker_count() if parse_workers is None else max(1, parse_workers)
     blob_root = archive_root / "blob"
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 

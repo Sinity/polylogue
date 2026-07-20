@@ -16,6 +16,7 @@ import os
 import sqlite3
 import sys
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -456,3 +457,49 @@ def test_per_session_archive_ingest_runs_post_commit_upkeep(
     assert wal_calls == len(sources)
     assert sum(1 for item in result.batch_observations if item.get("archive_post_commit_upkeep")) == len(sources)
     assert result.batch_observations[-1]["archive_write_targets"] == ["source.db", "index.db"]
+
+
+def test_parse_workers_override_bypasses_process_pool(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``parse_workers`` overrides the ambient worker count for one call.
+
+    Guards polylogue-b054.1.1.1: the demo seeder now passes ``parse_workers=1``
+    so the small, fixed demo corpus never goes through the real
+    ``ProcessPoolExecutor`` path, whose per-worker failures were previously
+    swallowed by the pool driver's ``except Exception: failed += 1; continue``
+    and silently dropped a fixture file's sessions under host load (the
+    observed nondeterministic declared-construct loss under xdist). This
+    spies on the exact ``ProcessPoolExecutor`` construction that path uses: if
+    the override stopped reaching ``workers`` -- e.g. the ``max(1,
+    parse_workers)`` branch in ``parse_sources_archive`` were reverted to
+    always call ``_parse_worker_count()`` -- the ``parse_workers=1`` call
+    below would still construct the pool (ambient worker count on any
+    multi-core host is > 1), and this test would fail.
+    """
+
+    pool_calls: list[int | None] = []
+
+    class _SpyExecutor(ProcessPoolExecutor):
+        def __init__(self, *args: object, max_workers: int | None = None, **kwargs: object) -> None:
+            pool_calls.append(max_workers)
+            super().__init__(*args, max_workers=max_workers, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(archive_ingest, "ProcessPoolExecutor", _SpyExecutor)
+    # No POLYLOGUE_INGEST_PARSE_WORKERS override: the ambient default is
+    # min(8, cpus-1), which is >= 2 on any real multi-core CI/dev host, so
+    # an un-overridden call below would exercise the pool branch.
+    monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
+    archive_root = workspace_env["archive_root"]
+
+    sequential_sources = _build_sources(tmp_path, count=2, seed=97)
+    result = asyncio.run(parse_sources_archive(archive_root, sequential_sources, parse_workers=1))
+    assert pool_calls == []  # workers<=1 takes the sequential for-loop, no pool constructed
+    assert result.counts["sessions"] == _expected_session_count(sequential_sources)
+
+    pooled_sources = _build_sources(tmp_path, count=2, seed=98)
+    result = asyncio.run(parse_sources_archive(archive_root, pooled_sources, parse_workers=3))
+    assert pool_calls == [3]  # explicit override reaches the pool construction exactly
+    assert result.counts["sessions"] == _expected_session_count(pooled_sources)

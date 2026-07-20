@@ -1293,7 +1293,24 @@ async def seed_demo_archive(
 
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
-        result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
+        # Force sequential (single-worker) parsing for the fixed, dozen-file
+        # synthetic demo corpus. `parse_sources_archive`'s ambient worker
+        # count defaults to up to `cpus-1` real OS subprocesses (spawn-based
+        # ProcessPoolExecutor); at demo scale that pool buys zero throughput
+        # (it exists to overlap CPU-bound parse with I/O-bound writes on real
+        # bulk archives) but multiplies badly under pytest-xdist, where every
+        # worker process independently spawns its own sub-pool. Under host
+        # load a per-file worker task can fail (BrokenProcessPool, transient
+        # spawn/OOM) and is caught by the pool driver's `except Exception:
+        # failed += 1; continue` -- silently dropping that file's sessions
+        # with only a log line, no raised error. That is the root cause of
+        # the observed nondeterministic declared-construct loss under xdist
+        # (polylogue-b054.1.1.1): a demo fixture file occasionally vanished
+        # under load with no test-visible signal until construct-coverage
+        # happened to depend on it. Sequential parsing removes the pool
+        # entirely for this fixed-size corpus, so demo seeding no longer
+        # depends on host process/memory pressure at all.
+        result = await parse_sources_archive(archive_root, demo_source_specs(source_root), parse_workers=1)
 
     apply_demo_post_ingest_augmentation(archive_root)
 
