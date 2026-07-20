@@ -15,9 +15,13 @@ repo conventions in [`CONVENTIONS.md`](CONVENTIONS.md).
 - `CONVENTIONS.md` — bead content bar, graph lint, execution tactics, PR
   cadence (kept deliberately parallel to sinex's; divergences are marked
   intentional).
-- `scripts/bd-graph-lint` — bead-graph invariant lint; run before shipping
-  bead-state deltas.
+- Repo-agent helper scripts live under `devtools/` as proper commands, not in
+  `.agent/` — `devtools lab policy bead-graph` (bead-graph invariant lint; run
+  before shipping bead-state deltas), `devtools workspace
+  bead-reimport-guard`, `devtools workspace delivery-gate-status`, `devtools
+  workspace bead-batch-show` (polylogue-kapb: `.agent/scripts/` and
+  `.agent/tools/` no longer carry tracked tooling).
 - `scratch/`, `archive/`, `reports/`, `task-history/` — gitignored, present
   only in a working checkout (thinking space, retired scaffold/evidence,
   report artifacts, local task-history JSONL respectively); `demos/`,
-  `handoffs/`, `tools/` — tracked shelves.
+  `handoffs/` — tracked shelves.

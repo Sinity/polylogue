@@ -81,13 +81,17 @@ dist/
 # stays on disk (git rm --cached only, nothing deleted) but is no longer
 # git-managed, and the negation is gone so new files there can't be
 # re-tracked by a plain `git add`.
+#
+# scripts/ and tools/ got the same treatment (polylogue-kapb): the
+# repo-tooling scripts that were actually referenced from hooks/docs moved
+# into devtools/ as proper commands; the rest were either dead (deleted) or
+# operator-personal convenience scripts (git rm --cached only, left on disk,
+# no longer re-trackable by a plain `git add`).
 .agent/*
 !.agent/README.md
 !.agent/CONVENTIONS.md
-!.agent/scripts/
-!.agent/scripts/**
-!.agent/tools/
-!.agent/tools/**
+!.agent/demos/
+!.agent/demos/**
 !.agent/handoffs/
 !.agent/handoffs/**
 !.agent/scratch/

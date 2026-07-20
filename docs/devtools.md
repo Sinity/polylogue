@@ -48,6 +48,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
 | `devtools lab policy backlog-hygiene` | Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 15 checks over the Beads export catching dangling dependency refs, blocks-cycles, missing horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance criteria, unlabeled non-epic beads, epics with no members or description, stale 'adopted' decisions left open, duplicate titles, and bead ids named but never created -- catches backlog structure drift before it needs an archaeology sweep to recover, instead of only a manually-invoked script. |
+| `devtools lab policy bead-graph` | Run right before shipping a bead-state delta (matches the sinex bead-graph-lint convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged (polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here). |
 | `devtools lab policy demo-packet-registry` | Enforce the 212 portfolio contract (polylogue-212.7): every demo prompt in .agent/demos/registry.json must have a packet directory carrying PROMPT.md, finding.yaml (five-part provenance stanza), report.md (fixed section order), evidence.ndjson, queries.ndjson, checks.json, and run.log. Catches a missing or malformed packet before it silently drops out of the demo shelf. |
 | `devtools lab policy demo-tour-freshness` | Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, report, per-step command output, recording tape) and the committed copies under docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). Runs the real tour (~10s), so it lives in the lab tier rather than --quick. |
 | `devtools lab policy docs-drift` | Catch doc-vs-code drift in the hand-maintained Reference-docs table (CLAUDE.md): a backtick-quoted file path that no longer exists, a '<Tier> schema version N' claim ahead of the tier's current constant, or a watchlisted table name renamed to a different current name (e.g. `artifact_observations` renamed to `raw_artifacts`) still asserted as current (polylogue-9e5.13). |
@@ -136,6 +137,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
 | `devtools lab policy backlog-hygiene` | Verify Beads backlog structure invariants (.beads/issues.jsonl). |
+| `devtools lab policy bead-graph` | Bead-graph invariant lint over live `bd` state (cycles, wave labels/inversions, missing AC). |
 | `devtools lab policy demo-packet-registry` | Verify every registered 212 demo has a conforming Demo Finding Packet. |
 | `devtools lab policy demo-tour-freshness` | Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts. |
 | `devtools lab policy docs-drift` | Verify checkable factual claims in the Reference-docs table against current source. |
@@ -206,9 +208,12 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
 | `devtools workspace archive-schema-fast-forward` | Clone-forward the v35 archive tiers without raw replay. |
 | `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
+| `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
+| `devtools workspace bead-reimport-guard` | Timestamp-aware guard restoring beads clobbered by bd's post-checkout/post-merge reimport. |
 | `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
+| `devtools workspace delivery-gate-status` | Per-release-gate progress board over .beads/issues.jsonl (delivery:<release> / lane:<lane> overlay). |
 | `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |

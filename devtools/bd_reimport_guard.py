@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Timestamp-aware guard around bd's post-checkout/post-merge auto-reimport.
 
 bd's own post-checkout/post-merge hooks reimport whichever branch's
@@ -20,11 +19,15 @@ the "before" row via a targeted `bd import`.
 
 Wired from OUTSIDE the "BEGIN/END BEADS INTEGRATION" markers in
 .beads-hooks/post-checkout and .beads-hooks/post-merge, which bd's own
-docs state are preserved across `bd hooks install`/upgrades.
+docs state are preserved across `bd hooks install`/upgrades. This module
+is invoked by direct file path from those hooks (``python3
+devtools/bd_reimport_guard.py <command> <hook-name>``), not via package
+import, so it deliberately depends on nothing beyond the Python stdlib --
+it must keep working even when the devshell/venv is not active.
 
 Usage:
-  bd-reimport-guard.py snapshot <hook-name>
-  bd-reimport-guard.py check-and-repair <hook-name>
+  bd_reimport_guard.py snapshot <hook-name>
+  bd_reimport_guard.py check-and-repair <hook-name>
 """
 
 from __future__ import annotations
@@ -34,13 +37,14 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 def _snapshot_path(hook_name: str) -> Path:
     return Path(tempfile.gettempdir()) / f"polylogue-bd-guard-snapshot-{hook_name}.jsonl"
 
 
-def _export_live_state() -> dict[str, dict]:
+def _export_live_state() -> dict[str, dict[str, Any]]:
     """Return {id: full_row_dict} for every issue currently live.
 
     Uses default `bd export` filtering (excludes infra beads/memories) --
@@ -56,7 +60,7 @@ def _export_live_state() -> dict[str, dict]:
             text=True,
             timeout=30,
         )
-        result: dict[str, dict] = {}
+        result: dict[str, dict[str, Any]] = {}
         with open(path) as f:
             for line in f:
                 line = line.strip()
@@ -100,7 +104,7 @@ def cmd_check_and_repair(hook_name: str) -> int:
 
     after = _export_live_state()
 
-    to_restore: list[tuple[str, dict, str]] = []
+    to_restore: list[tuple[str, dict[str, Any], str]] = []
     for issue_id, before_row in before.items():
         after_row = after.get(issue_id)
         before_ts = before_row.get("updated_at") or ""
@@ -143,11 +147,12 @@ def cmd_check_and_repair(hook_name: str) -> int:
     return 0
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) < 3:
-        print(f"usage: {argv[0]} <snapshot|check-and-repair> <hook-name>", file=sys.stderr)
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else list(argv)
+    if len(args) < 2:
+        print("usage: bd_reimport_guard.py <snapshot|check-and-repair> <hook-name>", file=sys.stderr)
         return 1
-    command, hook_name = argv[1], argv[2]
+    command, hook_name = args[0], args[1]
     if command == "snapshot":
         return cmd_snapshot(hook_name)
     if command == "check-and-repair":
@@ -157,4 +162,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

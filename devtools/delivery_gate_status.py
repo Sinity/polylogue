@@ -1,18 +1,17 @@
-#!/usr/bin/env python3
 """delivery-gate-status: per-release-gate progress board over .beads/issues.jsonl.
 
 The delivery overlay (2026-07-07, corpus escrowed at
 .agent/scratch/corpus-gpt-pro-2026-07-07/) labels every active bead with a
-delivery:<release> gate and lane:<lane>. This script computes, per gate:
-open / in_progress / closed / blocked / ready counts, percent complete, and
-the gate's exit criterion (embedded below — the corpus copy is ephemeral).
+delivery:<release> gate and lane:<lane>. This computes, per gate: open /
+in_progress / closed / blocked / ready counts, percent complete, and the
+gate's exit criterion (embedded below — the corpus copy is ephemeral).
 
 Gate ORDER is the implementation sequence: a gate is "up next" when every
 earlier gate is complete or explicitly waived. Exit criteria are prose —
 they need human/agent judgment, so the board prints them as reminders, not
 as computed booleans.
 
-Usage: python3 .agent/tools/delivery-gate-status.py [--json] [--fresh]
+Usage: devtools workspace delivery-gate-status [--json] [--fresh]
        [--gate delivery:A-trust-floor] [path-to-issues.jsonl]
 --fresh runs `bd export -o .beads/issues.jsonl` first (bd updates do NOT
 immediately re-export; a stale file yields stale counts).
@@ -26,6 +25,11 @@ import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
+
+from devtools import repo_root as _get_root
+
+IssueDict = dict[str, Any]
 
 # (gate-id, short name, exit criterion) in implementation order.
 # Source: delivery overlay release_gates (adjudicated 2026-07-07); durable copy.
@@ -109,8 +113,8 @@ GATES: list[tuple[str, str, str]] = [
 GATE_IDS = [g[0] for g in GATES]
 
 
-def load(path: Path):
-    issues: dict[str, dict] = {}
+def load(path: Path) -> tuple[dict[str, IssueDict], list[tuple[str, str, str]]]:
+    issues: dict[str, IssueDict] = {}
     deps: list[tuple[str, str, str]] = []
     for line in path.read_text().splitlines():
         if not line.strip():
@@ -125,31 +129,35 @@ def load(path: Path):
     return issues, deps
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("path", nargs="?", default=".beads/issues.jsonl")
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--fresh", action="store_true", help="bd export first")
-    ap.add_argument("--gate", help="only this gate (accepts 'A-trust-floor' or 'delivery:A-trust-floor')")
-    args = ap.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    root = _get_root()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("path", nargs="?", default=None, help="path to issues.jsonl (default: .beads/issues.jsonl)")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--fresh", action="store_true", help="bd export first")
+    parser.add_argument("--gate", help="only this gate (accepts 'A-trust-floor' or 'delivery:A-trust-floor')")
+    args = parser.parse_args(argv)
+
+    path = Path(args.path) if args.path else root / ".beads/issues.jsonl"
 
     if args.fresh:
-        subprocess.run(["bd", "export", "-o", args.path], check=True, capture_output=True)
+        subprocess.run(["bd", "export", "-o", str(path)], check=True, capture_output=True)
 
-    issues, deps = load(Path(args.path))
-    blockers = defaultdict(list)
+    issues, deps = load(path)
+    blockers: dict[str, list[str]] = defaultdict(list)
     for src, dst, kind in deps:
         if kind == "blocks" and dst in issues:
             blockers[src].append(dst)
 
-    def gate_of(d) -> str | None:
+    def gate_of(d: IssueDict) -> str | None:
         for lab in d.get("labels") or []:
+            lab_str = str(lab)
             # delivery:ac-patched is an overlay marker, not a gate assignment
-            if lab.startswith("delivery:") and lab != "delivery:ac-patched":
-                return lab.removeprefix("delivery:")
+            if lab_str.startswith("delivery:") and lab_str != "delivery:ac-patched":
+                return lab_str.removeprefix("delivery:")
         return None
 
-    by_gate: dict[str, list[dict]] = defaultdict(list)
+    by_gate: dict[str, list[IssueDict]] = defaultdict(list)
     unlabeled_open = 0
     for d in issues.values():
         g = gate_of(d)
@@ -160,7 +168,7 @@ def main() -> int:
         by_gate[g].append(d)
 
     want = args.gate.removeprefix("delivery:") if args.gate else None
-    rows = []
+    rows: list[dict[str, Any]] = []
     for gid, name, exit_crit in GATES:
         if want and gid != want:
             continue

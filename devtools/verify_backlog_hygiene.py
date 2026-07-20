@@ -39,8 +39,9 @@ rather than persisting a blocked flag that could go stale.)
 This module supersedes the standalone `.agent/tools/bead-lint.py` script
 (same algorithm, ported so the check runs through the standing `devtools
 verify --lab` gate instead of requiring a manual invocation). The allowlist
-at `.agent/tools/bead-lint-allow.txt` (format: `CHECK<TAB>bead-id<TAB>reason`
-per line) is unchanged.
+lives at `devtools/data/bead-lint-allow.txt` (format:
+`CHECK<TAB>bead-id<TAB>reason` per line; moved from
+`.agent/tools/bead-lint-allow.txt` by polylogue-kapb).
 
 Wired into ``devtools verify --lab`` alongside the other policy checks, since
 this is a repo-hygiene boundary check rather than a per-edit gate.
@@ -69,7 +70,7 @@ _PROVENANCE_HINTS = ("verbatim spec", "preserved as", "provenance", "escrow", "w
 _BEAD_REF_RE = re.compile(r"polylogue-[a-z0-9]+(?:\.[0-9]+)?(?![a-z0-9-])")
 
 _DEFAULT_ISSUES_RELPATH = ".beads/issues.jsonl"
-_DEFAULT_ALLOWLIST_RELPATH = ".agent/tools/bead-lint-allow.txt"
+_DEFAULT_ALLOWLIST_RELPATH = "devtools/data/bead-lint-allow.txt"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +145,7 @@ def collect_findings(
     """Run all 12 backlog-hygiene checks against a Beads jsonl export.
 
     ``path`` defaults to ``.beads/issues.jsonl`` under the repo root;
-    ``allow_path`` defaults to ``.agent/tools/bead-lint-allow.txt``.
+    ``allow_path`` defaults to ``devtools/data/bead-lint-allow.txt``.
     """
     root = _get_root()
     if path is None:
