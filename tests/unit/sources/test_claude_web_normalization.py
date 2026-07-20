@@ -585,7 +585,10 @@ def test_claude_normalization_survives_archive_write_and_hydration(
     assert tuple(by_native) == ("u1", "a-old", "a-new", "u2")
     assert by_native["a-old"][1:5] == (1, 0, 0, 0)
     assert by_native["a-new"][1:5] == (1, 1, 1, 0)
-    assert by_native["u2"][1:5] == (2, 0, 1, 1)
+    # u2 is a-new's only child: it inherits a-new's variant_index (1) rather
+    # than resetting to 0 -- the rank-0-inheritance fix for the sibling-variant
+    # continuation collision (see test_claude_sibling_variant_continuations_*).
+    assert by_native["u2"][1:5] == (2, 1, 1, 1)
     assert str(by_native["a-new"][5]).endswith(":u1")
     assert by_native["a-new"][6] == "completed"
     assert by_native["a-new"][7] == 1
@@ -595,3 +598,160 @@ def test_claude_normalization_survives_archive_write_and_hydration(
     attachment_only = next(message for message in hydrated.messages if str(message.id).endswith(":u2"))
     assert attachment_only.text is None
     assert [attachment.name for attachment in attachment_only.attachments] == ["evidence.json"]
+
+
+def _variant_position_collision_payload() -> dict[str, Any]:
+    """Regression fixture: two sibling variants whose continuations collide.
+
+    A 4-message linear chain (root -> chain-1 -> chain-2 -> branch-point)
+    ends at a message with two ASSISTANT sibling variants (a regenerate),
+    each of which has exactly one child continuation. Before the fix, a
+    rank-0 (only) child always reset to variant_index=0 regardless of which
+    variant its parent belonged to, so ``continuation-a`` and
+    ``continuation-b`` both landed at (position=5, variant_index=0) --
+    colliding on the messages table's
+    ``PRIMARY KEY(session_id, position, variant_index)`` and silently
+    dropping one of them via ``INSERT OR REPLACE`` while its blocks were
+    still written against its own (now-orphaned) message_id.
+    """
+    messages = [
+        {"uuid": "root", "sender": "human", "text": "root prompt", "created_at": "2026-07-10T10:00:00Z"},
+        {
+            "uuid": "chain-1",
+            "sender": "assistant",
+            "text": "chain response 1",
+            "parent_message_uuid": "root",
+            "created_at": "2026-07-10T10:00:01Z",
+        },
+        {
+            "uuid": "chain-2",
+            "sender": "human",
+            "text": "chain follow-up 2",
+            "parent_message_uuid": "chain-1",
+            "created_at": "2026-07-10T10:00:02Z",
+        },
+        {
+            "uuid": "branch-point",
+            "sender": "human",
+            "text": "prompt that gets regenerated",
+            "parent_message_uuid": "chain-2",
+            "created_at": "2026-07-10T10:00:03Z",
+        },
+        {
+            "uuid": "variant-a",
+            "sender": "assistant",
+            "text": "first regenerated response",
+            "parent_message_uuid": "branch-point",
+            "created_at": "2026-07-10T10:00:04Z",
+        },
+        {
+            "uuid": "variant-b",
+            "sender": "assistant",
+            "text": "second regenerated response",
+            "parent_message_uuid": "branch-point",
+            "created_at": "2026-07-10T10:00:05Z",
+        },
+        {
+            "uuid": "continuation-a",
+            "sender": "human",
+            "text": "follow-up inside variant a's world",
+            "parent_message_uuid": "variant-a",
+            "created_at": "2026-07-10T10:00:06Z",
+        },
+        {
+            "uuid": "continuation-b",
+            "sender": "human",
+            "text": "follow-up inside variant b's world",
+            "parent_message_uuid": "variant-b",
+            "created_at": "2026-07-10T10:00:07Z",
+        },
+    ]
+    return {
+        "uuid": "claude-variant-collision",
+        "name": "Variant continuation collision regression",
+        "created_at": "2026-07-10T10:00:00Z",
+        "updated_at": "2026-07-10T10:00:07Z",
+        "current_leaf_message_uuid": "continuation-b",
+        "chat_messages": messages,
+    }
+
+
+def test_claude_sibling_variant_continuations_get_distinct_coordinates() -> None:
+    """Mutation witness: reverting rank-0 inheritance reintroduces the (position, variant_index) collision."""
+    parsed = _parse_real_route(_variant_position_collision_payload())
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+
+    assert by_id["variant-a"].position == by_id["variant-b"].position == 4
+    assert {by_id["variant-a"].variant_index, by_id["variant-b"].variant_index} == {0, 1}
+
+    assert by_id["continuation-a"].position == by_id["continuation-b"].position == 5
+    # The actual regression: both continuations must inherit their own
+    # parent's variant, not independently reset to 0.
+    assert by_id["continuation-a"].variant_index == by_id["variant-a"].variant_index
+    assert by_id["continuation-b"].variant_index == by_id["variant-b"].variant_index
+    assert by_id["continuation-a"].variant_index != by_id["continuation-b"].variant_index
+
+    coordinates = [(message.position, message.variant_index) for message in parsed.messages]
+    assert len(coordinates) == len(set(coordinates)), f"duplicate (position, variant_index) pairs: {coordinates}"
+
+
+def test_claude_sibling_variant_continuations_all_reach_archive_with_blocks(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Real write witness: both continuation messages and their blocks must survive the archive write."""
+    payload = _variant_position_collision_payload()
+    raw_bytes = json.dumps(payload).encode()
+    db_path = db_setup(workspace_env)
+
+    with open_connection(db_path) as conn:
+        roundtrip = parse_payload_roundtrip("claude-ai", raw_bytes, unique_id="claude-variant-collision")
+        hydrated = write_and_hydrate(roundtrip, conn)
+        session_id = str(hydrated.id)
+        rows = conn.execute(
+            """
+            SELECT native_id, position, variant_index
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY position, variant_index
+            """,
+            (session_id,),
+        ).fetchall()
+        by_native_id = {str(row[0]): (int(row[1]), int(row[2])) for row in rows}
+        block_texts_by_message = {
+            str(message_row[0]): {
+                str(block_row[0])
+                for block_row in conn.execute(
+                    """
+                    SELECT b.search_text
+                    FROM blocks AS b
+                    WHERE b.message_id = ?
+                    """,
+                    (message_row[1],),
+                ).fetchall()
+            }
+            for message_row in conn.execute(
+                "SELECT native_id, message_id FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+        }
+
+    # All 8 messages made it -- nothing silently dropped via INSERT OR REPLACE.
+    assert len(rows) == 8
+    assert set(by_native_id) == {
+        "root",
+        "chain-1",
+        "chain-2",
+        "branch-point",
+        "variant-a",
+        "variant-b",
+        "continuation-a",
+        "continuation-b",
+    }
+    assert by_native_id["continuation-a"][0] == by_native_id["continuation-b"][0] == 5
+    assert by_native_id["continuation-a"][1] != by_native_id["continuation-b"][1]
+    # Every message's blocks reached the archive too -- no orphaned/missing
+    # blocks from a swallowed message row.
+    assert block_texts_by_message["continuation-a"], "continuation-a lost its blocks"
+    assert block_texts_by_message["continuation-b"], "continuation-b lost its blocks"
+    assert "follow-up inside variant a's world" in " ".join(block_texts_by_message["continuation-a"])
+    assert "follow-up inside variant b's world" in " ".join(block_texts_by_message["continuation-b"])

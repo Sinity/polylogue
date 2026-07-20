@@ -473,6 +473,102 @@ def _sibling_sort_key(evidence: _ClaudeMessageEvidence) -> tuple[int, int, float
     )
 
 
+def _resolve_variant_index(
+    start_id: str,
+    evidence_by_id: Mapping[str, _ClaudeMessageEvidence],
+    branch_index_by_id: Mapping[str, int],
+    resolved: dict[str, int],
+) -> int:
+    """Resolve a tree-mode message's variant index, composing rank-0 inheritance.
+
+    A message with an explicit provider variant index, or a nonzero rank among
+    its siblings, keeps that value -- those are real branch points. A rank-0
+    ("primary") child is just the continuation of whichever variant its parent
+    belongs to, so it inherits the parent's resolved variant index rather than
+    resetting to 0. This composes through chains of rank-0 descendants (a
+    rank-0 child of a rank-0 child of a variant sibling still inherits that
+    variant), walking up until an explicit/nonzero variant, the root, or a
+    cycle is found.
+
+    Without this, two sibling variants at the same depth each contribute a
+    rank-0 continuation at the *same* (position, variant_index=0) coordinate --
+    the exact collision shape that silently drops a message via
+    `INSERT OR REPLACE` on the messages table's
+    ``PRIMARY KEY(session_id, position, variant_index)``.
+
+    Cycles degrade to variant 0 (mirrors `_lineage_depths`' cycle handling)
+    instead of looping forever; the final uniqueness pass below is the safety
+    net if that ever produces a residual collision anyway.
+    """
+    chain: list[str] = []
+    cursor: str | None = start_id
+    seen: set[str] = set()
+    value = 0
+    while cursor is not None:
+        if cursor in resolved:
+            value = resolved[cursor]
+            break
+        if cursor in seen or cursor not in evidence_by_id:
+            value = 0
+            break
+        seen.add(cursor)
+        evidence = evidence_by_id[cursor]
+        if evidence.explicit_variant_index is not None:
+            value = evidence.explicit_variant_index
+            resolved[cursor] = value
+            break
+        rank = branch_index_by_id.get(cursor, 0)
+        if rank != 0:
+            value = rank
+            resolved[cursor] = value
+            break
+        chain.append(cursor)
+        cursor = evidence.parent_message_provider_id
+    for message_id in chain:
+        resolved[message_id] = value
+    return value
+
+
+def _deduplicate_variant_collisions(
+    emitted: list[_ClaudeMessageEvidence],
+    position_by_id: Mapping[str, int],
+    variant_index_by_id: dict[str, int],
+) -> None:
+    """Guarantee (position, variant_index) uniqueness per session -- the safety net.
+
+    Parser-level variant assignment (explicit provider values, sibling rank, or
+    rank-0 inheritance) is a heuristic and cannot be proven collision-free for
+    every exotic input tree shape. No two emitted messages may share
+    (position, variant_index): the messages table is unique on exactly that
+    pair, so a silent collision here becomes a silently dropped message
+    downstream (`INSERT OR REPLACE`) whose blocks then orphan against a
+    foreign key that no longer resolves.
+
+    Mutates ``variant_index_by_id`` in place. Positions with no collision are
+    left untouched. A colliding position group is fully renumbered in
+    order_key order (current variant index, then timestamp, then provider
+    message id) so the result is deterministic regardless of which heuristic
+    produced the original assignment.
+    """
+    by_position: dict[int, list[_ClaudeMessageEvidence]] = defaultdict(list)
+    for evidence in emitted:
+        by_position[position_by_id[evidence.provider_message_id]].append(evidence)
+    for group in by_position.values():
+        variants = [variant_index_by_id[evidence.provider_message_id] for evidence in group]
+        if len(set(variants)) == len(variants):
+            continue
+        ordered = sorted(
+            group,
+            key=lambda evidence: (
+                variant_index_by_id[evidence.provider_message_id],
+                _timestamp_sort_value(evidence.timestamp),
+                evidence.provider_message_id,
+            ),
+        )
+        for rank, evidence in enumerate(ordered):
+            variant_index_by_id[evidence.provider_message_id] = rank
+
+
 def _merge_attachment_rows(attachments: list[ParsedAttachment]) -> list[ParsedAttachment]:
     merged: dict[str, ParsedAttachment] = {}
     for candidate in attachments:
@@ -742,14 +838,30 @@ def normalize_chat_messages(
                     evidence.explicit_branch_index if evidence.explicit_branch_index is not None else rank
                 )
 
-    variant_index_by_id = {
-        evidence.provider_message_id: (
-            evidence.explicit_variant_index
-            if evidence.explicit_variant_index is not None
-            else branch_index_by_id.get(evidence.provider_message_id, 0)
-        )
-        for evidence in emitted
-    }
+    if flat_mode:
+        variant_index_by_id = {
+            evidence.provider_message_id: (
+                evidence.explicit_variant_index
+                if evidence.explicit_variant_index is not None
+                else branch_index_by_id.get(evidence.provider_message_id, 0)
+            )
+            for evidence in emitted
+        }
+    else:
+        resolved_variants: dict[str, int] = {}
+        variant_index_by_id = {
+            evidence.provider_message_id: _resolve_variant_index(
+                evidence.provider_message_id,
+                evidence_by_id,
+                branch_index_by_id,
+                resolved_variants,
+            )
+            for evidence in emitted
+        }
+    # Safety net regardless of mode: no input tree shape may leave two emitted
+    # messages sharing (position, variant_index) -- see
+    # `_deduplicate_variant_collisions` docstring.
+    _deduplicate_variant_collisions(emitted, position_by_id, variant_index_by_id)
     order_key_by_id = {
         evidence.provider_message_id: (
             position_by_id[evidence.provider_message_id],
