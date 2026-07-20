@@ -58,13 +58,36 @@ fs1.2.1, not assumed here.
 
 Session correlation (design's "join key: Hermes session id ->
 sessions.native_id"): this parser produces its own observer-evidence session
-identity (``observer:<hermes_session_id>``) rather than physically merging
-trajectory evidence into the state-db-ingested conversational session's
-message tree -- a physical merge across two independently-acquired artifacts
-for the same logical Hermes session is a session-identity/lineage design
-decision (topology_edges / session_links) that is explicitly deferred, not
-silently assumed. Read-side correlation by the shared Hermes session id
-remains possible today via ``hermes_observer_session_id_for``.
+identity (``observer:<hermes_session_id>[@profile-<key>]``) rather than
+physically merging trajectory evidence into the state-db-ingested
+conversational session's message tree -- a physical merge across two
+independently-acquired artifacts for the same logical Hermes session is a
+session-identity/lineage design decision that stays out of scope (no
+transcript-body merge, ever). Read-side correlation by the shared Hermes
+session id remains available via ``hermes_observer_session_id_for``.
+
+TOPOLOGY PROJECTION FIX (polylogue-fs1.14): the raw Hermes session id alone
+is not a safe archive join key -- two separate Hermes installs (profiles)
+can legitimately reuse the same raw session id, and the original
+``observer:<raw_id>`` identity (with no profile qualifier at all) silently
+collapsed ATIF and ATOF evidence from different installs onto one archive
+session whenever that happened, and made ``hermes_observer_session_id_for``'s
+reverse lookup strip the profile qualifier off a real conversational session
+id, discarding the very information that would have prevented the collision.
+Both artifact families now thread ``profile_root`` (the directory the raw
+ATIF/ATOF artifact was acquired from -- the same convention
+``hermes_state.parse_state_db`` already uses) through to
+``hermes_identity.profile_key``, the single shared helper both this module
+and ``hermes_state.py`` call, so the observer session identity and the
+``session_links`` parent edge asserted back to the state-db conversational
+session use the exact same qualifier. ``parent_session_provider_id`` is only
+ever set when the profile root is known -- an unqualified raw id is not
+asserted as a parent, which is the fail-closed side of the same fix: no
+edge is safer than a wrong one. Once asserted, the generic
+``session_links`` write/resolution machinery (``archive_tiers/write.py``,
+unchanged by this pass) resolves the edge when the target conversational
+session is ingested and leaves it explicitly ``unresolved`` (visible debt,
+never silently dropped) otherwise.
 
 LIVE INGESTION FIX (polylogue-flxh, confirmed 2026-07-18, fixed same day):
 the real ATOF producer writes ONE shared ``events.jsonl`` file across every
@@ -90,6 +113,7 @@ session_events / ``import_fidelity_declaration``. Regression proof:
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
@@ -97,6 +121,9 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from .hermes_identity import profile_key as _profile_key
+from .hermes_identity import qualified_session_id as _qualified_session_id
+from .hermes_identity import split_qualified_session_id as _split_qualified_session_id
 from .hermes_state import HermesFidelityCapability, HermesFidelityStatus, HermesImportFidelity
 
 # Real, externally-published ATIF schema-version prefix (NVIDIA NeMo Relay's
@@ -115,7 +142,7 @@ HermesSpanEventType: TypeAlias = Literal[
 ]
 
 
-def observer_session_provider_id(hermes_session_id: str) -> str:
+def observer_session_provider_id(hermes_session_id: str, profile_key: str | None = None) -> str:
     """Return the observer-evidence session identity for a Hermes session id.
 
     Deliberately distinct from the state-db-ingested conversational session
@@ -123,19 +150,34 @@ def observer_session_provider_id(hermes_session_id: str) -> str:
     never claims to physically merge into that session's message tree (see
     module docstring). Consumers correlate the two via
     ``hermes_observer_session_id_for``.
+
+    ``profile_key`` -- when known -- is folded into the identity using the
+    exact same qualifier scheme the state.db parser uses
+    (``hermes_identity.qualified_session_id``). This is a correctness fix,
+    not cosmetic: two separate Hermes installs (profiles) can legitimately
+    reuse the same raw session id, and an unqualified ``observer:<raw_id>``
+    identity silently collapsed their ATIF/ATOF evidence onto one archive
+    session (polylogue-fs1.14). When the profile root is not known at parse
+    time (``profile_key=None``), the identity stays unqualified rather than
+    guessing -- the fail-closed side of that same fix.
     """
+    if profile_key:
+        return f"observer:{_qualified_session_id(hermes_session_id, profile_key)}"
     return f"observer:{hermes_session_id}"
 
 
 def hermes_observer_session_id_for(conversational_session_id: str) -> str:
     """Map a state-db-ingested Hermes session id to its observer counterpart.
 
-    Strips the ``@profile-<key>`` qualifier (observer traces carry no
-    profile-root context of their own) so a reader holding the qualified
-    conversational session id can look up its observer evidence.
+    Preserves whatever ``@profile-<key>`` qualifier the conversational id
+    carries (see ``observer_session_provider_id`` docstring for why this
+    matters) so a reader holding the qualified conversational session id
+    looks up the observer evidence for the *same install*, not merely the
+    same raw session id. Falls back to an unqualified id only when the
+    conversational id itself carries no profile qualifier.
     """
-    raw_id = conversational_session_id.split("@profile-", 1)[0]
-    return observer_session_provider_id(raw_id)
+    raw_id, profile_key = _split_qualified_session_id(conversational_session_id)
+    return observer_session_provider_id(raw_id, profile_key)
 
 
 def marker_payload(
@@ -202,7 +244,12 @@ def looks_like_atof_payload(payload: JSONDocument) -> bool:
     )
 
 
-def parse_atof_stream(records: Iterable[object], fallback_id: str) -> list[ParsedSession]:
+def parse_atof_stream(
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    profile_root: Path | None = None,
+) -> list[ParsedSession]:
     """Normalize a raw Hermes NeMo Relay ATOF JSONL stream by session id.
 
     This is deliberately observer evidence rather than a transcript import.
@@ -218,6 +265,17 @@ def parse_atof_stream(records: Iterable[object], fallback_id: str) -> list[Parse
     incomplete evidence, not indistinguishable from a normal completed pair.
     Those are surfaced as explicit ``hermes_atof_unpaired_scope`` events
     rather than silently left as an ordinary-looking single-phase span.
+
+    ``profile_root`` -- the directory the raw ATOF artifact was acquired
+    from, mirroring ``hermes_state.parse_state_db``'s own convention (see
+    ``sources/source_parsing.py``/``sources/live/batch.py``) -- is the
+    producer-positive evidence used to profile-qualify both this stream's
+    own observer session identity and the ``session_links`` parent edge it
+    asserts back to the matching state-db conversational session (fs1.14).
+    When ``profile_root`` is ``None`` (unknown at parse time), no parent
+    edge is asserted: a wrong guess would silently correlate this evidence
+    with the wrong install's conversational session, which is worse than
+    leaving the correlation unresolved.
     """
     grouped: dict[str, list[ParsedSessionEvent]] = {}
     seen: dict[str, set[tuple[str, str | None]]] = {}
@@ -247,11 +305,13 @@ def parse_atof_stream(records: Iterable[object], fallback_id: str) -> list[Parse
 
     unpaired_events = {session_id: _unpaired_scope_events(phases) for session_id, phases in scope_phases.items()}
     session_ids = sorted(set(grouped) | set(unpaired_events))
+    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
     return [
         _atof_session(
             session_id,
             [*grouped.get(session_id, []), *unpaired_events.get(session_id, [])],
             skipped.get(session_id, 0),
+            profile_key=profile_key_value,
         )
         for session_id in session_ids
     ]
@@ -415,7 +475,13 @@ def _atof_event(record: JSONDocument) -> list[ParsedSessionEvent] | None:
     ]
 
 
-def _atof_session(session_id: str, events: list[ParsedSessionEvent], skipped: int) -> ParsedSession:
+def _atof_session(
+    session_id: str,
+    events: list[ParsedSessionEvent],
+    skipped: int,
+    *,
+    profile_key: str | None,
+) -> ParsedSession:
     del skipped  # counts live in session_events/import_fidelity_declaration, never in message text
     # Deliberately stable across every replay/revision of this session (never
     # embeds live event counts): the archive's membership classifier
@@ -426,7 +492,15 @@ def _atof_session(session_id: str, events: list[ParsedSessionEvent], skipped: in
     # for an already-observed session look like a non-monotonic edit,
     # silently discarding them.
     summary_text = f"Hermes ATOF observer stream: {session_id}"
-    provider_session_id = observer_session_provider_id(session_id)
+    provider_session_id = observer_session_provider_id(session_id, profile_key)
+    # The parent join key: asserting it makes the generic session_links write
+    # path (archive_tiers/write.py::_write_session_link, unchanged by this
+    # parser) resolve this observer session against the profile-qualified
+    # state-db conversational session sharing the same raw id -- resolvable
+    # once that session is ingested, visible as unresolved debt otherwise.
+    # Only asserted when the profile is known (see parse_atof_stream
+    # docstring): an unqualified raw id is not a safe cross-profile join key.
+    parent_session_provider_id = _qualified_session_id(session_id, profile_key) if profile_key else None
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
@@ -449,16 +523,24 @@ def _atof_session(session_id: str, events: list[ParsedSessionEvent], skipped: in
                 payload={
                     "hermes_conversation_session_id_prefix": session_id,
                     "join_key": "sessions.native_id",
+                    "profile_qualified": profile_key is not None,
+                    "asserted_parent_session_provider_id": parent_session_provider_id,
                     "note": "ATOF runtime evidence is stored as an observer session, not merged into the transcript.",
                 },
             ),
             *events,
         ],
+        parent_session_provider_id=parent_session_provider_id,
         ingest_flags=["hermes:atof-observer"],
     )
 
 
-def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSession:
+def parse_atif_document(
+    payload: JSONDocument,
+    fallback_id: str,
+    *,
+    profile_root: Path | None = None,
+) -> ParsedSession:
     """Parse one Hermes ATIF trajectory document into a session.
 
     Ambiguous input is handled deterministically: a step with none of the
@@ -470,6 +552,13 @@ def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSessio
     and observation text is never copied verbatim (see module docstring
     payload-hygiene note) -- only bounded evidence (presence, character
     length) is recorded.
+
+    ``profile_root`` mirrors :func:`parse_atof_stream`'s parameter of the
+    same name: producer-positive evidence (the directory this ATIF document
+    was acquired from) used to profile-qualify the observer session identity
+    and the ``session_links`` parent edge asserted back to the matching
+    state-db conversational session. ``None`` fails closed -- no parent edge
+    is asserted rather than guessing.
     """
     session_id = str(payload.get("session_id") or fallback_id)
     agent = json_document(payload.get("agent")) or {}
@@ -509,7 +598,9 @@ def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSessio
     # growth. Counts remain fully queryable from session_events /
     # import_fidelity_declaration.
     summary_text = f"Hermes ATIF trajectory: {session_id}"
-    provider_session_id = observer_session_provider_id(session_id)
+    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
+    provider_session_id = observer_session_provider_id(session_id, profile_key_value)
+    parent_session_provider_id = _qualified_session_id(session_id, profile_key_value) if profile_key_value else None
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
@@ -532,6 +623,8 @@ def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSessio
                 payload={
                     "hermes_conversation_session_id_prefix": session_id,
                     "join_key": "sessions.native_id",
+                    "profile_qualified": profile_key_value is not None,
+                    "asserted_parent_session_provider_id": parent_session_provider_id,
                     "note": (
                         "This session carries observer-layer evidence only; correlate with the "
                         "state-db-ingested conversational session sharing this raw Hermes session id."
@@ -540,6 +633,7 @@ def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSessio
             ),
             *events,
         ],
+        parent_session_provider_id=parent_session_provider_id,
         ingest_flags=["hermes:atif-trajectory"],
     )
 
@@ -702,6 +796,7 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
             counts={},
             detail="Physical topology_edges materialization from subagent_trajectories is out of scope for this pass.",
         ),
+        "parent_session_link": _parent_session_link_capability(session),
     }
     if generic_spans:
         capabilities["unrecognized_step_shapes"] = HermesFidelityCapability(
@@ -786,6 +881,7 @@ def _atof_import_fidelity_declaration(session: ParsedSession) -> HermesImportFid
             counts={},
             detail="Subagent ATOF marks are observer evidence only; session_links materialization remains deferred.",
         ),
+        "parent_session_link": _parent_session_link_capability(session),
     }
     if generic:
         capabilities["unrecognized_atof_events"] = HermesFidelityCapability(
@@ -821,6 +917,42 @@ def _atof_import_fidelity_declaration(session: ParsedSession) -> HermesImportFid
         ),
         capabilities=capabilities,
         caveats=caveats,
+    )
+
+
+def _parent_session_link_capability(session: ParsedSession) -> HermesFidelityCapability:
+    """Declare fidelity for the ``session_links`` parent edge to the conversational session.
+
+    This is the correlation the module docstring's "Session correlation"
+    section used to describe as read-side-only (``hermes_observer_session_id_for``).
+    fs1.14 also asserts it as a real ``parent_session_provider_id`` at parse
+    time when the profile root is known -- ``inferred`` (not ``exact``)
+    because the archive has not yet confirmed the target conversational
+    session was actually ingested; that confirmation is the generic
+    ``session_links`` resolution machinery's job, not this parser's.
+    """
+    if session.parent_session_provider_id:
+        return HermesFidelityCapability(
+            status="inferred",
+            observed=1,
+            expected=1,
+            counts={},
+            detail=(
+                "A profile-qualified session_links parent edge was asserted to the state-db "
+                "conversational session sharing this raw Hermes session id and profile root; "
+                "resolution against an actually-ingested session happens generically at write time."
+            ),
+        )
+    return HermesFidelityCapability(
+        status="absent",
+        observed=0,
+        expected=1,
+        counts={},
+        detail=(
+            "No profile root was available at ingest time, so no session_links parent edge was "
+            "asserted -- an unqualified raw session id is not a safe cross-profile join key "
+            "(fails closed rather than guessing)."
+        ),
     )
 
 

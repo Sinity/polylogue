@@ -115,7 +115,15 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     )
     assert len(sessions) == 1
     session = sessions[0]
-    assert session.provider_session_id == "observer:real-nemo-relay-session-redacted"
+    # fs1.14: dispatch derives profile_root from source_path's parent
+    # directory (production route, not a bespoke test-only call), so a real
+    # source_path now yields a profile-qualified identity and a parent
+    # session_links join key -- see test_dispatch_threads_source_path_directory_as_profile_root_for_atif.
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    expected_key = profile_key(REAL_ATOF_FIXTURE.parent)
+    assert session.provider_session_id == f"observer:real-nemo-relay-session-redacted@profile-{expected_key}"
+    assert session.parent_session_provider_id == qualified_session_id("real-nemo-relay-session-redacted", expected_key)
     events = session.session_events
     assert sum(event.event_type == "hermes_llm_request_span" for event in events) == 3
     assert sum(event.event_type == "hermes_tool_execution_span" for event in events) == 2
@@ -467,11 +475,145 @@ def test_decision_points_and_error_taxonomy_are_honestly_absent_not_fabricated()
 
 def test_observer_session_id_correlates_with_qualified_state_db_session_id() -> None:
     """Read-side join key: the observer-evidence session and the state-db session
-    share the raw Hermes session id, even though the state-db session id is
-    profile-qualified."""
+    share the same profile-qualified identity -- fs1.14 fixed the prior
+    behavior where ``hermes_observer_session_id_for`` stripped the profile
+    qualifier off a real conversational session id, which is exactly what let
+    two separate Hermes installs (profiles) reusing the same raw session id
+    silently collapse onto one observer-evidence archive session."""
 
     qualified = "hermes-session-1@profile-abc123def456"
-    assert hermes_spans.hermes_observer_session_id_for(qualified) == "observer:hermes-session-1"
+    assert hermes_spans.hermes_observer_session_id_for(qualified) == "observer:hermes-session-1@profile-abc123def456"
     assert hermes_spans.hermes_observer_session_id_for(qualified) == hermes_spans.observer_session_provider_id(
-        "hermes-session-1"
+        "hermes-session-1", "abc123def456"
     )
+    # Two different profiles reusing the same raw session id must NOT
+    # collapse onto the same observer session identity.
+    other_profile = "hermes-session-1@profile-fedcba654321"
+    assert hermes_spans.hermes_observer_session_id_for(qualified) != hermes_spans.hermes_observer_session_id_for(
+        other_profile
+    )
+    # A legacy/unqualified conversational id (no profile marker at all) falls
+    # back to an unqualified observer id rather than fabricating a profile.
+    assert hermes_spans.hermes_observer_session_id_for("hermes-session-1") == "observer:hermes-session-1"
+
+
+def test_atif_asserts_profile_qualified_parent_session_link_when_profile_root_known(tmp_path: Path) -> None:
+    """fs1.14: a known profile root makes this parser assert a real
+    session_links parent edge back to the matching state-db conversational
+    session, using the exact qualifier hermes_state.py computes for it."""
+
+    profile_root = tmp_path / "hermes-install"
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
+    session = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_root)
+
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    expected_key = profile_key(profile_root)
+    assert session.parent_session_provider_id == qualified_session_id("hermes-session-1", expected_key)
+    assert session.provider_session_id == f"observer:hermes-session-1@profile-{expected_key}"
+
+    correlation_event = session.session_events[0]
+    assert correlation_event.event_type == "hermes_observer_trace_correlation"
+    assert correlation_event.payload["profile_qualified"] is True
+    assert correlation_event.payload["asserted_parent_session_provider_id"] == session.parent_session_provider_id
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.capabilities["parent_session_link"].status == "inferred"
+
+
+def test_atif_fails_closed_on_unknown_profile_root() -> None:
+    """No profile root means no parent edge is asserted -- fail closed rather
+    than guessing an unqualified, potentially cross-profile-colliding join key."""
+
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+
+    assert session.parent_session_provider_id is None
+    assert session.provider_session_id == "observer:hermes-session-1"
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.capabilities["parent_session_link"].status == "absent"
+
+
+def test_two_profiles_with_the_same_raw_session_id_do_not_collapse(tmp_path: Path) -> None:
+    """The actual collapse bug fs1.14 fixes: two separate Hermes installs
+    (profiles) reusing the same raw session id must produce two distinct
+    observer-evidence archive sessions with two distinct parent edges, never
+    one session silently overwriting the other."""
+
+    profile_a = tmp_path / "install-a"
+    profile_b = tmp_path / "install-b"
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
+
+    session_a = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_a)
+    session_b = hermes_spans.parse_atif_document(payload, "fallback-id", profile_root=profile_b)
+
+    assert session_a.provider_session_id != session_b.provider_session_id
+    assert session_a.parent_session_provider_id != session_b.parent_session_provider_id
+
+
+def test_atof_stream_asserts_profile_qualified_parent_session_link(tmp_path: Path) -> None:
+    """Same fs1.14 wiring on the ATOF (JSONL scope/mark stream) route."""
+
+    profile_root = tmp_path / "hermes-install"
+    records = [
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "uuid": "u1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "name": "llm.request",
+            "category": "llm",
+            "scope_category": "start",
+            "metadata": {"session_id": "hermes-session-2", "model": "m", "provider": "p"},
+            "data": {},
+        },
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "uuid": "u1",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "name": "llm.request",
+            "category": "llm",
+            "scope_category": "end",
+            "metadata": {"session_id": "hermes-session-2", "model": "m", "provider": "p"},
+            "data": {},
+        },
+    ]
+    sessions = hermes_spans.parse_atof_stream(records, "fallback-id", profile_root=profile_root)
+    assert len(sessions) == 1
+    session = sessions[0]
+
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    expected_key = profile_key(profile_root)
+    assert session.parent_session_provider_id == qualified_session_id("hermes-session-2", expected_key)
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.capabilities["parent_session_link"].status == "inferred"
+
+    sessions_unknown_profile = hermes_spans.parse_atof_stream(records, "fallback-id")
+    assert sessions_unknown_profile[0].parent_session_provider_id is None
+    fidelity_unknown = hermes_spans.import_fidelity_declaration(sessions_unknown_profile[0])
+    assert fidelity_unknown.capabilities["parent_session_link"].status == "absent"
+
+
+def test_dispatch_threads_source_path_directory_as_profile_root_for_atif() -> None:
+    """Production route: dispatch.py derives profile_root from spec.source_path's
+    parent directory (the same convention hermes_state.py's own callers use),
+    not a bespoke test-only code path."""
+
+    payload = hermes_spans.marker_payload("hermes-session-3", _steps())
+    sessions = parse_payload(
+        Provider.HERMES,
+        payload,
+        "fallback-id",
+        source_path="/home/example/.hermes/atif/hermes-session-3.json",
+    )
+    assert len(sessions) == 1
+    session = sessions[0]
+
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    expected_key = profile_key(Path("/home/example/.hermes/atif"))
+    assert session.parent_session_provider_id == qualified_session_id("hermes-session-3", expected_key)

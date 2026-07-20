@@ -1645,7 +1645,7 @@ files:
     target: polylogue/daemon/otlp_receiver.py
     owner: stable
   - path: polylogue/daemon/parse_prefetch.py
-    loc: 433
+    loc: 429
     target: polylogue/daemon/parse_prefetch.py
     owner: stable
   - path: polylogue/daemon/process_start.py
@@ -2323,7 +2323,7 @@ files:
     target: polylogue/pipeline/ingest_support.py
     owner: stable
   - path: polylogue/pipeline/parsed_tree_size.py
-    loc: 137
+    loc: 183
     target: polylogue/pipeline/parsed_tree_size.py
     owner: stable
   - path: polylogue/pipeline/payload_types.py
@@ -3104,7 +3104,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1102
+    loc: 1120
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3324,16 +3324,20 @@ files:
     loc: 178
     target: polylogue/sources/parsers/grok.py
     owner: stable
+  - path: polylogue/sources/parsers/hermes_identity.py
+    loc: 56
+    target: polylogue/sources/parsers/hermes_identity.py
+    owner: stable
   - path: polylogue/sources/parsers/hermes_lifecycle.py
     loc: 228
     target: polylogue/sources/parsers/hermes_lifecycle.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_spans.py
-    loc: 842
+    loc: 974
     target: polylogue/sources/parsers/hermes_spans.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
-    loc: 992
+    loc: 984
     target: polylogue/sources/parsers/hermes_state.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_verification.py
@@ -3397,7 +3401,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 1512
+    loc: 1509
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3965,7 +3969,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 12564
+    loc: 12582
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py

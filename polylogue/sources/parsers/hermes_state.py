@@ -8,7 +8,6 @@ the authoritative live state shape.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
@@ -23,6 +22,8 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument, json_document
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from .hermes_identity import profile_key as _profile_key
+from .hermes_identity import qualified_session_id as _qualified_session_id
 from .local_agent import _content_blocks_from_content, _content_text, _tool_use_block
 
 HERMES_STATE_DB_MARKER = "hermes_state_db"
@@ -510,15 +511,6 @@ def _schema_version(conn: sqlite3.Connection) -> int | None:
 
 def _capabilities(columns: set[str], capability_map: Mapping[str, frozenset[str]]) -> list[str]:
     return sorted(name for name, fields in capability_map.items() if fields.issubset(columns))
-
-
-def _profile_key(profile_root: Path) -> str:
-    normalized = str(profile_root.expanduser().resolve(strict=False))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
-
-
-def _qualified_session_id(raw_session_id: str, profile_key: str) -> str:
-    return f"{raw_session_id}@profile-{profile_key}"
 
 
 def _identity_event(
