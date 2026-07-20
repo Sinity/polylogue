@@ -1365,7 +1365,13 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "hermes_root": "",
         "drive_credentials_path": str(captured.config_home / "polylogue-credentials.json"),
         "drive_token_path": str(captured.state_home / "token.json"),
-        "hook_sidecar_dir": str(captured.data_home / "hooks"),
+        # Blank (like browser_capture_spool_path above), not a hardcoded
+        # ``data_home / "hooks"``: resolve_runtime_config()'s archive-derived
+        # fallback only takes effect when this default is genuinely absent
+        # (polylogue-o7hx). A non-blank default here would silently override
+        # the archive-derived path for every archive root, defeating scratch
+        # archive isolation of the hook spool.
+        "hook_sidecar_dir": "",
         "backup_verify_tmpdir": None,
         "antigravity_language_server": None,
         "ingest_commit_batch_messages": 8000,
@@ -1680,7 +1686,11 @@ def resolve_runtime_config(
     hook_sidecar = _resolved_runtime_path(
         settings.hook_sidecar_dir,
         bootstrap=bootstrap,
-        fallback=bootstrap.data_home / "hooks",
+        # Mirrors browser_spool above (polylogue-o7hx): must fall back to the
+        # resolved archive root, not the XDG data home, or a scratch/test
+        # POLYLOGUE_ARCHIVE_ROOT fails to isolate its hook spool from the real
+        # one.
+        fallback=archive / "hooks",
     )
     drive_credentials = _resolved_runtime_path(
         settings.drive_credentials_path,

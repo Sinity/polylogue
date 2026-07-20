@@ -217,12 +217,21 @@ def blob_store_root() -> Path:
 
 
 def hooks_sidecar_dir() -> Path:
-    """Directory where hook scripts drop session event data.
+    """Directory where hook scripts drop session event data, scoped under the archive root.
 
     AI coding agent hooks (Claude Code, Codex) write structured JSONL
     event records here. The daemon watcher picks them up for ingestion.
+
+    Must track ``archive_root()`` (not ``data_home()``), mirroring
+    ``browser_capture_spool_root()``: a daemon started against a scratch or
+    test ``POLYLOGUE_ARCHIVE_ROOT`` must resolve to that scratch archive's own
+    hook spool, never the real global one (polylogue-o7hx -- a daemon pointed
+    at a scratch archive drained the real spool four separate times before
+    this was fixed). For the default production configuration the archive
+    root IS ``data_home()``, so this resolves to the exact same path as
+    before -- zero migration for real deployments.
     """
-    return data_home() / "hooks"
+    return archive_root() / "hooks"
 
 
 def drive_cache_path() -> Path:

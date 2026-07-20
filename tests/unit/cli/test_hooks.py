@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -82,7 +83,9 @@ def test_install_recommended_is_idempotent_and_preserves_unrelated_hooks(isolate
     assert document["hooks"]["PreToolUse"][0]["hooks"] == [{"type": "command", "command": "existing-policy"}]
     commands = _polylogue_commands(document)
     assert len(commands) == 5
-    assert "polylogue-hook SessionStart --provider claude-code" in commands
+    assert any(
+        command.startswith("polylogue-hook SessionStart --provider claude-code --sidecar-dir ") for command in commands
+    )
 
     before_second = target.read_bytes()
     second = runner.invoke(
@@ -95,6 +98,26 @@ def test_install_recommended_is_idempotent_and_preserves_unrelated_hooks(isolate
     assert second_payload["changed"] is False
     assert second_payload["written"] is False
     assert target.read_bytes() == before_second
+
+
+def test_install_bakes_the_current_archive_roots_resolved_spool_path(isolated_hook_home: Path) -> None:
+    """(polylogue-o7hx) ``polylogue hooks install`` resolves ``<archive_root>/hooks``
+    once, at install time, and bakes the concrete absolute path into the
+    rendered command -- a hook subprocess's environment cannot be trusted to
+    carry ``POLYLOGUE_ARCHIVE_ROOT`` at invocation time, so the installer is
+    the one place this gets resolved."""
+
+    archive_root = Path(os.environ["POLYLOGUE_ARCHIVE_ROOT"])
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "hooks", "install", "--harness", "claude-code", "--events", "SessionStart", "--json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    document = json.loads(settings_path("claude-code").read_text(encoding="utf-8"))
+    commands = _polylogue_commands(document)
+    assert commands == [f"polylogue-hook SessionStart --provider claude-code --sidecar-dir {archive_root / 'hooks'}"]
 
 
 def test_install_dry_run_does_not_create_settings(isolated_hook_home: Path) -> None:
@@ -164,7 +187,11 @@ def test_hook_runtime_provider_override_records_codex_event(
 
     monkeypatch.setattr("sys.stdin", StringIO('{"session_id":"session-1","model":"gpt-test"}'))
     assert hook_main(["SessionStart", "--provider", "codex"]) == 0
-    sidecar = isolated_hook_home.parent / "data" / "polylogue" / "hooks" / "codex-session-1.jsonl"
+    # hook_main() derives its sidecar dir from the resolved archive root
+    # (polylogue-o7hx), which isolated_hook_home points at tmp_path/"archive",
+    # not XDG_DATA_HOME.
+    archive_root = Path(os.environ["POLYLOGUE_ARCHIVE_ROOT"])
+    sidecar = archive_root / "hooks" / "codex-session-1.jsonl"
     record = json.loads(sidecar.read_text(encoding="utf-8"))
     assert record["provider"] == "codex"
     assert record["event_type"] == "SessionStart"

@@ -12,10 +12,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
-def test_hook_paste_enrichment_updates_archive_messages(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_hook_paste_enrichment_updates_archive_messages(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
@@ -52,8 +49,6 @@ def test_hook_paste_enrichment_updates_archive_messages(
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(hook_paste_enrichment, "hooks_sidecar_dir", lambda: hooks_dir)
-
     updated = hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db")
 
     assert updated == 1
@@ -78,3 +73,39 @@ def test_hook_paste_enrichment_updates_archive_messages(
             """
         ).fetchone()
         assert span == (0, 0, "hash_only")
+
+
+def test_hook_paste_enrichment_never_reads_a_sibling_archives_hooks_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(polylogue-o7hx) The hooks dir is derived from ``db_path.parent``, never
+    from an ambient global -- a different archive's hook events (including
+    one that happens to sit at the real XDG hooks location) must never leak
+    into this archive's paste enrichment."""
+
+    real_archive = tmp_path / "real-archive"
+    real_archive.mkdir()
+    real_hooks = real_archive / "hooks"
+    real_hooks.mkdir()
+    (real_hooks / "decoy.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "UserPromptSubmit",
+                "timestamp": "2026-05-07T12:00:00Z",
+                "payload": {"session_id": "codex-native-1", "prompt": "Inspect [Pasted text #1]"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # An ambient env override, if the implementation still read one, would
+    # point at ``real_hooks`` here -- it must have no effect.
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(real_archive))
+
+    scratch_ops_db = tmp_path / "scratch-archive" / "ops.db"
+    scratch_ops_db.parent.mkdir()
+
+    updated = hook_paste_enrichment.enrich_paste_from_hooks(scratch_ops_db)
+
+    assert updated == 0

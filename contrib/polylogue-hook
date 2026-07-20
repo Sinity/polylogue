@@ -7,11 +7,22 @@
 # pending spool where the daemon persists and acknowledges it.
 #
 # Usage:
-#   polylogue-hook <event-type> [--provider claude-code|codex|hermes]
+#   polylogue-hook <event-type> [--provider claude-code|codex|hermes] [--sidecar-dir PATH]
+#
+# --sidecar-dir is the concrete resolved spool path baked in by
+# `polylogue hooks install` at install time (polylogue-o7hx): a hook
+# subprocess's environment cannot be trusted to carry
+# POLYLOGUE_ARCHIVE_ROOT (agent harnesses invoke hooks with their own,
+# possibly minimal, environment), so ambient env resolution alone is not
+# reliable here. Without --sidecar-dir, falls back to
+# ${POLYLOGUE_ARCHIVE_ROOT:+$POLYLOGUE_ARCHIVE_ROOT/hooks} or the XDG
+# default (byte-identical to the default archive root's hooks directory).
 #
 # Environment variables:
-#   POLYLOGUE_HOOK_SIDECAR_DIR  Override default sidecar directory
-#   POLYLOGUE_HOOK_PROVIDER      Force provider (claude-code | codex | hermes)
+#   POLYLOGUE_ARCHIVE_ROOT  Overrides the archive root (and therefore the
+#                           default sidecar directory) when --sidecar-dir
+#                           is not given
+#   POLYLOGUE_HOOK_PROVIDER Force provider (claude-code | codex | hermes)
 #
 # Supported events:
 #   Claude Code (16): SessionStart, Setup, UserPromptSubmit, PreToolUse,
@@ -52,18 +63,36 @@ fi
 
 shift
 PROVIDER_ARG=""
-if [ "${1:-}" = "--provider" ]; then
-    PROVIDER_ARG="${2:-}"
-    case "$PROVIDER_ARG" in
-        claude-code|codex|hermes) ;;
+SIDECAR_DIR_ARG=""
+while [ "$#" -gt 0 ]; do
+    case "${1:-}" in
+        --provider)
+            PROVIDER_ARG="${2:-}"
+            case "$PROVIDER_ARG" in
+                claude-code|codex|hermes) ;;
+                *)
+                    echo "polylogue-hook: --provider must be claude-code, codex, or hermes" >&2
+                    exit 2
+                    ;;
+            esac
+            shift 2
+            ;;
+        --sidecar-dir)
+            SIDECAR_DIR_ARG="${2:-}"
+            shift 2
+            ;;
         *)
-            echo "polylogue-hook: --provider must be claude-code, codex, or hermes" >&2
-            exit 2
+            shift
             ;;
     esac
-fi
+done
 
-SIDECAR_DIR="${POLYLOGUE_HOOK_SIDECAR_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue/hooks}"
+# --sidecar-dir is the concrete resolved path baked in by `polylogue hooks
+# install` at install time -- see the header comment (polylogue-o7hx). It
+# takes precedence over ambient env resolution, which cannot be trusted in
+# an agent harness's hook subprocess environment.
+SIDECAR_DIR="${SIDECAR_DIR_ARG:-${POLYLOGUE_ARCHIVE_ROOT:+$POLYLOGUE_ARCHIVE_ROOT/hooks}}"
+SIDECAR_DIR="${SIDECAR_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue/hooks}"
 
 # Save stdin payload to a temp file so python3 can read it.
 # The heredoc below consumes python's stdin for the script source.

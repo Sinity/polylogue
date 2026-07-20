@@ -95,12 +95,32 @@ _MAX_TRANSCRIPT_LIKE_FIELD_CHARS = 2000
 
 
 def _default_sidecar_dir() -> Path:
-    override = os.environ.get("POLYLOGUE_HOOK_SIDECAR_DIR")
-    if override:
-        return Path(override)
+    """Resolve the sidecar dir when the command carries no ``--sidecar-dir``.
+
+    Falls back through ``POLYLOGUE_ARCHIVE_ROOT`` (mirroring the main
+    package's ``archive_root()``/``hooks_sidecar_dir()``) rather than a
+    separate, hook-specific env override: any environment that isolates a
+    scratch/test daemon must already set ``POLYLOGUE_ARCHIVE_ROOT``, so this
+    package needs no additional knob to stay isolated (polylogue-o7hx).
+    Prefer ``--sidecar-dir`` (baked in by ``polylogue hooks install``) when
+    the invoking environment cannot be trusted to carry that var at all.
+    """
+    archive_root_override = os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip()
+    if archive_root_override:
+        return Path(archive_root_override).expanduser() / "hooks"
     xdg_data_home = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
     return base / "polylogue" / "hooks"
+
+
+def _sidecar_dir_arg(args: list[str]) -> Path | None:
+    """Parse an explicit ``--sidecar-dir PATH`` baked in at install time."""
+    if "--sidecar-dir" not in args:
+        return None
+    index = args.index("--sidecar-dir")
+    if index + 1 >= len(args):
+        return None
+    return Path(args[index + 1]).expanduser()
 
 
 def _detect_provider(payload: dict[str, object], *, event_type: str | None = None) -> str | None:
@@ -141,10 +161,14 @@ def _extract_session_id(payload: dict[str, object]) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("Usage: polylogue-hook <event-type> [--provider claude-code|codex|hermes]", file=sys.stderr)
+        print(
+            "Usage: polylogue-hook <event-type> [--provider claude-code|codex|hermes] [--sidecar-dir PATH]",
+            file=sys.stderr,
+        )
         return 1
 
     event_type = args[0]
+    sidecar_dir_arg = _sidecar_dir_arg(args[1:])
     provider_arg: str | None = None
     if "--provider" in args[1:]:
         index = args.index("--provider")
@@ -208,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         "payload": payload,
     }
 
-    sidecar_dir = _default_sidecar_dir()
+    sidecar_dir = sidecar_dir_arg or _default_sidecar_dir()
     pending_dir = sidecar_dir / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
     _atomic_json_write(pending_dir / f"{record['event_id']}.json", record)

@@ -93,13 +93,15 @@ def acknowledged_hook_spool_dir(root: Path | None = None) -> Path:
 def hook_spool_root() -> Path:
     """Resolve the hook spool root shared by producer and daemon.
 
-    ``POLYLOGUE_HOOK_SIDECAR_DIR`` predates the durable spool and remains the
-    documented operator override.  Applying it here, rather than only in the
-    command-hook entrypoint, keeps the daemon on the same receipt path.
+    Derives from ``hooks_sidecar_dir()``, which is itself scoped under the
+    resolved archive root (polylogue-o7hx). There is no separate ad hoc env
+    override at this layer: ``POLYLOGUE_ARCHIVE_ROOT`` is the one knob that
+    already has to be set to isolate a scratch/test daemon, so a second,
+    hook-specific override was a manual escape hatch operators had to
+    remember on top of it -- and repeatedly didn't.
     """
 
-    override = os.environ.get("POLYLOGUE_HOOK_SIDECAR_DIR", "").strip()
-    return Path(override).expanduser() if override else hooks_sidecar_dir()
+    return hooks_sidecar_dir()
 
 
 def enqueue_hook_event(

@@ -21,7 +21,6 @@ from pathlib import Path
 from polylogue.archive.message.paste_detection import has_paste_indicator
 from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
-from polylogue.paths import hooks_sidecar_dir
 from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
@@ -166,9 +165,15 @@ def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, obje
 def enrich_paste_from_hooks(db_path: Path) -> int:
     """Scan hook sidecar files and update has_paste on matching messages.
 
+    ``db_path`` is the caller's ops.db path (``archive_root / "ops.db"``), so
+    the hook sidecar directory is derived from its parent rather than from an
+    ambient global (polylogue-o7hx): this enrichment always inspects the
+    archive it was actually called for, never a different one that happens to
+    be the process-wide default.
+
     Returns the number of messages updated.
     """
-    events = _iter_hook_paste_events(hooks_sidecar_dir())
+    events = _iter_hook_paste_events(db_path.parent / "hooks")
     if not events:
         return 0
 

@@ -121,16 +121,20 @@ def test_hook_spool_replay_is_idempotent_after_interrupted_acknowledgement(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_live_watcher_drains_the_configured_hook_spool_root(
+async def test_live_watcher_drains_the_hook_spool_scoped_to_the_archive_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The documented producer override reaches the daemon's real drain path."""
+    """A daemon pointed at a scratch archive root drains that archive's own
+    hook spool, never the real global one (polylogue-o7hx: a daemon started
+    against a scratch archive drained the real spool four times before the
+    spool path was made to derive from the resolved archive root)."""
 
-    spool_root = tmp_path / "configured-hooks"
+    scratch_archive_root = tmp_path / "scratch-archive-root"
+    spool_root = scratch_archive_root / "hooks"
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
-    monkeypatch.setenv("POLYLOGUE_HOOK_SIDECAR_DIR", str(spool_root))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(scratch_archive_root))
     event_path = enqueue_hook_event(
         event_id="configured-root-event",
         provider="claude-code",
@@ -151,6 +155,34 @@ async def test_live_watcher_drains_the_configured_hook_spool_root(
     assert event_path.exists() is False
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
+
+
+def test_hooks_sidecar_dir_isolates_a_scratch_archive_root_with_no_xdg_leakage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(polylogue-o7hx) A scratch ``POLYLOGUE_ARCHIVE_ROOT`` must resolve its
+    own hook spool, and a real-looking event sitting in the XDG-default
+    location must never be visible through the scratch-scoped resolution."""
+
+    from polylogue.paths import hooks_sidecar_dir
+
+    xdg_data_home = tmp_path / "xdg-data-home"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data_home))
+    real_looking_spool = xdg_data_home / "polylogue" / "hooks" / "pending"
+    real_looking_spool.mkdir(parents=True)
+    (real_looking_spool / "real-event.json").write_text("{}", encoding="utf-8")
+
+    scratch_archive_root = tmp_path / "scratch-archive-root"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(scratch_archive_root))
+
+    resolved = hooks_sidecar_dir()
+
+    assert resolved == scratch_archive_root / "hooks"
+    assert list(pending_hook_spool_dir(resolved).glob("*.json")) == []
+    # The XDG-default spool, seeded above to look like a real event, must
+    # remain untouched and undiscovered by the scratch-scoped resolution.
+    assert (real_looking_spool / "real-event.json").exists()
 
 
 @pytest.mark.asyncio
@@ -231,14 +263,14 @@ def test_hook_entrypoint_spools_and_materializes_configured_runtime_events(
     provider: str,
     session_id: str,
 ) -> None:
-    """The installed hook command reaches the durable source-tier receipt path."""
+    """The installed hook command (which bakes ``--sidecar-dir``, polylogue-o7hx)
+    reaches the durable source-tier receipt path."""
 
     spool_root = tmp_path / "hooks"
     archive_root = tmp_path / "archive"
-    monkeypatch.setenv("POLYLOGUE_HOOK_SIDECAR_DIR", str(spool_root))
     monkeypatch.setattr("sys.stdin", StringIO(f'{{"session_id":"{session_id}","tool_name":"exec"}}'))
 
-    assert hook_main(["PostToolUse", "--provider", provider]) == 0
+    assert hook_main(["PostToolUse", "--provider", provider, "--sidecar-dir", str(spool_root)]) == 0
 
     pending = list(pending_hook_spool_dir(spool_root).glob("*.json"))
     assert len(pending) == 1
@@ -249,6 +281,43 @@ def test_hook_entrypoint_spools_and_materializes_configured_runtime_events(
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == (session_id,)
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_env"),
+    [
+        (
+            (sys.executable, "-m", "polylogue_hooks.cli", "PostToolUse", "--provider", "claude-code"),
+            {"PYTHONPATH": str(Path("packaging/polylogue-hooks/src").resolve())},
+        ),
+        ((str(Path("contrib/polylogue-hook").resolve()), "PostToolUse", "--provider", "codex"), {}),
+    ],
+)
+def test_published_hook_adapters_fall_back_to_the_archive_root_env_var(
+    tmp_path: Path,
+    command: tuple[str, ...],
+    extra_env: dict[str, str],
+) -> None:
+    """Without an explicit ``--sidecar-dir``, the standalone adapters still
+    derive their spool from ``POLYLOGUE_ARCHIVE_ROOT`` -- the one env var
+    already required to isolate a scratch daemon, not a separate hook-specific
+    knob (polylogue-o7hx)."""
+
+    scratch_archive_root = tmp_path / "scratch-archive-root"
+    environment = os.environ | extra_env | {"TMPDIR": "/realm/tmp", "POLYLOGUE_ARCHIVE_ROOT": str(scratch_archive_root)}
+    result = subprocess.run(
+        command,
+        input='{"session_id":"external-session","tool_name":"exec"}',
+        text=True,
+        env=environment,
+        check=False,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    spool_root = scratch_archive_root / "hooks"
+    pending = list(pending_hook_spool_dir(spool_root).glob("*.json"))
+    assert len(pending) == 1
 
 
 @pytest.mark.parametrize(
@@ -271,13 +340,14 @@ def test_published_hook_adapters_spool_then_materialize(
     command: tuple[str, ...],
     extra_env: dict[str, str],
 ) -> None:
-    """Every documented non-bundled executable (incl. the Hermes prototype) reaches the durable receipt path."""
+    """Every documented non-bundled executable (incl. the Hermes prototype) reaches the durable receipt path
+    via ``--sidecar-dir``, the concrete resolved path an installer bakes in at install time (polylogue-o7hx)."""
 
     spool_root = tmp_path / "hooks"
     archive_root = tmp_path / "archive"
-    environment = os.environ | extra_env | {"POLYLOGUE_HOOK_SIDECAR_DIR": str(spool_root), "TMPDIR": "/realm/tmp"}
+    environment = os.environ | extra_env | {"TMPDIR": "/realm/tmp"}
     result = subprocess.run(
-        command,
+        (*command, "--sidecar-dir", str(spool_root)),
         input='{"session_id":"external-session","tool_name":"exec"}',
         text=True,
         env=environment,
@@ -311,10 +381,10 @@ def test_published_hook_adapters_refuse_duplicated_transcript_payloads(
     """The standalone (non-bundled) producers enforce the same no-transcript-duplication rule."""
 
     spool_root = tmp_path / "hooks"
-    environment = os.environ | extra_env | {"POLYLOGUE_HOOK_SIDECAR_DIR": str(spool_root), "TMPDIR": "/realm/tmp"}
+    environment = os.environ | extra_env | {"TMPDIR": "/realm/tmp"}
     oversized_payload = json.dumps({"session_id": "external-session", "text": "x" * 5000})
     result = subprocess.run(
-        command,
+        (*command, "--sidecar-dir", str(spool_root)),
         input=oversized_payload,
         text=True,
         env=environment,
