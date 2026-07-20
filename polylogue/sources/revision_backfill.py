@@ -8,14 +8,16 @@ import pickle
 import sqlite3
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Literal
+from typing import BinaryIO, Final, Literal
 
+from polylogue import logging as _polylogue_logging
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -37,6 +39,8 @@ from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+_LOGGER = _polylogue_logging.get_logger(__name__)
 
 
 def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "native"] | None:
@@ -596,6 +600,7 @@ def backfill_historical_revision_evidence(
     max_cached_payload_bytes: int | None = None,
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
+    replay_commit_batch_size: int | None = None,
     bulk_fts: bool = False,
     bulk_build: bool = False,
     prefetch_cache: RawParsePrefetchCache | None = None,
@@ -663,9 +668,24 @@ def backfill_historical_revision_evidence(
     """
     adoption_deferred = 0
     quarantined = 0
+    stage_timings: dict[str, float] = {}
     logical_keys: set[str] = set()
-    replay_batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
-    replay_batched = replay_batch_size is not None
+    # The REPLAY phase's batch size is separately tunable
+    # (``replay_commit_batch_size``; ``None`` inherits ``commit_batch_size``):
+    # each replayed cohort may flush blob-publication receipts on a SEPARATE
+    # source.db connection (a deliberate GC-safety design, see
+    # storage/blob_publication.py), and that connection waits at BEGIN
+    # IMMEDIATE behind the batch's held write lock -- a long replay batch
+    # window therefore deadlocks into 'database is locked' once the 30s busy
+    # timeout expires. Callers that batch aggressively (the full rebuild)
+    # pass ``replay_commit_batch_size=1`` to keep replay at per-cohort
+    # commits while still batching the census phase, which has no separate-
+    # connection writers inside its window.
+    effective_replay_batch = replay_commit_batch_size if replay_commit_batch_size is not None else commit_batch_size
+    replay_batch_size = (
+        effective_replay_batch if effective_replay_batch is not None and effective_replay_batch > 0 else None
+    )
+    replay_batched = replay_batch_size is not None and replay_batch_size > 1
     archive_context = (
         ArchiveStore.open_owned_inactive_generation(
             archive_root,
@@ -680,6 +700,7 @@ def backfill_historical_revision_evidence(
         archive_context as archive,
         _ParsedSessionSpill(archive_root, max_cached_payload_bytes=spill_cache_bytes) as spill,
     ):
+        census_started = time.perf_counter()
         census = _census_historical_revision_evidence(
             archive,
             spill,
@@ -689,6 +710,8 @@ def backfill_historical_revision_evidence(
             commit_batch_size=commit_batch_size,
             prefetch_cache=prefetch_cache,
         )
+        stage_timings["census"] = time.perf_counter() - census_started
+        receipt_started = time.perf_counter()
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         # The direct backfill entry point must publish the same current-parser
         # receipt as the census-only entry point before it assigns or applies
@@ -696,6 +719,7 @@ def backfill_historical_revision_evidence(
         # durable receipt writer observes one complete source snapshot.
         archive.commit()
         _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
+        stage_timings["census_receipt"] = time.perf_counter() - receipt_started
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids
 
@@ -723,7 +747,11 @@ def backfill_historical_revision_evidence(
                 # cohort to membership governance and let parsed-content
                 # prefix rules decide it; append chains remain byte-governed.
                 for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
+                    spill_started = time.perf_counter()
                     sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+                    stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                        time.perf_counter() - spill_started
+                    )
                     if len(sessions) != 1:
                         raise RuntimeError(f"full revision {raw_id} no longer parses to one session")
                     archive.replace_raw_membership_census(
@@ -740,7 +768,11 @@ def backfill_historical_revision_evidence(
             parsed_by_raw_id: dict[str, ParsedSession] = {}
             retained_bytes = 0
             for raw_id in plan.accepted_raw_ids:
+                spill_started = time.perf_counter()
                 sessions, payload_bytes = spill.for_raw(archive, raw_id)
+                stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                    time.perf_counter() - spill_started
+                )
                 if len(sessions) != 1:
                     raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
                 parsed_by_raw_id[raw_id] = sessions[0]
@@ -761,6 +793,7 @@ def backfill_historical_revision_evidence(
                     plan,
                     parsed_by_raw_id,
                     acquired_at_ms=0,
+                    stage_timings_s=stage_timings,
                     manage_transaction=not replay_batched,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
@@ -797,7 +830,11 @@ def backfill_historical_revision_evidence(
             if head_raw_id is not None and archive._raw_revision_authority(head_raw_id) == "quarantined":
                 candidate_raw_ids.add(head_raw_id)
             for raw_id in sorted(candidate_raw_ids):
+                spill_started = time.perf_counter()
                 sessions, payload_bytes = spill.for_raw(archive, raw_id)
+                stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                    time.perf_counter() - spill_started
+                )
                 for session in sessions:
                     session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
                     if session_logical_key != logical_key:
@@ -839,6 +876,7 @@ def backfill_historical_revision_evidence(
                     member_sessions,
                     projections,
                     acquired_at_ms=0,
+                    stage_timings_s=stage_timings,
                     manage_transaction=not replay_batched,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
@@ -854,6 +892,12 @@ def backfill_historical_revision_evidence(
                 commit_replay_unit()
         if replay_batched:
             archive.commit()
+        if stage_timings:
+            stage_timings["total"] = time.perf_counter() - census_started
+            _LOGGER.info(
+                "backfill stage timings: %s",
+                " ".join(f"{key}={value:.1f}s" for key, value in sorted(stage_timings.items(), key=lambda kv: -kv[1])),
+            )
     return RevisionBackfillResult(
         census.scanned,
         census.classified,
@@ -1264,11 +1308,31 @@ class _ParsedSessionSpill:
     I/O for completeness and makes no raw cohort silently disappear.
     """
 
+    #: Decoded-session RAM layer budget (payload-equivalent bytes). Replay
+    #: consumes a cohort almost immediately after census parses it, so a
+    #: small hot layer turns the common for_raw() into a dict hit instead of
+    #: a pickle.loads round-trip. Bounded independently of the sqlite layer.
+    _DECODED_CACHE_PAYLOAD_BYTES: Final[int] = 256 * 1024 * 1024
+
     def __init__(self, archive_root: Path, *, max_cached_payload_bytes: int | None) -> None:
-        fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=archive_root)
+        # Place the spill beside the RESOLVED index tier, not the archive
+        # root: on deployments where the .db files are symlinks (e.g. root
+        # SSD config dir -> NVMe data disk), a spill in archive_root would
+        # put census churn on the wear-limited disk the symlinks exist to
+        # protect.
+        index_path = archive_root / "index.db"
+        spill_dir = index_path.resolve().parent if index_path.exists() else archive_root
+        fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=spill_dir)
         os.close(fd)
         self.path = Path(name)
         self.conn = sqlite3.connect(self.path)
+        # Disposable single-connection cache: durability is meaningless (the
+        # fallback is reparsing durable source evidence), so skip the
+        # journal and every fsync -- the per-add commit previously paid a
+        # synchronous journal cycle per censused raw.
+        self.conn.execute("PRAGMA journal_mode=OFF")
+        self.conn.execute("PRAGMA synchronous=OFF")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
         self.conn.execute(
             """
             CREATE TABLE parsed_sessions (
@@ -1283,6 +1347,8 @@ class _ParsedSessionSpill:
         self.conn.execute("CREATE INDEX parsed_sessions_logical ON parsed_sessions(logical_key, raw_id)")
         self.max_cached_payload_bytes = max_cached_payload_bytes
         self.cached_payload_bytes = 0
+        self._decoded: dict[str, tuple[list[ParsedSession], int]] = {}
+        self._decoded_payload_bytes = 0
 
     def __enter__(self) -> _ParsedSessionSpill:
         return self
@@ -1316,8 +1382,22 @@ class _ParsedSessionSpill:
                 ),
             )
         self.cached_payload_bytes += payload_bytes
+        self._retain_decoded(raw_id, sessions, payload_bytes=payload_bytes)
+
+    def _retain_decoded(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
+        if payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
+            return
+        while self._decoded and self._decoded_payload_bytes + payload_bytes > self._DECODED_CACHE_PAYLOAD_BYTES:
+            oldest_raw = next(iter(self._decoded))
+            _evicted_sessions, evicted_bytes = self._decoded.pop(oldest_raw)
+            self._decoded_payload_bytes -= evicted_bytes
+        self._decoded[raw_id] = (sessions, payload_bytes)
+        self._decoded_payload_bytes += payload_bytes
 
     def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+        decoded = self._decoded.get(raw_id)
+        if decoded is not None:
+            return decoded
         rows = self.conn.execute(
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
         ).fetchall()
