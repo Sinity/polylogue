@@ -52,6 +52,7 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
         self._blocks: dict[str, _Block] = {}
         self._sessions: list[str] = []
         self._blocks_by_session: dict[str, list[str]] = {}
+        self._next_position_by_session: dict[str, int] = {}
         self._next_id = 0
         self._origin = "unknown-export"
 
@@ -69,8 +70,14 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             )
             self._sessions.append(native_session_id)
             self._blocks_by_session[native_session_id] = []
+            self._next_position_by_session[native_session_id] = 0
             return native_session_id
         return self._sessions[self._next_id % len(self._sessions)]
+
+    def _next_position(self, session_native_id: str) -> int:
+        position = self._next_position_by_session.get(session_native_id, 0)
+        self._next_position_by_session[session_native_id] = position + 1
+        return position
 
     def _insert_block(self, *, text: str | None) -> _Block:
         session_native_id = self._ensure_session()
@@ -82,9 +89,9 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
         self._conn.execute(
             """
             INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
-            VALUES (?, ?, 0, 'user', 'message', ?)
+            VALUES (?, ?, ?, 'user', 'message', ?)
             """,
-            (session_id, message_native_id, content_hash),
+            (session_id, message_native_id, self._next_position(session_native_id), content_hash),
         )
         self._conn.execute(
             """
@@ -168,9 +175,9 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             self._conn.execute(
                 """
                 INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
-                VALUES (?, ?, 0, 'user', 'message', ?)
+                VALUES (?, ?, ?, 'user', 'message', ?)
                 """,
-                (session_id, message_native_id, content_hash),
+                (session_id, message_native_id, self._next_position(session_native_id), content_hash),
             )
             self._conn.execute(
                 """
@@ -184,15 +191,25 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             self._blocks[block_id] = block
             self._blocks_by_session[session_native_id].append(block_id)
 
-    @precondition(lambda self: bool(self._blocks))
+    @precondition(lambda self: bool(self._sessions))
     @rule()
     def rollback_insert(self) -> None:
-        """A rolled-back mutation must leave zero trace in either table."""
+        """A rolled-back mutation must leave zero trace in either table.
+
+        Deliberately picks an EXISTING session rather than
+        ``_ensure_session()`` (which may INSERT a brand new session row) --
+        this rule's own SAVEPOINT rollback only undoes the DB side, not this
+        harness's Python-side bookkeeping, so creating new session state
+        inside the rolled-back block would desync the two and produce a
+        harness-only false failure (an FK violation on a later rule using a
+        session native_id the DB no longer has) that has nothing to do with
+        the production identity-ledger invariant under test.
+        """
         before_docsize = int(self._conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
         before_identity = int(self._conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0])
         self._conn.execute("SAVEPOINT rollback_probe")
         try:
-            session_native_id = self._ensure_session()
+            session_native_id = self._sessions[self._next_id % len(self._sessions)]
             self._next_id += 1
             message_native_id = f"rollback-msg-{self._next_id}"
             session_id = f"{self._origin}:{session_native_id}"
@@ -201,9 +218,9 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             self._conn.execute(
                 """
                 INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
-                VALUES (?, ?, 0, 'user', 'message', ?)
+                VALUES (?, ?, ?, 'user', 'message', ?)
                 """,
-                (session_id, message_native_id, content_hash),
+                (session_id, message_native_id, self._next_position(session_native_id), content_hash),
             )
             self._conn.execute(
                 """
@@ -215,6 +232,11 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
         finally:
             self._conn.execute("ROLLBACK TO rollback_probe")
             self._conn.execute("RELEASE rollback_probe")
+            # The position counter itself is Python-side bookkeeping, not
+            # transactional -- roll it back too so a later real insert into
+            # this session doesn't skip a position number needlessly (not a
+            # correctness requirement, just keeps position values compact).
+            self._next_position_by_session[session_native_id] -= 1
         after_docsize = int(self._conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
         after_identity = int(self._conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0])
         assert after_docsize == before_docsize

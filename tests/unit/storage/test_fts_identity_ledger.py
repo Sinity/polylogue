@@ -38,8 +38,14 @@ def _seed_block(
     native_message_id: str,
     text: str,
     content_hash: bytes = b"x" * 32,
+    message_position: int = 0,
 ) -> str:
-    """Insert one minimal session/message/block row and return the block_id."""
+    """Insert one minimal session/message/block row and return the block_id.
+
+    ``message_position`` must be distinct per message within a session
+    (``messages`` is UNIQUE on ``(session_id, position, variant_index)``);
+    the block itself is always at block position 0 within its own message.
+    """
     origin = "unknown-export"
     session_id = f"{origin}:{native_session_id}"
     message_id = f"{session_id}:{native_message_id}"
@@ -50,9 +56,9 @@ def _seed_block(
     conn.execute(
         """
         INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
-        VALUES (?, ?, 0, 'user', 'message', ?)
+        VALUES (?, ?, ?, 'user', 'message', ?)
         """,
-        (session_id, native_message_id, content_hash),
+        (session_id, native_message_id, message_position, content_hash),
     )
     conn.execute(
         """
@@ -131,6 +137,7 @@ class TestIdentityLedgerHappyPath:
             native_message_id="msg-identity-reuse-b",
             text="second block reusing the same rowid",
             content_hash=b"b" * 32,
+            message_position=1,
         )
         reused_rowid = _block_rowid(test_conn, block_id_b)
         assert reused_rowid == rowid, "test setup expected SQLite to reuse the freed rowid"
