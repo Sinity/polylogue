@@ -8,7 +8,21 @@ def action_relation_select_sql(
     session_placeholders: str | None = None,
     empty: bool = False,
 ) -> str:
-    """Return the actions SELECT, optionally bounding every physical branch."""
+    """Return the actions SELECT, optionally bounding every physical branch.
+
+    ``INDEXED BY idx_blocks_session_position`` is pinned on every ``blocks``
+    scan whenever the relation is session-bounded. Without ``ANALYZE``
+    statistics (a brand-new archive has none -- ``ArchiveStore``'s fresh-bootstrap
+    path never seeds ``sqlite_stat1``; see ``polylogue/storage/sqlite/schema.py``
+    for the separate connection-pool bootstrap that does), SQLite's planner
+    defaults to the low-cardinality ``idx_blocks_type_tool (block_type=?)``
+    index for a `block_type = 'tool_use'` predicate -- an archive-wide scan of
+    every tool_use/tool_result block regardless of how selective the session
+    bound is (measured: a single-session query planned the same full
+    ``idx_blocks_type_tool`` scan as an unbounded one; polylogue-z9gh.2
+    F-006/F-007). The exact session id(s) are already known at SQL-generation
+    time here, so the correct index is not a matter of estimation -- pin it.
+    """
     if empty and session_placeholders is not None:
         raise ValueError("An empty action relation cannot also declare session placeholders")
     use_bound = " AND 0" if empty else f" AND u.session_id IN ({session_placeholders})" if session_placeholders else ""
@@ -18,6 +32,7 @@ def action_relation_select_sql(
     null_id_bound = (
         " AND 0" if empty else f" AND u.session_id IN ({session_placeholders})" if session_placeholders else ""
     )
+    session_index_hint = " INDEXED BY idx_blocks_session_position" if session_placeholders else ""
     return f"""
 WITH ranked_uses AS (
     SELECT
@@ -34,7 +49,7 @@ WITH ranked_uses AS (
             PARTITION BY u.session_id, u.tool_id
             ORDER BY um.position, um.variant_index, u.position
         ) AS use_rank
-    FROM blocks u
+    FROM blocks u{session_index_hint}
     JOIN messages um ON um.message_id = u.message_id
     WHERE u.block_type = 'tool_use' AND u.tool_id IS NOT NULL AND u.tool_id != ''{use_bound}
 ),
@@ -50,7 +65,7 @@ ranked_results AS (
             PARTITION BY r.session_id, r.tool_id
             ORDER BY rm.position, rm.variant_index, r.position
         ) AS result_rank
-    FROM blocks r
+    FROM blocks r{session_index_hint}
     JOIN messages rm ON rm.message_id = r.message_id
     WHERE r.block_type = 'tool_result' AND r.tool_id IS NOT NULL AND r.tool_id != ''{result_bound}
 )
@@ -88,7 +103,7 @@ SELECT
     NULL AS is_error,
     NULL AS exit_code,
     NULL AS tool_result_block_id
-FROM blocks u
+FROM blocks u{session_index_hint}
 WHERE u.block_type = 'tool_use' AND (u.tool_id IS NULL OR u.tool_id = ''){null_id_bound}
 """.strip()
 

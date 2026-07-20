@@ -289,6 +289,102 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
     assert mutant_receipt.spec.semantic_result == "complete"
 
 
+def test_bounded_action_relation_plans_session_index_not_archive_wide_tool_scan(tmp_path: Path) -> None:
+    """polylogue-z9gh.2 F-006/F-007: a session-scoped ``followup_class``
+    query must not plan an archive-wide ``idx_blocks_type_tool`` scan.
+
+    ``_action_relation_for_query`` already narrows a ``session.id:X``
+    predicate to an exact session bound (``_exact_session_ids_from_predicate``)
+    for both the plain-count and the ``group by followup_class`` (needs the
+    derived follow-up relation) paths -- that part of the lowering was
+    already correct. The residual was physical: ``action_relation_select_sql``
+    had no way to force the session-scoped index, and a fresh ``ArchiveStore``
+    archive has no ``sqlite_stat1`` (its bootstrap path,
+    ``initialize_archive_tier``, never seeds planner statistics -- unlike the
+    separate connection-pool bootstrap in ``storage/sqlite/schema.py``), so
+    SQLite's planner fell back to ``idx_blocks_type_tool (block_type=?)`` --
+    an archive-wide scan of every ``tool_use``/``tool_result`` block --
+    regardless of how selective the session bound was. The exact session ids
+    are already known at SQL-generation time, so the fix pins
+    ``INDEXED BY idx_blocks_session_position`` on every bounded branch.
+    """
+    with ArchiveStore(tmp_path / "archive") as facade:
+        target_id: str | None = None
+        for i in range(8):
+            messages: list[ParsedMessage] = []
+            for j in range(3):
+                messages.append(
+                    ParsedMessage(
+                        provider_message_id=f"u{j}",
+                        role=Role.USER,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                    )
+                )
+                messages.append(
+                    ParsedMessage(
+                        provider_message_id=f"tu{j}",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id=f"t{i}-{j}",
+                                tool_input={"command": "ls"},
+                            )
+                        ],
+                    )
+                )
+                messages.append(
+                    ParsedMessage(
+                        provider_message_id=f"tr{j}",
+                        role=Role.TOOL,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id=f"t{i}-{j}",
+                                text="out",
+                                is_error=(j == 0),
+                            )
+                        ],
+                    )
+                )
+                messages.append(
+                    ParsedMessage(
+                        provider_message_id=f"a{j}",
+                        role=Role.ASSISTANT,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="acknowledged, continuing now")],
+                    )
+                )
+            session_id = facade.write_parsed(
+                ParsedSession(source_name=Provider.CODEX, provider_session_id=f"sess-{i}", messages=messages)
+            )
+            if i == 5:
+                target_id = session_id
+        assert target_id is not None
+
+        source = parse_unit_source_expression(f"actions where session.id:{target_id} | group by followup_class | count")
+        assert source is not None
+
+        captured_sql: list[str] = []
+        facade._conn.set_trace_callback(captured_sql.append)
+        try:
+            rows = facade.query_unit_counts("action", source.pipeline.predicate, group_by=source.pipeline.group_by)
+        finally:
+            facade._conn.set_trace_callback(None)
+
+        assert rows, "expected at least one followup_class group for the target session"
+
+        aggregate_sql = next(sql for sql in reversed(captured_sql) if "group_key" in sql)
+        plan_rows = facade._conn.execute(f"EXPLAIN QUERY PLAN {aggregate_sql}").fetchall()
+        plan_details = [str(row["detail"]) for row in plan_rows]
+
+    session_scoped_block_scans = [detail for detail in plan_details if ("SEARCH u " in detail or "SEARCH r " in detail)]
+    assert session_scoped_block_scans, plan_details
+    for detail in session_scoped_block_scans:
+        assert "idx_blocks_session_position" in detail, plan_details
+        assert "idx_blocks_type_tool" not in detail, plan_details
+
+
 def test_c03_exact_session_actions_uses_real_provider_pipeline_and_planted_facts(tmp_path: Path) -> None:
     """C-03 executes generated Codex bytes through acquire→parse→index→query."""
     artifact = build_seeded_archive(cache_root=tmp_path / "seeded-artifacts")
