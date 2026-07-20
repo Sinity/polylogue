@@ -351,6 +351,10 @@ A few keys not shown in the full example above, with their TOML path:
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
 | `daemon_parse_stage_split` | `daemon.raw_materialization.parse_stage_split` | Opt-in (polylogue-m6tp phase (a), default off): pre-parse raw-materialization census candidates in a bounded daemon-owned thread pool before the writer hold, instead of parsing inside the writer-held pass. |
 | `daemon_bulk_rebuild_routing` | `daemon.raw_materialization.bulk_rebuild_routing` | Opt-in (polylogue-m6tp phase (c) / polylogue-gd6v, default off): once a raw backlog is bulk-scale, route it into a daemon-owned resumable blue-green index generation build instead of the trickle conveyor, promoting it once exact-ready. |
+| `judgment_automation_enabled` | `judgment_automation.enabled` | Opt-in (polylogue-6qjc, default off): schedule the daemon judgment-automation sweep that calls the `judge` dispatcher on auto-judgeable assertion candidates per policy and escalates the rest to a `handoff` assertion. Exercises the same authority as the MCP `judge` dispatcher, so the sweep also requires `mcp_judge_enabled`. See [`docs/daemon.md`](daemon.md). |
+| `judgment_automation_interval_s` | `judgment_automation.interval_s` | Seconds between judgment-automation sweeps (default 3600; floored at 60 at runtime). |
+| `judgment_automation_batch_limit` | `judgment_automation.batch_limit` | Maximum candidates judged per judgment-automation sweep (default 200). |
+| `judgment_automation_policy` | `judgment_automation.policies` | Per-kind `auto_accept_min_confidence`/`auto_reject_max_confidence` thresholds for the judgment-automation policy engine; a kind with no entry always escalates. |
 
 ## Environment Policy
 

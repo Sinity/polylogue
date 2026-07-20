@@ -1270,7 +1270,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 2501
+    loc: 2590
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1500,7 +1500,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2564
+    loc: 2566
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1586,6 +1586,10 @@ files:
   - path: polylogue/daemon/http.py
     loc: 5423
     target: polylogue/daemon/http.py
+    owner: stable
+  - path: polylogue/daemon/judgment_automation.py
+    loc: 390
+    target: polylogue/daemon/judgment_automation.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
     loc: 285
@@ -1793,7 +1797,7 @@ files:
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 1320
+    loc: 1337
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/tour.py
@@ -2371,7 +2375,7 @@ files:
     target: polylogue/pipeline/services/acquisition_streams.py
     owner: stable
   - path: polylogue/pipeline/services/archive_ingest.py
-    loc: 458
+    loc: 465
     target: polylogue/pipeline/services/archive_ingest.py
     owner: stable
   - path: polylogue/pipeline/services/indexing.py
@@ -3232,7 +3236,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 1269
+    loc: 1390
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
@@ -4081,7 +4085,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 5021
+    loc: 5189
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
