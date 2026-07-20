@@ -44,7 +44,7 @@ def test_looks_like_atif_payload_requires_real_atif_schema_version_and_session_a
     # The old, pre-fix synthetic marker shape must NOT match anymore -- that
     # was exactly the review finding (a self-referential detector that could
     # only ever recognize this repo's own test fixture).
-    marker_only_payload = {"polylogue_artifact": "hermes_atif_trace", "session_id": "x", "spans": []}
+    marker_only_payload: JSONDocument = {"polylogue_artifact": "hermes_atif_trace", "session_id": "x", "spans": []}
     assert not hermes_spans.looks_like_atif_payload(marker_only_payload)
     # Same proof through the real dispatch entrypoint, not just the predicate.
     assert detect_provider(marker_only_payload) is not Provider.HERMES
