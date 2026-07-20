@@ -8,7 +8,7 @@ CLI or Python API for agent-facing recall, corrections, and context assembly.
 
 10 top-level tools are registered across `polylogue/mcp/server_*.py`, each a parser-owned
 dispatcher over a bounded operation grammar rather than a single fixed call — gated by
-capability role (see Configuration below):
+explicit config-opt-in capability flags (see Configuration below):
 
 - `status` — compact archive authority and readiness status.
 - `read` — read a stable archive URI or public ref through a declared view.
@@ -16,10 +16,10 @@ capability role (see Configuration below):
 - `query` — execute a parser-owned terminal query page, or resume its continuation.
 - `explain` — explain parser grammar, capabilities, refs, result semantics, or recovery.
 - `context` — compile a policy-gated bounded context image with receipts.
-- `write` (write role) — apply a declared mutation operation after shared authorization.
-- `run` (write role) — execute a saved query or governed recipe ref.
-- `judge` (review role) — accept, reject, defer, or supersede assertion candidates.
-- `maintenance` (admin role) — preview, execute, list, and inspect maintenance operations.
+- `write` (write capability) — apply a declared mutation operation after shared authorization.
+- `run` (write capability) — execute a saved query or governed recipe ref.
+- `judge` (judge capability) — accept, reject, defer, or supersede assertion candidates.
+- `maintenance` (maintenance capability) — preview, execute, list, and inspect maintenance operations.
 
 The exhaustive, currently-registered tool name set is a test-enforced contract, not hand
 duplicated here: `tests/infra/mcp.py:EXPECTED_TOOL_NAMES`. Adding a tool requires updating
@@ -39,10 +39,21 @@ that set plus its tool contract (see `CLAUDE.md` § MCP gotchas).
 ## Configuration
 
 The MCP server is a standalone console script (`polylogue.mcp.cli:main`), not a `polylogue`
-subcommand. It is read-only by default; write access to mutating tools is an explicit
-config opt-in. `--role` gates capability along a ladder: `read` (default — `status`, `read`,
-`get`, `query`, `explain`, `context`; 6 tools), `write` (adds `write`, `run`; 8 tools),
-`review` (adds `judge`; 9 tools), or `admin` (adds `maintenance`; 10 tools).
+subcommand. It is read-only by default (6 tools: `status`, `read`, `get`, `query`, `explain`,
+`context`). There is no role ladder and no `--role` flag; write, judge, and maintenance
+capability are independent config opt-ins resolved once at server startup, set via
+`polylogue.toml`:
+
+```toml
+[mcp]
+write_enabled = true        # adds `write`, `run`
+judge_enabled = true        # adds `judge`
+maintenance_enabled = true  # adds `maintenance`
+```
+
+or the equivalent `POLYLOGUE_MCP_WRITE_ENABLED` / `POLYLOGUE_MCP_JUDGE_ENABLED` /
+`POLYLOGUE_MCP_MAINTENANCE_ENABLED` environment variables. Enabling one does not enable
+another.
 
 Add to your Claude Code `.mcp.json`:
 
@@ -50,8 +61,7 @@ Add to your Claude Code `.mcp.json`:
 {
   "mcpServers": {
     "polylogue": {
-      "command": "polylogue-mcp",
-      "args": ["--role", "read"]
+      "command": "polylogue-mcp"
     }
   }
 }

@@ -26,7 +26,7 @@ import pytest
 from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.mcp.server import build_server
 from polylogue.mcp.server_support import _async_safe_call, _safe_call
-from tests.infra.mcp import MCPServerUnderTest
+from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest
 
 
 def _structured_error(payload: str) -> dict[str, object]:
@@ -126,7 +126,7 @@ class TestRegistrySurfaceContract:
         the six cutover transactions. (Per-tool error wiring is proven by
         the wrapper contract above plus per-tool tests elsewhere.)
         """
-        server = cast(MCPServerUnderTest, build_server(role="admin"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=ALL_CAPABILITIES))
         tool_names = set(server._tool_manager._tools.keys())
         for name in ["query", "read", "get", "explain", "context", "status"]:
             assert name in tool_names, f"missing expected MCP tool: {name}"

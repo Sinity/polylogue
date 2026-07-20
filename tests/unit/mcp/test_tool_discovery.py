@@ -39,7 +39,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
 
 def _discover_read_tool_names() -> frozenset[str]:
     """Return the set of all tool names registered on a read-role server."""
-    server = cast(MCPServerUnderTest, build_server(role="read"))
+    server = cast(MCPServerUnderTest, build_server())
     return frozenset(server._tool_manager._tools.keys())
 
 
@@ -61,7 +61,7 @@ def _tool_call_specs() -> list[object]:
 @pytest.mark.parametrize("tool_name, kwargs", list(_tool_call_specs()))
 def test_tool_returns_valid_response_envelope(tool_name: str, kwargs: dict[str, object]) -> None:
     """Every read-role MCP tool returns valid JSON with no unhandled InternalError."""
-    server = cast(MCPServerUnderTest, build_server(role="read"))
+    server = cast(MCPServerUnderTest, build_server())
     tool = server._tool_manager._tools.get(tool_name)
     assert tool is not None, f"tool {tool_name!r} not registered on read-role server"
 
@@ -98,7 +98,7 @@ def test_all_read_tools_discovered() -> None:
 
 def test_no_mutation_tools_in_read_role() -> None:
     """Mutation tools must NOT be registered on a read-role server."""
-    server = cast(MCPServerUnderTest, build_server(role="read"))
+    server = cast(MCPServerUnderTest, build_server())
     read_names = set(server._tool_manager._tools.keys())
 
     known_mutations = {

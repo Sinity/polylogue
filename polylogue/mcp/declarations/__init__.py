@@ -5,6 +5,8 @@ load the contract without importing the MCP runtime or archive services.
 """
 
 from polylogue.mcp.declarations.models import (
+    MCPCapabilities,
+    MCPCapabilityFlag,
     MCPContinuationContract,
     MCPDeprecationState,
     MCPHandlerBinding,
@@ -13,7 +15,6 @@ from polylogue.mcp.declarations.models import (
     MCPPromptDeclaration,
     MCPResourceDeclaration,
     MCPResultSemantics,
-    MCPRole,
     MCPToolDeclaration,
     MCPTransactionDeclaration,
     MCPVerb,
@@ -32,6 +33,8 @@ from polylogue.mcp.declarations.registry import (
 )
 
 __all__ = [
+    "MCPCapabilities",
+    "MCPCapabilityFlag",
     "MCPContinuationContract",
     "MCPDeprecationState",
     "MCPHandlerBinding",
@@ -41,7 +44,6 @@ __all__ = [
     "MCPPromptDeclaration",
     "MCPResourceDeclaration",
     "MCPResultSemantics",
-    "MCPRole",
     "MCPToolDeclaration",
     "MCPTransactionDeclaration",
     "MCPVerb",

@@ -4,18 +4,40 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Final, Literal, TypeAlias
+from typing import Literal, TypeAlias
 
 from polylogue.declarations import DeclarationSpec, JSONValue
 
-MCPRole = Literal["read", "write", "review", "admin"]
-MCP_ROLE_ORDER: Final[dict[MCPRole, int]] = {"read": 0, "write": 1, "review": 2, "admin": 3}
+#: The privileged capability flags a declaration can require. ``None`` on a
+#: declaration means it is a base read-only transaction, always available.
+MCPCapabilityFlag = Literal["write", "judge", "maintenance"]
 
 
-def mcp_role_allows(role: MCPRole, required: MCPRole) -> bool:
-    """Return whether ``role`` includes the required MCP capability."""
+@dataclass(frozen=True, slots=True)
+class MCPCapabilities:
+    """Explicit config opt-ins for the MCP server's privileged dispatchers.
 
-    return MCP_ROLE_ORDER[role] >= MCP_ROLE_ORDER[required]
+    Per polylogue-800m: the MCP role ladder is not a product concept. The
+    server is read-only by default (every field ``False``); write capability
+    (``write``/``run`` dispatchers), judge capability (``judge``), and
+    maintenance capability (``maintenance``) are independent boolean
+    opt-ins resolved from config (see ``polylogue.config.PolylogueConfig``:
+    ``mcp_write_enabled``/``mcp_judge_enabled``/``mcp_maintenance_enabled``).
+    There is no ordering between them -- enabling one does not imply another.
+    """
+
+    write: bool = False
+    judge: bool = False
+    maintenance: bool = False
+
+    def allows(self, required: MCPCapabilityFlag | None) -> bool:
+        """Return whether these capabilities satisfy ``required``.
+
+        ``required=None`` marks a base read-only transaction, always allowed.
+        """
+        if required is None:
+            return True
+        return bool(getattr(self, required))
 
 
 ObservedUse = Literal["observed", "not_observed", "unknown"]
@@ -114,7 +136,7 @@ class MCPToolDeclaration:
     description: str
     verb: MCPVerb
     object_kinds: tuple[str, ...]
-    minimum_role: MCPRole
+    required_capability: MCPCapabilityFlag | None
     capability: str
     result_semantics: MCPResultSemantics
     canonical_plan: str
@@ -173,7 +195,7 @@ class MCPTransactionDeclaration:
 
     name: str
     verb: MCPVerb
-    minimum_role: MCPRole
+    required_capability: MCPCapabilityFlag | None
     object_kinds: tuple[str, ...]
     result_semantics: tuple[MCPResultSemantics, ...]
     purpose: str
@@ -186,7 +208,7 @@ class MCPResourceDeclaration:
 
     uri_template: str
     object_kinds: tuple[str, ...]
-    minimum_role: MCPRole
+    required_capability: MCPCapabilityFlag | None
     authority: str
     migration_owner: str
 
@@ -197,7 +219,7 @@ class MCPPromptDeclaration:
 
     name: str
     workflow: str
-    minimum_role: MCPRole
+    required_capability: MCPCapabilityFlag | None
     mutation_authority: Literal["none"]
     migration_owner: str
 
@@ -205,6 +227,8 @@ class MCPPromptDeclaration:
 MCPDeclarationMap: TypeAlias = dict[str, MCPToolDeclaration]
 
 __all__ = [
+    "MCPCapabilities",
+    "MCPCapabilityFlag",
     "MCPContinuationContract",
     "MCPDeclarationMap",
     "MCPDeprecationState",
@@ -214,12 +238,9 @@ __all__ = [
     "MCPPromptDeclaration",
     "MCPResourceDeclaration",
     "MCPResultSemantics",
-    "MCPRole",
-    "MCP_ROLE_ORDER",
     "MCPToolDeclaration",
     "MCPTransactionDeclaration",
     "MCPVerb",
     "ObservedUse",
     "PythonParityExpectation",
-    "mcp_role_allows",
 ]

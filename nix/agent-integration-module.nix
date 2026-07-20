@@ -17,13 +17,15 @@ let
     (if cfg.installMcp then "--mcp" else "--no-mcp")
   ];
   replaceArgs = lib.optionals cfg.replaceClients [ "--replace-clients" ];
+  capabilityArgs = lib.optionals cfg.mcpEnableWrite [ "--enable-write" ]
+    ++ lib.optionals cfg.mcpEnableJudge [ "--enable-judge" ]
+    ++ lib.optionals cfg.mcpEnableMaintenance [ "--enable-maintenance" ];
 
   installArgs = [
     "${cfg.package}/bin/polylogue"
     "agent"
     "install"
-  ] ++ clientArgs ++ [
-    "--role" cfg.mcpRole
+  ] ++ clientArgs ++ capabilityArgs ++ [
     "--guidance" cfg.guidance
     "--server-command" "${cfg.package}/bin/polylogue-mcp"
     "--polylogue-command" "${cfg.package}/bin/polylogue"
@@ -48,10 +50,35 @@ in
       description = "Native clients to reconcile. Keep the module enabled while these files are managed.";
     };
 
-    mcpRole = mkOption {
-      type = types.enum [ "read" "write" "review" "admin" ];
-      default = "read";
-      description = "Hard MCP capability role installed into each client command.";
+    mcpEnableWrite = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Emit POLYLOGUE_MCP_WRITE_ENABLED=1 into each generated MCP client
+        entry's environment, opting that deployment into the write/run
+        dispatchers. Independent of mcpEnableJudge/mcpEnableMaintenance --
+        there is no role ladder. Off (read-only) by default.
+      '';
+    };
+
+    mcpEnableJudge = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Emit POLYLOGUE_MCP_JUDGE_ENABLED=1 into each generated MCP client
+        entry's environment, opting that deployment into the judge
+        dispatcher. Independent of mcpEnableWrite/mcpEnableMaintenance.
+      '';
+    };
+
+    mcpEnableMaintenance = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Emit POLYLOGUE_MCP_MAINTENANCE_ENABLED=1 into each generated MCP
+        client entry's environment, opting that deployment into the
+        maintenance dispatcher. Independent of mcpEnableWrite/mcpEnableJudge.
+      '';
     };
 
     guidance = mkOption {

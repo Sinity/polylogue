@@ -23,7 +23,8 @@ from typing import cast
 
 import pytest
 
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+from polylogue.mcp.declarations.models import MCPCapabilities
+from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, invoke_surface_async
 
 
 def _seed_archive(archive_root: Path) -> str:
@@ -72,34 +73,49 @@ def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
         server_support._set_runtime_services(original)
 
 
-class TestRoleGating:
-    def test_read_role_has_no_privileged_tools(self) -> None:
+class TestCapabilityGating:
+    """polylogue-800m: write/judge/maintenance are independent config opt-ins, not a role ladder.
+
+    Enabling one capability must never leak another -- that would silently
+    reintroduce the retired ladder semantics.
+    """
+
+    def test_read_only_by_default_has_no_privileged_tools(self) -> None:
         from polylogue.mcp.server import build_server
 
-        server = cast(MCPServerUnderTest, build_server(role="read"))
+        server = cast(MCPServerUnderTest, build_server())
         tools = set(server._tool_manager._tools)
         assert tools.isdisjoint({"write", "judge", "run", "maintenance"})
 
-    def test_write_role_has_write_and_run_but_not_judge_or_maintenance(self) -> None:
+    def test_write_capability_adds_write_and_run_only(self) -> None:
         from polylogue.mcp.server import build_server
 
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         tools = set(server._tool_manager._tools)
         assert {"write", "run"} <= tools
         assert tools.isdisjoint({"judge", "maintenance"})
 
-    def test_review_role_adds_judge(self) -> None:
+    def test_judge_capability_adds_judge_only(self) -> None:
+        """Judging assertion candidates does not require write capability."""
         from polylogue.mcp.server import build_server
 
-        server = cast(MCPServerUnderTest, build_server(role="review"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
         tools = set(server._tool_manager._tools)
-        assert {"write", "run", "judge"} <= tools
-        assert "maintenance" not in tools
+        assert "judge" in tools
+        assert tools.isdisjoint({"write", "run", "maintenance"})
 
-    def test_admin_role_has_all_four_privileged_tools(self) -> None:
+    def test_maintenance_capability_adds_maintenance_only(self) -> None:
         from polylogue.mcp.server import build_server
 
-        server = cast(MCPServerUnderTest, build_server(role="admin"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        tools = set(server._tool_manager._tools)
+        assert "maintenance" in tools
+        assert tools.isdisjoint({"write", "run", "judge"})
+
+    def test_all_capabilities_enabled_has_every_privileged_tool(self) -> None:
+        from polylogue.mcp.server import build_server
+
+        server = cast(MCPServerUnderTest, build_server(capabilities=ALL_CAPABILITIES))
         tools = set(server._tool_manager._tools)
         assert {"write", "run", "judge", "maintenance"} <= tools
 
@@ -111,7 +127,7 @@ class TestWriteTool:
 
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
         with _installed_runtime_services(archive_root):
@@ -133,7 +149,7 @@ class TestWriteTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
         with _installed_runtime_services(archive_root):
@@ -147,7 +163,7 @@ class TestWriteTool:
 
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
         with _installed_runtime_services(archive_root):
@@ -168,7 +184,7 @@ class TestWriteTool:
 
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
         with _installed_runtime_services(archive_root):
@@ -182,7 +198,7 @@ class TestWriteTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
         with _installed_runtime_services(archive_root):
@@ -196,7 +212,7 @@ class TestWriteTool:
 
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
         with _installed_runtime_services(archive_root):
@@ -210,7 +226,7 @@ class TestWriteTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
         with _installed_runtime_services(archive_root):
@@ -240,7 +256,7 @@ class TestJudgeTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="review"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
         judge_fn = server._tool_manager._tools["judge"].fn
 
         with _installed_runtime_services(archive_root):
@@ -276,7 +292,7 @@ class TestJudgeTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="review"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
         judge_fn = server._tool_manager._tools["judge"].fn
 
         with _installed_runtime_services(archive_root):
@@ -292,7 +308,7 @@ class TestRunTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
         run_fn = server._tool_manager._tools["run"].fn
 
@@ -317,7 +333,7 @@ class TestRunTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         run_fn = server._tool_manager._tools["run"].fn
 
         with _installed_runtime_services(archive_root):
@@ -331,7 +347,7 @@ class TestRunTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="write"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         run_fn = server._tool_manager._tools["run"].fn
 
         with _installed_runtime_services(archive_root):
@@ -347,7 +363,7 @@ class TestMaintenanceTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="admin"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
         with _installed_runtime_services(archive_root):
@@ -362,7 +378,7 @@ class TestMaintenanceTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="admin"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
         with _installed_runtime_services(archive_root):
@@ -376,7 +392,7 @@ class TestMaintenanceTool:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="admin"))
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
         with _installed_runtime_services(archive_root):
@@ -394,7 +410,7 @@ class TestQuerySessionsProjection:
 
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="read"))
+        server = cast(MCPServerUnderTest, build_server())
         query_fn = server._tool_manager._tools["query"].fn
 
         with _installed_runtime_services(archive_root):
@@ -413,7 +429,7 @@ class TestQuerySessionsProjection:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="read"))
+        server = cast(MCPServerUnderTest, build_server())
         query_fn = server._tool_manager._tools["query"].fn
 
         with _installed_runtime_services(archive_root):
@@ -428,7 +444,7 @@ class TestQuerySessionsProjection:
 
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(role="read"))
+        server = cast(MCPServerUnderTest, build_server())
         query_fn = server._tool_manager._tools["query"].fn
 
         with _installed_runtime_services(archive_root):

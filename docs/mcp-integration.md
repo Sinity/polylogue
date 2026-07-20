@@ -10,10 +10,14 @@ search past sessions semantically and retrieve archived sessions directly.
 ## Starting the Server
 
 ```bash
-polylogue-mcp --role read
+polylogue-mcp
 ```
 
-Runs in stdio mode (standard for MCP). Logs to stderr.
+Runs in stdio mode (standard for MCP), read-only by default. Logs to stderr. Write, judge,
+and maintenance capability are independent config opt-ins (`polylogue.toml` `[mcp]` keys or
+`POLYLOGUE_MCP_WRITE_ENABLED`/`POLYLOGUE_MCP_JUDGE_ENABLED`/
+`POLYLOGUE_MCP_MAINTENANCE_ENABLED`) — see `docs/mcp-reference.md#configuration`. There is no
+`--role` flag.
 
 ## Claude Code Configuration
 
@@ -23,8 +27,7 @@ Add to `~/.claude/settings.json`:
 {
   "mcpServers": {
     "polylogue": {
-      "command": "polylogue-mcp",
-      "args": ["--role", "read"]
+      "command": "polylogue-mcp"
     }
   }
 }
@@ -38,8 +41,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "polylogue": {
-      "command": "polylogue-mcp",
-      "args": ["--role", "read"]
+      "command": "polylogue-mcp"
     }
   }
 }

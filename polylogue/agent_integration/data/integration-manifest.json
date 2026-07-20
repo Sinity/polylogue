@@ -22,12 +22,16 @@
     "context",
     "status"
   ],
-  "default_role": "read",
-  "description": "Static six-tool target manifest. `polylogue agent manifest --role ROLE` also reports current declaration reconciliation.",
+  "description": "Static six-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` also reports current declaration reconciliation.",
   "manual_resources": [
     "polylogue://agent/manual",
     "polylogue://agent/reference",
-    "polylogue://agent/manifest/{role}"
+    "polylogue://agent/manifest"
+  ],
+  "mcp_capability_flags": [
+    "write",
+    "judge",
+    "maintenance"
   ],
   "privileged_tools": [
     "write",
@@ -60,18 +64,6 @@
     "polylogue://result-set/{id}",
     "polylogue://recall-pack/{id}",
     "polylogue://capabilities/query"
-  ],
-  "role_order": {
-    "admin": 3,
-    "read": 0,
-    "review": 2,
-    "write": 1
-  },
-  "roles": [
-    "read",
-    "write",
-    "review",
-    "admin"
   ],
   "schema_status": "cutover-parameterized",
   "schema_version": 2,

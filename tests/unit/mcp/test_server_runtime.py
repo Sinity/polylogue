@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from polylogue.mcp import server as server_module
+from polylogue.mcp.declarations.models import MCPCapabilities
 
 
 def test_build_server_registers_tools_resources_and_prompts() -> None:
@@ -26,7 +27,7 @@ def test_build_server_registers_tools_resources_and_prompts() -> None:
 
     assert built is fake_mcp
     fake_fast_mcp.assert_called_once()
-    registrar_type.assert_called_once_with(fake_mcp, role="read")
+    registrar_type.assert_called_once_with(fake_mcp, capabilities=MCPCapabilities())
     hooks = mock_tools.call_args.args[1]
     assert mock_tools.call_args.args[0] is declared_mcp
     assert callable(hooks.json_payload)
@@ -50,7 +51,7 @@ def test_get_server_caches_instance_and_updates_runtime_services() -> None:
             assert server_module._get_server() == "server"
 
         mock_set_services.assert_called_once_with(services)
-        mock_build.assert_called_once_with(role="read", services=services)
+        mock_build.assert_called_once_with(capabilities=MCPCapabilities(), services=services)
     finally:
         server_module._server_instance = original
 
@@ -59,7 +60,7 @@ def test_get_server_singleton_is_race_safe_under_concurrent_first_access() -> No
     """Concurrent first access must build exactly one FastMCP server (polylogue-xikl.2).
 
     ``_get_server()``'s check-then-set on ``_server_instance``/
-    ``_server_instance_role`` used to be unguarded. The daemon's real
+    ``_server_instance_capabilities`` used to be unguarded. The daemon's real
     ``archive_query_executor`` already dispatches concurrent request
     handlers onto real OS threads today, so this is a live hazard, not a
     hypothetical one. A short delay in ``build_server`` forces the
@@ -68,17 +69,17 @@ def test_get_server_singleton_is_race_safe_under_concurrent_first_access() -> No
     check-then-build section, exactly one thread ever builds a server.
     """
     original_instance = server_module._server_instance
-    original_role = server_module._server_instance_role
+    original_capabilities = server_module._server_instance_capabilities
     server_module._server_instance = None
-    server_module._server_instance_role = None
+    server_module._server_instance_capabilities = None
 
     build_calls: list[object] = []
     build_calls_lock = threading.Lock()
 
-    def delayed_build(*, role: str, services: object | None = None) -> object:
+    def delayed_build(*, capabilities: MCPCapabilities, services: object | None = None) -> object:
         del services
         time.sleep(0.02)
-        built = SimpleNamespace(role=role)
+        built = SimpleNamespace(capabilities=capabilities)
         with build_calls_lock:
             build_calls.append(built)
         return built
@@ -104,7 +105,7 @@ def test_get_server_singleton_is_race_safe_under_concurrent_first_access() -> No
         assert len({id(server) for server in servers}) == 1
     finally:
         server_module._server_instance = original_instance
-        server_module._server_instance_role = original_role
+        server_module._server_instance_capabilities = original_capabilities
 
 
 def test_serve_stdio_runs_cached_server() -> None:
@@ -113,5 +114,5 @@ def test_serve_stdio_runs_cached_server() -> None:
     with patch("polylogue.mcp.server._get_server", return_value=server) as mock_get_server:
         server_module.serve_stdio(services="services")
 
-    mock_get_server.assert_called_once_with("services", role="read")
+    mock_get_server.assert_called_once_with("services", capabilities=MCPCapabilities())
     server.run.assert_called_once_with(transport="stdio")

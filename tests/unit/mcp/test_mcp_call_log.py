@@ -101,7 +101,7 @@ def test_registered_tools_persist_success_and_typed_failure_through_daemon(
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
         _set_runtime_services(None)
         try:
-            server = cast(MCPServerUnderTest, build_server(role="read"))
+            server = cast(MCPServerUnderTest, build_server())
 
             status = invoke_surface(server._tool_manager._tools["status"].fn, scope="archive")
             missing = invoke_surface(
@@ -142,7 +142,7 @@ def test_session_tools_and_successor_preamble_are_queryable_by_session(
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
         _set_runtime_services(None)
         try:
-            server = cast(MCPServerUnderTest, build_server(role="read"))
+            server = cast(MCPServerUnderTest, build_server())
             tools = server._tool_manager._tools
             invoke_surface(tools["get"].fn, ref=f"session:{first_session}")
             invoke_surface(tools["read"].fn, ref=f"session:{second_session}")
@@ -164,7 +164,7 @@ def test_readiness_surface_exposes_outbox_pressure(
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
         _set_runtime_services(None)
         try:
-            server = cast(MCPServerUnderTest, build_server(role="read"))
+            server = cast(MCPServerUnderTest, build_server())
             payload = json.loads(invoke_surface(server._tool_manager._tools["status"].fn, scope="operation"))
             delivery = payload["operation"]["mcp_call_delivery"]
             assert {

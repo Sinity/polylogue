@@ -21,9 +21,10 @@ DEFAULT_DOC_PATH = Path("docs/mcp-reference.md")
 
 
 def _tool_names() -> tuple[str, ...]:
+    from polylogue.mcp.declarations.models import MCPCapabilities
     from polylogue.mcp.declarations.registry import declared_tool_names
 
-    return tuple(sorted(declared_tool_names("admin")))
+    return tuple(sorted(declared_tool_names(MCPCapabilities(write=True, judge=True, maintenance=True))))
 
 
 def build_tool_index_section(tool_names: tuple[str, ...] | None = None) -> str:

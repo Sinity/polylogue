@@ -11,7 +11,7 @@ from pathlib import Path
 
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
-from polylogue.mcp.declarations.models import MCPRole, MCPTransactionDeclaration
+from polylogue.mcp.declarations.models import MCPTransactionDeclaration
 from polylogue.mcp.declarations.registry import (
     MCP_TOOL_DECLARATIONS,
     PRIVILEGED_ALGEBRA,
@@ -28,7 +28,7 @@ def _transaction_payload(item: MCPTransactionDeclaration) -> dict[str, object]:
     return {
         "name": item.name,
         "verb": item.verb.value,
-        "minimum_role": item.minimum_role,
+        "required_capability": item.required_capability or "read",
         "object_kinds": list(item.object_kinds),
         "result_semantics": [value.value for value in item.result_semantics],
         "purpose": item.purpose,
@@ -39,7 +39,9 @@ def _transaction_payload(item: MCPTransactionDeclaration) -> dict[str, object]:
 def build_equivalence_payload() -> dict[str, object]:
     """Return the stable generated map consumed by drift checks and operators."""
 
-    role_counts = Counter(declaration.minimum_role for declaration in MCP_TOOL_DECLARATIONS)
+    capability_counts: Counter[str] = Counter(
+        declaration.required_capability or "read" for declaration in MCP_TOOL_DECLARATIONS
+    )
     read_retirements = sorted(
         declaration.name for declaration in MCP_TOOL_DECLARATIONS if declaration.retirement_owner == "polylogue-t46.8.2"
     )
@@ -53,7 +55,7 @@ def build_equivalence_payload() -> dict[str, object]:
         declaration.name for declaration in MCP_TOOL_DECLARATIONS if declaration.python_parity.binding is None
     )
 
-    role_order: tuple[MCPRole, ...] = ("read", "write", "review", "admin")
+    capability_order: tuple[str, ...] = ("read", "write", "judge", "maintenance")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -71,7 +73,9 @@ def build_equivalence_payload() -> dict[str, object]:
         },
         "compatibility_surface": {
             "tool_count": len(MCP_TOOL_DECLARATIONS),
-            "minimum_role_counts": {role: role_counts.get(role, 0) for role in role_order},
+            "required_capability_counts": {
+                capability: capability_counts.get(capability, 0) for capability in capability_order
+            },
             "python_binding_count": len(bound_python),
             "governed_python_absence_count": len(governed_absences),
             "tool_names": [declaration.name for declaration in MCP_TOOL_DECLARATIONS],

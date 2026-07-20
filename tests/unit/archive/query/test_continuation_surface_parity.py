@@ -101,7 +101,7 @@ def _request_json(base_url: str, path: str) -> tuple[int, object]:
 def mcp_server() -> MCPServerUnderTest:
     from polylogue.mcp.server import build_server
 
-    return cast(MCPServerUnderTest, build_server(role="read"))
+    return cast(MCPServerUnderTest, build_server())
 
 
 async def test_continuation_pages_match_identically_across_http_api_mcp(

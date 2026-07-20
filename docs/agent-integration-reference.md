@@ -5,13 +5,13 @@ This is the exhaustive companion to the standing manual. The standing manual rem
 
 ## Adjudication boundary
 
-The architecture is beads-06’s `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, role-scoped manifest, CLI, Home Manager module, and verification lanes. Its 103-tool-era content is replaced rather than forked; the current snapshot has since grown to 104 compatibility handlers. Current t46.8 declarations remain in flight, so `read` absorbs source row `graph` and `operate` aliases source row `maintenance`. No compatibility handler is deleted by this package.
+The architecture is beads-06’s `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. Its 103-tool-era content is replaced rather than forked; the current snapshot has since grown to 104 compatibility handlers. Current t46.8 declarations remain in flight, so `read` absorbs source row `graph` and `operate` aliases source row `maintenance`. No compatibility handler is deleted by this package.
 
 ## Target transaction declarations
 
 ### `query`
 
-- role: `read`
+- required capability: `read`
 - source declarations: `query`
 - schema status: `cutover-parameterized`
 - result semantics: `exhaustive_page`, `top_k`, `sample`, `aggregate`
@@ -60,7 +60,7 @@ A session result set suitable for a declared cost-rollup projection; coverage st
 
 ### `read`
 
-- role: `read`
+- required capability: `read`
 - source declarations: `read`
 - schema status: `cutover-parameterized`
 - result semantics: `single_object`, `exhaustive_page`, `bounded_context`
@@ -94,7 +94,7 @@ A bounded chronicle page retaining message/block evidence refs and the same resu
 
 ### `get`
 
-- role: `read`
+- required capability: `read`
 - source declarations: `get`
 - schema status: `cutover-parameterized`
 - result semantics: `single_object`
@@ -125,7 +125,7 @@ One object with its canonical ref and provenance; absence is explicit rather tha
 
 ### `explain`
 
-- role: `read`
+- required capability: `read`
 - source declarations: `explain`
 - schema status: `cutover-parameterized`
 - result semantics: `single_object`
@@ -157,7 +157,7 @@ Parser-owned AST/lowering metadata, selected unit, result semantics, and correct
 
 ### `context`
 
-- role: `read`
+- required capability: `read`
 - source declarations: `context`
 - schema status: `cutover-parameterized`
 - result semantics: `bounded_context`
@@ -191,7 +191,7 @@ A bounded context snapshot plus receipt describing selected refs, omissions, pol
 
 ### `status`
 
-- role: `read`
+- required capability: `read`
 - source declarations: `status`
 - schema status: `cutover-parameterized`
 - result semantics: `single_object`, `aggregate`
@@ -228,7 +228,7 @@ Archive identity, selected source coverage, freshness/readiness state, and expli
 
 ### `write`
 
-- role: `write`
+- required capability: `write`
 - source declarations: `write`
 - schema status: `cutover-parameterized`
 - result semantics: `mutation`
@@ -264,7 +264,7 @@ A mutation receipt with actor, target, effect identity, and resulting generation
 
 ### `judge`
 
-- role: `review`
+- required capability: `judge`
 - source declarations: `judge`
 - schema status: `cutover-parameterized`
 - result semantics: `mutation`
@@ -298,13 +298,13 @@ A judgment receipt that leaves candidate history intact and reports conflicts ex
 
 ### `run`
 
-- role: `write`
+- required capability: `write`
 - source declarations: `run`
 - schema status: `cutover-parameterized`
 - result semantics: `exhaustive_page`, `mutation`
 - continuation: `same-tool continuation-only request`
 - emits result ref: `yes`
-- purpose: Execute a saved query or governed recipe ref; any nested mutation inherits its own role and confirmation policy.
+- purpose: Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.
 
 Arguments:
 
@@ -333,7 +333,7 @@ A result_ref and receipt for the declared recipe; mutation authority is never ga
 
 ### `operate`
 
-- role: `admin`
+- required capability: `maintenance`
 - source declarations: `maintenance`
 - schema status: `cutover-parameterized`
 - result semantics: `maintenance`
@@ -721,25 +721,25 @@ Prompts: `cost_of`.
 
 ### Stable target resources
 
-- `polylogue://session/{id}` — objects session; role `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://message/{id}` — objects message; role `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://block/{id}` — objects block; role `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://action/{id}` — objects action; role `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://file/{id}` — objects file; role `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://query/{id}` — objects query; role `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://result-set/{id}` — objects result-set; role `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://recall-pack/{id}` — objects recall-pack; role `read`; owner `polylogue-t46.8.3`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://capabilities/query` — objects capability, query, result-set; role `read`; owner `polylogue-z9gh.3`; executable query vocabulary and recovery guidance; no mutation authority.
+- `polylogue://session/{id}` — objects session; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://message/{id}` — objects message; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://block/{id}` — objects block; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://action/{id}` — objects action; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://file/{id}` — objects file; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://query/{id}` — objects query; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://result-set/{id}` — objects result-set; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://recall-pack/{id}` — objects recall-pack; required capability `read`; owner `polylogue-t46.8.3`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://capabilities/query` — objects capability, query, result-set; required capability `read`; owner `polylogue-z9gh.3`; executable query vocabulary and recovery guidance; no mutation authority.
 
 ### Workflow prompts
 
-- `resume_context` — workflow `resume`; role `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `postmortem_last` — workflow `postmortem`; role `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `decisions_about` — workflow `decision-recovery`; role `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `unacknowledged_failures` — workflow `failure-recovery`; role `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `sessions_touching_file` — workflow `file-touch`; role `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `cost_of` — workflow `cost-analysis`; role `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `agent_coordination_brief` — workflow `coordination`; role `read`; mutation authority `none`; owner `polylogue-t46.8.3`.
+- `resume_context` — workflow `resume`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
+- `postmortem_last` — workflow `postmortem`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
+- `decisions_about` — workflow `decision-recovery`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
+- `unacknowledged_failures` — workflow `failure-recovery`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
+- `sessions_touching_file` — workflow `file-touch`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
+- `cost_of` — workflow `cost-analysis`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
+- `agent_coordination_brief` — workflow `coordination`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.3`.
 
 ## Source origins
 
@@ -762,7 +762,7 @@ Prompts: `cost_of`.
 - MCP config: Merge only the named polylogue entry in the native Claude MCP configuration.
 - standing manual: Install a SessionStart hook whose additionalContext is the complete generated standing manual.
 - reference: Install the generated deep reference as an owned local file.
-- unchanged: Hook ownership, idempotent merge, role/env selection, drift detection, and lossless uninstall are unchanged.
+- unchanged: Hook ownership, idempotent merge, capability/env selection, drift detection, and lossless uninstall are unchanged.
 - six-tool delta: Only the generated content, target manifest, six-tool vocabulary, continuation recipe, and cache digest change.
 
 ### codex
@@ -787,13 +787,13 @@ Prompts: `cost_of`.
 - standing manual: Install the complete generated manual inside the owned productivity/polylogue SKILL.md.
 - reference: Include the generated deep reference in the owned skill directory.
 - unchanged: YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged.
-- six-tool delta: The skill body, recipes, role ladder, and cache digest are regenerated for the six-tool surface.
+- six-tool delta: The skill body, recipes, capability opt-ins, and cache digest are regenerated for the six-tool surface.
 
 ## Packaging and ownership invariants
 
-The wheel/sdist package contains the generated text and JSON assets under `polylogue.agent_integration.data`. Installation records content version, aggregate digest, client, role, archive/config identity, and exact native operations in a self-digested state file. Upgrade rewrites only previously owned values or marked blocks. Uninstall removes only unchanged owned operations; operator drift is retained and reported. Symlinked configs and conflicting operator-owned Polylogue entries fail closed. Secrets are never written into generated assets.
+The wheel/sdist package contains the generated text and JSON assets under `polylogue.agent_integration.data`. Installation records content version, aggregate digest, client, capabilities, archive/config identity, and exact native operations in a self-digested state file. Upgrade rewrites only previously owned values or marked blocks. Uninstall removes only unchanged owned operations; operator drift is retained and reported. Symlinked configs and conflicting operator-owned Polylogue entries fail closed. Secrets are never written into generated assets.
 
-The Home Manager module remains separate from daemon lifecycle. Enabling agent integration does not start ingestion, grant a higher MCP role, or weaken operation confirmation. `guidance=full` remains the behaviorally complete default; `mcp-only` and `off` are explicit opt-downs.
+The Home Manager module remains separate from daemon lifecycle. Enabling agent integration does not start ingestion, grant additional MCP capability, or weaken operation confirmation. `guidance=full` remains the behaviorally complete default; `mcp-only` and `off` are explicit opt-downs.
 
 ## Post-cutover regeneration checklist
 
@@ -802,7 +802,7 @@ The Home Manager module remains separate from daemon lifecycle. Enabling agent i
 3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.
 4. Run `devtools verify agent-integration --lane live-fastmcp-signatures --json`; use its exact signature diff to update the parameterized contracts.
 5. Only after that lane reports exact signature parity, set `TARGET_SCHEMA_STATUS` in `polylogue/agent_integration/spec.py` to `live-verified` and run `devtools render agent-manual`; commit all packaged assets and docs mirrors.
-6. Run `devtools verify agent-integration --require-live`; it must see the role-scoped target tools, the live schema marker, and exact FastMCP signature parity.
+6. Run `devtools verify agent-integration --require-live`; it must see the capability-scoped target tools, the live schema marker, and exact FastMCP signature parity.
 7. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.
 8. Run clean-home Claude Code, Codex, Gemini, and Hermes installation smoke tests and one cold-agent trial per continuity recipe.
 

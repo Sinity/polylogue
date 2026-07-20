@@ -190,6 +190,49 @@ def _thaw_config_value(value: object) -> object:
     return deepcopy(value)
 
 
+_TRUE_TOKENS = ("1", "true", "yes", "on")
+_FALSE_TOKENS = ("0", "false", "no", "off")
+
+
+def _parse_bool_token(value: str) -> bool | None:
+    """Parse a canonical boolean string token, or ``None`` if unrecognized."""
+    lowered = value.strip().lower()
+    if lowered in _TRUE_TOKENS:
+        return True
+    if lowered in _FALSE_TOKENS:
+        return False
+    return None
+
+
+def _require_bool_config_value(data: Mapping[str, object], key: str) -> bool:
+    """Strictly resolve a capability-boundary boolean config value.
+
+    Fails closed rather than falling back to Python truthiness on an
+    unrecognized type or string: ``bool("flase")`` is ``True``, which would
+    silently flip a capability boundary open on a typo (degrade-loudly
+    doctrine -- see ``mcp_write_enabled``/``mcp_judge_enabled``/
+    ``mcp_maintenance_enabled``). Accepts a genuine ``bool`` (the normal
+    TOML/default-layer shape and the shape ``_coerce_env_value`` produces for
+    environment overrides) or one of the canonical 1/true/yes/on /
+    0/false/no/off string tokens (a quoted TOML value, or a value set
+    directly on a hand-built ``PolylogueConfig``). Anything else raises.
+    """
+    value = data.get(key)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, str):
+        parsed = _parse_bool_token(value)
+        if parsed is not None:
+            return parsed
+        raise ConfigError(
+            f"{key}={value!r} is not a recognized boolean value; "
+            "use one of 1/true/yes/on or 0/false/no/off (case-insensitive)."
+        )
+    raise ConfigError(f"{key}={value!r} ({type(value).__name__}) is not a valid boolean config value.")
+
+
 @dataclass(frozen=True, slots=True)
 class PolylogueConfig:
     """Typed configuration loaded from TOML with env/CLI overrides.
@@ -561,6 +604,45 @@ class PolylogueConfig:
         ``polylogue.daemon.parse_prefetch.DaemonParseStage``.
         """
         return bool(self._data.get("daemon_parse_stage_split"))
+
+    @property
+    def mcp_write_enabled(self) -> bool:
+        """Explicit opt-in for the MCP ``write``/``run`` dispatchers.
+
+        The MCP server is read-only by default (polylogue-800m): there is no
+        role ladder, only independent capability flags. Off by default; set
+        TOML ``[mcp] write_enabled = true`` or
+        ``POLYLOGUE_MCP_WRITE_ENABLED=1`` to register the mutation
+        dispatchers. Fails closed on an unrecognized value (raises
+        ``ConfigError``) rather than truthiness-coercing a typo into enabled.
+        """
+        return _require_bool_config_value(self._data, "mcp_write_enabled")
+
+    @property
+    def mcp_judge_enabled(self) -> bool:
+        """Explicit opt-in for the MCP ``judge`` dispatcher.
+
+        Independent of ``mcp_write_enabled`` (polylogue-800m) — judging
+        assertion candidates does not require the write dispatcher. Off by
+        default; set TOML ``[mcp] judge_enabled = true`` or
+        ``POLYLOGUE_MCP_JUDGE_ENABLED=1``. Fails closed on an unrecognized
+        value (raises ``ConfigError``) rather than truthiness-coercing a
+        typo into enabled.
+        """
+        return _require_bool_config_value(self._data, "mcp_judge_enabled")
+
+    @property
+    def mcp_maintenance_enabled(self) -> bool:
+        """Explicit opt-in for the MCP ``maintenance`` dispatcher.
+
+        Independent of ``mcp_write_enabled``/``mcp_judge_enabled``
+        (polylogue-800m). Off by default; set TOML
+        ``[mcp] maintenance_enabled = true`` or
+        ``POLYLOGUE_MCP_MAINTENANCE_ENABLED=1``. Fails closed on an
+        unrecognized value (raises ``ConfigError``) rather than
+        truthiness-coercing a typo into enabled.
+        """
+        return _require_bool_config_value(self._data, "mcp_maintenance_enabled")
 
     @property
     def daemon_bulk_rebuild_routing(self) -> bool:
@@ -1145,6 +1227,42 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         toml_kind="array-table",
     ),
     ConfigInventoryEntry(
+        "mcp_write_enabled",
+        toml_path="mcp.write_enabled",
+        env_var="POLYLOGUE_MCP_WRITE_ENABLED",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description=(
+            "Explicit opt-in (polylogue-800m) for the MCP server's write/run "
+            "dispatchers. Off by default: the server is read-only unless "
+            "this is set. No role ladder -- independent of judge/maintenance."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "mcp_judge_enabled",
+        toml_path="mcp.judge_enabled",
+        env_var="POLYLOGUE_MCP_JUDGE_ENABLED",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description=(
+            "Explicit opt-in (polylogue-800m) for the MCP server's judge "
+            "dispatcher (assertion-candidate judgment). Off by default; "
+            "independent of write/maintenance."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "mcp_maintenance_enabled",
+        toml_path="mcp.maintenance_enabled",
+        env_var="POLYLOGUE_MCP_MAINTENANCE_ENABLED",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description=(
+            "Explicit opt-in (polylogue-800m) for the MCP server's "
+            "maintenance dispatcher. Off by default; independent of "
+            "write/judge."
+        ),
+    ),
+    ConfigInventoryEntry(
         "daemon_parse_stage_split",
         toml_path="daemon.raw_materialization.parse_stage_split",
         env_var="POLYLOGUE_DAEMON_PARSE_STAGE_SPLIT",
@@ -1209,6 +1327,9 @@ _BOOL_CONFIG_KEYS = frozenset(
         "observability_enabled",
         "daemon_parse_stage_split",
         "daemon_bulk_rebuild_routing",
+        "mcp_write_enabled",
+        "mcp_judge_enabled",
+        "mcp_maintenance_enabled",
     }
 )
 
@@ -1407,6 +1528,9 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "subscription_plans": (),
         "daemon_parse_stage_split": False,
         "daemon_bulk_rebuild_routing": False,
+        "mcp_write_enabled": False,
+        "mcp_judge_enabled": False,
+        "mcp_maintenance_enabled": False,
     }
 
 
@@ -1577,15 +1701,25 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             cfg[legacy_key] = toml_data[legacy_key]
 
 
-def _coerce_env_value(cfg_key: str, value: str) -> object:
-    """Coerce environment values according to the config inventory key type."""
+def _coerce_env_value(cfg_key: str, env_var: str, value: str) -> object:
+    """Coerce environment values according to the config inventory key type.
+
+    Boolean keys fail closed, not open (degrade-loudly doctrine): a value
+    that is not a recognized true/false token raises a :class:`ConfigError`
+    naming the offending env var and value, rather than silently passing the
+    raw string through -- ``bool("flase")`` is ``True``, which would flip a
+    capability boundary (e.g. ``POLYLOGUE_MCP_WRITE_ENABLED``) open on a typo.
+    This applies uniformly to every ``_BOOL_CONFIG_KEYS`` entry, not just the
+    MCP capability flags, so no boolean config key can silently fail open.
+    """
     if cfg_key in _BOOL_CONFIG_KEYS:
-        lowered = value.strip().lower()
-        if lowered in ("1", "true", "yes", "on"):
-            return True
-        if lowered in ("0", "false", "no", "off"):
-            return False
-        return value
+        parsed = _parse_bool_token(value)
+        if parsed is not None:
+            return parsed
+        raise ConfigError(
+            f"{env_var}={value!r} is not a recognized boolean value for {cfg_key!r}; "
+            "use one of 1/true/yes/on or 0/false/no/off (case-insensitive)."
+        )
     if cfg_key in _INT_CONFIG_KEYS:
         try:
             return int(value)
@@ -1605,7 +1739,7 @@ def _apply_env_overrides(cfg: dict[str, object], environment: Mapping[str, str])
         value = environment.get(env_var)
         if value is None:
             continue
-        coerced = _coerce_env_value(cfg_key, value)
+        coerced = _coerce_env_value(cfg_key, env_var, value)
         if coerced is _MISSING:
             continue
         cfg[cfg_key] = coerced

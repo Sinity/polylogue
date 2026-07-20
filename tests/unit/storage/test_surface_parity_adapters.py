@@ -170,10 +170,11 @@ class _MCPSurface:
         from polylogue.mcp.server import build_server
         from polylogue.mcp.server_support import _set_runtime_services
         from polylogue.services import build_runtime_services
+        from tests.infra.mcp import ALL_CAPABILITIES
 
         self._services = build_runtime_services(db_path=db_path)
         _set_runtime_services(self._services)
-        self._server = build_server(role="admin")
+        self._server = build_server(capabilities=ALL_CAPABILITIES)
 
     async def ids(self, case: _Case) -> tuple[str, ...]:
         if case.search is not None:

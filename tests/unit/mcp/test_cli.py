@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -8,26 +9,41 @@ import tomllib
 from click.testing import CliRunner
 
 from polylogue.mcp.cli import main
+from polylogue.mcp.declarations.models import MCPCapabilities
 
 
-def test_polylogue_mcp_runs_stdio_server_with_default_role() -> None:
+def _config_stub(*, write: bool = False, judge: bool = False, maintenance: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(mcp_write_enabled=write, mcp_judge_enabled=judge, mcp_maintenance_enabled=maintenance)
+
+
+def test_polylogue_mcp_runs_stdio_server_read_only_by_default() -> None:
     runner = CliRunner()
 
-    with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
+    with (
+        patch("polylogue.mcp.server.serve_stdio") as mock_serve,
+        patch("polylogue.config.load_polylogue_config", return_value=_config_stub()),
+    ):
         result = runner.invoke(main, [])
 
     assert result.exit_code == 0
-    mock_serve.assert_called_once_with(role="read")
+    mock_serve.assert_called_once_with(capabilities=MCPCapabilities())
 
 
-def test_polylogue_mcp_accepts_role() -> None:
+def test_polylogue_mcp_resolves_capabilities_from_config_independently() -> None:
+    """No ladder (polylogue-800m): write/judge/maintenance are independent flags."""
     runner = CliRunner()
 
-    with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
-        result = runner.invoke(main, ["--role", "admin"])
+    with (
+        patch("polylogue.mcp.server.serve_stdio") as mock_serve,
+        patch(
+            "polylogue.config.load_polylogue_config",
+            return_value=_config_stub(write=True, judge=False, maintenance=True),
+        ),
+    ):
+        result = runner.invoke(main, [])
 
     assert result.exit_code == 0
-    mock_serve.assert_called_once_with(role="admin")
+    mock_serve.assert_called_once_with(capabilities=MCPCapabilities(write=True, judge=False, maintenance=True))
 
 
 def test_polylogue_mcp_handles_missing_dependency() -> None:
@@ -47,13 +63,14 @@ def test_polylogue_mcp_handles_missing_dependency() -> None:
     assert "Install the base polylogue package" in result.stderr
 
 
-def test_polylogue_mcp_rejects_unknown_role() -> None:
+def test_polylogue_mcp_has_no_role_flag() -> None:
+    """polylogue-800m: the role ladder is retired; there is no --role flag."""
     runner = CliRunner()
 
-    result = runner.invoke(main, ["--role", "owner"])
+    result = runner.invoke(main, ["--role", "admin"])
 
     assert result.exit_code != 0
-    assert "Invalid value" in result.output
+    assert "no such option" in result.output.lower()
 
 
 def test_polylogue_mcp_console_script_is_declared() -> None:

@@ -240,25 +240,27 @@ class TestCrossSurfaceParity:
 class TestMaintenanceMCPTools:
     """The MCP tools register and produce the shared envelope."""
 
-    def test_maintenance_tools_registered_on_admin_server(self) -> None:
+    def test_maintenance_tools_registered_when_capability_enabled(self) -> None:
+        from polylogue.mcp.declarations.models import MCPCapabilities
         from polylogue.mcp.server import build_server
 
-        server = build_server(role="admin")
+        server = build_server(capabilities=MCPCapabilities(maintenance=True))
         tools = server._tool_manager._tools
         assert "maintenance" in tools
 
-    def test_maintenance_tools_absent_from_read_server(self) -> None:
+    def test_maintenance_tools_absent_from_read_only_server(self) -> None:
         from polylogue.mcp.server import build_server
 
-        server = build_server(role="read")
+        server = build_server()
         tools = server._tool_manager._tools
         assert "maintenance" not in tools
 
     def test_maintenance_preview_returns_envelope(self) -> None:
+        from polylogue.mcp.declarations.models import MCPCapabilities
         from polylogue.mcp.server import build_server
 
         operation = _example_operation()
-        server = build_server(role="admin")
+        server = build_server(capabilities=MCPCapabilities(maintenance=True))
         fn = server._tool_manager._tools["maintenance"].fn
 
         with _patched_preview(operation):

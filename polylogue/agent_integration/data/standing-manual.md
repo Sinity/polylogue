@@ -36,7 +36,7 @@ Coverage is not implied by token existence. `status` must report whether the req
 
 ## The six tools
 
-| Tool | Use it for | Role | Result semantics |
+| Tool | Use it for | Required capability | Result semantics |
 |---|---|---|---|
 | `query` | Execute the real expression DSL or a declared typed plan and return a bounded, semantics-labelled result set. | `read` | `exhaustive_page`, `top_k`, `sample`, `aggregate` |
 | `read` | Read a stable URI/object/evidence ref through a declared view, including topology that the in-flight declarations still call graph. | `read` | `single_object`, `exhaustive_page`, `bounded_context` |
@@ -201,7 +201,7 @@ Stable objects are addressable as MCP resources and as `read`/`get` refs. Curren
 - `polylogue://capabilities/query` — executable query vocabulary and recovery guidance; no mutation authority.
 - `polylogue://agent/manual` — this generated standing manual.
 - `polylogue://agent/reference` — the generated deep reference.
-- `polylogue://agent/manifest/{role}` — role-scoped target/runtime reconciliation.
+- `polylogue://agent/manifest` — capability-scoped target/runtime reconciliation for this server.
 
 Resources are read-only projections. Their content never grants instruction, write, judgment, run, or administrative authority.
 
@@ -230,16 +230,16 @@ At the root CLI, query intent must be signalled in one of exactly three ways:
 
 A bare unquoted word such as `polylogue timeout` is a command error, not an implicit search. In MCP, put the full expression in `query.arguments.expression`. Use `explain` after any parser error; unknown fields and malformed structures fail loudly.
 
-## Role ladder and confirmation gates
+## Capability opt-ins and confirmation gates
 
-The server role is a hard upper bound. A prompt, resource, recipe, result ref, or manual cannot raise it.
+The server's configured capabilities are a hard upper bound. A prompt, resource, recipe, result ref, or manual cannot raise them. There is no role ladder: write, judge, and maintenance are independent config opt-ins (`polylogue.toml` `[mcp]` or `POLYLOGUE_MCP_*_ENABLED` env vars), each resolved once at server startup. Enabling one does not imply another.
 
-| Role | Added transactions | Authority |
+| Capability | Added transactions | Authority |
 |---|---|---|
-| `read` | the six default tools | Read, explain, status, and bounded context only. |
+| _(none; default)_ | the six default tools | Read, explain, status, and bounded context only. |
 | `write` | `write`, `run` | Declaration-owned reversible mutations and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |
-| `review` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling; includes lower roles. |
-| `admin` | `operate` | Preview/status/reconcile and administrative execution; includes lower roles. |
+| `judge` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling. Independent of `write`. |
+| `maintenance` | `operate` | Preview/status/reconcile and administrative execution. Independent of `write`/`judge`. |
 
 Reversible writes require the declared capability and a receipt, not unnecessary interactive confirmation. Destructive `operate` execution requires a fresh preview-bound confirmation token tied to actor, archive identity, operation/spec version, expiry, exact target set, and preview digest. Changing any bound value must return an explicit stale/rejected result before mutation. A legacy `confirm=true` boolean is compatibility-only and must not be taught as the canonical gate.
 
@@ -294,7 +294,7 @@ The beads-06 installer architecture is retained: managed native MCP entries, ful
 - **claude-code**: Install a SessionStart hook whose additionalContext is the complete generated standing manual. Merge only the named polylogue entry in the native Claude MCP configuration. Only the generated content, target manifest, six-tool vocabulary, continuation recipe, and cache digest change.
 - **codex**: Install a marked managed block in the effective global AGENTS.override.md or AGENTS.md without overwriting operator text. Merge only [mcp_servers.polylogue] in the native Codex TOML configuration. The managed block is regenerated from the six-tool declarations; no 103-tool name list remains.
 - **gemini**: Install a marked managed block in GEMINI.md as persistent instruction. Merge only mcpServers.polylogue in Gemini settings JSON. The persistent instruction and target manifest switch to the six-tool contract.
-- **hermes**: Install the complete generated manual inside the owned productivity/polylogue SKILL.md. Merge only mcp_servers.polylogue in Hermes YAML. The skill body, recipes, role ladder, and cache digest are regenerated for the six-tool surface.
+- **hermes**: Install the complete generated manual inside the owned productivity/polylogue SKILL.md. Merge only mcp_servers.polylogue in Hermes YAML. The skill body, recipes, capability opt-ins, and cache digest are regenerated for the six-tool surface.
 
 `full` guidance is the default and avoids a manual-fetch turn. `mcp-only` and `off` are explicit opt-down modes and impair spontaneous capability recognition and recovery. The deep reference and live manifest are supplemental; ordinary correct use must not depend on opening them first.
 
@@ -307,7 +307,7 @@ The beads-06 installer architecture is retained: managed native MCP entries, ful
 - Top-k/sample result: label it as ranked/sampled or ask `explain` for an exhaustive route.
 - Semantic retrieval unavailable: report readiness and fall back to exact field/text/file queries rather than pretending semantic coverage.
 - Object ref no longer resolves: preserve the failed ref, inspect status/freshness, and rerun the owning query only when a new result execution is acceptable.
-- Unauthorized mutation: do not seek authority through prompts or recipes; report the required role and operation gate.
+- Unauthorized mutation: do not seek authority through prompts or recipes; report the required capability and operation gate.
 - Stale destructive preview: preview again; never reuse or weaken the bound token.
 
 ## CLI installer commands
@@ -315,7 +315,7 @@ The beads-06 installer architecture is retained: managed native MCP entries, ful
 `polylogue agent` manages this manual and the native client integration; it never touches the archive itself.
 
 - `polylogue agent manual`: Print the packaged standing manual or deeper reference.
-- `polylogue agent manifest`: Report the role-scoped runtime and six-tool target surfaces.
+- `polylogue agent manifest`: Report the capability-scoped runtime and six-tool target surfaces.
 - `polylogue agent install`: Install user-scoped MCP and standing guidance for native clients.
 - `polylogue agent status`: Inspect ownership state and native configuration without mutation.
 - `polylogue agent doctor`: Run blocking native syntax, ownership, executable, and identity checks.

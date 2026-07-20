@@ -1,4 +1,4 @@
-"""Role-scoped target/runtime manifest for agent integration."""
+"""Capability-scoped target/runtime manifest for agent integration."""
 
 from __future__ import annotations
 
@@ -8,41 +8,35 @@ from polylogue.agent_integration.assets import agent_asset_metadata
 from polylogue.agent_integration.spec import (
     CAPABILITY_FAMILIES,
     RECIPES,
-    ROLE_ORDER,
-    ROLES,
     TARGET_SCHEMA_STATUS,
     TOOL_CONTRACTS,
 )
-from polylogue.mcp.declarations import TARGET_PROMPTS, TARGET_RESOURCES, MCPRole, declared_tool_names
+from polylogue.mcp.declarations import TARGET_PROMPTS, TARGET_RESOURCES, MCPCapabilities, declared_tool_names
 from polylogue.version import POLYLOGUE_VERSION
 
 _MANUAL_RESOURCES = (
     "polylogue://agent/manual",
     "polylogue://agent/reference",
-    "polylogue://agent/manifest/{role}",
+    "polylogue://agent/manifest",
 )
 
 
-def target_tool_names(role: MCPRole = "read") -> tuple[str, ...]:
-    """Return target transaction names visible at ``role`` in stable order."""
+def target_tool_names(capabilities: MCPCapabilities = MCPCapabilities()) -> tuple[str, ...]:
+    """Return target transaction names visible under ``capabilities`` in stable order."""
 
-    if role not in ROLES:
-        raise ValueError(f"unknown MCP role: {role}")
-    return tuple(contract.name for contract in TOOL_CONTRACTS if ROLE_ORDER[role] >= ROLE_ORDER[contract.minimum_role])
+    return tuple(contract.name for contract in TOOL_CONTRACTS if capabilities.allows(contract.required_capability))
 
 
-def declared_runtime_tool_names(role: MCPRole = "read") -> tuple[str, ...]:
-    """Return the compatibility/runtime declaration names visible at ``role``."""
+def declared_runtime_tool_names(capabilities: MCPCapabilities = MCPCapabilities()) -> tuple[str, ...]:
+    """Return the compatibility/runtime declaration names visible under ``capabilities``."""
 
-    if role not in ROLES:
-        raise ValueError(f"unknown MCP role: {role}")
-    return tuple(sorted(declared_tool_names(role)))
+    return tuple(sorted(declared_tool_names(capabilities)))
 
 
-def target_tool_names_are_registered(role: MCPRole = "read") -> bool:
-    """Return whether the runtime declaration names equal the target role surface."""
+def target_tool_names_are_registered(capabilities: MCPCapabilities = MCPCapabilities()) -> bool:
+    """Return whether the runtime declaration names equal the target capability surface."""
 
-    return set(declared_runtime_tool_names(role)) == set(target_tool_names(role))
+    return set(declared_runtime_tool_names(capabilities)) == set(target_tool_names(capabilities))
 
 
 def target_contract_schemas_are_live_verified() -> bool:
@@ -53,7 +47,7 @@ def target_contract_schemas_are_live_verified() -> bool:
     )
 
 
-def target_surface_is_registered(role: MCPRole = "read") -> bool:
+def target_surface_is_registered(capabilities: MCPCapabilities = MCPCapabilities()) -> bool:
     """Return whether target names and generated schemas have completed cutover.
 
     Both gates are required so a names-only cutover cannot activate stale
@@ -61,11 +55,11 @@ def target_surface_is_registered(role: MCPRole = "read") -> bool:
     package for an apply-after-cutover deployment.
     """
 
-    return target_tool_names_are_registered(role) and target_contract_schemas_are_live_verified()
+    return target_tool_names_are_registered(capabilities) and target_contract_schemas_are_live_verified()
 
 
-def build_live_manifest(role: MCPRole = "read") -> dict[str, object]:
-    """Build an honest role-scoped manifest from executable declarations.
+def build_live_manifest(capabilities: MCPCapabilities = MCPCapabilities()) -> dict[str, object]:
+    """Build an honest capability-scoped manifest from executable declarations.
 
     The declaration registrar validates the actual FastMCP set against these
     names, so this remains dependency-light while preserving runtime authority.
@@ -73,21 +67,23 @@ def build_live_manifest(role: MCPRole = "read") -> dict[str, object]:
     the intended small target surface instead of claiming they are equivalent.
     """
 
-    if role not in ROLES:
-        raise ValueError(f"unknown MCP role: {role}")
-    runtime_tools = declared_runtime_tool_names(role)
-    target_tools = target_tool_names(role)
+    runtime_tools = declared_runtime_tool_names(capabilities)
+    target_tools = target_tool_names(capabilities)
     runtime_set = set(runtime_tools)
     target_set = set(target_tools)
     names_registered = runtime_set == target_set
     schemas_verified = target_contract_schemas_are_live_verified()
     cutover_ready = names_registered and schemas_verified
-    allowed_recipes = [recipe.id for recipe in RECIPES if ROLE_ORDER[role] >= ROLE_ORDER["read"]]
+    allowed_recipes = [recipe.id for recipe in RECIPES]
     metadata = agent_asset_metadata()
     return {
         "schema_version": 2,
         "package_version": POLYLOGUE_VERSION,
-        "role": role,
+        "capabilities": {
+            "write": capabilities.write,
+            "judge": capabilities.judge,
+            "maintenance": capabilities.maintenance,
+        },
         "asset": metadata,
         "schema_status": "live-verified" if cutover_ready else "cutover-parameterized",
         "cutover_ready": cutover_ready,

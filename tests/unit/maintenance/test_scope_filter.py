@@ -322,8 +322,9 @@ def _capture_cli_preview(operation: BackfillOperation, tmp_path: Path) -> dict[s
 
 def _capture_mcp_preview(operation: BackfillOperation) -> dict[str, Any]:
     from polylogue.mcp.server import build_server
+    from tests.infra.mcp import ALL_CAPABILITIES
 
-    server = build_server(role="admin")
+    server = build_server(capabilities=ALL_CAPABILITIES)
     fn = server._tool_manager._tools["maintenance"].fn
 
     with patch("polylogue.maintenance.planner.preview_backfill", return_value=operation):

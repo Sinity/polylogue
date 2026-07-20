@@ -15,8 +15,8 @@ from polylogue.agent_integration.installer import (
     InstallOptions,
     claude_session_start_payload,
 )
-from polylogue.agent_integration.spec import CLIENTS, GUIDANCE_MODES, ROLES, AgentClient, GuidanceMode
-from polylogue.mcp.declarations import MCPRole
+from polylogue.agent_integration.spec import CLIENTS, GUIDANCE_MODES, AgentClient, GuidanceMode
+from polylogue.mcp.declarations import MCPCapabilities
 
 _FORMAT = click.Choice(["plain", "json"])
 
@@ -79,14 +79,23 @@ def manual_command(kind: str, output_format: str) -> None:
 
 
 @agent_command.command("manifest")
-@click.option("--role", type=click.Choice(list(ROLES)), default="read", show_default=True)
+@click.option("--enable-write", is_flag=True, help="Report the surface with write/run capability enabled.")
+@click.option("--enable-judge", is_flag=True, help="Report the surface with judge capability enabled.")
+@click.option("--enable-maintenance", is_flag=True, help="Report the surface with maintenance capability enabled.")
 @click.option("-f", "--format", "output_format", type=_FORMAT, default="json", show_default=True)
-def manifest_command(role: str, output_format: str) -> None:
-    """Report the role-scoped runtime and six-tool target surfaces."""
+def manifest_command(enable_write: bool, enable_judge: bool, enable_maintenance: bool, output_format: str) -> None:
+    """Report the capability-scoped runtime and six-tool target surfaces.
+
+    Read-only by default (no flags). These flags describe the manifest to
+    report, not a launch argument -- the live MCP server itself resolves
+    write/judge/maintenance from config only (``[mcp]`` in polylogue.toml or
+    ``POLYLOGUE_MCP_*_ENABLED`` env vars); there is no ``--role``/CLI toggle.
+    """
     try:
         from polylogue.agent_integration.manifest import build_live_manifest
 
-        payload = build_live_manifest(cast(MCPRole, role))
+        capabilities = MCPCapabilities(write=enable_write, judge=enable_judge, maintenance=enable_maintenance)
+        payload = build_live_manifest(capabilities)
     except ImportError as exc:
         raise click.ClickException(f"MCP runtime dependencies are unavailable: {exc}") from exc
     _emit(payload, output_format=output_format)
@@ -94,7 +103,17 @@ def manifest_command(role: str, output_format: str) -> None:
 
 @agent_command.command("install")
 @click.option("--client", "clients", type=click.Choice(list(CLIENTS)), multiple=True, required=True)
-@click.option("--role", type=click.Choice(list(ROLES)), default="read", show_default=True)
+@click.option(
+    "--enable-write", is_flag=True, help="Emit POLYLOGUE_MCP_WRITE_ENABLED=1 in the generated MCP client env."
+)
+@click.option(
+    "--enable-judge", is_flag=True, help="Emit POLYLOGUE_MCP_JUDGE_ENABLED=1 in the generated MCP client env."
+)
+@click.option(
+    "--enable-maintenance",
+    is_flag=True,
+    help="Emit POLYLOGUE_MCP_MAINTENANCE_ENABLED=1 in the generated MCP client env.",
+)
 @click.option("--guidance", type=click.Choice(list(GUIDANCE_MODES)), default="full", show_default=True)
 @click.option("--reference/--no-reference", "include_reference", default=True, show_default=True)
 @click.option("--mcp/--no-mcp", "install_mcp", default=True, show_default=True)
@@ -106,7 +125,9 @@ def manifest_command(role: str, output_format: str) -> None:
 @click.option("-f", "--format", "output_format", type=_FORMAT, default="plain", show_default=True)
 def install_command(
     clients: tuple[str, ...],
-    role: str,
+    enable_write: bool,
+    enable_judge: bool,
+    enable_maintenance: bool,
     guidance: str,
     include_reference: bool,
     install_mcp: bool,
@@ -120,8 +141,8 @@ def install_command(
     """Install user-scoped MCP and standing guidance for native clients."""
     from polylogue.agent_integration.manifest import target_surface_is_registered
 
-    typed_role = cast(MCPRole, role)
-    if not target_surface_is_registered(typed_role):
+    capabilities = MCPCapabilities(write=enable_write, judge=enable_judge, maintenance=enable_maintenance)
+    if not target_surface_is_registered(capabilities):
         raise click.ClickException(
             "six-tool agent guidance is staged but target tool-name registration and generated-schema verification "
             "have not both completed; rebase after the t46.8 cutover, verify live signatures, and regenerate before "
@@ -129,7 +150,7 @@ def install_command(
         )
     options = InstallOptions(
         clients=cast(tuple[AgentClient, ...], clients),
-        role=typed_role,
+        capabilities=capabilities,
         guidance=cast(GuidanceMode, guidance),
         include_reference=include_reference,
         install_mcp=install_mcp,

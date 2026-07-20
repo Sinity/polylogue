@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 import click
 
-from polylogue.mcp.server_support import MCPRole
+from polylogue.mcp.server_support import MCPCapabilities
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.option(
-    "--role",
-    type=click.Choice(["read", "write", "review", "admin"]),
-    default="read",
-    show_default=True,
-    help="MCP capability role. Read omits mutation and maintenance tools.",
-)
-def main(role: str) -> None:
-    """Start the Polylogue MCP stdio bridge."""
+def main() -> None:
+    """Start the Polylogue MCP stdio bridge.
+
+    Read-only by default. Write (``write``/``run``), judge, and maintenance
+    dispatchers are explicit config opt-ins -- see ``[mcp]`` in
+    ``polylogue.toml`` (``write_enabled``/``judge_enabled``/
+    ``maintenance_enabled``) or the ``POLYLOGUE_MCP_WRITE_ENABLED`` /
+    ``POLYLOGUE_MCP_JUDGE_ENABLED`` / ``POLYLOGUE_MCP_MAINTENANCE_ENABLED``
+    environment variables. There is no CLI flag and no role ladder
+    (polylogue-800m): each capability is an independent boolean.
+    """
     try:
         from polylogue.mcp.server import serve_stdio
     except ImportError as exc:
@@ -28,7 +28,15 @@ def main(role: str) -> None:
         )
         raise SystemExit(1) from None
 
-    serve_stdio(role=cast(MCPRole, role))
+    from polylogue.config import load_polylogue_config
+
+    cfg = load_polylogue_config()
+    capabilities = MCPCapabilities(
+        write=cfg.mcp_write_enabled,
+        judge=cfg.mcp_judge_enabled,
+        maintenance=cfg.mcp_maintenance_enabled,
+    )
+    serve_stdio(capabilities=capabilities)
 
 
 __all__ = ["main"]

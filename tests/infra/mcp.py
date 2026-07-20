@@ -10,24 +10,31 @@ from unittest.mock import AsyncMock, MagicMock
 
 from polylogue.archive.models import Session
 from polylogue.core.enums import Provider
+from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.declarations.registry import declared_tool_names
 from tests.infra.builders import make_conv, make_msg
 
 MCP_TOOL_NAME_BASELINE = frozenset({"query", "read", "get", "explain", "context", "status"})
 
+#: Every privileged dispatcher enabled -- the full ten-tool surface. There is
+#: no role ladder (polylogue-800m): write/judge/maintenance are independent
+#: config opt-ins, so this constant exists purely for tests that want the
+#: complete declared set rather than one server's resolved config.
+ALL_CAPABILITIES = MCPCapabilities(write=True, judge=True, maintenance=True)
+
 # Production discovery expectations are declaration-derived. The frozen baseline
 # remains an independent compatibility oracle so deleting a handler and its
 # declaration in the same change cannot make the test surface self-authorize.
-EXPECTED_TOOL_NAMES = set(declared_tool_names("admin"))
+EXPECTED_TOOL_NAMES = set(declared_tool_names(ALL_CAPABILITIES))
 
 EXPECTED_RESOURCE_URIS = {
     "polylogue://agent/manual",
     "polylogue://agent/reference",
+    "polylogue://agent/manifest",
     "polylogue://capabilities/query",
 }
 
 EXPECTED_RESOURCE_TEMPLATE_URIS = {
-    "polylogue://agent/manifest/{role}",
     "polylogue://session/{conv_id}",
 }
 

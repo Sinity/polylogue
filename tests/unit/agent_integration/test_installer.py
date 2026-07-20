@@ -17,6 +17,7 @@ from polylogue.agent_integration.installer import (
     NativeConfigConflict,
     StateIntegrityError,
 )
+from polylogue.mcp.declarations import MCPCapabilities
 
 
 def _commands(root: Path) -> tuple[Path, Path]:
@@ -45,7 +46,6 @@ def _manager(
 def _options(polylogue: Path, server: Path, **changes: object) -> InstallOptions:
     values: dict[str, object] = {
         "clients": ("claude-code", "codex", "gemini", "hermes"),
-        "role": "read",
         "archive_root": server.parent.parent / "archive",
         "config_path": server.parent.parent / "polylogue.toml",
         "server_command": str(server),
@@ -62,7 +62,7 @@ def test_all_clients_install_native_mcp_and_guidance(tmp_path: Path) -> None:
 
     assert receipt["ok"] is True
     claude_mcp = json.loads((home / ".claude.json").read_text())
-    assert claude_mcp["mcpServers"]["polylogue"]["args"] == ["--role", "read"]
+    assert claude_mcp["mcpServers"]["polylogue"]["args"] == []
     claude_settings = json.loads((home / ".claude" / "settings.json").read_text())
     command = claude_settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
     assert command.endswith(" agent session-start --client claude-code")
@@ -91,7 +91,7 @@ def test_install_is_idempotent_without_rewriting_files(tmp_path: Path) -> None:
     assert all(path.stat().st_mtime_ns == mtimes[path] for path in files)
 
 
-def test_role_and_archive_upgrade_reconciles_owned_values(tmp_path: Path) -> None:
+def test_capability_and_archive_upgrade_reconciles_owned_values(tmp_path: Path) -> None:
     manager, home, polylogue, server = _manager(tmp_path)
     manager.install(_options(polylogue, server))
 
@@ -99,16 +99,17 @@ def test_role_and_archive_upgrade_reconciles_owned_values(tmp_path: Path) -> Non
         _options(
             polylogue,
             server,
-            role="review",
+            capabilities=MCPCapabilities(judge=True),
             archive_root=tmp_path / "second-archive",
             config_path=tmp_path / "second.toml",
         )
     )
 
     claude = json.loads((home / ".claude.json").read_text())["mcpServers"]["polylogue"]
-    assert claude["args"] == ["--role", "review"]
+    assert claude["args"] == []
+    assert claude["env"]["POLYLOGUE_MCP_JUDGE_ENABLED"] == "1"
     assert claude["env"]["POLYLOGUE_ARCHIVE_ROOT"] == str((tmp_path / "second-archive").resolve())
-    assert "review" in (home / ".codex" / "config.toml").read_text()
+    assert "POLYLOGUE_MCP_JUDGE_ENABLED" in (home / ".codex" / "config.toml").read_text()
 
 
 def test_operator_additions_survive_uninstall_and_clean_owned_dirs(tmp_path: Path) -> None:
@@ -144,7 +145,7 @@ def test_preexisting_equal_native_value_is_not_claimed_or_removed(tmp_path: Path
     manager, home, polylogue, server = _manager(tmp_path)
     expected = {
         "command": str(server),
-        "args": ["--role", "read"],
+        "args": [],
         "env": {
             "POLYLOGUE_ARCHIVE_ROOT": str((tmp_path / "archive").resolve()),
             "POLYLOGUE_CONFIG": str((tmp_path / "polylogue.toml").resolve()),
@@ -193,7 +194,7 @@ def test_corrupt_state_blocks_status_doctor_and_uninstall(tmp_path: Path) -> Non
     manager, _, polylogue, server = _manager(tmp_path)
     manager.install(_options(polylogue, server, clients=("gemini",)))
     state = json.loads(manager.state_path.read_text())
-    state["clients"]["gemini"]["role"] = "admin"
+    state["clients"]["gemini"]["capabilities"] = {"write": True, "judge": True, "maintenance": True}
     manager.state_path.write_text(json.dumps(state))
 
     assert manager.status()["state_integrity"] == "failed"

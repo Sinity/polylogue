@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from tests.infra.mcp import MCPServerUnderTest
+from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest
 
 
 @pytest.fixture
@@ -22,6 +22,6 @@ def mcp_server() -> MCPServerUnderTest:
 
     from polylogue.mcp.server import build_server
 
-    server = build_server(role="admin")
+    server = build_server(capabilities=ALL_CAPABILITIES)
     assert isinstance(server, MCPServerUnderTest)
     return server

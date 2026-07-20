@@ -109,9 +109,9 @@ def test_names_only_cutover_cannot_activate_parameterized_guidance() -> None:
     """Mutation: dropping the live-schema marker gate would activate calls before signature reconciliation."""
     with patch(
         "polylogue.agent_integration.manifest.declared_runtime_tool_names",
-        return_value=target_tool_names("read"),
+        return_value=target_tool_names(),
     ):
-        assert target_surface_is_registered("read") is False
+        assert target_surface_is_registered() is False
 
 
 def test_generated_document_mirrors_match_packaged_assets_and_check_mode() -> None:

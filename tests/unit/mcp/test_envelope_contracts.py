@@ -22,7 +22,7 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel
 
-from tests.infra.mcp import EXPECTED_TOOL_NAMES, MCPServerUnderTest
+from tests.infra.mcp import ALL_CAPABILITIES, EXPECTED_TOOL_NAMES, MCPServerUnderTest
 
 # ---------------------------------------------------------------------------
 # Tool classification — every registered tool must appear here.
@@ -83,7 +83,7 @@ def admin_server() -> MCPServerUnderTest:
     """Build a server with the admin role so all tools are visible."""
     from polylogue.mcp.server import build_server
 
-    return cast(MCPServerUnderTest, build_server(role="admin"))
+    return cast(MCPServerUnderTest, build_server(capabilities=ALL_CAPABILITIES))
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ def read_server() -> MCPServerUnderTest:
     """Read-role server — resources are visible at this scope."""
     from polylogue.mcp.server import build_server
 
-    return cast(MCPServerUnderTest, build_server(role="read"))
+    return cast(MCPServerUnderTest, build_server())
 
 
 def _assert_structured_error(payload: str, *, expected_code: str | None = None) -> None:

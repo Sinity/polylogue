@@ -25,7 +25,7 @@ _PROMPT_CASES: Mapping[str, dict[str, object]] = {
 
 @pytest.mark.asyncio
 async def test_shipped_query_prompt_recipes_match_parser_and_discovered_schema() -> None:
-    server = build_server(role="read")
+    server = build_server()
     query_tool = server._tool_manager._tools["query"]
     properties = query_tool.parameters["properties"]
     assert isinstance(properties, dict)

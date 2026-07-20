@@ -19,7 +19,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.mcp.declarations.models import MCPRole
+from polylogue.mcp.declarations.models import MCPCapabilities
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
 
@@ -69,10 +69,12 @@ def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
         server_support._set_runtime_services(original)
 
 
-def _build_tools(role: MCPRole) -> dict[str, Callable[..., str | Awaitable[str]]]:
+def _build_tools(
+    capabilities: MCPCapabilities = MCPCapabilities(),
+) -> dict[str, Callable[..., str | Awaitable[str]]]:
     from polylogue.mcp.server import build_server
 
-    server = cast(MCPServerUnderTest, build_server(role=role))
+    server = cast(MCPServerUnderTest, build_server(capabilities=capabilities))
     return {name: tool.fn for name, tool in server._tool_manager._tools.items()}
 
 
@@ -81,7 +83,7 @@ class TestPersonalStateProjections:
     async def test_marks_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools("write")
+        tools = _build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
         with _installed_runtime_services(archive_root):
@@ -101,7 +103,7 @@ class TestPersonalStateProjections:
     async def test_annotations_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools("write")
+        tools = _build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
         with _installed_runtime_services(archive_root):
@@ -123,7 +125,7 @@ class TestPersonalStateProjections:
     async def test_saved_views_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("write")
+        tools = _build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
         with _installed_runtime_services(archive_root):
@@ -145,7 +147,7 @@ class TestPersonalStateProjections:
     async def test_recall_packs_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools("write")
+        tools = _build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
         with _installed_runtime_services(archive_root):
@@ -170,7 +172,7 @@ class TestPersonalStateProjections:
     async def test_workspaces_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("write")
+        tools = _build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
         with _installed_runtime_services(archive_root):
@@ -191,7 +193,7 @@ class TestPersonalStateProjections:
     async def test_corrections_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools("write")
+        tools = _build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
         with _installed_runtime_services(archive_root):
@@ -213,7 +215,7 @@ class TestPersonalStateProjections:
     async def test_blackboard_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("write")
+        tools = _build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
         with _installed_runtime_services(archive_root):
@@ -244,7 +246,7 @@ class TestPersonalStateProjections:
     async def test_personal_state_projection_rejects_continuation(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         query_fn = tools["query"]
 
         with _installed_runtime_services(archive_root):
@@ -258,7 +260,7 @@ class TestInsightProjections:
     async def test_postmortem_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         query_fn = tools["query"]
 
         with _installed_runtime_services(archive_root):
@@ -270,7 +272,7 @@ class TestInsightProjections:
     async def test_pathologies_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         query_fn = tools["query"]
 
         with _installed_runtime_services(archive_root):
@@ -282,7 +284,7 @@ class TestInsightProjections:
     async def test_abandoned_sessions_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         query_fn = tools["query"]
 
         with _installed_runtime_services(archive_root):
@@ -294,7 +296,7 @@ class TestInsightProjections:
     async def test_stuck_sessions_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         query_fn = tools["query"]
 
         with _installed_runtime_services(archive_root):
@@ -306,7 +308,7 @@ class TestInsightProjections:
     async def test_insight_projection_rejects_continuation(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         query_fn = tools["query"]
 
         with _installed_runtime_services(archive_root):
@@ -320,7 +322,7 @@ class TestStatusSourcesAndEmbeddingsScopes:
     async def test_status_sources_requires_ref(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         status_fn = tools["status"]
 
         with _installed_runtime_services(archive_root):
@@ -332,7 +334,7 @@ class TestStatusSourcesAndEmbeddingsScopes:
     async def test_status_sources_with_ref_returns_freshness_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         status_fn = tools["status"]
 
         with _installed_runtime_services(archive_root):
@@ -347,7 +349,7 @@ class TestStatusSourcesAndEmbeddingsScopes:
     async def test_status_embeddings_scope_returns_readiness_payload(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools("read")
+        tools = _build_tools()
         status_fn = tools["status"]
 
         with _installed_runtime_services(archive_root):
