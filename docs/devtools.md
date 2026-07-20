@@ -209,7 +209,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace archive-schema-fast-forward` | Clone-forward the v35 archive tiers without raw replay. |
 | `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
-| `devtools workspace bead-reimport-guard` | Timestamp-aware guard restoring beads clobbered by bd's post-checkout/post-merge reimport. |
+| `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
 | `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |

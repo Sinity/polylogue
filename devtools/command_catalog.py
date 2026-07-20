@@ -578,19 +578,28 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace bead-reimport-guard",
         "workspace",
-        "Timestamp-aware guard restoring beads clobbered by bd's post-checkout/post-merge reimport.",
+        "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",
         "devtools.bd_reimport_guard",
         use_when=(
-            "Invoked by .beads-hooks/post-checkout and .beads-hooks/post-merge (outside the "
-            "BEGIN/END BEADS INTEGRATION markers) around bd's own reimport step -- not normally "
-            "run by hand. bd's reimport is a blind upsert with no timestamp comparison, so an "
-            "ordinary checkout/pull can silently revert a bead closed-but-uncommitted in a "
-            "different worktree sharing the same live Dolt DB; this snapshots live state before "
-            "the hook runs and restores anything the hook clobbered with older data."
+            "`snapshot`/`check-and-repair` are invoked by .beads-hooks/post-checkout and "
+            "post-merge (outside the BEGIN/END BEADS INTEGRATION markers) around bd's own "
+            "reimport step -- not normally run by hand. bd's reimport is a blind upsert with no "
+            "revision comparison, so an ordinary checkout/pull can silently revert a bead "
+            "closed-but-uncommitted in a different worktree sharing the same live Dolt DB. "
+            "`reconcile <candidate.jsonl>` is the explicit, hand-invokable path for flows the "
+            "git hooks never see -- most importantly right after `git reset --hard`, which "
+            "rewrites .beads/issues.jsonl without firing any hook, leaving it live-hazardous "
+            "until the next `bd` call reimports it. `export <target.jsonl>` does an atomic, "
+            "validated snapshot export. All three write a machine-readable SyncReceipt (per-row "
+            "new/updated/equal/skipped_downgrade/conflicted outcome) under "
+            ".cache/bd-sync-receipts/; ordinary sync never applies a downgrade -- recovering one "
+            "on purpose requires reconcile --allow-downgrade plus --actor/--reason."
         ),
         examples=(
             "devtools workspace bead-reimport-guard snapshot post-checkout",
             "devtools workspace bead-reimport-guard check-and-repair post-checkout",
+            "devtools workspace bead-reimport-guard reconcile .beads/issues.jsonl",
+            "devtools workspace bead-reimport-guard export /tmp/issues-snapshot.jsonl",
         ),
     ),
     CommandSpec(
