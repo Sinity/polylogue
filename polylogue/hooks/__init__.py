@@ -13,6 +13,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import sys
@@ -330,9 +331,21 @@ def _wired_events_from_hooks(hooks: dict[str, object]) -> set[str]:
 
 
 def _managed_handler(harness: HookHarness, event: str) -> dict[str, object]:
+    """Build the installed handler, baking the concrete resolved spool path.
+
+    A hook subprocess's environment cannot be trusted to carry
+    ``POLYLOGUE_ARCHIVE_ROOT`` (agent harnesses invoke hooks with their own,
+    possibly minimal, environment), so the path this daemon is actually
+    draining is resolved once here, at install time, and baked into the
+    rendered command rather than re-resolved ambiently at every hook
+    invocation (polylogue-o7hx).
+    """
+    from polylogue.paths import hooks_sidecar_dir
+
+    sidecar_dir = shlex.quote(str(hooks_sidecar_dir()))
     return {
         "type": "command",
-        "command": f"polylogue-hook {event} --provider {harness}",
+        "command": f"polylogue-hook {event} --provider {harness} --sidecar-dir {sidecar_dir}",
         "timeout": 5,
     }
 
@@ -751,12 +764,14 @@ def flow_states() -> tuple[str, ...]:
 
 
 def _default_sidecar_dir() -> Path:
-    override = os.environ.get("POLYLOGUE_HOOK_SIDECAR_DIR")
-    if override:
-        return Path(override)
-    xdg_data_home = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
-    return base / "polylogue" / "hooks"
+    """Resolve the sidecar dir when the command carries no ``--sidecar-dir``.
+
+    Derives from the resolved archive root (polylogue-o7hx), same as every
+    other hook-spool consumer -- no separate ambient env override lives here.
+    """
+    from polylogue.paths import hooks_sidecar_dir
+
+    return hooks_sidecar_dir()
 
 
 def _detect_hook_provider(payload: dict[str, object]) -> HookHarness | None:
@@ -788,18 +803,36 @@ def _hook_provider_arg(args: list[str]) -> HookHarness | None:
     return None
 
 
+def _hook_sidecar_dir_arg(args: list[str]) -> Path | None:
+    """Parse an explicit ``--sidecar-dir PATH`` baked in by ``polylogue hooks install``.
+
+    A hook subprocess's environment cannot be trusted to carry
+    ``POLYLOGUE_ARCHIVE_ROOT`` (agent harnesses run hooks with their own,
+    possibly minimal, environment) -- so the installer bakes the concrete
+    resolved spool path into the rendered command instead of relying on
+    runtime env resolution (polylogue-o7hx).
+    """
+    if "--sidecar-dir" not in args:
+        return None
+    index = args.index("--sidecar-dir")
+    if index + 1 >= len(args):
+        return None
+    return Path(args[index + 1]).expanduser()
+
+
 def hook_main(argv: list[str] | None = None) -> int:
     """Record one harness hook event without loading the archive runtime."""
 
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("Usage: polylogue-hook <event-type> [--provider claude-code|codex]", file=sys.stderr)
+        print("Usage: polylogue-hook <event-type> [--provider claude-code|codex] [--sidecar-dir PATH]", file=sys.stderr)
         return 1
     event_type = args[0]
     provider_arg = _hook_provider_arg(args[1:])
     if "--provider" in args[1:] and provider_arg is None:
         print("polylogue-hook: --provider must be claude-code or codex", file=sys.stderr)
         return 2
+    sidecar_dir_arg = _hook_sidecar_dir_arg(args[1:])
     allowed_events = (
         EVENTS_BY_HARNESS[provider_arg]
         if provider_arg is not None
@@ -843,7 +876,7 @@ def hook_main(argv: list[str] | None = None) -> int:
     }
     from polylogue.sources.hooks import enqueue_hook_event
 
-    sidecar_dir = _default_sidecar_dir()
+    sidecar_dir = sidecar_dir_arg or _default_sidecar_dir()
     sidecar_dir.mkdir(parents=True, exist_ok=True)
     enqueue_hook_event(
         event_type=event_type,

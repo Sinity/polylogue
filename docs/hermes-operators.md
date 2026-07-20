@@ -441,21 +441,16 @@ polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.j
 polylogue import tests/fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.jsonl --explain
 
 # 2. Full ingest + query, watching only the throwaway archive's own inbox
-#    (never the real ~/.claude, ~/.codex, ~/.hermes, or the hook spool):
+#    (never the real ~/.claude, ~/.codex, or ~/.hermes; the hook spool is
+#    scoped to $POLYLOGUE_ARCHIVE_ROOT/hooks automatically):
 polylogued run --no-browser-capture --no-source-catchup \
   --root "$POLYLOGUE_ARCHIVE_ROOT/inbox" &
 polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json
 polylogue --origin hermes-session find "hermes" then read --all --format json
 ```
 
-Two safety notes learned the hard way while writing this guide:
+One safety note learned the hard way while writing this guide:
 
-- `--root <archive>/inbox` scopes the *watcher* to your throwaway inbox, but
-  the daemon's hook-spool drain is a **separate**, always-on component keyed
-  off `$XDG_DATA_HOME` (`~/.local/share` by default), not the archive root or
-  `--root`. If you also want to isolate that for a smoke test, override
-  `XDG_DATA_HOME` (or the config's `hook_sidecar_dir`) to the same throwaway
-  location before starting the daemon.
 - Never run `polylogued run` with source catch-up enabled (the default)
   against a throwaway archive on a machine with a real `~/.claude`,
   `~/.codex`, or `~/.hermes` — catch-up scans and ingests every configured

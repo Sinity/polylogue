@@ -87,7 +87,7 @@ agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
 ## Sidecar Directory Layout
 
 ```
-~/.local/share/polylogue/hooks/         # Default (XDG_DATA_HOME/polylogue/hooks)
+<archive_root>/hooks/                   # Default archive root: ~/.local/share/polylogue
 ├── pending/
 │   └── <event-id>.json                 # Atomic producer envelopes
 ├── acknowledged/
@@ -96,33 +96,52 @@ agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
 └── codex-<session-id>.jsonl            # Legacy Codex journal
 ```
 
-The daemon creates and watches the pending spool directory on startup, so the
-first hook event after a cold start is captured automatically. The documented
-spool-root override applies to both the producer and daemon.
+The hooks sidecar directory always lives under the resolved archive root
+(`POLYLOGUE_ARCHIVE_ROOT`, default `~/.local/share/polylogue`), the same as
+every other archive-scoped path — a scratch/test archive root gets its own
+hook spool, never the real one. The daemon creates and watches the pending
+spool directory on startup, so the first hook event after a cold start is
+captured automatically.
+
+`polylogue hooks install` resolves the current archive root's hooks
+directory once, at install time, and bakes the concrete absolute path into
+each rendered `polylogue-hook ... --sidecar-dir <path>` command (see
+Installation below). This is deliberate: a hook subprocess's environment
+cannot be trusted to carry `POLYLOGUE_ARCHIVE_ROOT` (agent harnesses invoke
+hooks with their own, possibly minimal, environment), so re-resolving it
+ambiently at every hook invocation is not reliable. Re-run `polylogue hooks
+install` after changing the archive root to rebake the path.
 
 ## Configuration
 
 ### polylogue.toml
 
+Only set this if the hook spool genuinely needs to live somewhere other than
+`<archive_root>/hooks`; the default already tracks the archive root:
+
 ```toml
-[hooks]
-enabled = true
-sidecar_dir = "/home/user/.local/share/polylogue/hooks"
+[sources]
+hook_sidecar_dir = "/home/user/.local/share/polylogue/hooks"
 ```
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `POLYLOGUE_HOOK_SIDECAR_DIR` | Override the shared producer/daemon spool root |
+| `POLYLOGUE_ARCHIVE_ROOT` | Overrides the archive root, and therefore the hook spool (`<archive_root>/hooks`) along with every other archive-scoped path |
 | `POLYLOGUE_HOOK_PROVIDER` | Force provider detection to `claude-code` or `codex` |
+
+There is no separate `POLYLOGUE_HOOK_SIDECAR_DIR` producer/daemon override
+env var: it was a manual escape hatch that had to be remembered on top of
+`POLYLOGUE_ARCHIVE_ROOT` and repeatedly wasn't (polylogue-o7hx). Use the
+`hook_sidecar_dir` config key below only if the hook spool genuinely needs
+to live somewhere other than `<archive_root>/hooks`.
 
 ### PolylogueConfig Properties
 
 | Property | Type | Default |
 |----------|------|---------|
-| `hooks_enabled` | `bool` | `False` |
-| `hooks_sidecar_dir` | `str` | `~/.local/share/polylogue/hooks` |
+| `hook_sidecar_dir` | `str` | `<archive_root>/hooks` |
 
 ## Installation
 
@@ -196,35 +215,35 @@ polylogue hooks uninstall --harness codex
         "hooks": [
           {
             "type": "command",
-            "command": "polylogue-hook SessionStart --provider claude-code",
+            "command": "polylogue-hook SessionStart --provider claude-code --sidecar-dir <archive_root>/hooks",
             "timeout": 5
           }
         ]
       }
     ],
     "UserPromptSubmit": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook UserPromptSubmit --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook UserPromptSubmit --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PreToolUse": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PreToolUse --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook PreToolUse --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PostToolUse": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUse --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUse --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PostToolUseFailure": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUseFailure --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUseFailure --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PermissionRequest": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionRequest --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionRequest --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PermissionDenied": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionDenied --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionDenied --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "Notification": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook Notification --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook Notification --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "Stop": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook Stop --provider claude-code", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "polylogue-hook Stop --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ]
   }
 }
@@ -250,7 +269,7 @@ same event/matcher-group/handler structure:
         "hooks": [
           {
             "type": "command",
-            "command": "polylogue-hook SessionStart --provider codex",
+            "command": "polylogue-hook SessionStart --provider codex --sidecar-dir <archive_root>/hooks",
             "timeout": 5
           }
         ]

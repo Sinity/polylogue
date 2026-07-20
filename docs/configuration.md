@@ -343,7 +343,7 @@ A few keys not shown in the full example above, with their TOML path:
 | `no_daemon` | `client.no_daemon` | Force direct in-process archive access, bypassing the daemon client even when one is reachable. |
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
 | `hermes_root` | `sources.hermes.root` | Runtime root watched for Hermes state, snapshots, NeMo Relay ATIF/ATOF artifacts, and verification evidence. Defaults to `~/.hermes`. |
-| `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. |
+| `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. Defaults to `<archive_root>/hooks`, so a scratch/test `POLYLOGUE_ARCHIVE_ROOT` genuinely isolates its hook spool from the real one; set explicitly only if you need the spool somewhere other than the archive it belongs to. |
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
 | `antigravity_language_server` | `sources.antigravity_language_server` | Path to an Antigravity language-server binary, when parsing Antigravity sessions needs it. |
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
