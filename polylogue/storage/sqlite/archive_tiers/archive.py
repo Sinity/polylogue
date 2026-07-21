@@ -3356,17 +3356,61 @@ class ArchiveStore:
                                 f"ambiguous={classification.ambiguous_raw_ids!r}) "
                                 f"persisted_session_raw={None if persisted_session is None else str(persisted_session[0])!r}"
                             )
-                        # No byte-governance refusal here: this branch is only
-                        # reachable when the head raw is a member of THIS
-                        # cohort, and membership rows for a source-keyed raw
-                        # only exist after a governance conversion decided it
-                        # belongs to membership classification -- a still-set
-                        # logical_source_key on raw_sessions is interrupted-
-                        # pass ordering drift (the conversion's key-nulling
-                        # had not committed when the pass died), not evidence
-                        # of live byte-chain governance. Foreign byte heads
-                        # never reach this branch: they yield in the
-                        # chain-governed-head branch above.
+                        # polylogue-miwv: #3211 removed a byte-governance
+                        # refusal here on the theory that this branch is only
+                        # reachable after a real governance conversion (a
+                        # still-set logical_source_key being interrupted-pass
+                        # drift, not live evidence). That premise is false for
+                        # the accepted head specifically: ``_apply_membership_
+                        # sessions`` (sources/live/batch.py) unconditionally
+                        # injects the current ``raw_revision_heads`` accepted
+                        # raw into the comparison cohort even when it has
+                        # NEVER been through a membership conversion -- the
+                        # #2718 scenario this whole code path exists for
+                        # (a byte-governed head being compared against
+                        # membership-discovered content for the first time).
+                        # Content-prefix growth alone cannot prove the older
+                        # bundle raw supersedes a head that still has live,
+                        # unresolved byte-append evidence hanging off it (a
+                        # quarantined/pending append raw whose
+                        # ``predecessor_source_revision`` chains to the head's
+                        # own ``source_revision``) that this classification
+                        # pass never saw. Only matters when replay is about to
+                        # CHANGE the accepted raw (mirrors #2718's original
+                        # ``accepted_raw_id != existing_raw_id`` guard
+                        # condition) -- a classification that keeps the same
+                        # existing_raw_id as the accepted member (e.g. the
+                        # head's own content already dominates every other
+                        # cohort member) is a no-op re-affirmation, not a
+                        # replacement, regardless of dangling evidence.
+                        # Narrower than #2718's original blanket
+                        # ``logical_source_key IS NOT NULL`` check so #3211's
+                        # own interrupted-pass-drift resumption (no dangling
+                        # append descendant, just a stale un-nulled key) is
+                        # unaffected.
+                        if accepted_raw_id != existing_raw_id:
+                            classified_placeholders = ", ".join("?" for _ in classified_raw_ids) or "NULL"
+                            dangling_append = conn.execute(
+                                f"""
+                                SELECT 1
+                                FROM raw_sessions AS child
+                                WHERE child.logical_source_key = ?
+                                  AND child.raw_id != ?
+                                  AND child.raw_id NOT IN ({classified_placeholders})
+                                  AND child.predecessor_source_revision IS NOT NULL
+                                  AND child.predecessor_source_revision = (
+                                      SELECT source_revision FROM raw_sessions WHERE raw_id = ?
+                                  )
+                                LIMIT 1
+                                """,
+                                (logical_source_key, existing_raw_id, *classified_raw_ids, existing_raw_id),
+                            ).fetchone()
+                            if dangling_append is not None:
+                                raise RuntimeError(
+                                    "membership replay cannot replace a head with unresolved byte-append "
+                                    f"evidence: logical_source_key={logical_source_key!r} "
+                                    f"existing_head(raw_id={existing_raw_id!r})"
+                                )
                         self._conn.execute(
                             "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
                             (logical_source_key,),
