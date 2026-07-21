@@ -21,56 +21,51 @@ server for agents, a local HTTP reader, and a Python API.
 
 ## See it work
 
-No accounts, no API keys, no personal data — `demo seed` builds a synthetic
-archive through the real ingestion path:
+Every block below is a real command against the author's own archive —
+Polylogue's own development history, ingested from Codex CLI and Claude
+Code sessions that worked on this repository. Output is trimmed with `...`
+where noted; nothing is invented.
+
+Search it. One query hits Codex and Claude Code sessions at once — here, a
+recurring clock-hygiene lint check landing in both:
 
 ```console
-$ polylogue demo seed
-Demo archive ready
-  Sessions:     19
-  Messages:     71
+$ polylogue --limit 4 find 'repo:polylogue "with host-clock calls"'
+1. claude-code-session  sure, I'm going AFK. Do not halt. Remember the word indefinitely. Do start by ex...  test files scanned: 618 files [with host-clock calls]: 23 allowlisted: 23 violations: 0
+2. claude-code-session  3b0038ec-234c-44b8-bb88-fe222b44fe0f:agent-a97318edcffaac69d  test files scanned: 738 files [with host-clock calls]: 22 allowlisted: 26 violations: 0
+3. claude-code-session  8dab1c19-ef6f-4f49-b4c1-cd9084c1b582  test files scanned: 894 files [with host-clock calls]: 27 allowlisted: 31 violations: 0 "total_duration_s": 28.98, "exit_code": 0 }
+4. codex-session  019e1a5c-0abe-71e1-8adf-8ae8d4cc71a6  Chunk ID: 7b81ce Wall time: 0.0000 seconds Process exited with code 0 Original token count: 22 Output: test files scanned: 598 files [with host-clock calls]: 23 allowlisted: 23 violations: 0
 ```
 
-Search it. One query hits Codex, Claude Code, and ChatGPT sessions at once:
+Read one back as a transcript — real coding-agent sessions carry a lot of
+injected system/skill context before the actual exchange, so this excerpt
+trims that noise down to the assistant's opening move on a real task:
 
 ```console
-$ polylogue find "clock"
-1. chatgpt-export       Flaky clock test fix summary   The fixture used a shared [clock] instance; switching to an isolated clock fixed it.
-2. claude-code-session  Fix the flaky clock test ...   F tests/test_[clock].py::test_uses_monotonic_clock 1 failed in 0.21s
-5. codex-session        Fix the clock-sensitive test   exec_command pytest tests/test_[clock].py -q
-8. codex-session        Fix the clock-sensitive test   {"metadata": {"exit_code": 1}, "output": "F tests/test_[clock].py..."}
+$ polylogue find 'id:codex-session:019f4b85-1e4a-7060-a8c3-36e4b4175ff2' then read --view transcript
+# 019f4b85-1e4a-7060-a8c3-36e4b4175ff2
 ...
-```
-
-Read one back as a transcript:
-
-```console
-$ polylogue find 'id:codex-session:demo-receipts' then read --view transcript
-# Fix the clock-sensitive test and prove the suite passes.
-
-## user
-Fix the clock-sensitive test and prove the suite passes.
-
-## tool
-{"metadata": {"exit_code": 1}, "output": "F  tests/test_clock.py::test_uses_monotonic_clock\n1 failed in 0.18s"}
-
 ## assistant
-All tests pass. The clock fix is complete.
-
-## user
-The receipt disagrees. Correct the fixture and verify again.
+I'll independently map the bead's acceptance criteria to the branch diff, then
+trace each persistence and reparse path into its production implementation and
+focused tests. I'll treat passing tests as evidence only after checking that
+they exercise the claimed failure modes.
 ...
 ```
 
 Query tool activity as data, not text. Tool calls are paired with their
 results, and failure comes from the provider's `exit_code`/`is_error`
-structure — not from grepping prose for the word "error":
+structure — not from grepping prose for the word "error" — so this is every
+tool that ever failed across this repo's own coding sessions, ranked:
 
 ```console
-$ polylogue 'actions where is_error:true | group by tool | count'
-tool=Bash count=4
-tool=exec_command count=2
-tool=Edit count=1
+$ polylogue "actions where session.repo:polylogue AND is_error:true | group by tool | count"
+tool=Bash count=5663
+tool=Read count=1399
+tool=Edit count=1167
+tool=shell count=533
+tool=exec_command count=149
+...
 ```
 
 That is the product: everything your AI tools ever produced, in one queryable
@@ -188,6 +183,15 @@ nix run github:Sinity/polylogue -- --help
 All three routes ship the same three commands: `polylogue`, `polylogued`,
 `polylogue-mcp`. Source checkout, NixOS/Home Manager modules, and
 verification: [docs/installation.md](docs/installation.md).
+
+No accounts, no personal data, no API keys — `demo seed` builds a small
+synthetic archive through the real ingestion path, so the commands above
+work against something before you point Polylogue at your own history:
+
+```bash
+polylogue demo seed      # writes a synthetic archive to POLYLOGUE_ARCHIVE_ROOT
+polylogue demo verify    # checks it round-tripped correctly
+```
 
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
