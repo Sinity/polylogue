@@ -2744,6 +2744,79 @@ describe("receiver health probe", () => {
     expect(stored.polylogueReceiverPairing.receiver_id).toBe("rx-expected");
   });
 
+  it("does not auto-recover a deliberate dev-override pairing even when the canonical identity would match (polylogue-jlme.5)", async () => {
+    // Reproduces the exact polylogue-jlme.5 incident shape in reverse: an
+    // operator has explicitly configured this profile to a dev-loop
+    // receiver (dev_override: true). That receiver goes offline. Unlike the
+    // ordinary "wandered off" case, this must NOT silently fail over to the
+    // canonical endpoint -- the operator chose the dev endpoint on purpose
+    // and needs to know loudly that it died, not have the extension quietly
+    // reconnect somewhere else mid dev-loop session.
+    await loadBackground({
+      polylogueReceiverPairing: {
+        state: "offline",
+        receiver_id: "rx-dev-loop",
+        api_schema: "polylogue-browser-capture/v1",
+        endpoint: "http://127.0.0.1:8876",
+        dev_override: true,
+      },
+    });
+    globalThis.fetch = vi.fn(async (url) => {
+      fetchCalls.push({ url });
+      if (String(url).startsWith("http://127.0.0.1:8875")) throw new TypeError("dev endpoint offline");
+      // The canonical endpoint is live and WOULD satisfy identity+schema
+      // match -- this is exactly what proves recovery is suppressed
+      // deliberately, not merely because canonical happened to be unreachable.
+      return responseJson({
+        ok: true,
+        api_schema: "polylogue-browser-capture/v1",
+        receiver_id: "rx-dev-loop",
+      });
+    });
+    await chrome.storage.local.set({ receiverBaseUrl: "http://127.0.0.1:8875" });
+
+    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
+
+    expect(response).toMatchObject({ ok: false, status: "dev_override_stale", endpoint: "http://127.0.0.1:8875" });
+    // Canonical was never even probed.
+    expect(fetchCalls.map((call) => call.url)).toEqual(["http://127.0.0.1:8875/v1/status"]);
+    expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8875");
+    expect(stored.polylogueReceiverPairing).toMatchObject({
+      state: "dev_override_stale",
+      dev_override: true,
+      receiver_id: "rx-dev-loop",
+    });
+  });
+
+  it("marks a manually configured non-canonical endpoint as a deliberate dev override", async () => {
+    await loadBackground({
+      polylogueReceiverPairing: {
+        state: "online",
+        receiver_id: "rx-canonical",
+        api_schema: "polylogue-browser-capture/v1",
+        endpoint: "http://127.0.0.1:8765",
+      },
+    });
+
+    await sendRuntimeMessage({
+      type: "polylogue.configureReceiver",
+      receiverBaseUrl: "http://127.0.0.1:8876",
+      receiverAuthToken: "token-1",
+    });
+
+    expect(stored.polylogueReceiverPairing).toMatchObject({ dev_override: true });
+
+    // Repointing settings back at the canonical endpoint is an equally
+    // explicit act and must clear the flag.
+    await sendRuntimeMessage({
+      type: "polylogue.configureReceiver",
+      receiverBaseUrl: "http://127.0.0.1:8765",
+      receiverAuthToken: "token-1",
+    });
+
+    expect(stored.polylogueReceiverPairing).toMatchObject({ dev_override: false });
+  });
+
   it("resets only the pairing key and preserves pending work", async () => {
     const queue = { entries: [{ id: "queued-capture" }], dropped_count: 0 };
     await loadBackground({

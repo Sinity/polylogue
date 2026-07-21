@@ -151,16 +151,28 @@ def browser_capture_spool_root() -> Path:
 def browser_capture_receiver_token_path() -> Path:
     """Path for the auto-minted browser-capture receiver bearer token, scoped under the archive root.
 
-    Must track ``archive_root()`` (not ``state_home()``): ``receiver_identity()``
-    hashes this token to derive the receiver's stable id, so an archive-scoped
-    token is also what gives two archive roots distinct receiver identities.
-    Before this, two ``polylogued`` instances with different
-    ``POLYLOGUE_ARCHIVE_ROOT`` values shared one token and one receiver
-    identity, letting a scratch instance silently authenticate against (and,
-    via the extension's canonical-endpoint self-heal, silently reconnect to)
-    a different instance's receiver.
+    Must track ``archive_root()`` (not ``state_home()``) so two ``polylogued``
+    instances with different ``POLYLOGUE_ARCHIVE_ROOT`` values never share one
+    token. See :func:`browser_capture_receiver_identity_path` for the
+    receiver's stable pairing identity, which is minted and persisted
+    independently of this token (polylogue-jlme.5): ordinary token rotation
+    must not force every paired browser profile through a full re-pair.
     """
     return archive_root() / "browser-capture-receiver-token"
+
+
+def browser_capture_receiver_identity_path() -> Path:
+    """Path for the auto-minted, non-secret browser-capture receiver identity.
+
+    Scoped under ``archive_root()`` like the bearer token above, so two
+    ``polylogued`` instances with different ``POLYLOGUE_ARCHIVE_ROOT`` values
+    get distinct identities. Deliberately a *separate* file from the bearer
+    token: the identity is the receiver's stable pairing anchor and must
+    survive ordinary token rotation (polylogue-jlme.5); hashing the token
+    itself (the pre-jlme.5 design) made every rotation an identity change and
+    forced every paired extension profile through an unnecessary re-pair.
+    """
+    return archive_root() / "browser-capture-receiver-id"
 
 
 def archive_root() -> Path:

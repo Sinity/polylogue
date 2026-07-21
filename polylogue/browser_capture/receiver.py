@@ -33,7 +33,11 @@ from polylogue.core.json import loads as json_loads
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
-from polylogue.paths import browser_capture_receiver_token_path, browser_capture_spool_root
+from polylogue.paths import (
+    browser_capture_receiver_identity_path,
+    browser_capture_receiver_token_path,
+    browser_capture_spool_root,
+)
 
 logger = get_logger(__name__)
 
@@ -119,6 +123,40 @@ def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = Fals
             tmp_path.unlink()
         raise
     return token
+
+
+#: Entropy (raw hex chars) for the auto-minted, non-secret receiver identity.
+RECEIVER_IDENTITY_HEX_CHARS = 20
+
+
+def load_or_mint_receiver_identity(path: Path | None = None) -> str:
+    """Return the receiver's persisted stable pairing identity, minting one on first use.
+
+    Unlike :func:`load_or_mint_receiver_token`, this value is non-secret by
+    construction (safe to advertise in ``/v1/status`` and popup UI) and is
+    stored in its own file so it survives token rotation untouched. Written
+    atomically (mkstemp + ``os.replace``), matching the token-minting
+    pattern, though no ``fchmod`` is needed since there is nothing secret to
+    protect.
+    """
+    target = path if path is not None else browser_capture_receiver_identity_path()
+    if target.exists():
+        existing = target.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    identity = f"rx-{secrets.token_hex(RECEIVER_IDENTITY_HEX_CHARS // 2)}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(identity)
+        os.replace(tmp_path, target)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
+    return identity
 
 
 def resolve_receiver_auth_token(
@@ -577,18 +615,20 @@ def write_capture_envelope(
 def receiver_identity(config: BrowserCaptureReceiverConfig) -> str:
     """Return a stable, non-secret identity for one paired receiver.
 
-    The persisted bearer token is the receiver's pairing root and remains stable
-    across daemon restarts.  Hashing it with a domain separator produces a
-    comparison-safe identifier without sending the token itself.  The explicit
-    no-auth escape hatch has no token, so it falls back to the resolved spool
-    path; that setup is already opt-in and local-only.
+    Persisted independently of the bearer token and the spool path
+    (polylogue-jlme.5): identity is minted once per archive root
+    (:func:`load_or_mint_receiver_identity`) and then read back on every
+    call, so it survives daemon restarts, spool relocation, *and* ordinary
+    token rotation. The pre-jlme.5 design hashed the auth token to derive
+    this id, which meant every token rotation silently changed a paired
+    extension's trusted identity and forced an unnecessary re-pair — exactly
+    the failure mode ``gnie``'s automatic credential refresh depends on not
+    happening.
     """
-    if config.auth_token:
-        material = f"token:{config.auth_token}"
-    else:
-        material = f"no-auth-spool:{config.spool_path.expanduser().resolve()}"
-    digest = hashlib.sha256(f"polylogue-browser-capture-receiver\0{material}".encode()).hexdigest()
-    return f"rx-{digest[:20]}"
+    # `config` is kept as the call-site signature (every caller already has
+    # one in hand) but no longer feeds the identity itself.
+    _ = config
+    return load_or_mint_receiver_identity()
 
 
 def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, object]:
@@ -816,6 +856,7 @@ __all__ = [
     "BACKFILL_CHECKPOINT_MAX_BYTES",
     "BACKFILL_CHECKPOINT_MAX_FILES",
     "BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV",
+    "RECEIVER_IDENTITY_HEX_CHARS",
     "RECEIVER_TOKEN_ENTROPY_BYTES",
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
@@ -825,6 +866,7 @@ __all__ = [
     "_is_extension_origin_pattern",
     "capture_artifact_path",
     "existing_capture_state",
+    "load_or_mint_receiver_identity",
     "load_or_mint_receiver_token",
     "read_backfill_checkpoint",
     "receiver_identity",

@@ -434,10 +434,32 @@ async function receiverSettings() {
 
 async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
   trustedReceiverHealthCache = null;
+  const normalizedBaseUrl = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER;
   await chrome.storage.local.set({
     receiverAuthToken: String(receiverAuthToken || ""),
-    receiverBaseUrl: String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER,
+    receiverBaseUrl: normalizedBaseUrl,
   });
+  // An operator who explicitly types a non-canonical endpoint into settings
+  // is declaring a deliberate development pairing, not drifting there by
+  // accident. Record that intent on the pairing itself so a later stale
+  // probe reports loudly instead of silently self-healing back to the
+  // canonical endpoint out from under an intentional dev-loop session
+  // (polylogue-jlme.5). Pointing settings back at the canonical endpoint is
+  // an equally explicit act and clears the flag.
+  const prior = await storedReceiverPairing();
+  const isDevOverride = normalizedBaseUrl !== DEFAULT_RECEIVER;
+  if (prior && Boolean(prior.dev_override) !== isDevOverride) {
+    await persistReceiverPairing({ ...prior, dev_override: isDevOverride });
+  } else if (!prior && isDevOverride) {
+    await persistReceiverPairing({
+      state: "legacy",
+      endpoint: normalizedBaseUrl,
+      dev_override: true,
+      last_seen_at: null,
+      checked_at: new Date().toISOString(),
+      last_error: null,
+    });
+  }
   return receiverSettings();
 }
 
@@ -456,9 +478,14 @@ async function markReceiverPairingUnavailable(detail) {
   trustedReceiverHealthCache = null;
   const pairing = await storedReceiverPairing();
   if (!pairing) return null;
+  // A deliberately dev-overridden pairing going stale is not ordinary
+  // "receiver asleep" (calm, expected, self-heals) -- it is the operator's
+  // chosen endpoint disappearing, and canonical failover is intentionally
+  // suppressed for it (see checkReceiverHealth). Give it a distinct, loud
+  // state so the popup does not present it as routine.
   return persistReceiverPairing({
     ...pairing,
-    state: "offline",
+    state: pairing.dev_override ? "dev_override_stale" : "offline",
     last_error: String(detail || "receiver_unavailable"),
     checked_at: new Date().toISOString(),
   });
@@ -486,6 +513,7 @@ async function observeReceiverIdentity(status, endpoint) {
     return persistReceiverPairing({
       state: "legacy",
       endpoint,
+      dev_override: Boolean(prior?.dev_override),
       last_seen_at: now,
       checked_at: now,
       last_error: null,
@@ -523,6 +551,7 @@ async function observeReceiverIdentity(status, endpoint) {
     receiver_id: receiverId,
     api_schema: apiSchema,
     endpoint,
+    dev_override: Boolean(prior?.dev_override),
     paired_at: prior?.paired_at || now,
     last_seen_at: now,
     checked_at: now,
@@ -978,6 +1007,14 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
     allowCanonicalRecovery
     && settings.baseUrl !== DEFAULT_RECEIVER
     && pairingBefore?.receiver_id
+    // A deliberate dev-override pairing must not silently self-heal to the
+    // canonical endpoint: that is precisely the "quiet drift" this bounded
+    // recovery exists to fix for an *accidental* stale pairing, but here the
+    // non-canonical endpoint is the operator's explicit choice. Report the
+    // failure loudly instead (see markReceiverPairingUnavailable) and
+    // require an explicit reset/settings change, same as an identity
+    // mismatch.
+    && !pairingBefore?.dev_override
   ) {
     try {
       const canonical = await probeReceiverStatus(DEFAULT_RECEIVER, settings.authToken);
@@ -1000,7 +1037,7 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
   const pairing = await markReceiverPairingUnavailable(primaryFailure);
   return {
     ok: false,
-    status: "unreachable",
+    status: pairing?.state === "dev_override_stale" ? "dev_override_stale" : "unreachable",
     detail: primaryFailure,
     endpoint: settings.baseUrl,
     pairing,
