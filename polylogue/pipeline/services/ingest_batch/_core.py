@@ -566,6 +566,13 @@ def _write_session(
         signature_cache=signature_cache,
         stage_timings_s=stage_timings_s,
         preacquired_attachment_blobs=preacquired_attachment_blobs,
+        # Guard-gated bulk FTS for any prefix-tail re-extraction this write
+        # cascades into (polylogue-crd8). Byte-identical to per-row trigger
+        # mode (tests/unit/storage/test_bulk_fts_prefix_reextract.py) but
+        # avoids the per-deleted-row action_pairs/FTS rebuild storm: a live
+        # whale-session rewrite held the daemon writer >1h at 260GB of reads
+        # with zero commits (2026-07-22) under per-row mode.
+        bulk_fts=True,
     )
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
