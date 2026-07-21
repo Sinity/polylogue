@@ -3,8 +3,17 @@
 Provider adapters retain record-level parsing.  This module owns only the
 cross-adapter admission contract: public origin vocabulary, acquisition modes,
 detector tightness, registration/fixture evidence, fidelity, and reparse
-consequences.  The initial pilots deliberately cover a streaming runtime, a
-document export, and a reserved origin.
+consequences.  The founding pilots (polylogue-2qx.1.1) deliberately covered a
+streaming runtime (Claude Code), a document export (ChatGPT), and a reserved
+origin (Grok, which had no confirmed export shape at the time). Grok has since
+shipped a real parser (polylogue-611 / #3201) and is admitted here as
+``lifecycle="executable"`` -- there is currently no origin genuinely in
+``lifecycle="reserved"``. The reserved-lifecycle path (an origin admitted with
+no parser/detector binding pending a fixture) remains part of this module's
+executable contract; ``tests/unit/sources/test_origin_specs.py`` exercises it
+with a synthetic declaration rather than a real Origin member, since every
+current public ``Origin`` token is already either executable or
+compatibility-only.
 """
 
 from __future__ import annotations
@@ -103,6 +112,14 @@ class OriginSpecDiagnostic:
     repair_command: str
 
 
+#: Provider-wire token values. A public origin name that collides with one of
+#: these would let a raw provider-wire spelling masquerade as public origin
+#: vocabulary (docs/provider-origin-identity.md's doctrine). No current
+#: ``Origin`` member collides with a ``Provider`` member; this check keeps
+#: that true as new origins are admitted.
+_PROVIDER_TOKEN_VALUES = frozenset(provider.value for provider in Provider)
+
+
 class OriginSpecRegistry:
     """Register origin declarations and reject incomplete admission edges."""
 
@@ -113,6 +130,11 @@ class OriginSpecRegistry:
     def register(self, spec: OriginSpec) -> OriginSpec:
         if spec.origin in self._by_origin:
             raise ValueError(f"duplicate OriginSpec for {spec.origin.value!r}")
+        if spec.declaration.public_name in _PROVIDER_TOKEN_VALUES:
+            raise ValueError(
+                f"{spec.origin.value}: public origin name {spec.declaration.public_name!r} leaks a "
+                "Provider-wire token; public origin vocabulary must not collide with provider-wire spelling"
+            )
         if spec.declaration.public_name != spec.origin.value:
             raise ValueError(f"{spec.origin.value}: declaration public name must equal the public Origin token")
         if not spec.acquisition_modes:
@@ -866,6 +888,41 @@ def validate_dispatch_precedence(provider_order: tuple[Provider, ...]) -> tuple[
     return tuple(sorted(diagnostics, key=lambda item: (item.origin.value, item.code)))
 
 
+def validate_stream_parser_parity(stream_record_providers: frozenset[Provider]) -> tuple[OriginSpecDiagnostic, ...]:
+    """Check that declared ``stream_parser_path`` presence matches dispatch's stream-record providers.
+
+    ``sources/dispatch.py:STREAM_RECORD_PROVIDERS`` is the current production
+    set of providers whose JSONL sources are parsed via a streaming record
+    path rather than a fully-materialized payload. An executable OriginSpec
+    whose provider wire is in that set but declares no ``stream_parser_path``
+    (or vice versa) is a stream/parser binding conflict: the declaration would
+    silently under- or over-promise streaming support relative to the actual
+    dispatch behavior it is supposed to describe.
+    """
+
+    diagnostics: list[OriginSpecDiagnostic] = []
+    for spec in ORIGIN_SPECS:
+        if spec.lifecycle != "executable":
+            continue
+        expects_stream = any(provider in stream_record_providers for provider in spec.provider_wires)
+        declares_stream = spec.stream_parser_path is not None
+        if expects_stream == declares_stream:
+            continue
+        diagnostics.append(
+            OriginSpecDiagnostic(
+                code="stream_parser_parity_mismatch",
+                message=(
+                    f"{spec.origin.value}: dispatch expects a stream parser binding ({expects_stream}) but "
+                    f"OriginSpec declares stream_parser_path={spec.stream_parser_path!r}"
+                ),
+                origin=spec.origin,
+                owner_path=spec.declaration.owner_path,
+                repair_command=spec.declaration.repair_command,
+            )
+        )
+    return tuple(sorted(diagnostics, key=lambda item: (item.origin.value, item.code)))
+
+
 __all__ = [
     "ORIGIN_SPECS",
     "ORIGIN_SPEC_REGISTRY",
@@ -879,4 +936,5 @@ __all__ = [
     "artifact_rule_for_path",
     "artifact_suffixes_for_provider",
     "validate_dispatch_precedence",
+    "validate_stream_parser_parity",
 ]
