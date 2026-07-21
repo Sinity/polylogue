@@ -1578,7 +1578,9 @@ def _parse_one(
                     profile_root=Path(source_path).parent,
                 )
             if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path):
-                return hermes_verification.parse_verification_evidence_db(sqlite_path, fallback_id=fallback_id)
+                return hermes_verification.parse_verification_evidence_db(
+                    sqlite_path, fallback_id=fallback_id, profile_root=Path(source_path).parent
+                )
     return parse_payload(
         provider,
         list(_iter_json_stream(BytesIO(payload), source_name)),
