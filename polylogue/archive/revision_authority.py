@@ -33,6 +33,28 @@ BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision a
 #: later-discovered raw as an unconditional singleton byte-proven baseline.
 HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL = "historical non-prefix full revision governance"
 
+#: All ``raw_membership_census.detail`` marker literals that mean "this raw
+#: was retired from full-revision byte governance to membership governance"
+#: (polylogue-hm2f, residual of polylogue-52l2). Durable ``raw_membership_
+#: census`` rows written before the #3234 fix used the literal
+#: ``"cross-route full revision governance"`` at the live-watcher call site
+#: (``sources/live/batch.py``, pre-fix) -- a DIFFERENT string from
+#: ``HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL``, which only the offline
+#: backfill call site used at the time. Those pre-fix rows are durable
+#: (``source.db``) and were never rewritten in place (durable-tier changes
+#: need an explicit additive migration, not a silent detail-string rewrite),
+#: so identities retired under the legacy literal remain invisible to a guard
+#: query keyed on the new marker alone. ``ArchiveStore.raw_membership_
+#: retired_full_revision_siblings`` matches against every literal in this
+#: tuple so old and new retirements are both recognized. The legacy literal
+#: is frozen here for read-compatibility only -- it must never be written by
+#: new code (both current call sites use ``HISTORICAL_NON_PREFIX_GOVERNANCE_
+#: DETAIL`` exclusively).
+RETIRED_FULL_REVISION_GOVERNANCE_DETAILS: tuple[str, ...] = (
+    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+    "cross-route full revision governance",  # legacy pre-#3234 literal -- read-only, never write.
+)
+
 
 @dataclass(frozen=True)
 class RawRevisionEnvelope:

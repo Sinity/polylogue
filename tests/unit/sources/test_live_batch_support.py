@@ -15,6 +15,7 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
+    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
@@ -3391,6 +3392,158 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
         assert conn.execute(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:shared'"
         ).fetchone() == (accepted_raw_id,)
+
+
+def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path) -> None:
+    """polylogue-hm2f: the live incremental path must reunite retired siblings, not drop new raws forever.
+
+    Mirrors the exact live call sequence the polylogue-52l2 guard protects
+    (``bind_raw_revision`` -> ``classify_raw_revision_cohort``), then proves
+    the new routing this fix adds: when that cohort comes back empty AND
+    ``raw_membership_retired_full_revision_siblings`` shows this identity has
+    known siblings already retired to membership governance -- exactly the
+    durable state offline backfill (``sources/revision_backfill.py``,
+    ``convertible_full_revision_raw_ids`` + ``replace_raw_membership_census``)
+    leaves behind for a decided-ambiguous full-only cohort -- a newly
+    discovered THIRD raw for the same identity must be folded into that same
+    membership governance and weighed by the real content-prefix classifier
+    (``classify_membership_revisions``) alongside every known sibling,
+    instead of being silently dropped with only a warning log line (the
+    pre-fix behavior: ``bind_raw_revision`` succeeds, but no
+    ``raw_session_memberships`` row is ever written for the raw and the file
+    surfaces as failed with zero evidence trail).
+
+    raw_a=["base","left"], raw_b=["base","right"] are byte-divergent (not a
+    prefix of one another) -- a genuine, decided ambiguous cohort, retired
+    here exactly the way ``backfill_historical_revision_evidence`` retires
+    one once ``classify_raw_revision_cohort`` returns no accepted chain.
+    raw_c=["base","left","extra"] then arrives through the live incremental
+    path (``LiveBatchProcessor._ingest_full_paths_sync``, the production
+    entry point, not a hand-simulated call). Content-wise raw_c does not
+    strictly dominate raw_b (they diverge at message index 1) so the real
+    classifier correctly still refuses to pick a winner -- but critically
+    that decision is reached by weighing raw_c against BOTH retired
+    siblings, and raw_c ends up in ``raw_session_memberships`` with a real,
+    decided outcome alongside raw_a and raw_b, proving reunification
+    happened rather than raw_c being evaluated alone or dropped.
+    """
+
+    def conversation(native_id: str, *texts: str) -> dict[str, object]:
+        mapping: dict[str, object] = {
+            "root": {"id": "root", "message": None, "parent": None, "children": [f"{native_id}-node-0"]}
+        }
+        for index, text in enumerate(texts):
+            node_id = f"{native_id}-node-{index}"
+            next_node = f"{native_id}-node-{index + 1}" if index + 1 < len(texts) else None
+            mapping[node_id] = {
+                "id": node_id,
+                "parent": "root" if index == 0 else f"{native_id}-node-{index - 1}",
+                "children": [] if next_node is None else [next_node],
+                "message": {
+                    "id": f"{native_id}-message-{index}",
+                    "author": {"role": "user"},
+                    "create_time": 1_780_000_000.0 + index,
+                    "content": {"content_type": "text", "parts": [text]},
+                    "metadata": {},
+                },
+            }
+        return {
+            "id": native_id,
+            "title": native_id,
+            "current_node": f"{native_id}-node-{len(texts) - 1}",
+            "mapping": mapping,
+        }
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
+        raw_a = store.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps([conversation("shared", "base", "left")]).encode(),
+            source_path="a.json",
+            acquired_at_ms=1,
+        )
+        store.bind_raw_revision(
+            raw_a,
+            RawRevisionEnvelope(
+                "chatgpt:shared", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        raw_b = store.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps([conversation("shared", "base", "right")]).encode(),
+            source_path="b.json",
+            acquired_at_ms=2,
+        )
+        store.bind_raw_revision(
+            raw_b,
+            RawRevisionEnvelope(
+                "chatgpt:shared", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+
+        # Exactly the polylogue-52l2 guard-tripping sequence: no unique
+        # byte-prefix chain across a and b.
+        plan = store.classify_raw_revision_cohort("chatgpt:shared")
+        assert plan.accepted_raw_ids == ()
+
+        # Mirror backfill_historical_revision_evidence's own retirement step
+        # once a full-only cohort is decided ambiguous: move every
+        # convertible full raw to membership governance.
+        for raw_id in store.convertible_full_revision_raw_ids("chatgpt:shared"):
+            sessions = LiveBatchProcessor._parse_retained_raw_sessions(store, raw_id)
+            store.replace_raw_membership_census(
+                raw_id,
+                sessions,
+                parser_fingerprint="revision-membership-v1",
+                censused_at_ms=0,
+                detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                retire_full_revision_governance=True,
+            )
+        store.commit()
+        retired_siblings = store.raw_membership_retired_full_revision_siblings("chatgpt:shared")
+    assert set(retired_siblings) == {raw_a, raw_b}
+
+    # A THIRD raw for the same logical identity, discovered afterward
+    # through the actual live incremental entry point.
+    root = tmp_path / "inbox"
+    root.mkdir()
+    third = root / "third.json"
+    third.write_text(json.dumps([conversation("shared", "base", "left", "extra")]), encoding="utf-8")
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    third_result = processor._ingest_full_paths_sync([third], source_name="inbox")
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT r.source_path, m.decision
+            FROM raw_session_memberships AS m
+            JOIN raw_sessions AS r USING (raw_id)
+            WHERE m.logical_source_key = 'chatgpt:shared'
+            ORDER BY r.source_path
+            """
+        ).fetchall()
+
+    # Reunification proof: raw_c (third.json) has a raw_session_memberships
+    # row -- it was folded into the SAME membership cohort as raw_a/raw_b,
+    # not evaluated alone and not silently dropped. Every member of the
+    # cohort has a real DECIDED outcome (not NULL/pending, not simply
+    # absent).
+    by_path = dict(rows)
+    assert set(by_path) == {"a.json", "b.json", str(third)}
+    assert all(decision is not None for decision in by_path.values())
+
+    # The genuine three-way content divergence still correctly refuses to
+    # pick a winner -- reunification recovers a real resolution when one
+    # exists, it does not fabricate one.
+    assert by_path[str(third)] == "ambiguous"
+    assert third_result.failed == [third]
+    assert third_result.succeeded == []
 
 
 def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_path: Path) -> None:

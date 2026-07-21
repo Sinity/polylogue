@@ -536,6 +536,97 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
     assert second_plan.accepted_raw_ids == ()
 
 
+def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail_string(
+    tmp_path: Path,
+) -> None:
+    """polylogue-hm2f: the 52l2 guard must also recognize legacy-detail retirements.
+
+    Durable ``raw_membership_census`` rows written by ``sources/live/batch.py``
+    BEFORE #3234 carry ``detail="cross-route full revision governance"`` (the
+    pre-fix literal at that call site) instead of the shared
+    ``HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL`` marker the #3234 guard query
+    matches. This is a byte-for-byte mirror of
+    ``test_isolated_later_raw_does_not_override_known_ambiguous_cohort``
+    except the two siblings are retired under that legacy literal directly
+    (as durable pre-#3234 rows would already be on disk) instead of the
+    current shared constant -- proving the guard's widened ``detail IN (...)``
+    match, not just its original single-literal match.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    def parsed_solo(native_id: str, *texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=native_id,
+            messages=[
+                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(texts)
+            ],
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_a = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            raw_a,
+            RawRevisionEnvelope(
+                "chatgpt:s1", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        raw_b = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"bbb-right", source_path="b.json", acquired_at_ms=2
+        )
+        archive.bind_raw_revision(
+            raw_b,
+            RawRevisionEnvelope(
+                "chatgpt:s1", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+
+        first_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+        assert first_plan.accepted_raw_ids == ()
+
+        # Retire both siblings under the LEGACY pre-#3234 literal, not the
+        # current shared constant -- this is what a durable row written
+        # before #3234 actually contains on disk.
+        for raw_id, session in (
+            (raw_a, parsed_solo("s1", "base", "left")),
+            (raw_b, parsed_solo("s1", "base", "right")),
+        ):
+            archive.replace_raw_membership_census(
+                raw_id,
+                [session],
+                parser_fingerprint="revision-membership-v1",
+                censused_at_ms=0,
+                detail="cross-route full revision governance",
+                retire_full_revision_governance=True,
+            )
+
+        # A THIRD raw for the same logical identity, discovered afterward.
+        raw_c = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+        )
+        archive.bind_raw_revision(
+            raw_c,
+            RawRevisionEnvelope(
+                "chatgpt:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        second_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+
+    # Same assertion as the shared-constant test: the isolated raw must not
+    # be promoted alone against siblings retired under the legacy literal.
+    assert second_plan.accepted_raw_ids == ()
+
+    # Anti-vacuity: removing the legacy literal from the tuple this guard
+    # matches against must make this exact test fail. Assert the tuple still
+    # names it explicitly, so a future edit that drops it is caught here too.
+    from polylogue.archive.revision_authority import RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
+
+    assert "cross-route full revision governance" in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
+
+
 def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 

@@ -1823,36 +1823,92 @@ class LiveBatchProcessor:
                                 ),
                             )
                             plan = archive.classify_raw_revision_cohort(logical_source_key)
-                            if not plan.accepted_raw_ids:
-                                # classify_raw_revision_cohort is a synchronous,
-                                # purely byte-level classification (no async
-                                # conveyor revisits it) -- an empty cohort here
-                                # is a genuine, terminal rewrite/divergence
-                                # conflict, not a pending hand-off. Leave this
-                                # raw out of both raw_ids and deferred_raw_ids so
-                                # the caller's aggregation counts it as a real
-                                # failure (fail-closed), with a log line so the
-                                # cause is diagnosable.
-                                logger.warning(
-                                    "live.watcher: no unique byte-revision candidate accepted for %s "
-                                    "(logical_source_key=%s) -- surfacing as failed",
+                            if plan.accepted_raw_ids:
+                                parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
+                                session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+                                    plan,
+                                    parsed_by_raw_id,
+                                    acquired_at_ms=acquired_at_ms,
+                                    stage_timings_s=record_timings,
+                                    stage_timing_prefix="full",
+                                )
+                                record_session_ids.append(session_id)
+                                record_session_count = 1
+                                record_message_count = sum(
+                                    len(parsed_by_raw_id[raw_id].messages) for raw_id in applied_raw_ids
+                                )
+                            else:
+                                # polylogue-hm2f (live-path half of the
+                                # polylogue-52l2 guard): an empty cohort here
+                                # can mean two different things.
+                                #
+                                # (1) This identity has NO retired sibling
+                                # evidence -- a genuine, terminal
+                                # rewrite/divergence conflict between raws
+                                # that are all still live 'full' rows. There
+                                # is nothing this tick can safely resolve;
+                                # leave this raw out of both raw_ids and
+                                # deferred_raw_ids so the caller's aggregation
+                                # counts it as a real failure (fail-closed),
+                                # with a log line so the cause is diagnosable.
+                                #
+                                # (2) This identity DOES have retired sibling
+                                # evidence (raw_membership_retired_full_
+                                # revision_siblings is non-empty): the 52l2
+                                # guard is exactly what emptied this cohort.
+                                # Offline backfill reunites retired siblings
+                                # with a newly discovered raw via its own
+                                # connected-component/membership_candidates
+                                # bookkeeping across the whole census pass;
+                                # the live incremental path processes one
+                                # record per tick with no such durable
+                                # bookkeeping, so it re-derives the sibling
+                                # set from the same durable marker the guard
+                                # itself reads. Fold this raw into membership
+                                # governance -- the same call sequence used
+                                # above for pre-existing-membership and
+                                # multi-session identities -- and pass the
+                                # retired siblings in explicitly so the real
+                                # content-prefix classifier
+                                # (classify_membership_revisions) weighs this
+                                # raw against every known sibling instead of
+                                # evaluating it alone. If the siblings turn
+                                # out to genuinely disagree, that classifier
+                                # still refuses to pick a winner (ambiguous
+                                # quarantine), so this can only ever recover a
+                                # real resolution, never fabricate one.
+                                retired_siblings = archive.raw_membership_retired_full_revision_siblings(
+                                    logical_source_key
+                                )
+                                if not retired_siblings:
+                                    logger.warning(
+                                        "live.watcher: no unique byte-revision candidate accepted for %s "
+                                        "(logical_source_key=%s) -- surfacing as failed",
+                                        record.source_path,
+                                        logical_source_key,
+                                    )
+                                    continue
+                                logger.info(
+                                    "live.watcher: reunifying %s with %d retired sibling(s) under membership "
+                                    "governance (logical_source_key=%s)",
                                     record.source_path,
+                                    len(retired_siblings),
                                     logical_source_key,
                                 )
-                                continue
-                            parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
-                            session_id, applied_raw_ids = archive.apply_raw_revision_replay(
-                                plan,
-                                parsed_by_raw_id,
-                                acquired_at_ms=acquired_at_ms,
-                                stage_timings_s=record_timings,
-                                stage_timing_prefix="full",
-                            )
-                            record_session_ids.append(session_id)
-                            record_session_count = 1
-                            record_message_count = sum(
-                                len(parsed_by_raw_id[raw_id].messages) for raw_id in applied_raw_ids
-                            )
+                                (
+                                    record_session_ids,
+                                    record_session_count,
+                                    record_message_count,
+                                    raw_authority_complete,
+                                ) = self._apply_membership_sessions(
+                                    archive,
+                                    source_raw_id,
+                                    sessions,
+                                    acquired_at_ms=acquired_at_ms,
+                                    stage_timings_s=record_timings,
+                                    allow_current_complete_raw=True,
+                                    extra_member_raw_ids=retired_siblings,
+                                )
                     else:
                         archive.replace_raw_membership_census(
                             source_raw_id,
@@ -1958,7 +2014,22 @@ class LiveBatchProcessor:
         acquired_at_ms: int,
         stage_timings_s: dict[str, float] | None = None,
         allow_current_complete_raw: bool = False,
+        extra_member_raw_ids: tuple[str, ...] = (),
     ) -> tuple[list[str], int, int, bool]:
+        """Apply membership-governed classification for one logical identity.
+
+        ``extra_member_raw_ids`` (polylogue-hm2f) names raws that carry known
+        membership evidence for this identity but are not currently
+        discoverable through ``archive.raw_membership_raw_ids`` -- concretely,
+        raws previously retired from full-revision byte governance
+        (``raw_membership_retired_full_revision_siblings``): their
+        ``raw_session_memberships`` row survives retirement with
+        ``revision_authority`` left at the default ``'quarantined'``, so the
+        ordinary byte-proven-or-caller-owned query never surfaces them. Forced
+        inclusion here is what lets a later-discovered raw be weighed by the
+        real content-prefix classifier against siblings the 52l2 guard is
+        aware of instead of being evaluated alone.
+        """
         session_ids: list[str] = []
         session_count = 0
         message_count = 0
@@ -1996,6 +2067,9 @@ class LiveBatchProcessor:
                     include_complete_raw_id=source_raw_id if allow_current_complete_raw else None,
                 )
             )
+            for extra_raw_id in extra_member_raw_ids:
+                if extra_raw_id not in member_raw_ids:
+                    member_raw_ids.append(extra_raw_id)
             accepted_head_raw_id = archive.raw_revision_head_raw_id(logical_source_key)
             if accepted_head_raw_id is not None and accepted_head_raw_id not in member_raw_ids:
                 member_raw_ids.append(accepted_head_raw_id)
