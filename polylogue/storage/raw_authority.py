@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
 from polylogue.logging import get_logger
 
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v1"
@@ -1446,6 +1446,107 @@ def recover_interrupted_raw_authority_censuses(
     return census_scopes
 
 
+_FRONTIER_WITNESS_SCHEMA = "polylogue.raw-authority-frontier-plan.v1"
+
+
+def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSONDocument | None:
+    """Read-only lookup of one unresolved blocker's resolution-eligibility shape.
+
+    Returns ``None`` when the blocker does not exist or is already resolved.
+    Zero-mutation counterpart to :func:`resolve_raw_authority_blocker`'s own
+    lookup -- used by ``BlockerResolveActuator.prepare``
+    (``polylogue.operations.mutation_actuators``) to build a hashable plan
+    without opening a write transaction against ``source.db``.
+    """
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        return None
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
+        ).fetchone()
+        if exists is None:
+            return None
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT b.blocker_id, b.plan_id, b.census_id, b.reason, b.created_at_ms,
+                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema
+            FROM raw_authority_blockers AS b
+            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
+            WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
+            """,
+            (blocker_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    kind = "frontier_judgment" if str(row["witness_schema"]) == _FRONTIER_WITNESS_SCHEMA else "stale_plan"
+    return json_document(
+        {
+            "blocker_id": str(row["blocker_id"]),
+            "plan_id": str(row["plan_id"]),
+            "census_id": str(row["census_id"]),
+            "reason": str(row["reason"]),
+            "created_at_ms": int(row["created_at_ms"]),
+            "kind": kind,
+        }
+    )
+
+
+def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 100) -> JSONDocumentList:
+    """Read-only inventory of every unresolved raw-authority blocker.
+
+    Distinguishes ``frontier_judgment`` blockers (require an accepted
+    judgment assertion id + ``retain_canonical_authority`` disposition, per
+    :func:`resolve_raw_authority_blocker`) from ordinary ``stale_plan``
+    blockers (replanning against current source/index evidence is enough).
+    This is the operator discovery surface the CLI's exact-``--blocker-id``
+    resolve command lacked -- previously the only way to learn an unresolved
+    ``blocker_id`` was ``raw-authority-census``/``raw-authority-detail``
+    page-walking or a hand-written script against the live archive.
+    """
+    if not 1 <= limit <= 500:
+        raise ValueError("raw authority blocker list limit must be between 1 and 500")
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        return []
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
+        ).fetchone()
+        if exists is None:
+            return []
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT b.blocker_id, b.plan_id, b.census_id, b.reason, b.created_at_ms,
+                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema
+            FROM raw_authority_blockers AS b
+            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
+            WHERE b.resolved_at_ms IS NULL
+            ORDER BY b.created_at_ms, b.blocker_id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        json_document(
+            {
+                "blocker_id": str(row["blocker_id"]),
+                "plan_id": str(row["plan_id"]),
+                "census_id": str(row["census_id"]),
+                "reason": str(row["reason"]),
+                "created_at_ms": int(row["created_at_ms"]),
+                "kind": (
+                    "frontier_judgment" if str(row["witness_schema"]) == _FRONTIER_WITNESS_SCHEMA else "stale_plan"
+                ),
+                "detail_query_handle": raw_authority_detail_query_handle(str(row["census_id"]), str(row["plan_id"])),
+            }
+        )
+        for row in rows
+    ]
+
+
 def resolve_raw_authority_blocker(
     archive_root: Path,
     blocker_id: str,
@@ -1690,8 +1791,10 @@ __all__ = [
     "RawReplayPlanStatus",
     "build_raw_replay_plan",
     "build_raw_replay_plans",
+    "describe_raw_authority_blocker",
     "finalize_raw_authority_census",
     "latest_raw_authority_census_receipt",
+    "list_unresolved_raw_authority_blockers",
     "raw_replay_application_receipt",
     "raw_authority_census_query_handle",
     "raw_authority_detail_query_handle",

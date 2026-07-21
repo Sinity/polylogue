@@ -155,10 +155,18 @@ def resolve_blocker(
     )
 
 
+def list_blockers(archive_root: Path, *, limit: int = 100) -> list[JSONDocument]:
+    """Read-only inventory of unresolved raw-authority blockers (operator discovery surface)."""
+    from polylogue.storage.raw_authority import list_unresolved_raw_authority_blockers
+
+    return list_unresolved_raw_authority_blockers(archive_root, limit=limit)
+
+
 __all__ = [
     "RawMaterializationCounts",
     "apply_frontier",
     "inspect_frontier",
+    "list_blockers",
     "read_census",
     "read_detail",
     "recover_interrupted_frontier",
