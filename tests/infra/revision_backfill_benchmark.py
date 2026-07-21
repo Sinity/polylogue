@@ -27,6 +27,23 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 SMALL_PAYLOAD_SHAPE: dict[str, int] = {"raw_count": 200, "avg_payload_bytes": 50_000}
 LARGE_PAYLOAD_SHAPE: dict[str, int] = {"raw_count": 80, "avg_payload_bytes": 1_700_000}
 
+# polylogue-odm1: one oversized ("whale") raw alongside a population of
+# small independent raws -- the shape of the v42 walk's whale-bearing rebuild
+# pages (a multi-hundred-MB Codex rollout sharing a page with many ordinary
+# sessions). ``whale_payload_bytes`` is deliberately far smaller than the
+# live 442MB receipts: the ratio between spill+reload cost and the
+# whale-aware-resident cost is what polylogue-odm1 measures, not the
+# absolute byte count, and a multi-hundred-MB fixture would make the test
+# suite itself slow. Benchmarks that need the real threshold math to trigger
+# on a payload this size shrink ``_ParsedSessionSpill``'s cache-size class
+# constants instead of growing the fixture (see
+# ``tests/benchmarks/test_whale_census_spill_bench.py``).
+WHALE_BEARING_SHAPE: dict[str, int] = {
+    "small_raw_count": 40,
+    "small_avg_payload_bytes": 20_000,
+    "whale_payload_bytes": 40_000_000,
+}
+
 # polylogue-nh44: one growing-file cohort shaped after the bead's own live
 # evidence (a Codex rollout file re-captured on every scan, each capture a
 # byte-superset of the last). ~1MB final size, 50 superseded snapshots plus
@@ -152,10 +169,49 @@ def build_revision_chain_corpus(
     return raw_ids
 
 
+def build_whale_bearing_corpus(
+    archive_root: Path,
+    *,
+    small_raw_count: int,
+    small_avg_payload_bytes: int,
+    whale_payload_bytes: int,
+) -> tuple[list[str], str]:
+    """Write a population of small independent raws plus one oversized
+    ("whale") raw, all uncensused single-session Codex records sharing no
+    cohort relationship (isolates whale-residency behavior from cohort
+    classification, same rationale as ``build_independent_raw_corpus``).
+
+    Returns ``(small_raw_ids, whale_raw_id)`` in insertion order. The archive
+    root is initialized fresh; call once per corpus.
+    """
+    initialize_active_archive_root(archive_root)
+    small_raw_ids: list[str] = []
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for index in range(small_raw_count):
+            payload = _codex_raw_payload(index, target_bytes=small_avg_payload_bytes)
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"synthetic-odm1/session-{index:06d}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            small_raw_ids.append(raw_id)
+        whale_payload = _codex_raw_payload(small_raw_count, target_bytes=whale_payload_bytes)
+        whale_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=whale_payload,
+            source_path="synthetic-odm1/whale-session.jsonl",
+            acquired_at_ms=small_raw_count + 1,
+        )
+    return small_raw_ids, whale_raw_id
+
+
 __all__ = [
     "LARGE_PAYLOAD_SHAPE",
     "REVISION_CHAIN_SHAPE",
     "SMALL_PAYLOAD_SHAPE",
+    "WHALE_BEARING_SHAPE",
     "build_independent_raw_corpus",
     "build_revision_chain_corpus",
+    "build_whale_bearing_corpus",
 ]

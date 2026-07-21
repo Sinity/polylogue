@@ -1358,6 +1358,30 @@ class _ParsedSessionSpill:
     _DECODED_CACHE_MIN_TREE_BYTES: Final[int] = 256 * 1024 * 1024
     _DECODED_CACHE_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
 
+    #: Whale-residency ceiling (polylogue-odm1): a single parsed tree that
+    #: exceeds ``_decoded_budget`` above is, by construction, never retained
+    #: by the hot multi-entry cache -- it previously fell all the way through
+    #: to the sqlite spill (pickle.dumps at census, pickle.loads on every
+    #: later ``for_raw()``), or, once the spill's own payload-byte budget was
+    #: also exhausted, was silently dropped and had to be REPARSED FROM RAW
+    #: BYTES on every subsequent ``for_raw()`` call -- the dominant cost on
+    #: whale-bearing rebuild pages (v42 walk receipts: spill_load = 41% of a
+    #: 1440.2s page). A whale is a transient, effectively single-occupant
+    #: resident (the hot cache already handles the "many small/medium trees"
+    #: case), so it can safely claim a much larger fraction of budgeted RAM
+    #: than the multi-entry hot pool without changing the pool's own sizing
+    #: philosophy: same ``effective_physical_memory_bytes()`` input, a wider
+    #: divisor (physical RAM / 4 instead of / 16) and a proportionally wider
+    #: absolute ceiling (8 GiB instead of 2 GiB), floored at whatever
+    #: ``_decoded_budget`` resolved to so the whale tier is never narrower
+    #: than the hot tier it complements. Bypassing the sqlite round trip
+    #: entirely (no pickle.dumps, no pickle.loads) is safe: the durable raw
+    #: bytes remain the replay fallback (``_parse_retained_raw``) if this
+    #: process dies before ``for_raw()`` is called, so nothing is lost, only
+    #: possibly reparsed once more on restart -- identical to today's
+    #: existing crash-recovery contract for the sqlite-backed spill.
+    _WHALE_CACHE_MAX_TREE_BYTES: Final[int] = 8 * 1024 * 1024 * 1024
+
     def __init__(self, archive_root: Path, *, max_cached_payload_bytes: int | None) -> None:
         # Place the spill beside the RESOLVED index tier, not the archive
         # root: on deployments where the .db files are symlinks (e.g. root
@@ -1399,6 +1423,20 @@ class _ParsedSessionSpill:
             if physical
             else self._DECODED_CACHE_MIN_TREE_BYTES
         )
+        # Whale-residency tier (polylogue-odm1): a bounded, FIFO-evicted
+        # sibling of ``_decoded`` for parsed trees too large for the hot
+        # cache's own budget. See ``_WHALE_CACHE_MAX_TREE_BYTES`` for the
+        # sizing rationale. Its accounting is fully independent of
+        # ``_decoded_tree_bytes`` -- the two tiers never compete for the same
+        # budgeted bytes, so peak RAM is bounded by the sum of both ceilings,
+        # not by either alone.
+        self._whales: dict[str, tuple[list[ParsedSession], int, int]] = {}
+        self._whale_tree_bytes = 0
+        self._whale_budget = (
+            max(self._decoded_budget, min(self._WHALE_CACHE_MAX_TREE_BYTES, physical // 4))
+            if physical
+            else self._decoded_budget
+        )
 
     def __enter__(self) -> _ParsedSessionSpill:
         return self
@@ -1414,10 +1452,30 @@ class _ParsedSessionSpill:
         self.path.unlink(missing_ok=True)
 
     def add(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
+        tree_bytes = estimate_parsed_tree_bytes(sessions)
+        if tree_bytes > self._decoded_budget and self._retain_whale(
+            raw_id, sessions, payload_bytes=payload_bytes, tree_bytes=tree_bytes
+        ):
+            # Size-partitioned spill (polylogue-odm1): a tree too big for the
+            # hot cache but within the whale ceiling bypasses the sqlite
+            # spill entirely -- no pickle.dumps now, no pickle.loads later.
+            # Correctness fallback: ``_retain_whale`` returns False (and
+            # execution falls through to the unchanged sqlite path below)
+            # whenever holding it resident would exceed the whale budget, so
+            # a session too large for EITHER tier still gets spilled exactly
+            # as before.
+            return
+        if self._spill_to_sqlite(raw_id, sessions, payload_bytes=payload_bytes):
+            self._retain_decoded(raw_id, sessions, payload_bytes=payload_bytes, tree_bytes=tree_bytes)
+
+    def _spill_to_sqlite(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> bool:
+        """Pickle ``sessions`` into the sqlite spill, subject to the caller's
+        overall payload-byte budget. Returns whether the write happened.
+        """
         if self.max_cached_payload_bytes is None or payload_bytes > self.max_cached_payload_bytes:
-            return
+            return False
         if self.cached_payload_bytes + payload_bytes > self.max_cached_payload_bytes:
-            return
+            return False
         with self.conn:
             self.conn.executemany(
                 "INSERT INTO parsed_sessions(raw_id, logical_key, payload_bytes, parsed) VALUES (?, ?, ?, ?)",
@@ -1432,10 +1490,11 @@ class _ParsedSessionSpill:
                 ),
             )
         self.cached_payload_bytes += payload_bytes
-        self._retain_decoded(raw_id, sessions, payload_bytes=payload_bytes)
+        return True
 
-    def _retain_decoded(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
-        tree_bytes = estimate_parsed_tree_bytes(sessions)
+    def _retain_decoded(
+        self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int, tree_bytes: int
+    ) -> None:
         if tree_bytes > self._decoded_budget:
             return
         while self._decoded and self._decoded_tree_bytes + tree_bytes > self._decoded_budget:
@@ -1445,10 +1504,44 @@ class _ParsedSessionSpill:
         self._decoded[raw_id] = (sessions, payload_bytes, tree_bytes)
         self._decoded_tree_bytes += tree_bytes
 
+    def _retain_whale(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int, tree_bytes: int) -> bool:
+        """Hold an outsized parsed tree resident, bypassing the sqlite spill.
+
+        Returns ``False`` (retaining nothing) when ``tree_bytes`` alone
+        exceeds ``_whale_budget`` -- the caller must then fall back to the
+        existing spill-or-reparse path rather than blow the memory budget.
+        Otherwise evicts oldest whale entries (FIFO, mirroring
+        ``_retain_decoded``) until the new entry fits and retains it.
+
+        A rare multi-whale page can still exceed the whale budget across
+        several distinct oversized raws even though each individually fits.
+        An entry evicted here to make room was never written to the sqlite
+        spill (that write was deliberately skipped to avoid the pickle
+        cost) -- so, unlike the hot cache's plain eviction, degrade it into
+        the sqlite spill as a courtesy on the way out (best-effort; if the
+        sqlite spill's own payload budget is also exhausted the entry is
+        dropped exactly as today's pre-lever code would drop it, falling
+        back to reparse-from-source on next access -- never worse than the
+        unpatched baseline).
+        """
+        if tree_bytes > self._whale_budget:
+            return False
+        while self._whales and self._whale_tree_bytes + tree_bytes > self._whale_budget:
+            oldest_raw = next(iter(self._whales))
+            evicted_sessions, evicted_payload, evicted_tree = self._whales.pop(oldest_raw)
+            self._whale_tree_bytes -= evicted_tree
+            self._spill_to_sqlite(oldest_raw, evicted_sessions, payload_bytes=evicted_payload)
+        self._whales[raw_id] = (sessions, payload_bytes, tree_bytes)
+        self._whale_tree_bytes += tree_bytes
+        return True
+
     def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
         decoded = self._decoded.get(raw_id)
         if decoded is not None:
             return decoded[0], decoded[1]
+        whale = self._whales.get(raw_id)
+        if whale is not None:
+            return whale[0], whale[1]
         rows = self.conn.execute(
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
         ).fetchall()
