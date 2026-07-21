@@ -15,6 +15,7 @@ from polylogue.archive.ingest_flags import (
 )
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
+from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
 from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
@@ -31,8 +32,10 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.revision_backfill_benchmark import (
     REVISION_CHAIN_SHAPE,
+    WHALE_BEARING_SHAPE,
     build_independent_raw_corpus,
     build_revision_chain_corpus,
+    build_whale_bearing_corpus,
 )
 
 
@@ -1714,3 +1717,203 @@ def test_parse_unique_retained_raws_routes_to_threads_when_probe_true(
 
     assert results == sentinel
     assert calls == [(("raw-a", "raw-b"), 4)]
+
+
+# ---------------------------------------------------------------------------
+# Whale-aware census spill (polylogue-odm1)
+# ---------------------------------------------------------------------------
+
+# Shrink the hot-cache budget so a modest (KB-scale) fixture reliably
+# classifies as a "whale" without depending on the host's real RAM -- see
+# tests/benchmarks/test_whale_census_spill_bench.py's module docstring for
+# the full rationale (the class computes its budgets from
+# effective_physical_memory_bytes(), whose production floor is 256 MiB).
+_SHRUNK_TREE_BYTES = 64 * 1024
+
+
+def test_whale_add_bypasses_sqlite_spill_and_holds_resident(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A parsed tree too large for the hot cache but within the whale
+    ceiling must be held resident in ``_whales`` and must NOT be written to
+    the sqlite spill at all (no pickle.dumps paid)."""
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", _SHRUNK_TREE_BYTES)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", _SHRUNK_TREE_BYTES)
+
+    archive_root = tmp_path / "archive"
+    _small_ids, whale_id = build_whale_bearing_corpus(
+        archive_root,
+        small_raw_count=1,
+        small_avg_payload_bytes=WHALE_BEARING_SHAPE["small_avg_payload_bytes"],
+        whale_payload_bytes=200_000,
+    )
+    with (
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+        revision_backfill._ParsedSessionSpill(archive_root, max_cached_payload_bytes=10_000_000) as spill,
+    ):
+        sessions, payload_bytes, _kind = revision_backfill._parse_retained_raw(archive, whale_id)
+        assert estimate_parsed_tree_bytes(sessions) > spill._decoded_budget, (
+            "fixture must actually exceed the shrunk hot-cache budget to exercise the whale path"
+        )
+
+        spill.add(whale_id, sessions, payload_bytes=payload_bytes)
+
+        assert whale_id in spill._whales
+        assert whale_id not in spill._decoded
+        row = spill.conn.execute("SELECT COUNT(*) FROM parsed_sessions WHERE raw_id = ?", (whale_id,)).fetchone()
+        assert row is not None and row[0] == 0, "whale must bypass the sqlite spill write entirely"
+
+        reloaded_sessions, reloaded_payload_bytes = spill.for_raw(archive, whale_id)
+        assert reloaded_sessions is sessions, "whale reload must return the same resident objects, no round trip"
+        assert reloaded_payload_bytes == payload_bytes
+
+
+def test_whale_exceeding_whale_ceiling_falls_back_to_sqlite_spill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Correctness-over-speed fallback: a tree too large for EITHER tier
+    (hot cache or whale ceiling) must still be spilled to sqlite exactly as
+    the pre-lever code did."""
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", _SHRUNK_TREE_BYTES)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", _SHRUNK_TREE_BYTES)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", _SHRUNK_TREE_BYTES)
+
+    archive_root = tmp_path / "archive"
+    _small_ids, whale_id = build_whale_bearing_corpus(
+        archive_root,
+        small_raw_count=1,
+        small_avg_payload_bytes=WHALE_BEARING_SHAPE["small_avg_payload_bytes"],
+        whale_payload_bytes=200_000,
+    )
+    with (
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+        revision_backfill._ParsedSessionSpill(archive_root, max_cached_payload_bytes=10_000_000) as spill,
+    ):
+        sessions, payload_bytes, _kind = revision_backfill._parse_retained_raw(archive, whale_id)
+
+        spill.add(whale_id, sessions, payload_bytes=payload_bytes)
+
+        assert whale_id not in spill._whales
+        assert whale_id not in spill._decoded
+        row = spill.conn.execute("SELECT COUNT(*) FROM parsed_sessions WHERE raw_id = ?", (whale_id,)).fetchone()
+        assert row is not None and row[0] > 0, "must fall back to the sqlite spill when the whale ceiling is exceeded"
+
+        reloaded_sessions, reloaded_payload_bytes = spill.for_raw(archive, whale_id)
+        assert reloaded_payload_bytes == payload_bytes
+        assert reloaded_sessions[0].provider_session_id == sessions[0].provider_session_id
+        assert [m.text for m in reloaded_sessions[0].messages] == [m.text for m in sessions[0].messages]
+
+
+def test_whale_eviction_degrades_to_sqlite_spill_courtesy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """When multiple whales together exceed the whale budget, the entry
+    evicted from the resident tier must be written to the sqlite spill
+    (not silently dropped) so a later ``for_raw`` still finds it without a
+    full reparse from raw bytes."""
+    # Each whale's tree is ~83KB (measured for 20,000-char payload text under
+    # this estimator); a 16KB decoded budget classifies either as a whale,
+    # and a 140KB whale ceiling holds exactly one at a time but not two.
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 16 * 1024)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 16 * 1024)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 140_000)
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        first_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_payload_of_size("whale-a", 20_000),
+            source_path="odm1/whale-a.jsonl",
+            acquired_at_ms=1,
+        )
+        second_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_payload_of_size("whale-b", 20_000),
+            source_path="odm1/whale-b.jsonl",
+            acquired_at_ms=2,
+        )
+
+    with (
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+        revision_backfill._ParsedSessionSpill(archive_root, max_cached_payload_bytes=10_000_000) as spill,
+    ):
+        first_sessions, first_payload_bytes, _kind = revision_backfill._parse_retained_raw(archive, first_id)
+        spill.add(first_id, first_sessions, payload_bytes=first_payload_bytes)
+        assert first_id in spill._whales
+
+        second_sessions, second_payload_bytes, _kind = revision_backfill._parse_retained_raw(archive, second_id)
+        spill.add(second_id, second_sessions, payload_bytes=second_payload_bytes)
+
+        # The second whale evicted the first from the resident tier.
+        assert second_id in spill._whales
+        assert first_id not in spill._whales
+
+        # But the first must have been degraded into the sqlite spill on
+        # eviction, not dropped -- for_raw() must still resolve it without
+        # touching _parse_retained_raw again (proven by content equality
+        # despite the archive already being past that raw in the loop).
+        row = spill.conn.execute("SELECT COUNT(*) FROM parsed_sessions WHERE raw_id = ?", (first_id,)).fetchone()
+        assert row is not None and row[0] > 0, "evicted whale must be degraded into the sqlite spill, not dropped"
+
+        reloaded_sessions, reloaded_payload_bytes = spill.for_raw(archive, first_id)
+        assert reloaded_payload_bytes == first_payload_bytes
+        assert [m.text for m in reloaded_sessions[0].messages] == [m.text for m in first_sessions[0].messages]
+
+
+def _codex_payload_of_size(session_id: str, text_len: int) -> bytes:
+    session_meta = (
+        json.dumps(
+            {"type": "session_meta", "payload": {"id": session_id, "timestamp": "2026-06-01T00:00:00Z"}},
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    response_item = (
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "one",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "x" * text_len}],
+                },
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    return (session_meta + response_item).encode()
+
+
+def test_backfill_replays_whale_bearing_page_byte_identical_to_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end proof (through ``backfill_historical_revision_evidence``,
+    not the ``_ParsedSessionSpill`` internals) that a whale-bearing rebuild
+    page still replays every session -- large and small -- to correct
+    content when the whale-residency lever is active. No schema change, no
+    output drift: counts and message text must match what an equivalent
+    small-only corpus already proves the pipeline produces."""
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", _SHRUNK_TREE_BYTES)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", _SHRUNK_TREE_BYTES)
+
+    archive_root = tmp_path / "archive"
+    small_raw_ids, whale_raw_id = build_whale_bearing_corpus(
+        archive_root,
+        small_raw_count=6,
+        small_avg_payload_bytes=5_000,
+        whale_payload_bytes=200_000,
+    )
+
+    result = backfill_historical_revision_evidence(
+        archive_root, max_cached_payload_bytes=10_000_000, commit_batch_size=200, replay_commit_batch_size=1
+    )
+
+    assert result.scanned == len(small_raw_ids) + 1
+    assert result.replayed_logical_sources == len(small_raw_ids) + 1
+    assert result.quarantined == 0
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        session_ids = {row[0] for row in conn.execute("SELECT raw_id FROM sessions")}
+        assert session_ids == {*small_raw_ids, whale_raw_id}
+        for raw_id in [*small_raw_ids, whale_raw_id]:
+            message_count = conn.execute("SELECT message_count FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+            assert message_count == (1,)
