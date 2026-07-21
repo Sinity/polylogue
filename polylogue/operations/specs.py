@@ -27,6 +27,14 @@ must check:
 SafetyGuard = Literal["write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"]
 """Declared safety guard that a mutating operation's public surfaces must enforce."""
 
+ExecutorStatus = Literal["executor-routed", "declared-not-routed", "typed-exemption"]
+"""t46.9 AC1 inventory status: whether a ``mutates_state=True`` operation's
+production surfaces drive it through ``operations.mutation_transaction
+.OperationExecutor`` (``executor-routed``), still enforce authorization
+independently pending Phase 2 migration (``declared-not-routed``, visible
+debt rather than silent absence), or are exempt with a typed reason recorded
+in ``docs/plans/mutation-census.yaml`` (``typed-exemption``)."""
+
 
 class OperationKind(str, Enum):
     """High-level operation class over runtime artifacts."""
@@ -60,6 +68,8 @@ class OperationSpec:
     idempotent: bool = True
     effects: tuple[Effect, ...] = ()
     safety_guards: tuple[SafetyGuard, ...] = ()
+    executor_status: ExecutorStatus | None = None
+    """t46.9 AC1: required (non-``None``) whenever ``mutates_state`` is ``True``."""
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -77,6 +87,7 @@ class OperationSpec:
                 "idempotent": self.idempotent,
                 "effects": list(self.effects),
                 "safety_guards": list(self.safety_guards),
+                "executor_status": self.executor_status,
             }
         )
 
@@ -118,6 +129,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("daemon", "sources"),
         mutates_state=True,
         effects=("Network", "DbWrite", "LiveArchive"),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="plan-validation-backlog",
@@ -167,6 +179,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("daemon", "reprocess", "ingest"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="index-message-fts",
@@ -183,6 +196,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("daemon", "doctor", "repair", "query"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="materialize-transcript-embeddings",
@@ -199,6 +213,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("daemon", "embed", "retrieval"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="query-sessions",
@@ -240,6 +255,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("daemon", "insights", "doctor", "repair"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="project-retrieval-band-readiness",
@@ -545,6 +561,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="mutate-remove-tag",
@@ -562,6 +579,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="mutate-bulk-tag-sessions",
@@ -576,6 +594,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="mutate-set-metadata",
@@ -594,6 +613,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="mutate-delete-metadata",
@@ -608,27 +628,91 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="mutate-delete-session",
         kind=OperationKind.MAINTENANCE,
-        description="Permanently delete one session and all associated data. Guarded by a confirm flag on all surfaces.",
+        description=(
+            "Permanently delete one session and all associated data. Routed through "
+            "OperationExecutor/SessionDeleteActuator on every surface: PREPARE previews "
+            "the exact target set, EXECUTE requires a confirm-flag-strength authorization "
+            "bound to that plan's hash."
+        ),
         consumes=("archive_session_rows",),
         produces=("archive_deleted_session",),
         path_targets=("session-delete-loop",),
         code_refs=(
             "polylogue.storage.repository.archive.writes.sessions.delete_session_via_backend",
             "polylogue.api.archive.PolylogueArchiveMixin.delete_session",
+            "polylogue.api.archive.PolylogueArchiveMixin.delete_session_safe",
             "polylogue.cli.query_verbs.delete_verb",
             "polylogue.cli.archive_query._emit_delete",
             "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.SessionDeleteActuator",
         ),
         surfaces=("facade", "cli", "mcp", "daemon"),
         mutates_state=True,
-        previewable=False,
+        # Previously declared False; the description said "confirm flag on all
+        # surfaces" (implying a preview step) while this field said otherwise
+        # -- a documented contradiction (t46.9 2026-07-18 note). Fixed: every
+        # surface's delete route always runs OperationExecutor.prepare before
+        # any mutation, and the CLI/dry-run path surfaces that preview.
+        previewable=True,
         idempotent=True,
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-session-excision",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Durable, cross-tier (source/index/embeddings/user) removal of one session that "
+            "records a removed-hash marker so unmodified-source re-ingest cannot resurrect it. "
+            "Routed through OperationExecutor/SessionExcisionActuator; requires --yes/confirm-flag."
+        ),
+        consumes=("archive_session_rows", "raw_sessions", "blob_refs"),
+        produces=("excision_receipt",),
+        path_targets=("session-excision-loop",),
+        code_refs=(
+            "polylogue.security.excision.plan_session_excision",
+            "polylogue.security.excision.apply_session_excision",
+            "polylogue.cli.commands.excise.excise_command",
+            "polylogue.operations.mutation_actuators.SessionExcisionActuator",
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-identity-reset",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Tombstone one or more sessions: durable user.db suppression plus rebuildable "
+            "index.db row removal. Routed through OperationExecutor/IdentityResetActuator; "
+            "requires --yes/confirm-flag. Distinct from excision: re-ingest of unmodified "
+            "source content can still repopulate index.db rows, but the suppression hides them."
+        ),
+        consumes=("archive_session_rows",),
+        produces=("suppression_rows",),
+        path_targets=("identity-reset-loop",),
+        code_refs=(
+            "polylogue.cli.commands.reset.reset_command",
+            "polylogue.cli.commands.reset._apply_identity_reset",
+            "polylogue.operations.mutation_actuators.IdentityResetActuator",
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
     ),
     OperationSpec(
         name="project-archive-readiness",
@@ -687,6 +771,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         previewable=False,
         effects=("DbWrite",),
+        executor_status="typed-exemption",
     ),
     OperationSpec(
         name="verify-demo-archive",
@@ -842,6 +927,26 @@ DECLARED_OPERATION_SPECS: tuple[OperationSpec, ...] = (
 )
 
 
+def _validate_executor_status() -> None:
+    """t46.9 AC1: every mutating spec must declare an executor_status.
+
+    A ``mutates_state=True`` spec with ``executor_status=None`` would be
+    silent absence -- an operation the catalog knows mutates state but says
+    nothing about whether it is executor-routed, still debt, or exempt.
+    Phase 2 migration work narrows the ``declared-not-routed`` set; this
+    check only guarantees the debt stays visible, never silent.
+    """
+    missing = [spec.name for spec in DECLARED_OPERATION_SPECS if spec.mutates_state and spec.executor_status is None]
+    if missing:
+        raise ValueError(
+            "OperationSpec entries with mutates_state=True must declare executor_status "
+            f"(missing: {', '.join(sorted(missing))})"
+        )
+
+
+_validate_executor_status()
+
+
 @lru_cache(maxsize=1)
 def build_runtime_operation_catalog() -> OperationCatalog:
     """Return the authored runtime operation catalog."""
@@ -860,6 +965,7 @@ __all__ = [
     "DECLARED_CONTROL_PLANE_OPERATION_SPECS",
     "DECLARED_OPERATION_SPECS",
     "Effect",
+    "ExecutorStatus",
     "build_declared_operation_catalog",
     "build_runtime_operation_catalog",
     "OperationCatalog",

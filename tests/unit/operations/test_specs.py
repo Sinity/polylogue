@@ -45,6 +45,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-delete-metadata",
         "mutate-delete-session",
         "mutate-bulk-tag-sessions",
+        "mutate-session-excision",
+        "mutate-identity-reset",
     }
     assert specs["acquire-raw-sessions"].kind is OperationKind.MATERIALIZATION
     assert specs["acquire-raw-sessions"].mutates_state is True

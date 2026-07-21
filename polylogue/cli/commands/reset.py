@@ -9,7 +9,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import click
 
@@ -201,40 +201,37 @@ def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
         conn.close()
 
 
-def _delete_archive_sessions(session_ids: list[str]) -> int:
-    archive_db = _index_db_path()
-    if not session_ids or not archive_db.exists():
-        return 0
-    conn = sqlite3.connect(archive_db)
-    conn.execute("PRAGMA foreign_keys = ON")
-    deleted = 0
-    try:
-        with conn:
-            for session_id in session_ids:
-                cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                deleted += max(int(cursor.rowcount), 0)
-        return deleted
-    finally:
-        conn.close()
+def _apply_identity_reset(session_ids: list[str], *, reason: str) -> tuple[int, int]:
+    """Tombstone ``session_ids`` through the shared OperationExecutor mutation authority.
 
+    Routes through :class:`IdentityResetActuator` (polylogue-t46.9/kwsb.2) so
+    ``reset --session/--source`` shares its PREPARE/AUTHORIZE/EXECUTE contract
+    with the other named destructive routes (session delete, excision)
+    instead of tombstoning directly. Returns
+    ``(suppressed_count, deleted_archive_rows)``.
+    """
+    from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
+    from polylogue.operations.mutation_transaction import OperationExecutor
 
-def _suppress_archive_sessions(session_ids: list[str], *, reason: str) -> int:
     if not session_ids:
-        return 0
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
-
-    user_db = _user_db_path()
-    initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
-    try:
-        with conn:
-            for session_id in session_ids:
-                upsert_suppression(conn, session_id=session_id, reason=reason, mode="hide")
-        return len(session_ids)
-    finally:
-        conn.close()
+        return 0, 0
+    actuator = IdentityResetActuator()
+    executor = OperationExecutor()
+    args = IdentityResetArgs(archive_root=_archive_root(), session_ids=tuple(session_ids), reason=reason)
+    plan = executor.prepare(actuator, args)
+    authorization = executor.authorize(
+        actuator,
+        plan,
+        actor="user:cli",
+        role="write",
+        capability="archive.identity_reset",
+        confirmation_strength="confirm_flag",
+    )
+    receipt = executor.execute(actuator, plan, authorization, args)
+    domain = receipt.domain_receipt
+    suppressed = cast("int", domain.get("suppressed_count", receipt.affected_count))
+    deleted = cast("int", domain.get("deleted_archive_rows", 0))
+    return int(suppressed), int(deleted)
 
 
 def _identity_reset_targets(*, conv_id: str | None, source_path: Path | None) -> tuple[list[str], str]:
@@ -445,8 +442,7 @@ def reset_command(
                 env.ui.console.print("Aborted.")
                 return
 
-        suppressed = _suppress_archive_sessions(session_ids, reason=reason)
-        deleted = _delete_archive_sessions(session_ids)
+        suppressed, deleted = _apply_identity_reset(session_ids, reason=reason)
         if conv_id:
             plain_message = (
                 f"Tombstoned session {conv_id}: {suppressed} suppression(s), {deleted} archive row(s) deleted."

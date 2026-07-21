@@ -1931,9 +1931,27 @@ def _emit_user_mutations(
 def _emit_delete(
     env: AppEnv, archive: ArchiveStore, session_ids: tuple[str, ...], *, params: dict[str, object]
 ) -> None:
+    """Delete sessions through the shared OperationExecutor mutation authority.
+
+    Every surface that can permanently delete a session (this CLI route and
+    MCP ``write(operation='delete_session')`` in ``mcp/server_cutover.py``)
+    drives the same :class:`SessionDeleteActuator` through
+    :class:`OperationExecutor` (polylogue-t46.9/kwsb.2) instead of calling
+    ``ArchiveStore.delete_sessions`` directly, so preview/authorization/
+    receipt semantics cannot diverge between adapters.
+    """
+    from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+    from polylogue.operations.mutation_transaction import OperationExecutor
+
     dry_run = bool(params.get("dry_run"))
     force = bool(params.get("force"))
     count = len(session_ids)
+
+    actuator = SessionDeleteActuator()
+    executor = OperationExecutor()
+    prepare_args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
+    plan = executor.prepare(actuator, prepare_args)
+
     if dry_run:
         # ``session_count`` = matched, ``affected_count`` = deleted (0 in a
         # preview); ``session_ids`` enumerates the sessions that would be deleted.
@@ -1985,7 +2003,16 @@ def _emit_delete(
                 ).to_json(exclude_none=True)
             )
             return
-    deleted = archive.delete_sessions(session_ids)
+    authorization = executor.authorize(
+        actuator,
+        plan,
+        actor="user:cli",
+        role="write",
+        capability="archive.delete_session",
+        confirmation_strength="confirm_flag",
+    )
+    receipt = executor.execute(actuator, plan, authorization, prepare_args)
+    deleted = receipt.affected_count
     # ``session_count`` = matched, ``affected_count`` = sessions actually deleted.
     click.echo(
         MutationResultPayload(

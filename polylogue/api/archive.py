@@ -5451,21 +5451,45 @@ class PolylogueArchiveMixin:
         result = await self.delete_session_safe(session_id)
         return result.outcome == "deleted"
 
-    async def delete_session_safe(self, session_id: str) -> DeleteSessionResult:
-        """Typed delete that returns ``outcome="deleted"`` or ``"not_found"``."""
+    async def delete_session_safe(self, session_id: str, *, actor: str = "user:api") -> DeleteSessionResult:
+        """Typed delete that returns ``outcome="deleted"`` or ``"not_found"``.
+
+        Routes through :class:`~polylogue.operations.mutation_transaction
+        .OperationExecutor` and ``SessionDeleteActuator`` (polylogue-t46.9/
+        kwsb.2) so every session-delete adapter -- this API method (consumed
+        by MCP's ``write(operation='delete_session')``), and the CLI
+        ``delete`` verb's own actuator use in ``archive_query._emit_delete``
+        -- shares one preview/authorization/receipt contract instead of
+        calling ``ArchiveStore.delete_sessions`` independently.
+        """
+        from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import DeleteSessionResult
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             try:
                 resolved = archive.resolve_session_id(session_id)
-                deleted = archive.delete_sessions((resolved,))
             except KeyError:
                 return DeleteSessionResult(
                     outcome="not_found",
                     session_id=session_id,
                     detail="session_not_found",
                 )
+            actuator = SessionDeleteActuator()
+            executor = OperationExecutor()
+            args = SessionDeleteArgs(archive=archive, session_ids=(resolved,))
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor=actor,
+                role="write",
+                capability="archive.delete_session",
+                confirmation_strength="confirm_flag",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        deleted = receipt.affected_count > 0
         return DeleteSessionResult(
             outcome="deleted" if deleted else "not_found",
             session_id=resolved,
