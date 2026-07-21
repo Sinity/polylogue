@@ -196,6 +196,80 @@ class TestIdentityLedgerHappyPath:
         assert _identity_mismatch_count(test_conn) == 0
 
 
+class TestIdentityLedgerBlockIdCollisionRepro:
+    """polylogue-miwv: an orphaned ledger row must never abort a later write.
+
+    ``messages_fts_identity`` carries TWO independent uniqueness constraints
+    -- the ``rowid`` INTEGER PRIMARY KEY and the ``block_id TEXT ... UNIQUE``
+    column -- but the ``messages_fts_ad``/``au`` trigger arms and every bulk
+    delete companion in ``storage/fts/sql.py`` only ever clean up by rowid.
+    If ANY path (an interrupted bulk-guarded delete, a future bug, a
+    partial/rolled-back attempt) leaves a stale ``(old_rowid, block_id=X)``
+    ledger row behind, a later write that computes that same ``block_id`` at
+    a *different* rowid used to hit ``UNIQUE constraint failed:
+    messages_fts_identity.block_id`` and abort outright -- reported as a
+    live pre-existing regression alongside this bead's other work. Since the
+    exact write-sequence trigger for that orphan in production code was not
+    reproducible against the two originally-flagged test files
+    (``tests/unit/storage/test_revision_replay.py``,
+    ``tests/unit/sources/test_live_batch_support.py`` -- both pass cleanly,
+    repeatedly, serially and under ``-n auto`` xdist, against both this
+    branch and a fresh ``origin/master`` checkout), this test proves the
+    INVARIANT directly against the real trigger DDL: construct a genuine
+    orphaned ledger row (a delete that ran with the AD trigger structurally
+    absent, the same shape a bulk-guarded delete leaves if a companion
+    cleanup is ever missed), then insert a fresh block that computes the
+    same ``block_id`` at a new rowid through the real ``messages_fts_ai``
+    trigger. Anti-vacuity: reverting the ``INSERT OR REPLACE`` fix in
+    ``BLOCKS_FTS_TRIGGER_DDL`` (back to a bare ``INSERT``) makes this raise
+    ``sqlite3.IntegrityError`` again.
+    """
+
+    def test_orphaned_ledger_row_does_not_abort_a_colliding_insert(self, test_conn: sqlite3.Connection) -> None:
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-identity-collision",
+            native_message_id="msg-identity-collision",
+            text="original occupant of this block_id",
+            content_hash=b"a" * 32,
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert _identity_row(test_conn, rowid) == (block_id, b"a" * 32, FTS_MESSAGES_IDENTITY_RECIPE_ID)
+
+        # Construct a genuine orphan: delete the block with the AD trigger
+        # structurally absent (the same shape a bulk-guarded delete leaves
+        # behind if its companion identity cleanup is ever skipped), so the
+        # ledger row survives even though its block is gone.
+        test_conn.execute("DROP TRIGGER messages_fts_ad")
+        test_conn.execute("DELETE FROM blocks WHERE block_id = ?", (block_id,))
+        assert _identity_row(test_conn, rowid) is not None, "test setup must leave a real orphaned ledger row"
+        restore_fts_triggers_sync(test_conn)
+
+        # Re-insert a block computing the SAME block_id (same message_id +
+        # position) forced to a different rowid -- reproduces the exact
+        # bug shape via the real messages_fts_ai trigger, not a toy.
+        new_rowid = rowid + 1000
+        test_conn.execute(
+            """
+            INSERT INTO blocks (rowid, message_id, session_id, position, block_type, text, content_hash)
+            VALUES (?, ?, ?, 0, 'text', ?, ?)
+            """,
+            (
+                new_rowid,
+                f"{block_id.rsplit(':', 1)[0]}",
+                "unknown-export:conv-identity-collision",
+                "new occupant of this block_id",
+                b"b" * 32,
+            ),
+        )
+
+        identity = _identity_row(test_conn, new_rowid)
+        assert identity == (block_id, b"b" * 32, FTS_MESSAGES_IDENTITY_RECIPE_ID)
+        assert _identity_row(test_conn, rowid) is None, "the stale orphan holder must be evicted, not duplicated"
+        assert _identity_mismatch_count(test_conn) == 0
+
+
 class TestIdentityMismatchDetection:
     """Anti-vacuity: prove the exact check actually flags corruption, not just 0/0."""
 
