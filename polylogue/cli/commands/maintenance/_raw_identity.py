@@ -149,6 +149,43 @@ def raw_authority_detail_command(
         click.echo(f"\nNext: {next_handle}")
 
 
+@click.command("raw-authority-blockers")
+@click.option("--limit", type=click.IntRange(1, 500), default=100, show_default=True)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def raw_authority_blockers_command(env: AppEnv, limit: int, output_format: str) -> None:
+    """List unresolved raw-authority blockers (read-only operator discovery surface).
+
+    Distinguishes ``stale_plan`` blockers (replan against current evidence)
+    from ``frontier_judgment`` blockers (require an accepted judgment
+    assertion + disposition) so an operator can find a ``--blocker-id`` for
+    ``raw-authority-blocker-resolve`` without page-walking
+    ``raw-authority-census``/``raw-authority-detail`` or writing an ad hoc
+    script against the live archive.
+    """
+    try:
+        blockers = raw_authority.list_blockers(env.config.archive_root, limit=limit)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_format == "json":
+        click.echo(json.dumps({"blockers": blockers}, indent=2, sort_keys=True))
+        return
+    if not blockers:
+        click.echo("No unresolved raw-authority blockers.")
+        return
+    for blocker in blockers:
+        click.echo(
+            f"{blocker['blocker_id']}  kind={blocker['kind']}  plan={blocker['plan_id']}  census={blocker['census_id']}"
+        )
+        click.echo(f"  reason: {blocker['reason']}")
+
+
 @click.command("raw-authority-blocker-resolve")
 @click.option("--blocker-id", required=True, help="Exact unresolved durable blocker identifier.")
 @click.option("--reason", required=True, help="Operator rationale recorded in the immutable resolution receipt.")
@@ -181,19 +218,47 @@ def raw_authority_blocker_resolve_command(
     confirmed: bool,
     output_format: str,
 ) -> None:
-    """Resolve one stale-plan blocker after replanning current evidence."""
+    """Resolve one stale-plan blocker after replanning current evidence.
+
+    Routed through ``OperationExecutor``/``BlockerResolveActuator`` (t46.9
+    phase 3): PREPARE previews the exact blocker target, EXECUTE requires a
+    confirm-flag-strength authorization bound to that plan's hash, and a
+    fresh PREPARE immediately before EXECUTE refuses (``PlanStaleError``) if
+    the blocker was concurrently resolved between preview and confirm.
+    """
     if not confirmed:
         raise click.ClickException("refusing to resolve a durable blocker without --yes")
+    from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
+    from polylogue.operations.mutation_transaction import (
+        MutationTransactionError,
+        OperationExecutor,
+    )
+
+    actuator = BlockerResolveActuator()
+    executor = OperationExecutor()
+    args = BlockerResolveArgs(
+        archive_root=env.config.archive_root,
+        blocker_id=blocker_id,
+        resolution=reason,
+        assertion_id=assertion_id,
+        judgment_disposition=judgment_disposition,
+    )
     try:
-        receipt = raw_authority.resolve_blocker(
-            env.config.archive_root,
-            blocker_id,
-            resolution=reason,
-            assertion_id=assertion_id,
-            judgment_disposition=judgment_disposition,
+        plan = executor.prepare(actuator, args)
+        authorization = executor.authorize(
+            actuator,
+            plan,
+            actor="cli",
+            role="write",
+            capability="raw_authority.resolve_blocker",
+            confirmation_strength="confirm_flag",
         )
-    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
+        result = executor.execute(actuator, plan, authorization, args)
+    except (FileNotFoundError, KeyError, RuntimeError, ValueError, MutationTransactionError) as exc:
         raise click.ClickException(str(exc)) from exc
+    if result.status != "applied":
+        raise click.ClickException(f"blocker {blocker_id!r} not found or already resolved")
+    receipt = dict(result.domain_receipt)
     if output_format == "json":
         click.echo(json.dumps(receipt, indent=2, sort_keys=True))
         return
