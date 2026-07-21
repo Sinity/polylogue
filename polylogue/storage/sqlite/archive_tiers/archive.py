@@ -38,7 +38,7 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 from polylogue.archive.revision_authority import (
-    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+    RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -2003,18 +2003,27 @@ class ArchiveStore:
         transition, so a later-arriving sibling for the same identity can
         still be told this identity has known, unresolved ambiguous
         evidence (polylogue-52l2) instead of being evaluated alone.
+
+        Matches every literal in ``RETIRED_FULL_REVISION_GOVERNANCE_DETAILS``
+        (polylogue-hm2f), not only the current
+        ``HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL`` marker: durable
+        ``raw_membership_census`` rows written before #3234 used a different,
+        now-legacy literal at the live-watcher call site, and durable-tier
+        detail strings are never silently rewritten in place.
         """
+        detail_placeholders = ", ".join("?" for _ in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS)
+        where_clause = f"c.detail IN ({detail_placeholders})"
         rows = (
             self._ensure_source_conn()
             .execute(
-                """
+                f"""
                 SELECT m.raw_id
                 FROM raw_session_memberships AS m
                 JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
-                WHERE m.logical_source_key = ? AND c.detail = ?
+                WHERE m.logical_source_key = ? AND {where_clause}
                 ORDER BY m.raw_id
                 """,
-                (logical_source_key, HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL),
+                (logical_source_key, *RETIRED_FULL_REVISION_GOVERNANCE_DETAILS),
             )
             .fetchall()
         )
