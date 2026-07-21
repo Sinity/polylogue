@@ -901,6 +901,71 @@ async function probeReceiverStatus(baseUrl, authToken = "") {
   }
 }
 
+// polylogue-gnie: exchange a short-lived one-time pairing code (minted via
+// `polylogued browser-capture pairing start`) for the receiver's bearer
+// token. Deliberately does NOT go through postJson/requestHeaders -- those
+// require an already-configured token (or ensureTrustedReceiver, which
+// requires an already-paired identity), both circular for a fresh install
+// that has neither yet. No Authorization header is sent; the code itself is
+// this route's one-time credential.
+async function redeemPairingCode(baseUrl, code) {
+  const requestId = buildReceiverRequestId();
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort("pairing_redeem_timeout"), RECEIVER_HEALTH_TIMEOUT_MS);
+  await appendDebugLog({ stage: "receiver_request", method: "POST", path: "/v1/pairing/redeem", endpoint: baseUrl, request_id: requestId });
+  try {
+    const response = await fetch(`${baseUrl}/v1/pairing/redeem`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Request-ID": requestId },
+      body: JSON.stringify({ code }),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => null);
+    const receiverRequestId = response.headers?.get?.("X-Request-ID") || requestId;
+    await appendDebugLog({
+      stage: "receiver_response",
+      method: "POST",
+      path: "/v1/pairing/redeem",
+      endpoint: baseUrl,
+      request_id: requestId,
+      receiver_request_id: receiverRequestId,
+      ok: response.ok,
+      status: response.status,
+    });
+    if (!response.ok || !body?.auth_token) {
+      return { ok: false, error: body?.error || `http_${response.status}`, receiverRequestId };
+    }
+    return { ok: true, authToken: body.auth_token, receiverId: body.receiver_id, receiverRequestId };
+  } catch (error) {
+    await appendDebugLog({
+      stage: "receiver_error",
+      method: "POST",
+      path: "/v1/pairing/redeem",
+      endpoint: baseUrl,
+      request_id: requestId,
+      error: String(error.message || error),
+    });
+    return { ok: false, error: String(error.message || error) };
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
+
+async function pairWithCode(code) {
+  const trimmed = String(code || "").trim();
+  if (!trimmed) return { ok: false, error: "pairing_code_required" };
+  const settings = await receiverSettings();
+  const result = await redeemPairingCode(settings.baseUrl, trimmed);
+  if (!result.ok) return result;
+  await saveReceiverSettings(settings.baseUrl, result.authToken);
+  // A code exchange is an explicit, just-completed pairing act -- confirm
+  // it against the receiver immediately rather than waiting for the next
+  // scheduled health check, but do not let a stale non-canonical endpoint
+  // silently fail over (same posture as an explicit settings save).
+  const health = await checkReceiverHealth({ allowCanonicalRecovery: false });
+  return { ok: true, health, pairing: health.pairing || (await storedReceiverPairing()) };
+}
+
 async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
   const settings = await receiverSettings();
   const pairingBefore = await storedReceiverPairing();
@@ -2852,6 +2917,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "polylogue.configureReceiver") {
       const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
       sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
+      return;
+    }
+    if (message.type === "polylogue.pairWithCode") {
+      sendResponse(await pairWithCode(message.code));
       return;
     }
     if (message.type === "polylogue.backfill.start") {

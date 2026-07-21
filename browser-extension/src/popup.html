@@ -410,6 +410,12 @@
           </div>
           <label class="label" for="receiver-token">Bearer token</label>
           <input id="receiver-token" type="password" autocomplete="off" placeholder="Required by the default authenticated receiver">
+          <label class="label" for="pairing-code">Pairing code</label>
+          <div class="setting-row">
+            <input id="pairing-code" autocomplete="off" placeholder="From `polylogued browser-capture pairing start`">
+            <button id="pair-with-code"><span class="button-label">Pair</span><span class="button-status"></span></button>
+          </div>
+          <p class="section-note">Avoids typing the long bearer token above: run <code>polylogued browser-capture pairing start</code>, then enter the short one-time code it prints here. The code expires quickly and can only be used once.</p>
         </section>
       </details>
 
