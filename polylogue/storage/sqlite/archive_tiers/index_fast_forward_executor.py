@@ -1,5 +1,7 @@
 """Runtime executor for declared, clone-safe index-tier fast-forward plans.
 
+Writer module: index.
+
 ``polylogue.storage.sqlite.lifecycle`` declares, for a bounded set of
 index-tier schema-version gaps, a contiguous chain of
 :class:`~polylogue.storage.sqlite.lifecycle.IndexDeltaDeclaration` entries
@@ -32,17 +34,12 @@ import sqlite3
 import uuid
 
 from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync, rebuild_fts_index_sync
-from polylogue.storage.fts.sql import (
-    FTS_IDENTITY_REBUILD_SQL,
-    FTS_REBUILD_SQL,
-    insert_all_message_identity_rows_sql,
-    insert_all_message_rows_sql,
-)
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.fts.sql import insert_all_message_identity_rows_sql, insert_all_message_rows_sql
 from polylogue.storage.sqlite.lifecycle import (
     FastForwardOperation,
     FastForwardOperationKind,
     IndexFastForwardPlan,
+    resolve_canonical_index_objects,
 )
 
 # messages_fts / messages_fts_identity are maintained by the SAME per-row
@@ -54,33 +51,6 @@ _MESSAGES_FTS_SURFACE_TABLES = frozenset({"messages_fts", "messages_fts_identity
 # shared full rebuild rather than duplicating its private per-surface helpers
 # here (see fts_lifecycle.rebuild_fts_index_sync).
 _OTHER_FTS_SURFACE_TABLES = frozenset({"session_work_events_fts", "threads_fts"})
-
-
-def _canonical_index_objects(objects: tuple[tuple[str, str], ...]) -> dict[tuple[str, str], str]:
-    """Resolve the exact canonical ``CREATE`` statement for each declared object.
-
-    Built from a scratch in-memory connection executing the current
-    ``INDEX_DDL`` so the resolved text is always the live canonical shape --
-    the same source of truth ``devtools/index_fast_forward.py``'s offline
-    clone actuator uses (``_canonical_schema``).
-    """
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(INDEX_DDL)
-        resolved: dict[tuple[str, str], str] = {}
-        for object_type, name in objects:
-            row = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
-                (object_type, name),
-            ).fetchone()
-            if row is None or row[0] is None:
-                raise RuntimeError(
-                    f"canonical index DDL is missing {object_type} {name!r}; fast-forward cannot proceed"
-                )
-            resolved[(object_type, name)] = str(row[0])
-        return resolved
-    finally:
-        conn.close()
 
 
 def _apply_drop_table(conn: sqlite3.Connection, name: str) -> None:
@@ -153,10 +123,12 @@ def _apply_rebuild_fts(conn: sqlite3.Connection, operation: FastForwardOperation
         # v43's messages_fts_identity ledger maintenance) reaches disk.
         ensure_fts_index_sync(conn)
         if "messages_fts" in table_names:
-            conn.execute(FTS_REBUILD_SQL)
+            # messages_fts is contentless (content='') -- clearing it requires
+            # a bulk delete-all, then a full repopulate from blocks.
+            conn.execute("DELETE FROM messages_fts")
             conn.execute(insert_all_message_rows_sql())
         if "messages_fts_identity" in table_names:
-            conn.execute(FTS_IDENTITY_REBUILD_SQL)
+            conn.execute("DELETE FROM messages_fts_identity")
             conn.execute(insert_all_message_identity_rows_sql())
     if table_names & _OTHER_FTS_SURFACE_TABLES:
         rebuild_fts_index_sync(conn)
@@ -216,7 +188,7 @@ def apply_index_fast_forward(conn: sqlite3.Connection, plan: IndexFastForwardPla
             for object_ref in operation.objects
         )
     )
-    canonical = _canonical_index_objects(objects_needing_canonical_sql)
+    canonical = resolve_canonical_index_objects(objects_needing_canonical_sql)
     for declaration in plan.declarations:
         conn.execute("BEGIN IMMEDIATE")
         try:

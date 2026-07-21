@@ -9,6 +9,7 @@ full rebuild instead.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypedDict
@@ -299,6 +300,39 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
 )
 
 
+def resolve_canonical_index_objects(objects: tuple[tuple[str, str], ...]) -> dict[tuple[str, str], str]:
+    """Resolve the exact canonical ``CREATE`` statement for each declared object.
+
+    Built from a scratch in-memory connection executing the current
+    ``INDEX_DDL`` so the resolved text is always the live canonical shape --
+    the same source of truth ``devtools/index_fast_forward.py``'s offline
+    clone actuator uses (``_canonical_schema``). Lives here (not in the
+    executor module under ``storage/sqlite/archive_tiers/``) so it stays a
+    read-only declaration-resolution helper, never itself an index-tier
+    mutation the writer-module inventory has to account for.
+    """
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX])
+        resolved: dict[tuple[str, str], str] = {}
+        for object_type, name in objects:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+                (object_type, name),
+            ).fetchone()
+            if row is None or row[0] is None:
+                raise RuntimeError(
+                    f"canonical index DDL is missing {object_type} {name!r}; fast-forward cannot proceed"
+                )
+            resolved[(object_type, name)] = str(row[0])
+        return resolved
+    finally:
+        conn.close()
+
+
 def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclarationReport:
     """Return the static declaration coverage used by the schema-policy lint."""
     versions = tuple(declaration.version for declaration in INDEX_DELTA_DECLARATIONS)
@@ -355,4 +389,5 @@ __all__ = [
     "IndexFastForwardPlan",
     "index_delta_declaration_report",
     "index_fast_forward_plan",
+    "resolve_canonical_index_objects",
 ]

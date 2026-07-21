@@ -124,6 +124,12 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints: [seed_price_catalog]
+    - path: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
+      surfaces:
+        - tier: index
+          durability: rebuildable
+          interruption: replayable
+      entrypoints: [apply_index_fast_forward]
   twin_write_contracts:
     - name: raw-membership-classification
       module: polylogue/storage/sqlite/archive_tiers/archive.py
