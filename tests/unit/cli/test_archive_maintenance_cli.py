@@ -20,7 +20,7 @@ from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
     ArchiveTierInitResult,
@@ -140,26 +140,87 @@ def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
     assert detail_payload["next_query_handle"] is not None
 
 
-def test_raw_authority_blocker_resolution_cli_requires_confirmation(
-    cli_runner: CliRunner,
-    monkeypatch: pytest.MonkeyPatch,
+def _seed_raw_authority_blocker(
+    archive_root: Path,
+    *,
+    blocker_id: str,
+    plan_id: str = "raw-replay:cli-test-plan",
+    census_id: str = "raw-authority-census:cli-test",
+    frontier: bool = False,
+    reason: str = "immutable source/index preconditions changed after the census",
 ) -> None:
-    calls: list[tuple[str, str]] = []
+    """Directly seed one real, unresolved ``raw_authority_blockers`` row.
 
-    def resolve(
-        _root: Path,
-        blocker_id: str,
-        *,
-        resolution: str,
-        assertion_id: str | None = None,
-        judgment_disposition: str | None = None,
-    ) -> dict[str, object]:
-        assert assertion_id is None
-        assert judgment_disposition is None
-        calls.append((blocker_id, resolution))
-        return {"blocker_id": blocker_id, "current_plan": {"plan_id": "current-plan"}}
+    Mirrors the full production shape (census -> plan -> blocker, plus one
+    real ``raw_sessions`` row so a non-frontier resolution can genuinely
+    replan it) with hand-built minimal rows rather than driving the full
+    census/reject-stale workflow (see
+    ``tests/unit/storage/test_raw_authority_ledger.py`` for that heavier
+    path) -- sufficient to exercise ``BlockerResolveActuator.prepare``'s real
+    read against ``source.db`` and, for non-frontier blockers,
+    ``resolve_raw_authority_blocker``'s real replan.
+    """
+    raw_id = f"raw-{blocker_id}"
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        payload = (
+            b'{"type":"session_meta","payload":{"id":"' + blocker_id.encode() + b'"}}\n'
+            b'{"type":"response_item","payload":{"type":"message","id":"m-1",'
+            b'"role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+        )
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=f"{blocker_id}.jsonl",
+            acquired_at_ms=1000,
+            raw_id=raw_id,
+        )
 
-    monkeypatch.setattr("polylogue.storage.raw_authority.resolve_raw_authority_blocker", resolve)
+    witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        next_sequence_no = int(
+            conn.execute("SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM raw_authority_censuses").fetchone()[0]
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_censuses (
+                census_id, sequence_no, scope_json, residual_json, parser_fingerprint,
+                mode, lifecycle_status, quiescent, inventory_digest, residual_digest,
+                plan_count, post_inventory_digest, post_residual_json, post_residual_digest,
+                post_plan_count, postflight_at_ms, executable_plan_count, residual_plan_count,
+                predecessor_census_id, fixed_point, created_at_ms, completed_at_ms
+            ) VALUES (?, ?, '{}', '{}', 'cli-test-fp', 'apply', 'completed', 1, ?, ?, 1,
+                      ?, '{}', ?, 0, 1000, 1, 0, NULL, 0, 1000, 1000)
+            """,
+            (census_id, next_sequence_no, "a" * 64, "b" * 64, "c" * 64, "d" * 64),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_plans (
+                plan_id, input_digest, input_raw_ids_json, logical_keys_json,
+                authority_witness_json, source_preconditions_json, index_preconditions_json,
+                created_at_ms
+            ) VALUES (?, ?, ?, '[]', ?, '{}', '{}', 1000)
+            """,
+            (plan_id, "e" * 64, json.dumps([raw_id]), json.dumps({"schema": witness_schema})),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_blockers (
+                blocker_id, plan_id, census_id, reason, expected_json, observed_json, created_at_ms
+            ) VALUES (?, ?, ?, ?, '{}', '{}', 1000)
+            """,
+            (blocker_id, plan_id, census_id, reason),
+        )
+        conn.commit()
+
+
+def test_raw_authority_blocker_resolution_cli_requires_confirmation(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    root = cli_workspace["archive_root"]
+    _seed_raw_authority_blocker(root, blocker_id="blocker-1")
     base = [
         "--plain",
         "ops",
@@ -177,7 +238,89 @@ def test_raw_authority_blocker_resolution_cli_requires_confirmation(
     assert "without --yes" in refused.output
     assert accepted.exit_code == 0
     assert "Resolved blocker-1" in accepted.output
-    assert calls == [("blocker-1", "reviewed current evidence")]
+    with sqlite3.connect(root / "source.db") as conn:
+        row = conn.execute(
+            "SELECT resolved_at_ms, resolution FROM raw_authority_blockers WHERE blocker_id = ?", ("blocker-1",)
+        ).fetchone()
+    assert row is not None
+    assert row[0] is not None
+    assert "reviewed current evidence" in str(row[1])
+
+
+def test_raw_authority_blocker_resolution_cli_refuses_unknown_blocker(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """Anti-vacuity: an unknown/already-resolved blocker id must not silently succeed."""
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-blocker-resolve",
+            "--blocker-id",
+            "does-not-exist",
+            "--reason",
+            "reviewed current evidence",
+            "--yes",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "not found or already resolved" in result.output
+
+
+def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    root = cli_workspace["archive_root"]
+    _seed_raw_authority_blocker(root, blocker_id="blocker-stale", plan_id="raw-replay:stale-plan")
+    _seed_raw_authority_blocker(
+        root,
+        blocker_id="blocker-frontier",
+        plan_id="raw-replay:frontier-plan",
+        census_id="raw-authority-census:frontier-test",
+        frontier=True,
+        reason="conflicting canonical authority",
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    by_id = {row["blocker_id"]: row for row in payload["blockers"]}
+    assert by_id["blocker-stale"]["kind"] == "stale_plan"
+    assert by_id["blocker-frontier"]["kind"] == "frontier_judgment"
+
+    # Resolving one blocker removes it from the unresolved listing.
+    resolve = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-blocker-resolve",
+            "--blocker-id",
+            "blocker-stale",
+            "--reason",
+            "acknowledged",
+            "--yes",
+        ],
+        catch_exceptions=False,
+    )
+    assert resolve.exit_code == 0
+
+    after = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    remaining = {row["blocker_id"] for row in json.loads(after.output)["blockers"]}
+    assert remaining == {"blocker-frontier"}
 
 
 def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
