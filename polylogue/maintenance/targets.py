@@ -39,6 +39,18 @@ class MaintenanceTargetSpec:
     #: decide which ``InvalidationReason`` applies. Examples:
     #: ``"messages_fts"``, ``"session.profile"``, ``"embedding.voyage-4"``.
     invalidation_keys: tuple[str, ...] = ()
+    #: Whether this target can be driven through the resumable replay
+    #: executor (:func:`polylogue.maintenance.replay.execute_replay`).
+    #: ``True`` is the default and asserts a real handler exists in
+    #: :data:`polylogue.storage.repair.REPAIR_HANDLERS` -- the catalog
+    #: equality test in ``tests/unit/maintenance/test_targets.py`` fails
+    #: anti-vacuously if a target claims replayable without a handler, or
+    #: has a handler but is not advertised as replayable.
+    replayable: bool = True
+    #: Surface-visible reason a target is intentionally excluded from
+    #: replay (break-glass only, requires a dedicated command, etc.).
+    #: Required (non-empty) when ``replayable=False``.
+    non_replayable_reason: str = ""
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -58,6 +70,8 @@ class MaintenanceTargetSpec:
                 "archive_readiness_requires_deep": self.archive_readiness_requires_deep,
                 "aliases": list(self.aliases),
                 "invalidation_keys": list(self.invalidation_keys),
+                "replayable": self.replayable,
+                "non_replayable_reason": self.non_replayable_reason,
             }
         )
 
@@ -93,6 +107,36 @@ class MaintenanceTargetCatalog:
             seen.add(spec.name)
             resolved.append(spec)
         return tuple(resolved)
+
+    def resolve_or_default(self, names: tuple[str, ...]) -> tuple[MaintenanceTargetSpec, ...]:
+        """Resolve explicit target names, or expand to the run-all set.
+
+        This is the single target-resolution behavior shared by
+        ``polylogue ops maintenance plan``/``run`` (CLI, via
+        :func:`~polylogue.maintenance.replay.execute_replay`) and the
+        daemon HTTP/MCP ``preview``/``execute`` routes (via
+        :func:`~polylogue.maintenance.planner.execute_backfill`/
+        ``preview_backfill``): an empty ``names`` tuple means "no
+        explicit scope narrowing", which expands to every catalog
+        target in declared order -- the documented targetless run-all
+        set. An explicit but unresolvable name (e.g. a typo) still
+        resolves to an empty tuple so callers can distinguish "asked
+        for nothing in particular" from "asked for something that does
+        not exist".
+        """
+        if not names:
+            return self.specs
+        return self.resolve(names)
+
+    def replayable_names(self) -> tuple[str, ...]:
+        """Names of targets the catalog declares replay-capable.
+
+        This is the catalog-side half of the replay-capability contract;
+        :mod:`polylogue.maintenance.replay` cross-checks these against the
+        real handler dict in :mod:`polylogue.storage.repair` so the two
+        never silently diverge again (polylogue-71ey).
+        """
+        return tuple(spec.name for spec in self.specs if spec.replayable)
 
     def preview_target_names(self) -> tuple[str, ...]:
         return tuple(spec.name for spec in self.specs if spec.include_preview_when_ready)

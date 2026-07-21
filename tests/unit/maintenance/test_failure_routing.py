@@ -320,6 +320,9 @@ def test_execute_replay_routes_unsupported_target_failure(tmp_path: Path, monkey
                 for name in names
             )
 
+        def resolve_or_default(self, names: tuple[str, ...]) -> tuple[MaintenanceTargetSpec, ...]:
+            return self.resolve(names)
+
     monkeypatch.setattr(replay_mod, "build_maintenance_target_catalog", lambda: _FakeCatalog())
 
     operation = execute_replay(
@@ -343,13 +346,13 @@ def test_execute_replay_routes_repair_failure(tmp_path: Path, monkeypatch: pytes
     config = _make_config(tmp_path)
 
     from polylogue.config import Config as ConfigT
-    from polylogue.maintenance import replay as replay_mod
+    from polylogue.storage import repair as repair_mod
     from polylogue.storage.repair import RepairResult as RepairResultT
 
     def _bad_repair(_config: ConfigT, _dry_run: bool) -> RepairResultT:
         raise RuntimeError("session insight rebuild failed: /tmp/path/session_42")
 
-    monkeypatch.setitem(replay_mod._REPLAY_DISPATCH, "session_insights", _bad_repair)
+    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, "session_insights", _bad_repair)
 
     operation = execute_replay(
         config,
@@ -372,8 +375,8 @@ def test_execute_replay_routes_repair_reported_failure(tmp_path: Path, monkeypat
     """A repair fn that returns ``success=False`` is routed with the canonical kind."""
     config = _make_config(tmp_path)
 
-    from polylogue.maintenance import replay as replay_mod
     from polylogue.maintenance.models import MaintenanceCategory
+    from polylogue.storage import repair as repair_mod
     from polylogue.storage.repair import RepairResult
 
     def _failing_repair(_config: Config, _dry_run: bool) -> RepairResult:
@@ -386,7 +389,7 @@ def test_execute_replay_routes_repair_reported_failure(tmp_path: Path, monkeypat
             detail="insight repair could not converge",
         )
 
-    monkeypatch.setitem(replay_mod._REPLAY_DISPATCH, "session_insights", _failing_repair)
+    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, "session_insights", _failing_repair)
 
     operation = execute_replay(
         config,
