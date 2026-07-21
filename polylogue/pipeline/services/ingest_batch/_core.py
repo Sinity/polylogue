@@ -1419,10 +1419,11 @@ async def process_ingest_batch(
     # Get validation mode from environment and Sinex authority mode from the
     # canonical config layer.  Off mode is passed through so the sync writer
     # performs no protocol encoding or outbox work.
-    validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
     from polylogue.config import load_polylogue_config
 
-    publication_mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    _resolved_settings = load_polylogue_config()
+    validation_mode = _resolved_settings.schema_validation
+    publication_mode = PublicationMode.from_string(_resolved_settings.sinex_mode)
 
     batch_summary = await asyncio.to_thread(
         _process_ingest_batch_sync,

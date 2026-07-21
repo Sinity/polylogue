@@ -11,7 +11,6 @@ factory — see :mod:`polylogue.storage.search_providers.hybrid` for why
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -60,7 +59,9 @@ def create_vector_provider(
     if voyage_key is None and config and config.index_config:
         voyage_key = config.index_config.voyage_api_key
     if voyage_key is None:
-        voyage_key = os.environ.get("VOYAGE_API_KEY")
+        from polylogue.config import load_polylogue_config
+
+        voyage_key = load_polylogue_config().voyage_api_key
 
     if not voyage_key:
         return None

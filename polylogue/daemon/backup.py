@@ -692,8 +692,10 @@ def _verify_backup_result(result: BackupResult) -> None:
 
 def _backup_verification_scratch_parent(path: Path) -> Path | None:
     """Choose scratch placement near the backup to avoid root ``/tmp`` I/O."""
-    env_tmpdir = os.environ.get("POLYLOGUE_BACKUP_VERIFY_TMPDIR")
-    candidates = (path.parent, Path(env_tmpdir) if env_tmpdir else None, Path("/realm/tmp"))
+    from polylogue.config import load_polylogue_config
+
+    configured_tmpdir = load_polylogue_config().backup_verify_tmpdir
+    candidates = (path.parent, Path(configured_tmpdir) if configured_tmpdir else None, Path("/realm/tmp"))
     for candidate in candidates:
         if candidate is None:
             continue

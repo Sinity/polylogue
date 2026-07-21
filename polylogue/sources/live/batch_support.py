@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import time
 from collections.abc import Callable, Iterable
@@ -376,12 +375,11 @@ def _full_ingest_worker_count(records: list[RawSessionRecord]) -> int:
 
 
 def _live_full_ingest_worker_limit() -> int:
-    """Resolve the daemon live full-ingest worker cap from the environment."""
-    raw_value = os.environ.get("POLYLOGUE_LIVE_FULL_INGEST_WORKERS")
-    if raw_value is None or raw_value.strip() == "":
-        return _DEFAULT_LIVE_FULL_INGEST_WORKERS
+    """Resolve the daemon live full-ingest worker cap via the layered config."""
+    from polylogue.config import load_polylogue_config
+
     try:
-        return max(1, int(raw_value))
+        return load_polylogue_config().live_full_ingest_workers
     except ValueError:
         return _DEFAULT_LIVE_FULL_INGEST_WORKERS
 

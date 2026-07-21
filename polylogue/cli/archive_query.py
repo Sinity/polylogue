@@ -1199,9 +1199,12 @@ def _daemon_session_query_params(
 def _daemon_disabled(*, flag: bool = False) -> bool:
     if flag:
         return True
-    if os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+    from polylogue.config import load_polylogue_config
+
+    settings = load_polylogue_config()
+    if settings.no_daemon:
         return True
-    return os.environ.get("POLYLOGUE_DAEMON", "").lower() == "off"
+    return settings.daemon_client_mode == "off"
 
 
 def _fetch_daemon_sessions_payload(

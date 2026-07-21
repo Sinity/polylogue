@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import socket
@@ -341,9 +340,11 @@ def iter_language_server_exports(
 
 
 def discover_language_server() -> Path | None:
-    env_path = os.environ.get("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER")
-    if env_path:
-        path = Path(env_path).expanduser()
+    from polylogue.config import load_polylogue_config
+
+    configured_path = load_polylogue_config().antigravity_language_server
+    if configured_path:
+        path = Path(configured_path).expanduser()
         if path.is_file():
             return path
 

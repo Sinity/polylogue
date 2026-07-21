@@ -94,9 +94,12 @@ def _fetch_daemon_facets(
 ) -> FacetsResponse | None:
     """Use the config-matched UDS daemon for read-only facets when lossless."""
 
-    if disabled or no_idf or os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+    from polylogue.config import load_polylogue_config
+
+    settings = load_polylogue_config()
+    if disabled or no_idf or settings.no_daemon:
         return None
-    if os.environ.get("POLYLOGUE_DAEMON", "").lower() == "off":
+    if settings.daemon_client_mode == "off":
         return None
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.cli.shared.helpers import load_effective_config

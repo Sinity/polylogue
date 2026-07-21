@@ -154,10 +154,11 @@ def _guided_path_needed() -> bool:
 
 def _daemon_http_alive() -> bool:
     """Best-effort daemon liveness probe with a short timeout."""
-    import os
     from urllib.request import Request, urlopen
 
-    url = os.environ.get("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766")
+    from polylogue.config import load_polylogue_config
+
+    url = load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
     try:
         req = Request(f"{url}/api/status", method="GET")
         with urlopen(req, timeout=0.5) as resp:
