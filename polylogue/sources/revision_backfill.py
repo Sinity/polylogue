@@ -985,13 +985,10 @@ def _parse_dispatch_max_bytes() -> int:
     to the pool, where aggregate parse time genuinely dominates transfer
     cost. Override with POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES.
     """
-    raw = os.environ.get("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES")
-    if raw is None:
-        return _DEFAULT_PARSE_DISPATCH_MAX_BYTES
-    try:
-        return int(raw)
-    except ValueError:
-        return _DEFAULT_PARSE_DISPATCH_MAX_BYTES
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().revision_parse_dispatch_max_bytes
+    return configured if configured is not None else _DEFAULT_PARSE_DISPATCH_MAX_BYTES
 
 
 def _partition_raws_by_dispatch_size(
@@ -1028,13 +1025,10 @@ def _parse_pool_min_aggregate_bytes() -> int:
     strictly slower. Override with
     ``POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES`` (polylogue-crd8 follow-up).
     """
-    raw = os.environ.get("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES")
-    if raw is None:
-        return _DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES
-    try:
-        return int(raw)
-    except ValueError:
-        return _DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().revision_parse_pool_min_bytes
+    return configured if configured is not None else _DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES
 
 
 def _pool_dispatch_amortizes(pool_raw_ids: list[str], payload_sizes: dict[str, int]) -> bool:

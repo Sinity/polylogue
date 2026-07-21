@@ -231,6 +231,13 @@ def _resolve_user_config_path() -> Path:
 
     Honors ``POLYLOGUE_CONFIG`` so tests and per-project setups can redirect
     the write; otherwise falls back to the XDG starter path.
+
+    Deliberately a raw ``os.environ`` read, not ``load_polylogue_config()``:
+    ``POLYLOGUE_CONFIG`` is the bootstrap variable that selects *which* user
+    TOML file the layered resolver loads, so it cannot itself be resolved
+    through that resolver -- mirrors ``polylogue.config``'s own
+    ``_user_config_path``/``_site_config_path`` bootstrap reads
+    (polylogue-uu8r judgment call; see docs/configuration.md).
     """
     override = os.environ.get("POLYLOGUE_CONFIG")
     if override:

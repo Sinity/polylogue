@@ -378,6 +378,17 @@ def _parse_optional_int_env(name: str) -> int | None:
 
 
 def _dev_loop_payload() -> JSONDocument:
+    # Deliberately raw os.environ reads, not load_polylogue_config(): this
+    # endpoint reports whether the dev-loop LAUNCHER set these vars in the
+    # daemon's own environment (harness diagnosis), not the resolved
+    # 5-layer config value -- resolving through config.py would mask an
+    # unset env var behind a TOML/default fallback and defeat the probe.
+    # RUN_ID/LOG_DIR are launcher-injected correlation metadata (structurally
+    # identical to CODEX_SESSION_ID), deliberately excluded from config.py's
+    # layered inventory (polylogue-uu8r judgment call; see
+    # docs/configuration.md). ARCHIVE_ROOT itself IS an inventoried setting
+    # (config.py's `archive_root`) but is read raw here for the same
+    # env-presence-diagnostic reason.
     run_id = os.environ.get("POLYLOGUE_DEV_LOOP_RUN_ID")
     log_dir = os.environ.get("POLYLOGUE_DEV_LOOP_LOG_DIR")
     archive_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")

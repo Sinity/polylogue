@@ -575,6 +575,16 @@ class PolylogueConfig:
         return str(self._data.get("hook_sidecar_dir", ""))
 
     @property
+    def hook_provider(self) -> str | None:
+        """Forced hook-harness id ('claude-code'/'codex') or None to auto-detect.
+
+        Returned as a raw string (not the ``HookHarness`` literal) to avoid a
+        ``polylogue.hooks`` import here; callers validate/narrow the value.
+        """
+        value = self._data.get("hook_provider")
+        return value if isinstance(value, str) and value else None
+
+    @property
     def backup_verify_tmpdir(self) -> str | None:
         value = self._data.get("backup_verify_tmpdir")
         return value if isinstance(value, str) and value else None
@@ -597,6 +607,43 @@ class PolylogueConfig:
         return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
 
     @property
+    def raw_authority_commit_batch_size(self) -> int | None:
+        """Census-phase commit batch size for raw-materialization repair (polylogue-amg1).
+
+        ``None``/absent falls back to the caller's hardcoded default; <=0
+        disables batching (per-raw commits), mirroring the historical
+        ``os.environ`` escape hatch.
+        """
+        value = self._data.get("raw_authority_commit_batch_size")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
+    def revision_parse_dispatch_max_bytes(self) -> int | None:
+        """Payload-size ceiling (bytes) for pool-eligible revision parse dispatch.
+
+        ``None``/absent falls back to the caller's hardcoded default
+        (polylogue-amg1).
+        """
+        value = self._data.get("revision_parse_dispatch_max_bytes")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
+    def revision_parse_pool_min_bytes(self) -> int | None:
+        """Aggregate pool-eligible payload floor (bytes) for revision parse dispatch.
+
+        ``None``/absent falls back to the caller's hardcoded default
+        (polylogue-amg1 / polylogue-crd8).
+        """
+        value = self._data.get("revision_parse_pool_min_bytes")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
     def daemon_parse_stage_split(self) -> bool:
         """Opt-in: pre-parse raw-materialization census candidates off the writer hold.
 
@@ -604,6 +651,54 @@ class PolylogueConfig:
         ``polylogue.daemon.parse_prefetch.DaemonParseStage``.
         """
         return bool(self._data.get("daemon_parse_stage_split"))
+
+    @property
+    def daemon_parse_stage_workers(self) -> int | None:
+        """Worker cap for the daemon-owned pre-parse thread pool.
+
+        ``None``/absent or <=0 falls back to the adaptive ``cpu_count - 1``
+        default. See ``polylogue.daemon.parse_prefetch``.
+        """
+        value = self._data.get("daemon_parse_stage_workers")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
+    def daemon_parse_stage_max_inflight_bytes(self) -> int | None:
+        """Whale-memory budget (bytes) for in-flight prefetch payloads.
+
+        ``None``/absent or <=0 falls back to the adaptive 1/16-physical-RAM
+        default. See ``polylogue.daemon.parse_prefetch``.
+        """
+        value = self._data.get("daemon_parse_stage_max_inflight_bytes")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
+    def daemon_parse_stage_max_cached_tree_bytes(self) -> int | None:
+        """Whole-cache budget (bytes) for ESTIMATED resident parsed-tree bytes.
+
+        ``None``/absent or <=0 falls back to the adaptive 1/8-physical-RAM
+        default. See ``polylogue.daemon.parse_prefetch``.
+        """
+        value = self._data.get("daemon_parse_stage_max_cached_tree_bytes")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
+    def daemon_parse_stage_warm_timeout_seconds(self) -> float | None:
+        """Bound (seconds) on how long a prefetch warm() pass waits for workers.
+
+        ``None``/absent or <=0 falls back to the 300s default. See
+        ``polylogue.daemon.parse_prefetch``.
+        """
+        value = self._data.get("daemon_parse_stage_warm_timeout_seconds")
+        if value is None:
+            return None
+        return float(str(value))
 
     @property
     def mcp_write_enabled(self) -> bool:
@@ -1220,6 +1315,16 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Durable hook-event sidecar/spool directory.",
     ),
     ConfigInventoryEntry(
+        "hook_provider",
+        toml_path="sources.hook_provider",
+        env_var="POLYLOGUE_HOOK_PROVIDER",
+        owner_class="deployment-policy",
+        reload_behavior="per-invocation-client",
+        description=(
+            "Force hook-event harness detection to 'claude-code' or 'codex' instead of sniffing the payload shape."
+        ),
+    ),
+    ConfigInventoryEntry(
         "backup_verify_tmpdir",
         toml_path="maintenance.backup_verify_tmpdir",
         env_var="POLYLOGUE_BACKUP_VERIFY_TMPDIR",
@@ -1258,6 +1363,41 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="resource-policy",
         reload_behavior="startup-bound",
         description="Maximum concurrent workers for live full-artifact ingestion.",
+    ),
+    ConfigInventoryEntry(
+        "raw_authority_commit_batch_size",
+        toml_path="pipeline.raw_authority.commit_batch_size",
+        env_var="POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description=(
+            "Census-phase commit batch size for raw-materialization repair "
+            "(polylogue-amg1); <=0 disables batching (per-raw commits)."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "revision_parse_dispatch_max_bytes",
+        toml_path="pipeline.revision_parse.dispatch_max_bytes",
+        env_var="POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description=(
+            "Payload-size ceiling (bytes) above which a raw parses "
+            "sequentially in-process instead of dispatching to the parse "
+            "pool (polylogue-amg1)."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "revision_parse_pool_min_bytes",
+        toml_path="pipeline.revision_parse.pool_min_bytes",
+        env_var="POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description=(
+            "Aggregate pool-eligible payload floor (bytes) below which pool "
+            "dispatch cannot amortize worker spawn cost, so the batch parses "
+            "sequentially instead (polylogue-amg1 / polylogue-crd8)."
+        ),
     ),
     ConfigInventoryEntry(
         "subscription_plans",
@@ -1315,6 +1455,54 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "the writer hold, instead of parsing inside the writer-held pass. "
             "Off by default; proves the parse/apply seam ahead of the "
             "free-threaded 3.14t daemon deploy."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "daemon_parse_stage_workers",
+        toml_path="daemon.raw_materialization.parse_stage_workers",
+        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Worker cap for the daemon-owned pre-parse thread pool "
+            "(polylogue-m6tp phase (a)); default cpu_count-1. <=0 falls "
+            "back to the adaptive default."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "daemon_parse_stage_max_inflight_bytes",
+        toml_path="daemon.raw_materialization.parse_stage_max_inflight_bytes",
+        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Whale-memory budget (bytes) for raw payloads admitted while "
+            "prefetch parses are in flight; default 1/16 physical RAM "
+            "clamped [64 MiB, 2 GiB]. <=0 falls back to the adaptive default."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "daemon_parse_stage_max_cached_tree_bytes",
+        toml_path="daemon.raw_materialization.parse_stage_max_cached_tree_bytes",
+        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Whole-cache budget (bytes) for ESTIMATED parsed-tree bytes held "
+            "resident between warm() passes; default 1/8 physical RAM "
+            "clamped [256 MiB, 4 GiB]. <=0 falls back to the adaptive default."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "daemon_parse_stage_warm_timeout_seconds",
+        toml_path="daemon.raw_materialization.parse_stage_warm_timeout_seconds",
+        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Bound (seconds) on how long a prefetch warm() pass waits for "
+            "its dispatched workers before leaving stragglers uncached. "
+            "<=0 falls back to the 300s default."
         ),
     ),
     ConfigInventoryEntry(
@@ -1394,9 +1582,22 @@ _INT_CONFIG_KEYS = frozenset(
         "live_full_ingest_workers",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
+        "raw_authority_commit_batch_size",
+        "revision_parse_dispatch_max_bytes",
+        "revision_parse_pool_min_bytes",
+        "daemon_parse_stage_workers",
+        "daemon_parse_stage_max_inflight_bytes",
+        "daemon_parse_stage_max_cached_tree_bytes",
     }
 )
-_FLOAT_CONFIG_KEYS = frozenset({"embedding_max_cost_usd", "slow_query_notice_seconds", "watch_debounce_s"})
+_FLOAT_CONFIG_KEYS = frozenset(
+    {
+        "embedding_max_cost_usd",
+        "slow_query_notice_seconds",
+        "watch_debounce_s",
+        "daemon_parse_stage_warm_timeout_seconds",
+    }
+)
 _BOOL_CONFIG_KEYS = frozenset(
     {
         "browser_capture_allow_remote",
@@ -1605,13 +1806,21 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         # the archive-derived path for every archive root, defeating scratch
         # archive isolation of the hook spool.
         "hook_sidecar_dir": "",
+        "hook_provider": None,
         "backup_verify_tmpdir": None,
         "antigravity_language_server": None,
         "ingest_commit_batch_messages": 8000,
         "ingest_parse_workers": default_parse_workers,
         "live_full_ingest_workers": 1,
+        "raw_authority_commit_batch_size": None,
+        "revision_parse_dispatch_max_bytes": None,
+        "revision_parse_pool_min_bytes": None,
         "subscription_plans": (),
         "daemon_parse_stage_split": False,
+        "daemon_parse_stage_workers": None,
+        "daemon_parse_stage_max_inflight_bytes": None,
+        "daemon_parse_stage_max_cached_tree_bytes": None,
+        "daemon_parse_stage_warm_timeout_seconds": None,
         "daemon_bulk_rebuild_routing": False,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,
