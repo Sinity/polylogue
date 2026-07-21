@@ -3811,6 +3811,31 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     succeeds: bool,
     census_head: bool,
 ) -> None:
+    """Pins #2718's fail-closed contract: a bundle raw discovered later must
+    never silently replace an accepted head that still has live, unresolved
+    byte-append evidence (the QUARANTINED append raw this test binds), even
+    when the bundle's own content happens to strictly extend the head's
+    content (``bundle_texts2``/``bundle_texts3``: content-prefix growth alone
+    is not proof of provenance).
+
+    polylogue-miwv (2026-07-21): #3211 ("in-cohort head-retire drift fix")
+    removed ``apply_raw_membership_classification``'s byte-governance refusal
+    on the mistaken premise that its branch is only reachable after a real
+    membership-governance conversion -- but ``_apply_membership_sessions``
+    unconditionally injects the CURRENT accepted head into the comparison
+    cohort even when it has never been converted (exactly this test's byte-
+    governed-head scenario), so the removed guard's absence let the older
+    bundle's superset content silently move the head (message_count 2->3,
+    ``accepted_raw_id`` changed) for ``bundle_texts2``/``bundle_texts3``.
+    This was not caused by, and is unrelated to, the messages_fts_identity
+    UNIQUE(block_id) ledger work landing the same day (polylogue-miwv's
+    other commits) -- confirmed by reproducing this exact failure on the
+    commit immediately preceding messages_fts_identity's introduction.
+    Restored as a narrower guard (refuses only when replay is about to change
+    the accepted raw AND a live raw_sessions row still chains a
+    ``predecessor_source_revision`` off the existing head) so #3211's own
+    interrupted-pass-drift resumption keeps working.
+    """
     root = tmp_path / "sessions"
     root.mkdir()
     current = root / "current.jsonl"
