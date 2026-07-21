@@ -331,6 +331,28 @@ async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connectio
     return tuple(ddl)
 
 
+def rebuild_messages_fts_content_sync(conn: sqlite3.Connection) -> None:
+    """Clear and repopulate ``messages_fts`` content only (no identity ledger).
+
+    Companion to :func:`rebuild_messages_fts_identity_sync`; callers that also
+    need the identity ledger to converge call both. Split out (polylogue-t3gk)
+    so a caller that only needs one surface refreshed -- e.g. an index
+    fast-forward declaration naming only ``messages_fts_identity`` -- does not
+    have to pay for a full content rescan it did not declare.
+    """
+    conn.execute(FTS_REBUILD_SQL)
+    conn.execute(insert_all_message_rows_sql())
+
+
+def rebuild_messages_fts_identity_sync(conn: sqlite3.Connection) -> None:
+    """Clear and repopulate the ``messages_fts_identity`` ledger only.
+
+    See :func:`rebuild_messages_fts_content_sync`.
+    """
+    conn.execute(FTS_IDENTITY_REBUILD_SQL)
+    conn.execute(insert_all_message_identity_rows_sql())
+
+
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Rebuild the full FTS index from persisted archive rows.
 
@@ -339,10 +361,8 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     projection.
     """
     ensure_fts_index_sync(conn)
-    conn.execute(FTS_REBUILD_SQL)
-    conn.execute(insert_all_message_rows_sql())
-    conn.execute(FTS_IDENTITY_REBUILD_SQL)
-    conn.execute(insert_all_message_identity_rows_sql())
+    rebuild_messages_fts_content_sync(conn)
+    rebuild_messages_fts_identity_sync(conn)
     _rebuild_session_work_events_fts_sync(conn)
     _rebuild_threads_fts_sync(conn)
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
@@ -1113,6 +1133,8 @@ __all__ = [
     "rebuild_command_trigram_index_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
+    "rebuild_messages_fts_content_sync",
+    "rebuild_messages_fts_identity_sync",
     "rebuild_session_insight_fts_sync",
     "repair_fts_index_async",
     "repair_fts_index_sync",

@@ -119,6 +119,30 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   chains. They are rebuildable products over durable source/user evidence:
   schema mismatches are handled by rebuilding or blue-green replacing the
   affected derived tier from source, preserving durable tiers.
+- **Index-tier open-path fast-forward executor** (polylogue-t3gk): a version
+  gap is not automatically a rebuild. `storage/sqlite/lifecycle.py` declares,
+  per `INDEX_DELTA_DECLARATIONS` entry, whether a schema-version delta is
+  clone-safe (`FastForwardOperation`s with no `SEMANTIC_REPARSE` class) or
+  requires raw reparse. `initialize_archive_database`
+  (`storage/sqlite/archive_tiers/bootstrap.py`) calls
+  `index_fast_forward_plan(current_version, expected_version)`: when the gap
+  is covered by a contiguous chain of eligible declarations, the executor in
+  `storage/sqlite/archive_tiers/index_fast_forward_executor.py` applies each
+  declaration's operations in order, dispatching generically on
+  `FastForwardOperationKind` (`REPLACE_TABLE` copy-forwards shared columns
+  onto the canonical shape, `REPLACE_VIEW`/`CREATE_INDEX` re-run canonical
+  DDL resolved from a scratch in-memory connection, `DROP_TABLE` drops,
+  `REBUILD_FTS` drops the declared triggers and repopulates only the
+  declared FTS surfaces) — never a version-specific branch. Each declaration
+  commits (and bumps `PRAGMA user_version` to that declaration's version) in
+  its own transaction, so a crash mid-chain resumes idempotently from
+  whatever version actually landed on disk. Only when no eligible plan
+  covers the exact gap (e.g. a `SEMANTIC_REPARSE` declaration is in the
+  span, as with v39 and v42) does the open path fall back to the
+  rebuild-required `RuntimeError`. This closes the gap where the v43
+  `messages_fts_identity` declaration existed but had no consumer: a freshly
+  promoted v42 archive could not be opened by v43 code at all before this
+  executor existed.
 - **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
   helpers for daemon telemetry because the tier is disposable.
 - **Index-tier benign-DDL convergence** (polylogue-jc1b): a registered set of

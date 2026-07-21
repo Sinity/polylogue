@@ -519,7 +519,7 @@ files:
     target: polylogue/archive/resume_routing.py
     owner: stable
   - path: polylogue/archive/revision_authority.py
-    loc: 242
+    loc: 252
     target: polylogue/archive/revision_authority.py
     owner: stable
   - path: polylogue/archive/revision_replay.py
@@ -1584,7 +1584,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 5423
+    loc: 5435
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/judgment_automation.py
@@ -3196,7 +3196,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 2512
+    loc: 2513
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -3417,7 +3417,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 1509
+    loc: 1545
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3598,7 +3598,7 @@ files:
     target: polylogue/storage/fts/dangling_repair.py
     owner: stable
   - path: polylogue/storage/fts/drift_sampling.py
-    loc: 116
+    loc: 117
     target: polylogue/storage/fts/drift_sampling.py
     owner: stable
   - path: polylogue/storage/fts/freshness.py
@@ -3989,7 +3989,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 12600
+    loc: 12654
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -4005,7 +4005,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/bootstrap.py
-    loc: 231
+    loc: 249
     target: polylogue/storage/sqlite/archive_tiers/bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/column_spec.py
@@ -4035,6 +4035,10 @@ files:
   - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
     loc: 114
     target: polylogue/storage/sqlite/archive_tiers/index_convergence.py
+    owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
+    loc: 233
+    target: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
     loc: 236
