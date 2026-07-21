@@ -20,12 +20,41 @@ normalized into one model — sessions, messages, content blocks, tool calls
 and their results — and serves it back through a query-first CLI, an MCP
 server for agents, a local HTTP reader, and a Python API.
 
+```mermaid
+flowchart LR
+    subgraph sources[" "]
+        direction TB
+        A["Claude Code · Codex · Gemini CLI<br/>live JSONL, watched as you work"]
+        B["ChatGPT · Claude · Grok · AI Studio<br/>export zips, browser capture"]
+    end
+    sources -->|"ingest"| S[("source.db<br/><i>raw bytes, durable</i>")]
+    S -->|"parse + derive"| I[("index.db<br/><i>one normalized model,<br/>rebuildable</i>")]
+    U[("user.db<br/><i>your notes & judgments,<br/>durable</i>")] --- I
+    I --> CLI["CLI<br/><code>find … then …</code>"]
+    I --> MCP["MCP server<br/>for agents"]
+    I --> HTTP["local HTTP<br/>reader"]
+    I --> PY["Python<br/>API"]
+```
+
 ## See it work
 
 Every block below is a real command against the author's own archive —
-Polylogue's own development history, ingested from Codex CLI and Claude
-Code sessions that worked on this repository. Output is trimmed with `...`
-where noted; nothing is invented.
+currently **83,000+ sessions and 4.7 million messages** of live history,
+five providers, reaching back to 2022. Output is trimmed with `...` where
+noted; nothing is invented.
+
+Start wide: dated top-level sessions per year (subagent runs and capture
+sidecars ride along with their parents rather than carrying a date of their
+own — they are most of the other ~66K sessions):
+
+```console
+$ polylogue find 'since:2015-01-01' then analyze --by year
+2026: 13537
+2025: 2270
+2024: 737
+2023: 683
+2022: 25
+```
 
 Search it. One query hits Codex and Claude Code sessions at once — here, a
 recurring clock-hygiene lint check landing in both:
@@ -67,6 +96,17 @@ tool=Edit count=1167
 tool=shell count=533
 tool=exec_command count=149
 ...
+```
+
+The same structure answers sharper questions. Every `pytest` invocation any
+agent ever ran here, split by its **actual exit status** — including the
+honest `unknown` lane for results the provider never reported:
+
+```console
+$ polylogue "actions where tool:Bash AND command:pytest | group by is_error | count"
+is_error=0 count=12861
+is_error=1 count=1039
+is_error=unknown count=115
 ```
 
 That is the product: everything your AI tools ever produced, in one queryable
