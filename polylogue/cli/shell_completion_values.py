@@ -41,6 +41,7 @@ from polylogue.archive.query.transaction import archive_read_context
 from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
 from polylogue.paths import active_index_db_path
+from polylogue.sources.origin_specs import ORIGIN_SPECS
 from polylogue.surfaces.action_affordances import InputUnit
 
 if TYPE_CHECKING:
@@ -48,16 +49,9 @@ if TYPE_CHECKING:
 
 ArchiveCompletionAction = Callable[["ArchiveStore"], list[CompletionItem]]
 
-_ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = {
-    "chatgpt-export": "ChatGPT web exports (lab: OpenAI)",
-    "claude-ai-export": "Claude web exports (lab: Anthropic)",
-    "claude-code-session": "Claude Code local sessions (lab: Anthropic)",
-    "codex-session": "Codex CLI local sessions (lab: OpenAI)",
-    "aistudio-drive": "Google AI Studio / Drive exports (lab: Google)",
-    "gemini-cli-session": "Gemini CLI local sessions (lab: Google)",
-    "hermes-session": "Hermes agent sessions",
-    "antigravity-session": "Antigravity brain artifacts",
-}
+# Derived from the one typed origin admission inventory; do not hand-maintain
+# a second per-origin description list here.
+_ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = {spec.origin.value: spec.display_description for spec in ORIGIN_SPECS}
 
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32

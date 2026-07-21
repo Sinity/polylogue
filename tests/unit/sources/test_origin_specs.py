@@ -210,3 +210,18 @@ def test_origin_specs_are_parity_checked_against_the_live_assembly_registry() ->
     declared_origins = {spec.origin for spec in ORIGIN_SPECS if spec.assembly_spec_path is not None}
     assert {item.origin for item in diagnostics} == declared_origins
     assert declared_origins  # sanity: the production set is non-empty today
+
+
+def test_every_origin_spec_declares_a_display_description() -> None:
+    """Production dependency: CLI --origin shell completion derives its help text from OriginSpec.
+
+    Anti-vacuity: blanking a display_description (or dropping a spec) shrinks
+    the derived completion inventory below the full Origin vocabulary.
+    """
+    from polylogue.cli.shell_completion_values import _ORIGIN_DESCRIPTIONS
+
+    for spec in ORIGIN_SPECS:
+        assert spec.display_description.strip(), spec.origin.value
+
+    assert set(_ORIGIN_DESCRIPTIONS) == {origin.value for origin in Origin}
+    assert all(text.strip() for text in _ORIGIN_DESCRIPTIONS.values())
