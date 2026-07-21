@@ -2875,3 +2875,67 @@ describe("receiver health probe", () => {
     expect(response).toMatchObject({ ok: false, status: "unreachable", detail: "non_json_response" });
   });
 });
+
+describe("pairing-code bootstrap (polylogue-gnie)", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    // A fresh install has no bearer token configured -- that is exactly the
+    // state this flow exists to fix.
+    await loadBackground({ receiverAuthToken: "" });
+  });
+
+  it("exchanges a valid pairing code for the bearer token without an Authorization header", async () => {
+    globalThis.fetch = vi.fn(async (url, options) => {
+      fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/pairing/redeem")) {
+        return responseJson({ ok: true, auth_token: "minted-token", receiver_id: "rx-fresh" });
+      }
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, api_schema: "polylogue-browser-capture/v1", receiver_id: "rx-fresh" });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+
+    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "ABCD1234" });
+
+    expect(response.ok).toBe(true);
+    expect(stored.receiverAuthToken).toBe("minted-token");
+    const redeemCall = fetchCalls.find((call) => String(call.url).endsWith("/v1/pairing/redeem"));
+    expect(redeemCall).toBeDefined();
+    expect(JSON.parse(redeemCall.options.body)).toEqual({ code: "ABCD1234" });
+    expect(redeemCall.options.headers.Authorization).toBeUndefined();
+  });
+
+  it("does not store a token when the receiver rejects the code", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      fetchCalls.push({ url });
+      return responseJson({ ok: false, error: "pairing_code_rejected" }, { ok: false, status: 401 });
+    });
+
+    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "WRONGCOD" });
+
+    expect(response).toMatchObject({ ok: false, error: "pairing_code_rejected" });
+    expect(stored.receiverAuthToken).toBe("");
+  });
+
+  it("rejects an empty code locally without a network call", async () => {
+    globalThis.fetch = vi.fn();
+
+    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "   " });
+
+    expect(response).toMatchObject({ ok: false, error: "pairing_code_required" });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports the fetch failure when the receiver is unreachable", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "ABCD1234" });
+
+    expect(response).toMatchObject({ ok: false, error: "Failed to fetch" });
+    expect(stored.receiverAuthToken).toBe("");
+  });
+});

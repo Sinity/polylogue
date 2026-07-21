@@ -52,6 +52,8 @@ function installDom() {
       <span id="archive"></span>
       <input id="receiver-url" />
       <input id="receiver-token" />
+      <input id="pairing-code" />
+      <button id="pair-with-code"><span class="button-status"></span></button>
       <p id="state-detail"></p>
       <button id="save"><span class="button-status"></span></button>
       <button id="copy-ref" class="conversation-only"><span class="button-status"></span></button>
@@ -732,6 +734,24 @@ describe("popup capture", () => {
 
     document.getElementById("backfill-pause").click();
     await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("paused"));
+  });
+
+  it("pairs with a one-time code and clears the input on success (polylogue-gnie)", async () => {
+    const sent = [];
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      sent.push(message);
+      if (message.type === "polylogue.pairWithCode") return { ok: true, health: { status: "ok" }, pairing: null };
+      return { ok: true };
+    });
+    document.getElementById("pairing-code").value = "ABCD1234";
+
+    document.getElementById("pair-with-code").click();
+    await vi.waitFor(() =>
+      expect(sent.some((message) => message.type === "polylogue.pairWithCode")).toBe(true)
+    );
+
+    expect(sent).toContainEqual({ type: "polylogue.pairWithCode", code: "ABCD1234" });
+    await vi.waitFor(() => expect(document.getElementById("pairing-code").value).toBe(""));
   });
 });
 

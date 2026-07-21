@@ -24,6 +24,10 @@ from polylogue.browser_capture.models import (
     BrowserActionRequest,
     BrowserActionTarget,
 )
+from polylogue.browser_capture.pairing import (
+    PAIRING_CODE_DEFAULT_TTL_SECONDS,
+    mint_pairing_code,
+)
 from polylogue.browser_capture.receiver import (
     BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
     BrowserCaptureReceiverConfig,
@@ -114,6 +118,67 @@ def token_show(rotate: bool, output_format: str | None) -> None:
         click.echo(dumps({"token": token, "rotated": rotate}))
         return
     click.echo(token)
+
+
+@browser_capture_command.group("pairing")
+def pairing_group() -> None:
+    """Pair a fresh extension install without viewing or pasting the bearer token."""
+
+
+@pairing_group.command("start")
+@click.option(
+    "--ttl-seconds",
+    default=PAIRING_CODE_DEFAULT_TTL_SECONDS,
+    show_default=True,
+    type=int,
+    help="How long the code remains redeemable.",
+)
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+def pairing_start(ttl_seconds: int, output_format: str | None) -> None:
+    """Mint a short-lived one-time pairing code.
+
+    Enter the printed code into the extension popup's "Pairing code" field
+    (Diagnostics > Receiver settings) within the TTL. The extension exchanges
+    it for the receiver's bearer token automatically -- the operator never
+    views or pastes the token itself. The code is single-use and invalidated
+    after 5 wrong attempts; run this command again to mint a fresh one.
+    """
+    minted = mint_pairing_code(ttl_seconds=ttl_seconds)
+    if output_format == "json":
+        click.echo(
+            dumps({"code": minted.code, "expires_at_ms": minted.expires_at_ms, "ttl_seconds": minted.ttl_seconds})
+        )
+        return
+    click.echo(f"Pairing code: {minted.code}")
+    click.echo(f"Expires in {minted.ttl_seconds}s -- enter it in the extension popup's Pairing code field now.")
+
+
+@browser_capture_command.command("capture-health")
+@click.option("--limit", default=50, show_default=True, type=int, help="Maximum recent events to show.")
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+def capture_health_command(limit: int, output_format: str | None) -> None:
+    """List recent extension-reported capture-health events (polylogue-3v1).
+
+    Reads the same ops.db daemon-event ledger the receiver's
+    ``GET /v1/capture-health`` route serves, directly (no HTTP round trip),
+    so capture gaps/errors/spool backlog reported by the extension are
+    queryable even when the daemon's HTTP surface is not running.
+    """
+    from polylogue.daemon.events import query_daemon_events
+
+    events = query_daemon_events(kind="browser_capture_health", limit=limit)
+    if output_format == "json":
+        click.echo(dumps({"events": events}))
+        return
+    if not events:
+        click.echo("No capture-health events recorded.")
+        return
+    for event in events:
+        payload = event.get("payload", {})
+        kind = payload.get("event", "?") if isinstance(payload, dict) else "?"
+        provider = payload.get("provider") if isinstance(payload, dict) else None
+        session_id = payload.get("provider_session_id") if isinstance(payload, dict) else None
+        click.echo(f"{event.get('ts')}  {kind}  provider={provider or '-'}  session={session_id or '-'}")
 
 
 @browser_capture_command.command("action")
@@ -254,4 +319,11 @@ def action_command(
     click.echo(f"Target: {action.target.conversation_id}  policy: {action.submit_policy}")
 
 
-__all__ = ["action_command", "browser_capture_command", "serve_command", "status_command"]
+__all__ = [
+    "action_command",
+    "browser_capture_command",
+    "capture_health_command",
+    "pairing_start",
+    "serve_command",
+    "status_command",
+]

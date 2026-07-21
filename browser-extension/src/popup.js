@@ -820,6 +820,18 @@ document.getElementById("save").addEventListener("click", async () => {
   }, { busy: "Saving", ok: "Saved" });
 });
 
+document.getElementById("pair-with-code")?.addEventListener("click", async () => {
+  await withAction("pair-with-code", async () => {
+    const codeInput = document.getElementById("pairing-code");
+    const code = codeInput.value.trim();
+    if (!code) throw new Error("pairing_code_required");
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.pairWithCode", code });
+    if (!result?.ok) throw new Error(result?.error || "pairing_failed");
+    codeInput.value = "";
+    await refreshStatus("popup_pair_with_code");
+  }, { busy: "Pairing", ok: "Paired" });
+});
+
 document.getElementById("debug-toggle").addEventListener("click", () => {
   document.getElementById("debug-panel").toggleAttribute("hidden");
 });

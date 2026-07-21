@@ -11,7 +11,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-BrowserCaptureAuthPolicy = Literal["extension_origin", "bearer_if_web_origin", "bearer_if_configured"]
+BrowserCaptureAuthPolicy = Literal[
+    "extension_origin",
+    "bearer_if_web_origin",
+    "bearer_if_configured",
+    # No bearer token accepted or required -- the route's whole purpose is
+    # minting/exchanging that token for an unpaired caller. Origin is still
+    # enforced (extension-only); the short-lived single-use code carried in
+    # the request body is this route's credential (polylogue-gnie).
+    "unauthenticated_pairing_exchange",
+]
 BrowserCaptureRouteKind = Literal[
     "capabilities",
     "status",
@@ -34,6 +43,9 @@ BrowserCaptureRouteKind = Literal[
     "capture_job_checkpoint",
     "backfill_checkpoint_store",
     "backfill_checkpoint_read",
+    "pairing_redeem",
+    "capture_health_report",
+    "capture_health_list",
 ]
 
 
@@ -243,6 +255,44 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "extension_instance_id query parameter",
         "BrowserBackfillCheckpointPayload | BrowserCaptureErrorPayload",
         "Returns the mirrored checkpoint for an extension instance, or 404 if none was stored.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/pairing/redeem",
+        "pairing_redeem",
+        "unauthenticated_pairing_exchange",
+        "BrowserCapturePairingRedeemRequest",
+        "BrowserCapturePairingRedeemPayload | BrowserCaptureErrorPayload",
+        (
+            "Exchanges a short-lived single-use pairing code (minted out-of-band by "
+            "`polylogued browser-capture pairing start`) for the receiver's current bearer "
+            "token, so a fresh install never requires the operator to view/copy/paste the "
+            "token itself (polylogue-gnie). Wrong codes and reuse are rejected; 5 wrong "
+            "guesses or expiry invalidate the pending code."
+        ),
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/capture-health",
+        "capture_health_report",
+        "bearer_if_configured",
+        "BrowserCaptureHealthEventRequest",
+        "BrowserCaptureHealthEventAcceptedPayload | BrowserCaptureErrorPayload",
+        (
+            "Extension-reported capture-health telemetry (gap/error/spool-backlog/"
+            "provider-auth-broken), stored in the ops.db daemon-event ledger under kind "
+            "'browser_capture_health' so silent capture incompleteness becomes queryable "
+            "history rather than only-visible-in-the-popup-at-that-moment (polylogue-3v1)."
+        ),
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/capture-health",
+        "capture_health_list",
+        "bearer_if_configured",
+        "optional limit query parameter",
+        "{ok: true, events: [...]}",
+        "Recent capture-health events, most recent first -- read side of the report route above.",
     ),
 )
 
