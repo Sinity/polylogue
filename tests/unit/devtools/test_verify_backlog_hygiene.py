@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from devtools import verify_backlog_hygiene
+
+# Fixed anchor instant for F3 (stale-claim) tests -- passed explicitly as
+# collect_findings' `now` param rather than mocking datetime.now, so these
+# tests are deterministic regardless of the host wall clock.
+_ANCHOR = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _write_jsonl(path: Path, issues: list[dict[str, object]]) -> None:
@@ -47,6 +53,8 @@ def _issue(
     issue_type: str = "task",
     labels: list[str] | None = None,
     dependencies: list[dict[str, str]] | None = None,
+    metadata: dict[str, object] | None = None,
+    updated_at: str | None = None,
 ) -> dict[str, object]:
     return {
         "id": id,
@@ -60,6 +68,8 @@ def _issue(
         "issue_type": issue_type,
         "labels": labels if labels is not None else [],
         "dependencies": dependencies if dependencies is not None else [],
+        "metadata": metadata if metadata is not None else {},
+        "updated_at": updated_at,
     }
 
 
@@ -493,3 +503,435 @@ def test_sync_receipt_allowlist_suppresses_finding(tmp_path: Path) -> None:
     allow_path.write_text("S1\tpolylogue-allowed-conflict\taccepted exception\n")
     findings = verify_backlog_hygiene.collect_findings(path=path, allow_path=allow_path, receipts_path=receipts_dir)
     assert findings == []
+
+
+# --- F1-F4: active-set / execution-focus / program-grouping invariants
+# (polylogue-8jg9.1 remaining scope) ---
+
+
+def test_f1_active_epic_leaf_is_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            # Program-marker beads need not be issue_type="epic" for this
+            # module's checks (only F1 cares about the *leaf's* type); using
+            # "task" here avoids incidentally tripping the unrelated
+            # E1/E2 epic-membership checks in this minimal fixture.
+            _issue(
+                "polylogue-prog",
+                title="Owning program",
+                description="Groups active work.",
+                labels=["area:ops"],
+                issue_type="task",
+                metadata={"frontier_program": "active"},
+            ),
+            # F1: an epic itself carries frontier=active as a leaf.
+            _issue(
+                "polylogue-f1epic",
+                title="Epic mistakenly admitted as a leaf",
+                description="An epic that also claims to be an active leaf.",
+                labels=["area:ops"],
+                issue_type="epic",
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-prog"},
+            ),
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
+    assert ("F1", "polylogue-f1epic") in {(f.check, f.bead_id) for f in findings}
+
+
+def test_f2_active_leaf_missing_program_ref_is_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-f2missing",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active"},
+            )
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("F2", "polylogue-f2missing")]
+    assert "no frontier_program_ref" in findings[0].message
+
+
+def test_f2_active_leaf_dangling_program_ref_is_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-f2dangling",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-ghost-prog"},
+            )
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("F2", "polylogue-f2dangling")]
+    assert "does not exist" in findings[0].message
+
+
+def test_f2_active_leaf_program_ref_not_active_program_is_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-notprog",
+                title="Not marked as an active program",
+                description="A bead that never got frontier_program=active.",
+                labels=["area:ops"],
+                issue_type="task",
+            ),
+            _issue(
+                "polylogue-f2mismatch",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-notprog"},
+            ),
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("F2", "polylogue-f2mismatch")]
+    assert "not itself frontier_program=active" in findings[0].message
+
+
+def test_f3_stale_in_progress_claim_is_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-f3stale",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                status="in_progress",
+                updated_at="2026-07-01T00:00:00Z",  # 20 days before _ANCHOR
+            )
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+        receipts_path=tmp_path / "no-receipts",
+        now=_ANCHOR,
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("F3", "polylogue-f3stale")]
+    assert "no recorded activity" in findings[0].message
+
+
+def test_f3_recent_in_progress_claim_is_not_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-f3fresh",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                status="in_progress",
+                updated_at="2026-07-20T00:00:00Z",  # 1.5 days before _ANCHOR
+            )
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+        receipts_path=tmp_path / "no-receipts",
+        now=_ANCHOR,
+    )
+    assert findings == []
+
+
+def test_f3_stale_claim_days_is_configurable(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-f3configurable",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                status="in_progress",
+                updated_at="2026-07-20T00:00:00Z",  # 1.5 days before _ANCHOR
+            )
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+        receipts_path=tmp_path / "no-receipts",
+        now=_ANCHOR,
+        stale_claim_days=1,
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("F3", "polylogue-f3configurable")]
+
+
+def test_f4_program_with_no_active_leaves_is_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-f4orphan",
+                title="Program admitted with no members",
+                description="Claims frontier_program=active but nothing references it.",
+                labels=["area:ops"],
+                issue_type="task",
+                metadata={"frontier_program": "active"},
+            )
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
+    assert [(f.check, f.bead_id) for f in findings] == [("F4", "polylogue-f4orphan")]
+    assert "no open active leaf" in findings[0].message
+
+
+def test_f4_program_with_an_active_leaf_is_not_a_finding(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-f4prog",
+                title="Program with a real member",
+                description="Groups active work.",
+                labels=["area:ops"],
+                issue_type="task",
+                metadata={"frontier_program": "active"},
+            ),
+            _issue(
+                "polylogue-f4leaf",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-f4prog"},
+            ),
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
+    assert findings == []
+
+
+def test_seeded_active_set_checks_all_fire_together(tmp_path: Path) -> None:
+    """One deliberately-seeded violation per new F1-F4 check in a single fixture."""
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-okprog",
+                title="Healthy program",
+                description="A healthy program.",
+                labels=["area:ops"],
+                issue_type="task",
+                metadata={"frontier_program": "active"},
+            ),
+            # A real (non-epic) leaf backing polylogue-okprog's frontier_program=active
+            # claim, so F4 does not also fire on it -- isolating the F1 epic-leaf
+            # violation below from the program-membership concern F4 checks.
+            _issue(
+                "polylogue-okleaf",
+                title="Real member of the healthy program",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-okprog"},
+            ),
+            # F1: epic itself admitted as an active leaf.
+            _issue(
+                "polylogue-af1",
+                title="Epic mistakenly admitted",
+                description="Epic mistakenly admitted as a leaf.",
+                labels=["area:ops"],
+                issue_type="epic",
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-okprog"},
+            ),
+            # F2: active leaf with a dangling program ref.
+            _issue(
+                "polylogue-af2",
+                title="Leaf with dangling program ref",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-ghost"},
+            ),
+            # F3: stale in_progress claim.
+            _issue(
+                "polylogue-af3",
+                title="Stale in-progress claim",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                status="in_progress",
+                updated_at="2026-07-01T00:00:00Z",
+            ),
+            # F4: program admitted with no referencing leaves.
+            _issue(
+                "polylogue-af4",
+                title="Orphaned program admission",
+                description="Orphaned program admission.",
+                labels=["area:ops"],
+                issue_type="task",
+                metadata={"frontier_program": "active"},
+            ),
+        ],
+    )
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+        receipts_path=tmp_path / "no-receipts",
+        now=_ANCHOR,
+    )
+    fired = {(f.check, f.bead_id) for f in findings}
+    assert ("F1", "polylogue-af1") in fired
+    assert ("F2", "polylogue-af2") in fired
+    assert ("F3", "polylogue-af3") in fired
+    assert ("F4", "polylogue-af4") in fired
+    # polylogue-okprog has a real (non-epic-leaf) admitted member, so it must
+    # not also be flagged F4.
+    assert not any(bid == "polylogue-okprog" for _check, bid in fired)
+
+
+# --- compute_active_set_summary: soft-band diagnostics (never a Finding) ---
+
+
+def test_active_set_summary_within_target_has_no_diagnostics(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-leaf1",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-prog"},
+            ),
+        ],
+    )
+    summary = verify_backlog_hygiene.compute_active_set_summary(path=path, target=30, warn=50)
+    assert summary.active_leaf_count == 1
+    assert summary.band == "within-target"
+    assert summary.diagnostics == []
+
+
+def test_active_set_summary_above_target_is_diagnostic_not_a_failure(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    issues = [
+        _issue(
+            f"polylogue-leaf{n}",
+            title=f"Leaf {n}",
+            acceptance_criteria="Verify: x.",
+            labels=["area:ops"],
+            metadata={"frontier": "active", "frontier_program_ref": "polylogue-prog"},
+        )
+        for n in range(5)
+    ]
+    # A real, validly-marked program so collect_findings() below stays clean
+    # (F2 would otherwise fire on the dangling ref, which is not this test's
+    # concern -- it's isolating the size-band diagnostic).
+    issues.append(
+        _issue(
+            "polylogue-prog",
+            title="Owning program",
+            description="Owning program.",
+            labels=["area:ops"],
+            issue_type="task",
+            metadata={"frontier_program": "active"},
+        )
+    )
+    _write_jsonl(path, issues)
+    summary = verify_backlog_hygiene.compute_active_set_summary(path=path, target=3, warn=10)
+    assert summary.active_leaf_count == 5
+    assert summary.band == "above-target"
+    assert summary.diagnostics  # informational note present
+    # Crucially: exceeding target never becomes a collect_findings() Finding.
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path, allow_path=tmp_path / "no-allowlist.txt", receipts_path=tmp_path / "no-receipts"
+    )
+    assert findings == []
+
+
+def test_active_set_summary_above_warn_band(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    issues = [
+        _issue(
+            f"polylogue-leaf{n}",
+            acceptance_criteria="Verify: x.",
+            labels=["area:ops"],
+            metadata={"frontier": "active", "frontier_program_ref": "polylogue-prog"},
+        )
+        for n in range(5)
+    ]
+    _write_jsonl(path, issues)
+    summary = verify_backlog_hygiene.compute_active_set_summary(path=path, target=1, warn=2)
+    assert summary.active_leaf_count == 5
+    assert summary.band == "above-warn"
+    assert "soft warn threshold" in summary.diagnostics[0]
+
+
+def test_active_set_summary_excludes_epic_leaves(tmp_path: Path) -> None:
+    """An active epic is an F1 finding, not a legitimately-counted active leaf."""
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-epicleaf",
+                description="Epic wrongly admitted as a leaf.",
+                labels=["area:ops"],
+                issue_type="epic",
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-prog"},
+            ),
+        ],
+    )
+    summary = verify_backlog_hygiene.compute_active_set_summary(path=path)
+    assert summary.active_leaf_count == 0
+
+
+def test_main_json_includes_active_set_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-clean1",
+                title="Clean active leaf",
+                acceptance_criteria="Verify: x.",
+                labels=["area:ops"],
+                metadata={"frontier": "active", "frontier_program_ref": "polylogue-prog"},
+            ),
+            _issue(
+                "polylogue-prog",
+                title="Owning program",
+                description="Owning program.",
+                labels=["area:ops"],
+                issue_type="task",
+                metadata={"frontier_program": "active"},
+            ),
+        ],
+    )
+    monkeypatch.setattr(verify_backlog_hygiene, "_get_root", lambda: tmp_path)
+
+    exit_code = verify_backlog_hygiene.main(["--json", "--active-target", "10", str(path)])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["active_set"]["active_leaf_count"] == 1
+    assert payload["active_set"]["target"] == 10
+    assert payload["active_set"]["band"] == "within-target"

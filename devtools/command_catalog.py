@@ -1117,20 +1117,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
         "devtools.verify_backlog_hygiene",
         use_when=(
-            "Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 16 checks "
+            "Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 20 checks "
             "over the Beads export catching dangling dependency refs, blocks-cycles, missing "
             "horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance "
             "criteria, unlabeled non-epic beads, epics with no members or description, stale "
             "'adopted' decisions left open, duplicate titles, bead ids named but never "
-            "created, and an unclean/corrupt bd JSONL sync receipt (S1, consuming "
-            "polylogue-gxjh.1's monotonic sync contract) -- catches backlog structure drift "
-            "before it needs an archaeology sweep to recover, instead of only a "
-            "manually-invoked script."
+            "created, an unclean/corrupt bd JSONL sync receipt (S1, consuming "
+            "polylogue-gxjh.1's monotonic sync contract), an active leaf that is itself an "
+            "epic (F1), an active leaf with a missing/dangling/mismatched program ref (F2), a "
+            "stale in_progress claim with no recent activity (F3, configurable window), and a "
+            "frontier_program=active program with no admitted active leaves (F4) -- catches "
+            "backlog structure drift before it needs an archaeology sweep to recover, instead "
+            "of only a manually-invoked script. Also reports a non-blocking active-set size "
+            "diagnostic (soft target/warn bands, never a hard cap or failure)."
         ),
         examples=(
             "devtools lab policy backlog-hygiene",
             "devtools lab policy backlog-hygiene --json",
             "devtools lab policy backlog-hygiene --fresh",
+            "devtools lab policy backlog-hygiene --stale-claim-days 10",
         ),
     ),
     CommandSpec(
