@@ -154,8 +154,10 @@ def test_shared_kernel_has_no_domain_or_runtime_imports() -> None:
         "polylogue.archive",
         "polylogue.config",
         "polylogue.insights",
+        "polylogue.maintenance",
         "polylogue.mcp",
         "polylogue.operations",
+        "polylogue.sources",
         "polylogue.storage",
     )
     imported: list[tuple[Path, str]] = []

@@ -174,3 +174,26 @@ rules:
 
   - target: polylogue/daemon
     description: "Daemon convergence and HTTP/web-reader surface adapter."
+
+  - target: polylogue/declarations
+    description: >-
+      Shared storage-free DeclarationSpec/derivation kernel (polylogue-o21.1)
+      — domain registries (MCP, sources, insights, maintenance, ...) consume
+      this package; it must never import a domain registry, surface adapter,
+      or storage/config internals back.
+    disallow:
+      from:
+        [
+          polylogue/api,
+          polylogue/archive,
+          polylogue/cli,
+          polylogue/config,
+          polylogue/daemon,
+          polylogue/insights,
+          polylogue/maintenance,
+          polylogue/mcp,
+          polylogue/operations,
+          polylogue/sources,
+          polylogue/storage,
+          polylogue/ui,
+        ]
