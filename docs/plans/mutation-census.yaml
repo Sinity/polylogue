@@ -13,11 +13,14 @@
 #   - every row has a `status` in the closed vocabulary above and, for
 #     `typed-exemption`, a non-empty `reason`.
 #
-# This census is Phase 1 (t46.9/kwsb.2) scope: the two named routes (session
-# delete/excision, derived identity reset) are fully executor-routed on every
-# surface that exposes them. Every other destructive operation below is
-# inventoried honestly as `declared-not-routed` -- visible debt for the
-# Phase 2 migration named in the PR body, not a claim of completion.
+# Phase 1 (t46.9/kwsb.2) shipped the two named destructive routes (session
+# delete/excision, derived identity reset), fully executor-routed on every
+# surface that exposes them. Phase 2 adds the `reversible`-class tag,
+# metadata, and mark mutation families (role_only-strength executor routes,
+# per AC4: reversible writes must not acquire unnecessary interactive
+# confirmation). Every remaining operation below is inventoried honestly as
+# `declared-not-routed` -- visible debt for a later phase, not a claim of
+# completion.
 
 schema_version: 1
 
@@ -49,49 +52,78 @@ rows:
     adapters:
       - polylogue.cli.commands.reset.reset_command (--session/--source)
 
-  # --- Phase 2 debt: declared-not-routed --------------------------------------
-  # Reversible tag/metadata mutations. Idempotent, role-gated
-  # (write_role_required), no confirm/dry-run today; low blast radius (undo =
-  # another write) but not yet executor-routed.
+  # --- Phase 2: executor-routed (reversible class, role_only confirmation) ---
   - operation: mutate-add-tag
     spec_name: mutate-add-tag
-    status: declared-not-routed
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.TagAddActuator
     surfaces: [facade, mcp, api]
-    reason: >
-      Reversible write; Phase 2 candidate for a role_only-strength executor
-      route once reversible-class confirmation floors are settled.
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.add_tag
+      - polylogue.mcp.server_cutover._dispatch_write (operation=add_tag, via add_tag)
 
   - operation: mutate-remove-tag
     spec_name: mutate-remove-tag
-    status: declared-not-routed
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.TagRemoveActuator
     surfaces: [facade, mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.remove_tag
+      - polylogue.mcp.server_cutover._dispatch_write (operation=remove_tag, via remove_tag)
 
   - operation: mutate-bulk-tag-sessions
     spec_name: mutate-bulk-tag-sessions
-    status: declared-not-routed
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.BulkTagActuator
     surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.bulk_tag_sessions
+      - polylogue.mcp.server_cutover._dispatch_write (operation=bulk_tag_sessions, via bulk_tag_sessions)
 
   - operation: mutate-set-metadata
     spec_name: mutate-set-metadata
-    status: declared-not-routed
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.MetadataSetActuator
     surfaces: [facade, mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.set_metadata
+      - polylogue.mcp.server_cutover._dispatch_write (operation=set_metadata, via set_metadata)
 
   - operation: mutate-delete-metadata
     spec_name: mutate-delete-metadata
-    status: declared-not-routed
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.MetadataDeleteActuator
     surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.delete_metadata
+      - polylogue.mcp.server_cutover._dispatch_write (operation=delete_metadata, via delete_metadata)
 
+  - operation: mutate-add-mark
+    spec_name: mutate-add-mark
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.MarkAddActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.add_mark
+      - polylogue.mcp.server_cutover._dispatch_write (operation=add_mark, via add_mark)
+
+  - operation: mutate-remove-mark
+    spec_name: mutate-remove-mark
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.MarkRemoveActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.remove_mark
+      - polylogue.mcp.server_cutover._dispatch_write (operation=remove_mark, via remove_mark)
+
+  # --- Phase 3 debt: declared-not-routed --------------------------------------
   # MCP-only mutation family with no OperationSpec entry yet (pre-existing
   # gap, not introduced by this PR). jn40's confirm-boolean sweep is the
   # interim mitigation for the destructive members of this family
   # (delete_annotation, delete_saved_view, delete_recall_pack,
-  # delete_workspace); it does not satisfy executor-routing.
-  - operation: add_mark / remove_mark
-    status: declared-not-routed
-    surfaces: [mcp]
-    adapters: [polylogue.mcp.server_cutover._dispatch_write]
-    reason: Reversible user-state write; jn40 out of scope (not in its named-ten list).
-
+  # delete_workspace); it does not satisfy executor-routing. add_mark/
+  # remove_mark are executor-routed above (t46.9 phase 2); the rest of this
+  # family remains Phase 3 debt.
   - operation: save_annotation / delete_annotation
     status: declared-not-routed
     surfaces: [mcp]
@@ -132,11 +164,6 @@ rows:
     status: declared-not-routed
     surfaces: [mcp]
     reason: User-correction overlay write; low blast radius (single-target overwrite).
-
-  - operation: delete_metadata (MCP admin alias)
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: jn40 confirm-gated (delete_metadata is in the named-ten list); not yet executor-routed.
 
   - operation: rebuild_index / update_index / rebuild_insights (maintenance_execute family)
     status: declared-not-routed

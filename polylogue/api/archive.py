@@ -5509,21 +5509,44 @@ class PolylogueArchiveMixin:
         Returns a ``TagMutationResult`` with:
         - ``outcome="added"`` if the tag was newly added
         - ``outcome="no_op"`` if the tag was already present
+
+        Routed through ``OperationExecutor``/``TagAddActuator`` (t46.9 phase
+        2): the real mutation is still ``ArchiveStore.add_user_tags``, but
+        every surface (this facade method, reached by CLI's
+        ``apply_modifiers``/query-mutation path and MCP's
+        ``write(operation='add_tag')``) now shares one preview/authorize/
+        receipt contract instead of calling the primitive independently.
         """
+        from polylogue.operations.mutation_actuators import TagAddActuator, TagAddArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import TagMutationResult
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            actuator = TagAddActuator()
+            executor = OperationExecutor()
+            args = TagAddArgs(
+                archive=archive, session_id=session_id, tag=tag, author_ref=author_ref, author_kind=author_kind
+            )
             try:
-                resolved_v1 = archive.resolve_session_id(session_id)
-                changed = archive.add_user_tags(
-                    (resolved_v1,),
-                    (tag,),
-                    author_ref=author_ref,
-                    author_kind=author_kind,
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator,
+                    plan,
+                    actor="facade",
+                    role="write",
+                    capability="archive.add_tag",
+                    confirmation_strength="role_only",
                 )
+                receipt = executor.execute(actuator, plan, authorization, args)
             except KeyError:
+                # Covers both the initial resolve (session never existed) and
+                # EXECUTE's fresh-PREPARE revalidation (session deleted by a
+                # concurrent actor between AUTHORIZE and EXECUTE) -- both
+                # collapse to the same "session not found" outcome for this
+                # reversible-class operation.
                 raise SessionNotFoundError(session_id) from None
+        changed = receipt.affected_count
         return TagMutationResult(
             outcome="added" if changed else "no_op",
             detail=None if changed else "already_present",
@@ -5535,16 +5558,33 @@ class PolylogueArchiveMixin:
         Returns a ``TagMutationResult`` with:
         - ``outcome="removed"`` if the tag was removed
         - ``outcome="not_present"`` if the tag was not present
+
+        Routed through ``OperationExecutor``/``TagRemoveActuator`` (t46.9
+        phase 2); see :meth:`add_tag` for the shared-contract rationale.
         """
+        from polylogue.operations.mutation_actuators import TagRemoveActuator, TagRemoveArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import TagMutationResult
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            actuator = TagRemoveActuator()
+            executor = OperationExecutor()
+            args = TagRemoveArgs(archive=archive, session_id=session_id, tag=tag)
             try:
-                resolved_v1 = archive.resolve_session_id(session_id)
-                changed = archive.remove_user_tags((resolved_v1,), (tag,))
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator,
+                    plan,
+                    actor="facade",
+                    role="write",
+                    capability="archive.remove_tag",
+                    confirmation_strength="role_only",
+                )
+                receipt = executor.execute(actuator, plan, authorization, args)
             except KeyError:
                 raise SessionNotFoundError(session_id) from None
+        changed = receipt.affected_count
         return TagMutationResult(
             outcome="removed" if changed else "not_present",
             detail=None if changed else "tag_not_present",
@@ -5585,7 +5625,12 @@ class PolylogueArchiveMixin:
         validated before any store call (raising
         :class:`~polylogue.surfaces.payloads.MetadataKeyValidationError`),
         and the ``unchanged`` detail token is the shared ``value_unchanged``.
+
+        Routed through ``OperationExecutor``/``MetadataSetActuator`` (t46.9
+        phase 2); see :meth:`add_tag` for the shared-contract rationale.
         """
+        from polylogue.operations.mutation_actuators import MetadataSetActuator, MetadataSetArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import (
             MetadataKeyValidationError,
@@ -5598,11 +5643,24 @@ class PolylogueArchiveMixin:
             raise MetadataKeyValidationError(validation_error)
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            actuator = MetadataSetActuator()
+            executor = OperationExecutor()
+            args = MetadataSetArgs(archive=archive, session_id=session_id, key=key, value=value)
             try:
-                resolved = archive.resolve_session_id(session_id)
-                changed = archive.set_user_metadata((resolved,), ((key, value),))
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator,
+                    plan,
+                    actor="facade",
+                    role="write",
+                    capability="archive.set_metadata",
+                    confirmation_strength="role_only",
+                )
+                receipt = executor.execute(actuator, plan, authorization, args)
             except KeyError:
                 raise SessionNotFoundError(session_id) from None
+        changed = receipt.affected_count
+        resolved = str(plan.context["session_id"])
         return MetadataMutationResult(
             outcome="set" if changed else "unchanged",
             session_id=resolved,
@@ -5616,7 +5674,13 @@ class PolylogueArchiveMixin:
         Follows the centralized mutation contract (#862): the key is
         validated before any store call, and the missing-key detail token is
         the shared ``key_not_found``.
+
+        Routed through ``OperationExecutor``/``MetadataDeleteActuator``
+        (t46.9 phase 2); see :meth:`add_tag` for the shared-contract
+        rationale.
         """
+        from polylogue.operations.mutation_actuators import MetadataDeleteActuator, MetadataDeleteArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import (
             MetadataKeyValidationError,
@@ -5629,11 +5693,24 @@ class PolylogueArchiveMixin:
             raise MetadataKeyValidationError(validation_error)
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            actuator = MetadataDeleteActuator()
+            executor = OperationExecutor()
+            args = MetadataDeleteArgs(archive=archive, session_id=session_id, key=key)
             try:
-                resolved = archive.resolve_session_id(session_id)
-                changed = archive.delete_user_metadata(resolved, key)
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator,
+                    plan,
+                    actor="facade",
+                    role="write",
+                    capability="archive.delete_metadata",
+                    confirmation_strength="role_only",
+                )
+                receipt = executor.execute(actuator, plan, authorization, args)
             except KeyError:
                 raise SessionNotFoundError(session_id) from None
+        changed = receipt.affected_count
+        resolved = str(plan.context["session_id"])
         return MetadataMutationResult(
             outcome="deleted" if changed else "not_found",
             session_id=resolved,
@@ -5654,7 +5731,12 @@ class PolylogueArchiveMixin:
         Validation (empty inputs and size limits) is enforced inside the
         :class:`ArchiveMutationsMixin` so every surface sees the same
         behavior.
+
+        Routed through ``OperationExecutor``/``BulkTagActuator`` (t46.9 phase
+        2); see :meth:`add_tag` for the shared-contract rationale.
         """
+        from polylogue.operations.mutation_actuators import BulkTagActuator, BulkTagArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import BulkTagMutationResult
 
@@ -5668,28 +5750,33 @@ class PolylogueArchiveMixin:
             raise ValueError(f"bulk_tag_sessions supports at most {max_sessions} session_ids")
         if len(tags) > max_tags:
             raise ValueError(f"bulk_tag_sessions supports at most {max_tags} tags")
-        affected_count = 0
+
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            for session_id in session_ids:
-                try:
-                    resolved = archive.resolve_session_id(session_id)
-                except KeyError:
-                    continue
-                if (
-                    archive.add_user_tags(
-                        (resolved,),
-                        tuple(tags),
-                        author_ref=author_ref,
-                        author_kind=author_kind,
-                    )
-                    > 0
-                ):
-                    affected_count += 1
+            actuator = BulkTagActuator()
+            executor = OperationExecutor()
+            args = BulkTagArgs(
+                archive=archive,
+                session_ids=tuple(session_ids),
+                tags=tuple(tags),
+                author_ref=author_ref,
+                author_kind=author_kind,
+            )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.bulk_tag_sessions",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        domain_receipt = receipt.domain_receipt
         return BulkTagMutationResult(
-            session_count=len(session_ids),
-            tag_count=len(tags),
-            affected_count=affected_count,
-            skipped_count=len(session_ids) - affected_count,
+            session_count=int(cast("int", domain_receipt["session_count"])),
+            tag_count=int(cast("int", domain_receipt["tag_count"])),
+            affected_count=int(cast("int", domain_receipt["affected_count"])),
+            skipped_count=int(cast("int", domain_receipt["skipped_count"])),
         )
 
     # ------------------------------------------------------------------
@@ -5812,8 +5899,17 @@ class PolylogueArchiveMixin:
 
         Returns ``True`` if the mark was newly added, ``False`` if it already
         existed.
+
+        Routed through ``OperationExecutor``/``MarkAddActuator`` (t46.9 phase
+        2: the first MCP no-spec mutation family to gain executor routing).
+        Target resolution stays here (async, may consult insight-derived
+        indexes) and runs once before the actuator sees an already-resolved
+        ``target_type``/``target_id`` pair, mirroring
+        ``IdentityResetActuator``'s pattern.
         """
         from polylogue.core.user_state_targets import validate_mark_type
+        from polylogue.operations.mutation_actuators import MarkAddActuator, MarkArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
 
         mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
@@ -5825,7 +5921,25 @@ class PolylogueArchiveMixin:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.add_mark(str(target["target_type"]), str(target["target_id"]), mark_type)
+            actuator = MarkAddActuator()
+            executor = OperationExecutor()
+            args = MarkArgs(
+                archive=archive,
+                target_type=str(target["target_type"]),
+                target_id=str(target["target_id"]),
+                mark_type=mark_type,
+            )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.add_mark",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return receipt.status == "applied"
 
     async def remove_mark(
         self,
@@ -5836,8 +5950,14 @@ class PolylogueArchiveMixin:
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> bool:
-        """Remove a mark from a session or message. Returns ``True`` if removed."""
+        """Remove a mark from a session or message. Returns ``True`` if removed.
+
+        Routed through ``OperationExecutor``/``MarkRemoveActuator`` (t46.9
+        phase 2); see :meth:`add_mark` for the shared-contract rationale.
+        """
         from polylogue.core.user_state_targets import validate_mark_type
+        from polylogue.operations.mutation_actuators import MarkArgs, MarkRemoveActuator
+        from polylogue.operations.mutation_transaction import OperationExecutor
 
         mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
@@ -5849,7 +5969,25 @@ class PolylogueArchiveMixin:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.remove_mark(str(target["target_type"]), str(target["target_id"]), mark_type)
+            actuator = MarkRemoveActuator()
+            executor = OperationExecutor()
+            args = MarkArgs(
+                archive=archive,
+                target_type=str(target["target_type"]),
+                target_id=str(target["target_id"]),
+                mark_type=mark_type,
+            )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.remove_mark",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return receipt.status == "applied"
 
     async def list_marks(
         self,

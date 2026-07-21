@@ -546,7 +546,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="mutate-add-tag",
         kind=OperationKind.MAINTENANCE,
-        description="Add a tag to one session. Idempotent — returns unchanged when the tag is already present.",
+        description=(
+            "Add a tag to one session. Idempotent — returns unchanged when the tag is already present. "
+            "Routed through OperationExecutor/TagAddActuator (reversible class, role_only confirmation)."
+        ),
         consumes=("sessions", "assertions"),
         produces=("assertions",),
         path_targets=("tag-mutation-loop",),
@@ -554,51 +557,65 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.add_tag",
             "polylogue.api.archive.PolylogueArchiveMixin.add_tag",
             "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.TagAddActuator",
         ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
-        executor_status="declared-not-routed",
+        executor_status="executor-routed",
     ),
     OperationSpec(
         name="mutate-remove-tag",
         kind=OperationKind.MAINTENANCE,
-        description="Remove a tag from one session. Idempotent — returns not-found when the tag is absent.",
+        description=(
+            "Remove a tag from one session. Idempotent — returns not-found when the tag is absent. "
+            "Routed through OperationExecutor/TagRemoveActuator (reversible class, role_only confirmation)."
+        ),
         consumes=("sessions", "assertions"),
         produces=("assertions",),
         path_targets=("tag-mutation-loop",),
         code_refs=(
             "polylogue.api.archive.PolylogueArchiveMixin.remove_tag",
             "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.TagRemoveActuator",
         ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
-        executor_status="declared-not-routed",
+        executor_status="executor-routed",
     ),
     OperationSpec(
         name="mutate-bulk-tag-sessions",
         kind=OperationKind.MAINTENANCE,
-        description="Apply tags to multiple sessions in one transaction. Returns affected and skipped counts.",
+        description=(
+            "Apply tags to multiple sessions in one transaction. Returns affected and skipped counts. "
+            "Routed through OperationExecutor/BulkTagActuator (reversible class, role_only confirmation)."
+        ),
         consumes=("sessions", "assertions"),
         produces=("assertions",),
         path_targets=("tag-mutation-loop",),
-        code_refs=("polylogue.mcp.server_cutover._dispatch_write",),
+        code_refs=(
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.BulkTagActuator",
+        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
-        executor_status="declared-not-routed",
+        executor_status="executor-routed",
     ),
     OperationSpec(
         name="mutate-set-metadata",
         kind=OperationKind.MAINTENANCE,
-        description="Set a metadata key on one session. Idempotent — returns unchanged when the value matches.",
+        description=(
+            "Set a metadata key on one session. Idempotent — returns unchanged when the value matches. "
+            "Routed through OperationExecutor/MetadataSetActuator (reversible class, role_only confirmation)."
+        ),
         consumes=("sessions", "assertions"),
         produces=("assertions",),
         path_targets=("metadata-mutation-loop",),
@@ -606,28 +623,82 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.update_metadata",
             "polylogue.api.archive.PolylogueArchiveMixin.update_metadata",
             "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.MetadataSetActuator",
         ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
-        executor_status="declared-not-routed",
+        executor_status="executor-routed",
     ),
     OperationSpec(
         name="mutate-delete-metadata",
         kind=OperationKind.MAINTENANCE,
-        description="Delete a metadata key from one session. Idempotent — returns not-found when the key is absent.",
+        description=(
+            "Delete a metadata key from one session. Idempotent — returns not-found when the key is absent. "
+            "Routed through OperationExecutor/MetadataDeleteActuator (reversible class, role_only confirmation)."
+        ),
         consumes=("sessions", "assertions"),
         produces=("assertions",),
         path_targets=("metadata-mutation-loop",),
-        code_refs=("polylogue.mcp.server_cutover._dispatch_write",),
+        code_refs=(
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.MetadataDeleteActuator",
+        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
-        executor_status="declared-not-routed",
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-add-mark",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Add a mark (star/pin/archive) to a session, message, or block. Idempotent — returns unchanged "
+            "when the mark is already present. Routed through OperationExecutor/MarkAddActuator (reversible "
+            "class, role_only confirmation); the first MCP no-spec mutation family (t46.9 phase 2) to gain "
+            "an OperationSpec and executor route."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("mark-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.add_mark",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.MarkAddActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-remove-mark",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Remove a mark from a session, message, or block. Idempotent — returns unchanged when the mark "
+            "is absent. Routed through OperationExecutor/MarkRemoveActuator (reversible class, role_only "
+            "confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("mark-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.remove_mark",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.MarkRemoveActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
     ),
     OperationSpec(
         name="mutate-delete-session",
