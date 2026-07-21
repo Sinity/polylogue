@@ -237,6 +237,87 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
         assert matching_receipts is not None and tuple(matching_receipts) == (1,)
 
 
+def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path) -> None:
+    """No accepted head means no fabricated supersession authority.
+
+    Production dependency: ``apply_raw_membership_classification``'s
+    membership write-back. Mutation that must fail this test: labeling
+    ``equivalent_raw_ids`` as ``superseded_equivalent``/``byte_proven`` when
+    ``accepted_raw_ids`` is empty (the pre-fix behavior that produced 914
+    headless-but-byte_proven logical sources on the 2026-07-20 rebuild).
+    """
+    initialize_active_archive_root(tmp_path)
+
+    def session_with(text: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="session",
+            messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text=text)],
+        )
+
+    branch_a = session_with("alpha")
+    branch_b = session_with("beta")
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+
+        def add_member(raw_id: str, session: ParsedSession) -> MembershipRevision:
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=raw_id.encode(),
+                source_path=f"{raw_id}.jsonl",
+                acquired_at_ms=1,
+                raw_id=raw_id,
+            )
+            archive.replace_raw_membership_census(
+                raw_id,
+                [session],
+                parser_fingerprint="test-parser",
+                censused_at_ms=1,
+            )
+            return MembershipRevision(raw_id, session_revision_projection(session))
+
+        members = [
+            add_member("branch-a", branch_a),
+            add_member("branch-a-dup", branch_a),
+            add_member("branch-b", branch_b),
+        ]
+        classification = classify_membership_revisions(members)
+        assert classification.accepted_raw_ids == ()
+        assert classification.equivalent_raw_ids
+
+        session_by_raw = {"branch-a": branch_a, "branch-a-dup": branch_a, "branch-b": branch_b}
+        archive.apply_raw_membership_classification(
+            "codex:session",
+            classification,
+            session_by_raw,
+            {raw_id: session_revision_projection(session) for raw_id, session in session_by_raw.items()},
+            acquired_at_ms=1,
+        )
+
+        head = archive._conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"
+        ).fetchone()
+        assert head is None
+
+        membership_rows = (
+            archive._ensure_source_conn()
+            .execute(
+                """
+            SELECT raw_id, decision, revision_authority
+            FROM raw_session_memberships
+            WHERE logical_source_key = 'codex:session'
+            ORDER BY raw_id
+            """
+            )
+            .fetchall()
+        )
+        assert [tuple(row) for row in membership_rows] == [
+            ("branch-a", "ambiguous", "quarantined"),
+            ("branch-a-dup", "ambiguous", "quarantined"),
+            ("branch-b", "ambiguous", "quarantined"),
+        ]
+
+
 def test_replay_defers_gap_and_quarantines_unproven_evidence() -> None:
     candidates = [
         _candidate("base", RawRevisionKind.FULL, 1),

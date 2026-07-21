@@ -3265,7 +3265,18 @@ class ArchiveStore:
         conn = self._ensure_source_conn()
         decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
         decisions: dict[str, str] = dict.fromkeys(classification.ambiguous_raw_ids, "ambiguous")
-        decisions.update(dict.fromkeys(classification.equivalent_raw_ids, "superseded_equivalent"))
+        # "superseded_equivalent" asserts an accepted chain superseded the
+        # member. With no accepted head, equivalence collapses back into the
+        # unresolved cohort: labeling it superseded (and, downstream,
+        # byte_proven) fabricates authority for a head that was never written
+        # -- 914 headless-but-"byte_proven" logical sources on the 2026-07-20
+        # rebuild walk came from exactly this mislabel.
+        decisions.update(
+            dict.fromkeys(
+                classification.equivalent_raw_ids,
+                "superseded_equivalent" if classification.accepted_raw_ids else "ambiguous",
+            )
+        )
         for raw_id in classification.accepted_raw_ids[:-1]:
             decisions[raw_id] = "superseded_prefix"
         session_id: str | None = None
