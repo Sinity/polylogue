@@ -51,6 +51,8 @@ from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
+    trigram_delete_session_rows_sql,
+    trigram_insert_session_rows_sql,
 )
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -4142,8 +4144,11 @@ def _bulk_fts_session_guard(
     25+ minute single-DELETE stall on the live rebuild.
 
     While ``enabled``, this sets a **dedicated** ``derived_refresh_guard`` row
-    (``fts-bulk-session-write``) that gates only the ``messages_fts_{ai,ad,au}``
-    trigger BODIES (see ``polylogue.storage.fts.sql``); the triggers stay
+    (``fts-bulk-session-write``) that gates the ``messages_fts_{ai,ad,au}``
+    trigger BODIES (see ``polylogue.storage.fts.sql``) and, since
+    polylogue-v6i3, the ``blocks_command_trigram_{ai,ad,au}`` bodies as well
+    (see ``archive_tiers/index.py``) -- so both surfaces get the explicit
+    session-scoped delete/re-insert bracketing below; the triggers stay
     structurally present in ``sqlite_master`` throughout; only their WHEN
     clause short-circuits. This is deliberately a *different* guard name from
     the existing ``session-write`` guard: that guard is set unconditionally
@@ -4184,6 +4189,14 @@ def _bulk_fts_session_guard(
     # polylogue-miwv: identity-ledger companion, same chunk params as the
     # messages_fts delete above.
     conn.execute(delete_session_identity_rows_sql(1), (session_id,))
+    # polylogue-v6i3 gated blocks_command_trigram's trigger bodies on this same
+    # guard row, so the trigram index needs the same explicit session-scoped
+    # delete-then-reinsert bracketing or the guarded block mutations leave
+    # stale external-content postings (later LIKE queries then raise
+    # "fts5: missing row N from content table"). The delete MUST run here,
+    # while the doomed prefix blocks still exist -- external-content FTS5
+    # deletion needs the OLD text to locate postings.
+    conn.execute(trigram_delete_session_rows_sql(), (session_id,))
     conn.execute(
         "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
         (FTS_BULK_SESSION_WRITE_GUARD,),
@@ -4195,6 +4208,8 @@ def _bulk_fts_session_guard(
         # polylogue-miwv: identity-ledger companion, same chunk params as the
         # messages_fts insert above.
         conn.execute(insert_session_identity_rows_sql(1), (session_id,))
+        # Trigram companion: repopulate from whatever tool_use blocks survive.
+        conn.execute(trigram_insert_session_rows_sql(), (session_id,))
         conn.execute(
             "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
             (FTS_BULK_SESSION_WRITE_GUARD,),

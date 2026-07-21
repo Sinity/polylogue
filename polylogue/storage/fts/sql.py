@@ -455,6 +455,43 @@ def message_identity_mismatch_sql() -> str:
 TRIGRAM_REBUILD_DELETE_ALL_SQL = "INSERT INTO blocks_command_trigram(blocks_command_trigram) VALUES ('delete-all')"
 
 
+def trigram_delete_session_rows_sql() -> str:
+    """Session-scoped external-content ``'delete'`` command for
+    ``blocks_command_trigram``.
+
+    Must run while the session's ``blocks`` rows are still present -- FTS5
+    external-content deletion needs the OLD text to locate the exact postings
+    (see the ``blocks_command_trigram_ad`` trigger's comment in
+    ``archive_tiers/index.py``). The ``docsize`` filter mirrors
+    ``delete_session_rows_sql``: issuing a ``'delete'`` for a rowid that was
+    never indexed silently corrupts an external-content FTS5 table.
+    """
+    return """
+        INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
+        SELECT 'delete', b.rowid, b.tool_detail_text
+        FROM blocks AS b
+        WHERE b.session_id = ?
+          AND b.block_type = 'tool_use'
+          AND b.tool_detail_text != ' '
+          AND b.rowid IN (SELECT id FROM blocks_command_trigram_docsize)
+    """
+
+
+def trigram_insert_session_rows_sql() -> str:
+    """Session-scoped repopulate of ``blocks_command_trigram`` from ``blocks``.
+
+    Mirrors the ``blocks_command_trigram_ai`` trigger body's insert shape for
+    whatever tool_use blocks remain for one session after a guarded bulk
+    mutation (the per-session analogue of ``insert_all_trigram_rows_sql``).
+    """
+    return """
+        INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
+        SELECT rowid, tool_detail_text
+        FROM blocks
+        WHERE session_id = ? AND block_type = 'tool_use' AND tool_detail_text != ' '
+    """
+
+
 def insert_all_trigram_rows_sql() -> str:
     """Bulk repopulate ``blocks_command_trigram`` from ``blocks``.
 
@@ -499,4 +536,6 @@ __all__ = [
     "insert_session_rows_sql",
     "message_identity_mismatch_sql",
     "repair_message_identity_rows_range_sql",
+    "trigram_delete_session_rows_sql",
+    "trigram_insert_session_rows_sql",
 ]
