@@ -40,6 +40,7 @@ from polylogue.browser_capture.route_contracts import (
 )
 from polylogue.browser_capture.server import MAX_BROWSER_CAPTURE_BODY_BYTES, make_server
 from polylogue.daemon.cli import main as daemon_cli
+from polylogue.paths import browser_capture_receiver_identity_path
 
 _EXTENSION_ORIGIN = "chrome-extension://polylogue-test"
 _CHATGPT_ORIGIN = "https://chatgpt.com"
@@ -307,20 +308,48 @@ def test_receiver_identity_is_stable_across_restarts_and_hides_pairing_secret(tm
     assert str(first.spool_path) not in first_id
 
 
-def test_receiver_identity_changes_on_token_rotation(tmp_path: Path) -> None:
+def test_receiver_identity_survives_token_rotation(tmp_path: Path) -> None:
+    """polylogue-jlme.5 AC2: identity is persisted independently of the bearer token.
+
+    Before this fix, ``receiver_identity`` hashed ``config.auth_token``
+    directly, so an ordinary token rotation silently minted a *different*
+    receiver identity and forced every paired browser profile through an
+    unnecessary re-pair. Rotation must now be invisible to identity.
+    """
     before = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="token-before-rotation")
     after = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="token-after-rotation")
 
-    assert receiver_identity(before) != receiver_identity(after)
+    assert receiver_identity(before) == receiver_identity(after)
 
 
-def test_no_auth_receiver_identity_is_stable_per_resolved_spool(tmp_path: Path) -> None:
+def test_receiver_identity_is_minted_once_and_persisted_on_disk(tmp_path: Path) -> None:
+    """The identity is a real minted value read back from disk, not merely a
+    process-memoized pure function of config -- a fresh config instance
+    (simulating a daemon restart) must still recover the same value."""
+    identity_path = browser_capture_receiver_identity_path()
+    assert not identity_path.exists()
+
+    config = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="some-token")
+    minted = receiver_identity(config)
+
+    assert identity_path.exists()
+    assert identity_path.read_text(encoding="utf-8").strip() == minted
+    # A brand-new config object for the "same receiver" (same archive root)
+    # must read the persisted value back rather than minting a new one.
+    assert receiver_identity(BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="different-token")) == minted
+
+
+def test_no_auth_receiver_identity_is_also_persisted_independently_of_spool(tmp_path: Path) -> None:
+    """The no-auth escape hatch previously derived identity from the resolved
+    spool path (the only stable-ish signal available without a token). It now
+    shares the same archive-root-scoped persisted identity as the
+    authenticated path, so it is unaffected by spool relocation too."""
     first = BrowserCaptureReceiverConfig(spool_path=tmp_path / "same" / ".." / "spool")
     same_resolved_spool = BrowserCaptureReceiverConfig(spool_path=tmp_path / "spool")
-    different_spool = BrowserCaptureReceiverConfig(spool_path=tmp_path / "other")
+    relocated_spool = BrowserCaptureReceiverConfig(spool_path=tmp_path / "other")
 
     assert receiver_identity(first) == receiver_identity(same_resolved_spool)
-    assert receiver_identity(first) != receiver_identity(different_spool)
+    assert receiver_identity(first) == receiver_identity(relocated_spool)
 
 
 def test_receiver_status_payload_advertises_versioned_stable_identity(tmp_path: Path) -> None:
