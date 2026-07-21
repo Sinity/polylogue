@@ -24,6 +24,7 @@ from polylogue.archive.ingest_flags import (
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
 from polylogue.archive.revision_authority import (
+    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
@@ -1983,7 +1984,7 @@ class LiveBatchProcessor:
                     retained_sessions,
                     parser_fingerprint=self._current_parser_fingerprint(),
                     censused_at_ms=acquired_at_ms,
-                    detail="cross-route full revision governance",
+                    detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                     retire_full_revision_governance=True,
                 )
             member_sessions: dict[str, Any] = {}

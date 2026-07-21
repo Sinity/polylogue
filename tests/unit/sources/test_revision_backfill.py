@@ -1122,12 +1122,15 @@ def test_partition_raws_by_dispatch_size_routes_small_to_pool_large_sequential()
     assert sequential_ids == ["large-1", "large-2"]
 
 
-def test_parse_retained_raws_dedupes_identical_blob_and_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Byte-identical rows at the same source_path parse once and the outcome
-    fans out with each row's own revision_kind; the same bytes at a DIFFERENT
-    path still parse separately (path participates in some parsers' identity).
-    Live shape (polylogue-869u): one 442MB codex rollout acquired 8x within
-    2.3s during a stampede — 8 raw rows, one blob, 8 full parses."""
+def test_parse_retained_raws_dedupes_identical_blob_across_paths_for_safe_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-869u: for a path-independent provider (Codex here), rows
+    sharing a ``blob_hash`` parse once and fan out -- INCLUDING across
+    different ``source_path``s, since those parsers' session identity comes
+    entirely from the payload bytes. Live shape: one 442MB codex rollout
+    acquired 8x within 2.3s during a stampede, at up to 8 different acquired
+    paths -- 8 raw rows, one blob, formerly 8 full parses."""
     descriptors = {
         "dup-1": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.FULL, 10),
         "dup-2": (Provider.CODEX, "hash-A", "same.jsonl", RawRevisionKind.UNKNOWN, 10),
@@ -1155,13 +1158,55 @@ def test_parse_retained_raws_dedupes_identical_blob_and_path(monkeypatch: pytest
         ingest_workers=1,
     )
 
-    # one parse per distinct (blob_hash, source_path): dup-2/dup-3 reuse dup-1's
-    assert parsed == ["dup-1", "other-path", "other-bytes"]
+    # one parse per distinct blob_hash: dup-2/dup-3/other-path all reuse
+    # dup-1's outcome despite other-path having a different source_path.
+    assert parsed == ["dup-1", "other-bytes"]
     assert set(results) == set(descriptors)
     sessions, size, kind = results["dup-2"]  # type: ignore[misc]
     assert (sessions, size, kind) == ([], 10, RawRevisionKind.UNKNOWN)
     _sessions, _size, dup3_kind = results["dup-3"]  # type: ignore[misc]
     assert dup3_kind == RawRevisionKind.FULL
+    _sessions, other_path_size, other_path_kind = results["other-path"]  # type: ignore[misc]
+    assert (other_path_size, other_path_kind) == (10, RawRevisionKind.FULL)
+
+
+def test_parse_retained_raws_preserves_path_scoped_dedup_for_path_dependent_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-869u: Beads derives workspace-scoped native ids from
+    ``source_path`` (``sources/parsers/beads.py:_repository_root``), so
+    byte-identical Beads rows at DIFFERENT paths must keep parsing
+    separately -- unlike the path-independent providers, cross-path
+    identity is not provably safe here."""
+    descriptors = {
+        "same-path-a": (Provider.BEADS, "hash-A", "workspace-one/issues.jsonl", RawRevisionKind.FULL, 10),
+        "same-path-b": (Provider.BEADS, "hash-A", "workspace-one/issues.jsonl", RawRevisionKind.FULL, 10),
+        "other-path": (Provider.BEADS, "hash-A", "workspace-two/issues.jsonl", RawRevisionKind.FULL, 10),
+    }
+
+    class FakeArchive:
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            return descriptors[raw_id]
+
+    parsed: list[str] = []
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        descriptor = descriptors[raw_id]
+        return [], descriptor[4], descriptor[3]
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+
+    results = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=1,
+    )
+
+    # same-path-b reuses same-path-a's outcome; other-path (different
+    # source_path, same bytes) still pays its own parse.
+    assert parsed == ["same-path-a", "other-path"]
+    assert set(results) == set(descriptors)
 
 
 def test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows(monkeypatch: pytest.MonkeyPatch) -> None:

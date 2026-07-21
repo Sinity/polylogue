@@ -38,6 +38,7 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 from polylogue.archive.revision_authority import (
+    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -1986,6 +1987,39 @@ class ArchiveStore:
         row = rows[0]
         return str(row[0]), str(row[1]), int(row[2]) + 1
 
+    def raw_membership_retired_full_revision_siblings(self, logical_source_key: str) -> tuple[str, ...]:
+        """Return raws previously retired from full-revision byte governance for this key.
+
+        ``replace_raw_membership_census(..., retire_full_revision_governance=True)``
+        nulls the retired raw's ``raw_sessions.logical_source_key`` and sets
+        ``revision_authority='quarantined'`` -- it becomes invisible both to
+        ``classify_raw_revision_cohort``'s own byte-row query and to
+        ``raw_membership_rebuild_raw_ids``'s deliberately byte-proven-only
+        filter (polylogue-lkrc/#2822 guards a different hazard: reopening a
+        quarantined member against an already-established head). Its
+        ``raw_session_memberships`` row, keyed by the raw's own parsed
+        logical identity, survives retirement together with a
+        ``raw_membership_census.detail`` marker naming this specific
+        transition, so a later-arriving sibling for the same identity can
+        still be told this identity has known, unresolved ambiguous
+        evidence (polylogue-52l2) instead of being evaluated alone.
+        """
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+                SELECT m.raw_id
+                FROM raw_session_memberships AS m
+                JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
+                WHERE m.logical_source_key = ? AND c.detail = ?
+                ORDER BY m.raw_id
+                """,
+                (logical_source_key, HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL),
+            )
+            .fetchall()
+        )
+        return tuple(str(row[0]) for row in rows)
+
     def classify_raw_revision_cohort(self, logical_source_key: str) -> RevisionReplayPlan:
         """Promote only a unique byte-prefix full chain and contiguous appends."""
         if self._blob_publisher is None:
@@ -1999,6 +2033,26 @@ class ArchiveStore:
             """,
             (logical_source_key,),
         ).fetchall()
+        # polylogue-52l2: a byte chain is classified against whichever full
+        # rows the caller happens to have discovered/censused so far, not
+        # against the complete sibling population for this logical identity
+        # -- an earlier pass can have already retired ambiguous siblings to
+        # membership governance (nulling their logical_source_key, see
+        # raw_membership_retired_full_revision_siblings). If that leaves a
+        # later-discovered raw as the ONLY remaining 'full' row here, it
+        # would be evaluated as a trivial one-member "chain" and
+        # unconditionally accepted as a byte-proven baseline by
+        # classify_historical_full_revision_streams (no sibling to prove a
+        # byte prefix against) -- permanently establishing session content
+        # from whichever raw happened to be discovered last, independent of
+        # which content is actually correct. Refuse the byte-chain path
+        # entirely whenever this identity has retired sibling evidence: the
+        # caller's existing "no accepted chain" fallback
+        # (convertible_full_revision_raw_ids) folds these full rows into
+        # membership governance instead, where the real prefix-based
+        # classifier weighs every known sibling together.
+        if full_rows and self.raw_membership_retired_full_revision_siblings(logical_source_key):
+            full_rows = []
         historical: list[HistoricalRawRevisionStream] = []
         for row in full_rows:
 
