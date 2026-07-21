@@ -63,7 +63,7 @@ class ClaimProblem:
 REPOSITORY_CAPABILITY_CLAIMS: tuple[CapabilityClaimInput, ...] = (
     CapabilityClaimInput(
         claim_key="category.local-evidence-system",
-        publication="Polylogue is a local evidence system for AI work.",
+        publication="Polylogue archives your AI conversations - all of them, in one place, on your machine.",
         scope="The current local archive, query, evidence, judgment, and context surfaces.",
         caveat="This is a product-category capability statement, not a measured performance or prevalence claim.",
         public_evidence_refs=(

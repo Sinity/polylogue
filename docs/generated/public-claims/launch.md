@@ -6,7 +6,7 @@ This file is generated from FINDING assertions, canonical judgment state, and th
 
 ## `category.local-evidence-system` [CAPABILITY ONLY]
 
-Polylogue is a local evidence system for AI work.
+Polylogue archives your AI conversations - all of them, in one place, on your machine.
 
 - Scope: The current local archive, query, evidence, judgment, and context surfaces.
 - Caveat: This is a product-category capability statement, not a measured performance or prevalence claim.
