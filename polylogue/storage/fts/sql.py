@@ -359,22 +359,23 @@ def message_identity_mismatch_sql() -> str:
 
     Deliberately NOT counted: an indexed row with NO identity ledger entry
     at all. Every per-row trigger arm and bulk companion writes the ledger
-    alongside its ``messages_fts`` write, but
+    alongside its ``messages_fts`` write; as of polylogue-miwv,
     ``storage/sqlite/archive_tiers/write.py``'s non-bulk full-session-replace
     fast path (``delete_session_rows_sql``/``insert_session_rows_sql``
     called directly, outside this module -- see the polylogue-1xc.12 note in
-    ``docs/internals.md``) does not yet call the identity companions inline,
-    so a session written through that path is coverage-incomplete until the
-    next repair backfills it. A missing entry is provably safe on its own:
-    nothing reads block identity FROM this ledger except this
-    reconciliation query itself, and the next trigger-fired mutation at that
-    rowid (delete or update) creates a correct fresh row regardless of
-    whether one existed before. Only a PRESENT-but-WRONG entry is the
-    dangerous rowid-reuse signature this check exists to catch -- a
-    consumer trusting the ledger would see a real but incorrect binding, not
-    an absence. Counting missing rows here would make ``ready`` permanently
-    false on any archive that writes through the ordinary session-replace
-    path, which defeats the point of a readiness signal.
+    ``docs/internals.md``) also pairs each call with its identity companion
+    inline, so this coverage gap no longer accrues on ordinary writes. The
+    boundary still exists deliberately, as defense-in-depth for archives
+    written before polylogue-1xc.12 introduced the ledger (a missing entry
+    there is provably safe on its own: nothing reads block identity FROM
+    this ledger except this reconciliation query itself, and the next
+    trigger-fired mutation at that rowid -- delete or update -- creates a
+    correct fresh row regardless of whether one existed before). Only a
+    PRESENT-but-WRONG entry is the dangerous rowid-reuse signature this
+    check exists to catch -- a consumer trusting the ledger would see a real
+    but incorrect binding, not an absence. Counting missing rows here would
+    make ``ready`` permanently false on any archive with pre-ledger history
+    still in its rowid space, which defeats the point of a readiness signal.
     """
     return f"""
         SELECT

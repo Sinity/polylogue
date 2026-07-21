@@ -16,6 +16,7 @@ catch that class of drift, not merely that happy-path counts agree.
 from __future__ import annotations
 
 import sqlite3
+from typing import TYPE_CHECKING
 
 from polylogue.storage.fts.freshness import (
     READY,
@@ -29,6 +30,9 @@ from polylogue.storage.fts.fts_lifecycle import (
 )
 from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID, message_identity_mismatch_sql
 from polylogue.storage.sqlite.archive_tiers.ops_write import list_fts_drift_samples, record_fts_drift_sample
+
+if TYPE_CHECKING:
+    from polylogue.sources.parsers.base import ParsedSession
 
 
 def _seed_block(
@@ -375,6 +379,126 @@ class TestIdentityMismatchGatesReadiness:
         ).fetchone()
         assert row is not None
         assert int(row[0]) == 0
+
+
+def _missing_identity_entry_count(conn: sqlite3.Connection) -> int:
+    """Count indexed rows with NO ``messages_fts_identity`` entry at all.
+
+    Deliberately separate from :func:`_identity_mismatch_count`
+    (``message_identity_mismatch_sql``): that check is documented to NOT
+    count a coverage gap (an indexed row with no ledger entry), only a
+    PRESENT-but-WRONG one. This helper counts exactly the gap class, which is
+    what the write-path companion-call fix (polylogue-miwv) closes for the
+    non-bulk full-session-replace fast path.
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM messages_fts_docsize AS d
+        LEFT JOIN messages_fts_identity AS i ON i.rowid = d.id
+        WHERE i.rowid IS NULL
+        """
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+class TestWritePathIdentityCompanions:
+    """polylogue-miwv: write.py's non-bulk full-session-replace fast path.
+
+    ``_replace_full_session_messages_and_blocks`` bypasses the per-row
+    ``messages_fts_{ai,ad,au}`` triggers for a scoped delete+reinsert (see its
+    docstring) and previously called only ``delete_session_rows_sql``/
+    ``insert_session_rows_sql`` -- the two ``messages_fts`` bulk helpers --
+    without their ``messages_fts_identity`` companions. That left every
+    session written through the dominant real-world path (``write_parsed_
+    session_to_archive`` with ``merge_append=False``, the default) coverage-
+    incomplete: ``messages_fts_docsize`` had a row but ``messages_fts_identity``
+    never did, until the next repair pass backfilled it.
+
+    These tests exercise the REAL writer entry point end-to-end (never a
+    toy/mock of the SQL), proving zero missing ledger entries survive a
+    full-session-replace, in addition to the mismatch-only invariant
+    ``message_identity_mismatch_sql`` already covers.
+    """
+
+    def _parsed_session(self, native_id: str, *texts: str, start_index: int = 0) -> ParsedSession:
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            title="Write-path identity companion test",
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"m{start_index + i}",
+                    role=Role.USER,
+                    text=text,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                )
+                for i, text in enumerate(texts)
+            ],
+        )
+
+    def test_full_session_replace_leaves_zero_missing_identity_entries(self, test_conn: sqlite3.Connection) -> None:
+        from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+        session_v1 = self._parsed_session(
+            "write-path-identity-companion",
+            "first version needle alpha",
+            "second message needle beta",
+        )
+        write_parsed_session_to_archive(test_conn, session_v1)
+        test_conn.commit()
+
+        # Sanity: the first write already indexed both blocks.
+        assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 2
+        assert _identity_mismatch_count(test_conn) == 0
+        assert _missing_identity_entry_count(test_conn) == 0
+
+        # A genuine full-session-replace: same provider_session_id, entirely
+        # different message content, so the content hash differs and this is
+        # not skipped as an idempotent re-import. merge_append defaults to
+        # False, so this goes through ``_replace_full_session_messages_and_
+        # blocks``'s scoped delete+reinsert fast path (triggers are present
+        # on a freshly initialized schema, so ``use_scoped_fts_rebuild`` is
+        # True -- exactly the site this bead's fix targets).
+        session_v2 = self._parsed_session(
+            "write-path-identity-companion",
+            "replaced content needle gamma",
+        )
+        write_parsed_session_to_archive(test_conn, session_v2, force_replace=True)
+        test_conn.commit()
+
+        assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        assert _identity_mismatch_count(test_conn) == 0
+        assert _missing_identity_entry_count(test_conn) == 0, (
+            "full-session-replace left a messages_fts_docsize row with no "
+            "messages_fts_identity companion -- the write.py fast-path pairing "
+            "(polylogue-miwv) regressed"
+        )
+
+    def test_merge_append_path_also_leaves_zero_missing_identity_entries(self, test_conn: sqlite3.Connection) -> None:
+        """The merge-append path writes blocks through the ordinary trigger
+        path (no scoped delete/reinsert), so it was never the gap this bead
+        closes -- pinned here as a control so a future regression in the
+        *other* write path is caught too."""
+        from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+        session = self._parsed_session("write-path-identity-merge-append", "base message needle delta")
+        write_parsed_session_to_archive(test_conn, session)
+        test_conn.commit()
+
+        appended = self._parsed_session(
+            "write-path-identity-merge-append", "appended message needle epsilon", start_index=1
+        )
+        write_parsed_session_to_archive(test_conn, appended, merge_append=True)
+        test_conn.commit()
+
+        assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 2
+        assert _identity_mismatch_count(test_conn) == 0
+        assert _missing_identity_entry_count(test_conn) == 0
 
 
 class TestFtsDriftSamples:
