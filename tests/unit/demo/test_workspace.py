@@ -93,6 +93,27 @@ def test_run_pipeline_for_configured_sources_filters_named_sources(tmp_path: Pat
     assert [source.name for source in selected] == ["codex"]
 
 
+def test_run_pipeline_for_configured_sources_regenerates_schemas_when_requested(tmp_path: Path) -> None:
+    workspace = create_verification_workspace(tmp_path / "workspace")
+    config = Config(
+        archive_root=tmp_path / "archive-root",
+        render_root=tmp_path / "render-root",
+        sources=[Source(name="chatgpt", path=tmp_path / "chatgpt")],
+    )
+
+    _RecordingPolylogue.instances.clear()
+    with patch("polylogue.demo.workspace.get_config", return_value=config):
+        with patch("polylogue.api.Polylogue", _RecordingPolylogue):
+            with patch("polylogue.schemas.operator.schema_inference.generate_all_schemas") as generate_all_schemas:
+                generate_all_schemas.return_value = []
+                run_pipeline_for_configured_sources(workspace, regenerate_schemas=True)
+
+    generate_all_schemas.assert_called_once()
+    _, kwargs = generate_all_schemas.call_args
+    assert kwargs["db_path"] is not None
+    assert kwargs["output_dir"].name == "schemas"
+
+
 def test_run_pipeline_for_fixture_workspace_mirrors_fixtures_to_inbox(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
     fixture_dir = workspace.fixture_dir / "claude-ai"

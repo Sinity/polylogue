@@ -6,9 +6,8 @@ Provides three primitives that surfaces compose into their own UI:
 * :func:`embed_session_sync` — embed messages for one session.
 * :class:`EmbedSessionOutcome` — typed outcome record.
 
-CLI (:mod:`polylogue.cli.shared.embed_runtime`) and pipeline
-(:mod:`polylogue.pipeline.run_stages`) layer their progress and message
-formatting on top.
+CLI (:mod:`polylogue.cli.shared.embed_runtime`) layers its progress and
+message formatting on top.
 """
 
 from __future__ import annotations

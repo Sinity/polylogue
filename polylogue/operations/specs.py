@@ -121,7 +121,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("raw_validation_state", "artifact_observation_rows"),
         path_targets=("source-acquisition-loop",),
         code_refs=(
-            "polylogue.pipeline.run_stages.execute_acquire_stage",
             "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
             "polylogue.sources.source_acquisition.iter_source_raw_data",
             "polylogue.pipeline.services.acquisition_persistence.persist_raw_record",

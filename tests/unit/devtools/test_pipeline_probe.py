@@ -333,6 +333,42 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
     assert len(_require_json_array(summary["raw_fanout"])) == raw_count
 
 
+async def test_run_probe_materializes_and_indexes_sessions_when_stage_is_all(tmp_path: Path) -> None:
+    """Real-route proof for the acquire->parse->materialize->index sequence.
+
+    Guards the production materialize/index actuators (session-insight
+    refresh + FTS index service) that the probe drives directly since the
+    orphaned pipeline-stage-executor indirection (polylogue-a7xr.20) was
+    removed: replacing either actuator with a no-op makes this fail.
+    """
+    request = PipelineProbeRequest(
+        stage="all",
+        workdir=str(tmp_path / "probe-all"),
+        corpus_request=CorpusRequest(
+            providers=("chatgpt",),
+            source="default",
+            count=1,
+            messages_min=3,
+            messages_max=4,
+            seed=7,
+            style="default",
+        ),
+    )
+
+    summary = await run_probe(request)
+    run_payload = _require_json_object(summary["run_payload"])
+    metrics = _require_json_object(run_payload["metrics"])
+    stages = _require_json_object(metrics["stages"])
+
+    assert _json_path(summary, "probe", "stage_sequence") == ["acquire", "parse", "materialize", "index"]
+    materialize_stage = _require_json_object(stages["materialize"])
+    index_stage = _require_json_object(stages["index"])
+    assert _require_int(materialize_stage["items"]) >= 1
+    assert _require_int(index_stage["items"]) >= 0
+    assert _json_path(summary, "result", "indexed") is True
+    assert _json_path(summary, "result", "index_error") is None
+
+
 async def test_run_probe_can_stage_real_source_subset(tmp_path: Path) -> None:
     source_input_root = tmp_path / "inputs"
     files, total_bytes = _write_probe_sources(
