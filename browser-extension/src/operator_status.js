@@ -96,6 +96,12 @@
           ? "No conversation is selected on this provider page. Polylogue remains available and observes conversations automatically."
           : OPERATOR_STATUS.not_conversation.detail,
       );
+    } else if (state.receiver_pairing?.state === "dev_override_stale" || state.error === "dev_override_stale") {
+      status = withDetail(
+        OPERATOR_STATUS.needs_attention,
+        "This profile is pinned to a deliberate dev receiver that is unreachable. It will not silently fail over -- reset pairing or repoint settings.",
+      );
+      status.tone = "bad";
     } else if (state.receiver_pairing?.state === "mismatch" || state.error === "receiver_pairing_mismatch") {
       status = withDetail(
         OPERATOR_STATUS.needs_attention,
@@ -173,6 +179,13 @@
     };
 
     const status = operatorStatusForState(state);
+    if (state.receiver_pairing?.state === "dev_override_stale" || state.error === "dev_override_stale") return {
+      status,
+      badge: ["bad", "needs attention"],
+      archive: status.label,
+      headline: "Dev-override receiver unreachable.",
+      detail: status.detail,
+    };
     if (state.receiver_pairing?.state === "mismatch" || state.error === "receiver_pairing_mismatch") return {
       status,
       badge: ["bad", "needs attention"],
@@ -430,6 +443,13 @@
   }
 
   function receiverPairingPresentation({ pairing = null, health = null, configuredUrl = "" } = {}) {
+    if (pairing?.state === "dev_override_stale" || health?.status === "dev_override_stale") {
+      return {
+        status: { ...OPERATOR_STATUS.needs_attention, tone: "bad" },
+        headline: "Dev-override receiver unreachable",
+        detail: `${configuredUrl || pairing?.endpoint || "the configured endpoint"} is deliberately pinned and will not auto-recover to the canonical receiver. Reset pairing or point settings back at the canonical endpoint.`,
+      };
+    }
     if (pairing?.state === "mismatch" || health?.status === "pairing_mismatch") {
       return {
         status: { ...OPERATOR_STATUS.needs_attention, tone: "bad" },
@@ -487,6 +507,16 @@
     workItems = [],
     browserActions = [],
   } = {}) {
+    if (pairing?.state === "dev_override_stale" || health?.status === "dev_override_stale") {
+      return {
+        kind: "dev_override_stale",
+        tone: "bad",
+        headline: "Dev-override receiver unreachable",
+        detail: "This profile is deliberately pinned to a non-canonical receiver and will not silently fail over. Reset pairing or repoint settings at the canonical endpoint.",
+        actionId: "reset-pairing",
+        actionLabel: "Reset pairing",
+      };
+    }
     if (pairing?.state === "mismatch" || health?.status === "pairing_mismatch") {
       return {
         kind: "auth_pairing_mismatch",

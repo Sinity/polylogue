@@ -385,11 +385,12 @@ function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
     unauthorized: "Token required",
     pairing_mismatch: "Identity mismatch",
     unreachable: "Receiver offline",
+    dev_override_stale: "Dev receiver unreachable",
     error: "Receiver error",
   };
   const tone = ["ok", "recovered"].includes(health.status)
     ? "ok"
-    : ["unauthorized", "pairing_mismatch", "error"].includes(health.status)
+    : ["unauthorized", "pairing_mismatch", "error", "dev_override_stale"].includes(health.status)
       ? "bad"
       : "warn";
   node.textContent = labels[health.status] || health.status || "--";

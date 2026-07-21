@@ -232,6 +232,16 @@ describe("shared operator status vocabulary", () => {
       status: { code: "needs_attention" },
       headline: "Receiver identity changed",
     });
+
+    // A deliberate dev-override pairing going stale must present loudly,
+    // distinctly from ordinary calm receiver-offline framing (polylogue-jlme.5).
+    expect(api.receiverPairingPresentation({
+      pairing: { state: "dev_override_stale", dev_override: true, receiver_id: "rx-dev-loop", endpoint: "http://127.0.0.1:8876" },
+      health: { status: "dev_override_stale" },
+    })).toMatchObject({
+      status: { code: "needs_attention", tone: "bad" },
+      headline: "Dev-override receiver unreachable",
+    });
   });
 
   it("surfaces at most one attention item, in strict priority order", () => {
@@ -274,6 +284,12 @@ describe("shared operator status vocabulary", () => {
       conversationState: { archive_state: { state: "failed", latest_failure: "index rejected" } },
     });
     expect(archiveFailed).toMatchObject({ kind: "archive_failed", detail: "index rejected" });
+
+    const devOverrideStale = api.computeAttention({
+      pairing: { state: "dev_override_stale", dev_override: true },
+      health: { status: "dev_override_stale" },
+    });
+    expect(devOverrideStale).toMatchObject({ kind: "dev_override_stale", tone: "bad", actionId: "reset-pairing" });
   });
 
   it("counts only browser actions still awaiting a receipt as pending", () => {
