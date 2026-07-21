@@ -403,41 +403,41 @@ def syntax_theme(surface: SyntaxSurface, mode: ThemeMode | None = None) -> str:
 
 
 def resolve_theme_mode() -> ThemeMode:
-    """Resolve the active theme mode honoring env, config, and auto-detection.
+    """Resolve the active theme mode honoring config layering and auto-detection.
 
-    See module docstring for precedence rules. Returns ``"dark"`` on
-    indeterminate auto-detection so the historical default is preserved.
+    See module docstring for precedence rules. ``ui.theme`` / ``POLYLOGUE_THEME``
+    is a fully layered inventory setting (default -> site TOML -> user TOML ->
+    env -> CLI); resolution goes through :func:`load_polylogue_config` so a CLI
+    override always wins over an ambient environment variable. Returns
+    ``"dark"`` on indeterminate auto-detection so the historical default is
+    preserved.
     """
-    env_value = os.environ.get("POLYLOGUE_THEME", "").strip().lower()
-    if env_value == "dark":
-        return "dark"
-    if env_value == "light":
-        return "light"
-    if env_value == "" or env_value == "auto":
-        # Try config layer; importing lazily keeps the theme module
-        # importable from anywhere without circular dependency risk.
-        try:
-            from polylogue.config import load_polylogue_config
+    # Importing lazily keeps the theme module importable from anywhere
+    # without circular dependency risk.
+    try:
+        from polylogue.config import load_polylogue_config
 
-            configured = (load_polylogue_config().theme or "").strip().lower()
-            if configured == "dark":
-                return "dark"
-            if configured == "light":
-                return "light"
-            if configured and configured != "auto":
-                return "dark"
-        except Exception:
-            pass
-        # Auto-detection: COLORFGBG="<fg>;<bg>" — bg index <8 → dark, else light.
-        fgbg = os.environ.get("COLORFGBG", "")
-        if fgbg:
-            parts = fgbg.split(";")
-            if len(parts) >= 2:
-                try:
-                    bg = int(parts[-1])
-                    return "light" if bg >= 8 else "dark"
-                except ValueError:
-                    pass
+        configured = (load_polylogue_config().theme or "").strip().lower()
+    except Exception:
+        configured = ""
+    if configured == "dark":
+        return "dark"
+    if configured == "light":
+        return "light"
+    if configured and configured != "auto":
+        return "dark"
+    # Auto-detection: COLORFGBG="<fg>;<bg>" — bg index <8 → dark, else light.
+    # COLORFGBG is a genuine external terminal-capability signal, not a
+    # polylogue-namespaced setting, so it stays a direct environment read.
+    fgbg = os.environ.get("COLORFGBG", "")
+    if fgbg:
+        parts = fgbg.split(";")
+        if len(parts) >= 2:
+            try:
+                bg = int(parts[-1])
+                return "light" if bg >= 8 else "dark"
+            except ValueError:
+                pass
     return "dark"
 
 

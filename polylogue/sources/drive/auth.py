@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
@@ -60,9 +59,13 @@ def _resolve_credentials_path(ui: DriveUILike | _PromptBridge | None, config: Dr
     if configured := _configured_path(config, "credentials_path"):
         return configured
 
-    env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-    if env_path:
-        return Path(env_path).expanduser()
+    from polylogue.config import load_polylogue_config
+
+    settings = load_polylogue_config()
+    if settings.layer_of("drive_credentials_path") != "default":
+        configured_path = settings.drive_credentials_path
+        if configured_path:
+            return Path(configured_path).expanduser()
 
     default_path = default_credentials_path(config)
     if default_path.exists():
@@ -89,9 +92,13 @@ def _resolve_token_path(config: DriveConfigLike | None = None) -> Path:
     if configured := _configured_path(config, "token_path"):
         return configured
 
-    env_path = os.environ.get("POLYLOGUE_TOKEN_PATH")
-    if env_path:
-        return Path(env_path).expanduser()
+    from polylogue.config import load_polylogue_config
+
+    settings = load_polylogue_config()
+    if settings.layer_of("drive_token_path") != "default":
+        configured_path = settings.drive_token_path
+        if configured_path:
+            return Path(configured_path).expanduser()
 
     return default_token_path(config)
 

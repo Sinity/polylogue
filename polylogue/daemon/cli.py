@@ -2199,7 +2199,9 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    url = os.environ.get("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766").rstrip("/")
+    from polylogue.config import load_polylogue_config
+
+    url = (load_polylogue_config().daemon_url or "http://127.0.0.1:8766").rstrip("/")
     try:
         req = Request(f"{url}/api/status", headers={"Accept": "application/json"}, method="GET")
         with urlopen(req, timeout=timeout) as resp:

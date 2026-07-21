@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
 from collections.abc import Sequence
@@ -67,16 +66,16 @@ _ARCHIVE_COMPONENT_REPAIR_HINTS: dict[str, str] = {
 
 
 def _default_daemon_url() -> str:
-    """Resolve the default daemon URL.
+    """Resolve the default daemon URL through the layered config resolver.
 
-    Honours ``POLYLOGUE_DAEMON_URL`` so test fixtures can route the CLI to an
-    unreachable address and avoid contacting an operator-host ``polylogued``
-    listening at the built-in default (#1325).
+    Honours ``daemon.url`` / ``POLYLOGUE_DAEMON_URL`` (site TOML -> user TOML
+    -> env -> CLI) so test fixtures can route the CLI to an unreachable
+    address and avoid contacting an operator-host ``polylogued`` listening at
+    the built-in default (#1325).
     """
-    override = os.environ.get("POLYLOGUE_DAEMON_URL")
-    if override:
-        return override
-    return _BUILTIN_DAEMON_URL
+    from polylogue.config import load_polylogue_config
+
+    return load_polylogue_config().daemon_url or _BUILTIN_DAEMON_URL
 
 
 def _fast_count(conn: Any, sql: str, params: tuple[object, ...] = ()) -> int:
@@ -138,7 +137,9 @@ def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
             urls.append(normalized)
 
     add(primary_url)
-    if os.environ.get("POLYLOGUE_DAEMON_URL"):
+    from polylogue.config import load_polylogue_config
+
+    if load_polylogue_config().layer_of("daemon_url") != "default":
         return tuple(urls)
     for port in _discover_polylogued_api_ports():
         add(f"http://127.0.0.1:{port}")

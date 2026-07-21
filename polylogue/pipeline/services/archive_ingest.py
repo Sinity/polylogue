@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,11 +44,10 @@ POST_COMMIT_UPKEEP_REASON = "archive_ingest_commit"
 
 
 def _commit_batch_message_threshold() -> int:
-    raw = os.environ.get("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES")
-    if raw is None:
-        return COMMIT_BATCH_MESSAGE_THRESHOLD
+    from polylogue.config import load_polylogue_config
+
     try:
-        return int(raw)
+        return load_polylogue_config().ingest_commit_batch_messages
     except ValueError:
         return COMMIT_BATCH_MESSAGE_THRESHOLD
 

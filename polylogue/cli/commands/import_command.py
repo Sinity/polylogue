@@ -25,7 +25,6 @@ The three observable outcomes are:
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import time
 from pathlib import Path
@@ -42,8 +41,6 @@ from polylogue.paths import archive_root
 if TYPE_CHECKING:
     from polylogue.demo import DemoVerifyResult
 
-_DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
-
 # Statuses that mean the daemon accepted scheduling and the work is now
 # observable through the inbox / ``polylogue ops status`` surfaces.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
@@ -51,7 +48,9 @@ _DEMO_WAIT_POLL_INTERVAL_S = 0.25
 
 
 def _default_daemon_url() -> str:
-    return os.environ.get("POLYLOGUE_DAEMON_URL") or _DEFAULT_DAEMON_URL
+    from polylogue.config import load_polylogue_config
+
+    return load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
 
 
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from urllib.request import Request, urlopen
 
 import click
@@ -43,7 +42,9 @@ def dashboard_command(env: AppEnv, status_only: bool, output_format: str) -> Non
 
 
 def _dashboard_launch_evidence() -> dict[str, object]:
-    daemon_url = os.environ.get("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766")
+    from polylogue.config import load_polylogue_config
+
+    daemon_url = load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
     status: dict[str, object] = {
         "surface": "terminal_tui",
         "launches": "Textual dashboard in the current terminal",

@@ -344,7 +344,9 @@ def _resolve_voyage_key(env: AppEnv, explicit: str | None) -> str | None:
         return explicit
     if env.config.index_config and env.config.index_config.voyage_api_key:
         return env.config.index_config.voyage_api_key
-    return os.environ.get("VOYAGE_API_KEY") or None
+    from polylogue.config import load_polylogue_config
+
+    return load_polylogue_config().voyage_api_key
 
 
 @embed_command.command("enable")
