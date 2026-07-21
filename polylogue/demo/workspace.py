@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from collections.abc import Iterator
@@ -395,7 +396,6 @@ def _run_pipeline_with_sources(
 ) -> None:
     """Ingest sources through the daemon-owned parsing path in a workspace."""
     from polylogue.api import Polylogue
-    from polylogue.pipeline.run_stages import execute_schema_generation_stage
 
     config = Config(
         archive_root=workspace.archive_root,
@@ -405,7 +405,14 @@ def _run_pipeline_with_sources(
 
     async def _ingest() -> None:
         if regenerate_schemas:
-            await execute_schema_generation_stage()
+            from polylogue.paths import data_home, db_path
+            from polylogue.schemas.operator.schema_inference import generate_all_schemas
+
+            await asyncio.to_thread(
+                generate_all_schemas,
+                output_dir=data_home() / "schemas",
+                db_path=db_path(),
+            )
         async with Polylogue(archive_root=config.archive_root, db_path=workspace.db_path) as polylogue:
             await polylogue.parse_sources(config.sources)
 

@@ -10,8 +10,9 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -48,7 +49,6 @@ from polylogue.core.metrics import PipelineMetrics
 from polylogue.core.sources import provider_from_origin
 from polylogue.demo.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.paths import active_index_db_path, blob_store_root
-from polylogue.pipeline.run_stages import execute_index_stage, execute_materialize_stage
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.scenarios import (
     PipelineProbeInputMode,
@@ -592,6 +592,119 @@ async def _seed_archive_subset(
     }
 
 
+@dataclass(slots=True)
+class _MaterializeStageOutcome:
+    item_count: int
+
+
+@dataclass(slots=True)
+class _IndexStageOutcome:
+    indexed: bool
+    item_count: int
+    error: str | None = None
+
+
+async def _probe_materialize_stage(
+    *,
+    stage: str,
+    source_names: Sequence[str] | None,
+    processed_ids: set[str],
+    backend: SQLiteBackend,
+) -> _MaterializeStageOutcome:
+    """Materialize probe-ingested sessions through the production insights writer."""
+    from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_async
+
+    if stage in {"all", "reprocess"}:
+        session_ids = sorted(processed_ids)
+        if not session_ids:
+            return _MaterializeStageOutcome(item_count=0)
+        await refresh_session_insights_bulk(backend, session_ids)
+        return _MaterializeStageOutcome(item_count=len(session_ids))
+
+    if stage != "materialize":
+        return _MaterializeStageOutcome(item_count=0)
+
+    if source_names:
+        scoped_source_names = list(source_names)
+        materialize_total = await backend.count_session_ids(source_names=scoped_source_names)
+        if not materialize_total:
+            return _MaterializeStageOutcome(item_count=0)
+        session_ids = [session_id async for session_id in backend.iter_session_ids(source_names=scoped_source_names)]
+        await refresh_session_insights_bulk(backend, session_ids)
+        return _MaterializeStageOutcome(item_count=materialize_total)
+
+    async with backend.connection() as conn:
+        total_row = await (await conn.execute("SELECT COUNT(*) FROM sessions")).fetchone()
+        total_sessions = int(total_row[0]) if total_row is not None else 0
+        counts = await rebuild_session_insights_async(conn, progress_total=total_sessions)
+        await conn.commit()
+    return _MaterializeStageOutcome(item_count=counts.profiles)
+
+
+async def _probe_index_stage(
+    *,
+    config: Config,
+    stage: str,
+    source_names: Sequence[str] | None,
+    processed_ids: set[str],
+    backend: SQLiteBackend,
+) -> _IndexStageOutcome:
+    """Index probe-ingested sessions through the production FTS index service."""
+    from polylogue.pipeline.services.indexing import IndexService
+
+    index_service = IndexService(config=config, backend=backend)
+    try:
+        if stage == "parse":
+            if processed_ids:
+                return _IndexStageOutcome(
+                    indexed=await index_service.update_index(processed_ids),
+                    item_count=len(processed_ids),
+                )
+            return _IndexStageOutcome(indexed=False, item_count=0)
+
+        if stage == "index":
+            if processed_ids:
+                status = await index_service.get_index_status()
+                if status["exists"]:
+                    return _IndexStageOutcome(
+                        indexed=await index_service.update_index(processed_ids),
+                        item_count=len(processed_ids),
+                    )
+            if source_names:
+                scoped_source_names = list(source_names)
+                total = await backend.count_session_ids(source_names=scoped_source_names)
+                success = await index_service.update_index(
+                    backend.iter_session_ids(source_names=scoped_source_names),
+                )
+                return _IndexStageOutcome(indexed=success, item_count=total)
+            total = await backend.count_session_ids()
+            return _IndexStageOutcome(
+                indexed=await index_service.rebuild_index(),
+                item_count=total,
+            )
+
+        if stage in {"all", "reprocess"}:
+            status = await index_service.get_index_status()
+            if not status["exists"]:
+                return _IndexStageOutcome(
+                    indexed=await index_service.rebuild_index(),
+                    item_count=len(processed_ids),
+                )
+            if processed_ids:
+                # The parse stage repairs FTS for changed sessions as a
+                # synchronous ingest side effect. Re-running the same repair in
+                # the chained index stage doubles FTS I/O on large archives.
+                return _IndexStageOutcome(indexed=True, item_count=0)
+        return _IndexStageOutcome(indexed=False, item_count=0)
+    except Exception as exc:
+        return _IndexStageOutcome(
+            indexed=False,
+            item_count=0,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
 async def _run_probe_pipeline(
     *,
     config: Config,
@@ -641,7 +754,7 @@ async def _run_probe_pipeline(
 
         if stage_sequence is not None and "materialize" in stage_sequence:
             materialize_stage = metrics.start_stage("materialize")
-            materialize_outcome = await execute_materialize_stage(
+            materialize_outcome = await _probe_materialize_stage(
                 stage=request.stage,
                 source_names=source_names,
                 processed_ids=parse_result.processed_ids,
@@ -651,7 +764,7 @@ async def _run_probe_pipeline(
 
         if stage_sequence is not None and "index" in stage_sequence:
             index_stage = metrics.start_stage("index")
-            index_outcome = await execute_index_stage(
+            index_outcome = await _probe_index_stage(
                 config=config,
                 stage=request.stage,
                 source_names=source_names,
