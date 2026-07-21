@@ -90,14 +90,11 @@ def daemon_parse_stage_worker_count() -> int:
     ``polylogue.pipeline.services.process_pool``). Override with
     ``POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS``.
     """
-    raw = os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS")
-    if raw is not None:
-        try:
-            value = int(raw)
-        except ValueError:
-            value = 0
-        if value > 0:
-            return value
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().daemon_parse_stage_workers
+    if configured is not None and configured > 0:
+        return configured
     return max(1, (os.cpu_count() or 2) - 1)
 
 
@@ -112,14 +109,11 @@ def daemon_parse_stage_max_inflight_bytes() -> int:
     constants above for the measured starvation the old fixed 64 MiB default
     caused). Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES``.
     """
-    raw = os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES")
-    if raw is not None:
-        try:
-            value = int(raw)
-        except ValueError:
-            value = 0
-        if value > 0:
-            return value
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().daemon_parse_stage_max_inflight_bytes
+    if configured is not None and configured > 0:
+        return configured
     physical = _physical_memory_bytes()
     if physical is None:
         return _MIN_MAX_INFLIGHT_BYTES
@@ -158,14 +152,11 @@ def daemon_parse_stage_max_cached_tree_bytes() -> int:
     Adaptive: 1/8 of physical RAM clamped to [256 MiB, 4 GiB]. Override with
     ``POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES``.
     """
-    raw = os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES")
-    if raw is not None:
-        try:
-            value = int(raw)
-        except ValueError:
-            value = 0
-        if value > 0:
-            return value
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().daemon_parse_stage_max_cached_tree_bytes
+    if configured is not None and configured > 0:
+        return configured
     physical = _physical_memory_bytes()
     if physical is None:
         return _MIN_MAX_CACHED_TREE_BYTES
@@ -179,14 +170,11 @@ def daemon_parse_stage_warm_timeout_seconds() -> float:
     ``_DEFAULT_WARM_TIMEOUT_SECONDS`` for why this exists and what it does
     (and does not) guarantee.
     """
-    raw = os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS")
-    if raw is not None:
-        try:
-            value = float(raw)
-        except ValueError:
-            value = 0.0
-        if value > 0:
-            return value
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().daemon_parse_stage_warm_timeout_seconds
+    if configured is not None and configured > 0:
+        return configured
     return _DEFAULT_WARM_TIMEOUT_SECONDS
 
 

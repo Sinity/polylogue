@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import os
 import re
 import sqlite3
 import time
@@ -5679,17 +5678,25 @@ def preview_session_insights(*, count: int) -> RepairResult:
 
 
 def _resolve_raw_authority_commit_batch_size(commit_batch_size: int | None) -> int | None:
-    """Resolve the census-phase commit batch size (polylogue-amg1)."""
+    """Resolve the census-phase commit batch size (polylogue-amg1).
+
+    Explicit caller value wins; otherwise the layered config resolver
+    (``pipeline.raw_authority.commit_batch_size`` /
+    ``POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE``, polylogue-uu8r) decides.
+    ``<= 0`` disables batching (per-raw commits), mirroring the historical
+    ``os.environ`` escape hatch.
+    """
     if commit_batch_size is not None:
         return commit_batch_size
-    raw = os.environ.get("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE")
-    if raw is None:
-        return RAW_MATERIALIZATION_COMMIT_BATCH_SIZE
+    from polylogue.config import load_polylogue_config
+
     try:
-        resolved = int(raw)
+        configured = load_polylogue_config().raw_authority_commit_batch_size
     except ValueError:
         return RAW_MATERIALIZATION_COMMIT_BATCH_SIZE
-    return resolved if resolved > 0 else None
+    if configured is None:
+        return RAW_MATERIALIZATION_COMMIT_BATCH_SIZE
+    return configured if configured > 0 else None
 
 
 def repair_raw_materialization(

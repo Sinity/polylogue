@@ -268,3 +268,147 @@ class TestDirectEnvBypassCallersRouteThroughResolver:
         result = discover_language_server()
 
         assert result == configured_binary
+
+
+class TestNewlyInventoriedSettingsRouteThroughResolver:
+    """polylogue-uu8r: settings that had NO config-inventory entry at all
+    before this change (not merely a bypassing caller for an
+    already-inventoried key, unlike the class above) -- each test pins one
+    setting family against its real runtime consumer.
+    """
+
+    def test_hook_provider_toml_only_forces_detection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Reverted-mutation witness: restore
+        ``forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER")`` in
+        ``polylogue/hooks/__init__.py::_detect_hook_provider`` -- the test
+        then fails because no environment variable is set (TOML-only
+        configuration) and detection falls through to the payload-shape
+        sniffing branches below, which do not match this ambiguous payload.
+        """
+        from polylogue.hooks import _detect_hook_provider
+
+        _disable_site(monkeypatch)
+        monkeypatch.delenv("POLYLOGUE_HOOK_PROVIDER", raising=False)
+        user = tmp_path / "user.toml"
+        user.write_text('[sources]\nhook_provider = "codex"\n', encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
+
+        # Ambiguous payload: none of the shape-sniffing branches (turn_id,
+        # permission_mode/model, source) match, so an unforced detection
+        # would return None.
+        result = _detect_hook_provider({})
+
+        assert result == "codex"
+
+    def test_raw_authority_commit_batch_size_toml_only_reaches_repair_resolution(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Reverted-mutation witness: restore
+        ``raw = os.environ.get("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE")``
+        in ``polylogue/storage/repair.py::_resolve_raw_authority_commit_batch_size``
+        -- the test then fails because no environment variable is set
+        (TOML-only configuration) and resolution falls back to the module's
+        hardcoded ``RAW_MATERIALIZATION_COMMIT_BATCH_SIZE`` default instead
+        of the configured value.
+        """
+        from polylogue.storage.repair import _resolve_raw_authority_commit_batch_size
+
+        _disable_site(monkeypatch)
+        monkeypatch.delenv("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE", raising=False)
+        user = tmp_path / "user.toml"
+        user.write_text("[pipeline.raw_authority]\ncommit_batch_size = 4242\n", encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
+
+        assert _resolve_raw_authority_commit_batch_size(None) == 4242
+        # Explicit caller override still wins over the configured value.
+        assert _resolve_raw_authority_commit_batch_size(7) == 7
+
+    def test_revision_parse_dispatch_thresholds_toml_only_reach_dispatch_partitioning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Reverted-mutation witness: restore either
+        ``os.environ.get("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES")`` or
+        ``os.environ.get("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES")`` in
+        ``polylogue/sources/revision_backfill.py`` -- the test then fails
+        because no environment variable is set (TOML-only configuration) and
+        both helpers fall back to their hardcoded module defaults
+        (262144 bytes / 48 MiB) instead of the configured values.
+        """
+        from polylogue.sources.revision_backfill import (
+            _parse_dispatch_max_bytes,
+            _parse_pool_min_aggregate_bytes,
+        )
+
+        _disable_site(monkeypatch)
+        monkeypatch.delenv("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES", raising=False)
+        monkeypatch.delenv("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES", raising=False)
+        user = tmp_path / "user.toml"
+        user.write_text(
+            "[pipeline.revision_parse]\ndispatch_max_bytes = 1024\npool_min_bytes = 2048\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
+
+        assert _parse_dispatch_max_bytes() == 1024
+        assert _parse_pool_min_aggregate_bytes() == 2048
+
+    def test_daemon_parse_stage_knobs_toml_only_reach_prefetch_resolution(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Reverted-mutation witness: restore any of the four
+        ``os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_...")`` reads in
+        ``polylogue/daemon/parse_prefetch.py`` -- the corresponding assertion
+        then fails because no environment variable is set (TOML-only
+        configuration) and that helper falls back to its adaptive
+        physical-RAM-derived or hardcoded default instead of the configured
+        value. These four knobs are read from a daemon-owned
+        ``ThreadPoolExecutor`` in-process (never inside a spawned/forked
+        worker), so ``load_polylogue_config()`` at this call site carries no
+        multiprocessing-spawn hazard.
+        """
+        from polylogue.daemon.parse_prefetch import (
+            daemon_parse_stage_max_cached_tree_bytes,
+            daemon_parse_stage_max_inflight_bytes,
+            daemon_parse_stage_warm_timeout_seconds,
+            daemon_parse_stage_worker_count,
+        )
+
+        _disable_site(monkeypatch)
+        for env_var in (
+            "POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS",
+            "POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES",
+            "POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES",
+            "POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        user = tmp_path / "user.toml"
+        user.write_text(
+            """
+[daemon.raw_materialization]
+parse_stage_workers = 3
+parse_stage_max_inflight_bytes = 999999
+parse_stage_max_cached_tree_bytes = 8888888
+parse_stage_warm_timeout_seconds = 12.5
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
+
+        assert daemon_parse_stage_worker_count() == 3
+        assert daemon_parse_stage_max_inflight_bytes() == 999999
+        assert daemon_parse_stage_max_cached_tree_bytes() == 8888888
+        assert daemon_parse_stage_warm_timeout_seconds() == 12.5

@@ -2050,6 +2050,12 @@ def _resolve_coordination_session(
 
 
 def _candidate_session_tokens(session_ref: str | None) -> tuple[str, ...]:
+    # POLYLOGUE_SESSION_REF is launcher-injected correlation metadata for
+    # THIS process, grouped here with CODEX_THREAD_ID/CODEX_SESSION_ID/
+    # CLAUDE_SESSION_ID (all genuinely external, unnamespaced env vars) --
+    # not an operator TOML preference. Deliberately excluded from config.py's
+    # layered inventory (polylogue-uu8r judgment call; see
+    # docs/configuration.md).
     env_tokens = (
         session_ref,
         os.environ.get("POLYLOGUE_SESSION_REF"),

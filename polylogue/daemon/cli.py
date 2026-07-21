@@ -1529,6 +1529,11 @@ async def _emit_daemon_lifecycle_event(
     """Persist a daemon lifecycle event without making observability fatal."""
     from polylogue.daemon.events import emit_daemon_event
 
+    # POLYLOGUE_DEV_LOOP_RUN_ID/LOG_DIR are launcher-injected correlation
+    # metadata for THIS process invocation, structurally identical to
+    # CODEX_SESSION_ID/CLAUDE_SESSION_ID -- not an operator TOML preference.
+    # Deliberately excluded from config.py's layered inventory
+    # (polylogue-uu8r judgment call; see docs/configuration.md).
     run_id = os.environ.get("POLYLOGUE_DEV_LOOP_RUN_ID")
     event_payload: dict[str, object] = {
         "phase": phase,

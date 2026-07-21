@@ -344,12 +344,20 @@ A few keys not shown in the full example above, with their TOML path:
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
 | `hermes_root` | `sources.hermes.root` | Runtime root watched for Hermes state, snapshots, NeMo Relay ATIF/ATOF artifacts, and verification evidence. Defaults to `~/.hermes`. |
 | `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. Defaults to `<archive_root>/hooks`, so a scratch/test `POLYLOGUE_ARCHIVE_ROOT` genuinely isolates its hook spool from the real one; set explicitly only if you need the spool somewhere other than the archive it belongs to. |
+| `hook_provider` | `sources.hook_provider` | Force hook-event harness detection to `claude-code` or `codex` instead of sniffing the payload shape; unset auto-detects. |
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
 | `antigravity_language_server` | `sources.antigravity_language_server` | Path to an Antigravity language-server binary, when parsing Antigravity sessions needs it. |
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
 | `ingest_parse_workers` | `sources.ingest_parse_workers` | Parallel parse workers during ingest (default 1). |
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
+| `raw_authority_commit_batch_size` | `pipeline.raw_authority.commit_batch_size` | Census-phase commit batch size for raw-materialization repair (polylogue-amg1); unset uses the built-in default, `<=0` disables batching (per-raw commits). |
+| `revision_parse_dispatch_max_bytes` | `pipeline.revision_parse.dispatch_max_bytes` | Payload-size ceiling (bytes) above which a raw parses sequentially in-process instead of dispatching to the parse pool (polylogue-amg1). |
+| `revision_parse_pool_min_bytes` | `pipeline.revision_parse.pool_min_bytes` | Aggregate pool-eligible payload floor (bytes) below which pool dispatch cannot amortize worker-spawn cost (polylogue-amg1 / polylogue-crd8). |
 | `daemon_parse_stage_split` | `daemon.raw_materialization.parse_stage_split` | Opt-in (polylogue-m6tp phase (a), default off): pre-parse raw-materialization census candidates in a bounded daemon-owned thread pool before the writer hold, instead of parsing inside the writer-held pass. |
+| `daemon_parse_stage_workers` | `daemon.raw_materialization.parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool; unset/`<=0` uses the adaptive `cpu_count - 1` default. |
+| `daemon_parse_stage_max_inflight_bytes` | `daemon.raw_materialization.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for raw payloads admitted while prefetch parses are in flight; unset/`<=0` uses the adaptive 1/16-physical-RAM default (clamped [64 MiB, 2 GiB]). |
+| `daemon_parse_stage_max_cached_tree_bytes` | `daemon.raw_materialization.parse_stage_max_cached_tree_bytes` | Whole-cache budget (bytes) for estimated parsed-tree bytes held resident between `warm()` passes; unset/`<=0` uses the adaptive 1/8-physical-RAM default (clamped [256 MiB, 4 GiB]). |
+| `daemon_parse_stage_warm_timeout_seconds` | `daemon.raw_materialization.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 300s default. |
 | `daemon_bulk_rebuild_routing` | `daemon.raw_materialization.bulk_rebuild_routing` | Opt-in (polylogue-m6tp phase (c) / polylogue-gd6v, default off): once a raw backlog is bulk-scale, route it into a daemon-owned resumable blue-green index generation build instead of the trickle conveyor, promoting it once exact-ready. |
 | `judgment_automation_enabled` | `judgment_automation.enabled` | Opt-in (polylogue-6qjc, default off): schedule the daemon judgment-automation sweep that calls the `judge` dispatcher on auto-judgeable assertion candidates per policy and escalates the rest to a `handoff` assertion. Exercises the same authority as the MCP `judge` dispatcher, so the sweep also requires `mcp_judge_enabled`. See [`docs/daemon.md`](daemon.md). |
 | `judgment_automation_interval_s` | `judgment_automation.interval_s` | Seconds between judgment-automation sweeps (default 3600; floored at 60 at runtime). |
@@ -398,6 +406,29 @@ Common runtime overrides:
 | `POLYLOGUE_OBSERVABILITY_ENABLED` | `observability_enabled` | Enable OTLP/observability HTTP ingestion. |
 | `POLYLOGUE_CREDENTIAL_PATH` | Drive auth | OAuth client JSON path. |
 | `POLYLOGUE_TOKEN_PATH` | Drive auth | OAuth token path. |
+| `POLYLOGUE_HOOK_PROVIDER` | `hook_provider` | Force hook-harness detection to `claude-code`/`codex`. |
+| `POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE` | `raw_authority_commit_batch_size` | Census-phase commit batch size for raw-materialization repair. |
+| `POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES` | `revision_parse_dispatch_max_bytes` | Payload-size ceiling for pool-eligible revision-parse dispatch. |
+| `POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES` | `revision_parse_pool_min_bytes` | Aggregate payload floor for revision-parse pool dispatch to amortize. |
+| `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
+| `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
+| `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES` | `daemon_parse_stage_max_cached_tree_bytes` | Resident parsed-tree budget for the prefetch cache. |
+| `POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `daemon_parse_stage_warm_timeout_seconds` | Timeout for a prefetch `warm()` pass. |
+
+Three `POLYLOGUE_*`-namespaced variables are deliberately **not** layered
+config keys (polylogue-uu8r judgment call): `POLYLOGUE_DEV_LOOP_RUN_ID`,
+`POLYLOGUE_DEV_LOOP_LOG_DIR`, and `POLYLOGUE_SESSION_REF` are
+launcher/harness-injected correlation metadata for one process invocation
+(dev-loop run/log identity, cross-agent session correlation), structurally
+identical to `CODEX_SESSION_ID`/`CLAUDE_SESSION_ID` rather than an operator
+TOML preference. They stay direct `os.environ` reads at their call sites
+(`polylogue/daemon/cli.py`, `polylogue/daemon/http.py`,
+`polylogue/coordination/envelope.py`). `POLYLOGUE_CONFIG` is similarly
+exempt: it is the bootstrap variable that selects *which* user TOML file to
+load, so it cannot itself be resolved through the layered reader it
+configures — `polylogue/cli/commands/embed.py::_resolve_user_config_path`
+reads it directly, matching `polylogue/config.py`'s own
+`_user_config_path`/`_site_config_path` bootstrap reads.
 
 ### Theme and no-color policy
 

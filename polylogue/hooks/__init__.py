@@ -775,7 +775,9 @@ def _default_sidecar_dir() -> Path:
 
 
 def _detect_hook_provider(payload: dict[str, object]) -> HookHarness | None:
-    forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER")
+    from polylogue.config import load_polylogue_config
+
+    forced = load_polylogue_config().hook_provider
     if forced == "claude-code":
         return "claude-code"
     if forced == "codex":
