@@ -35,6 +35,36 @@ Checks over `.beads/issues.jsonl`:
       sync receipts (polylogue-8jg9.1). No receipt on disk is not a
       violation (nothing has synced through the guard yet in this
       checkout); a *present but unclean* receipt is.
+  F1  an open bead carrying ``metadata.frontier == "active"`` (an admitted
+      active leaf) is itself an epic — epics are not work; the epic should
+      instead carry ``metadata.frontier_program == "active"`` and its
+      member leaves should be the ones admitted.
+  F2  an open active leaf (non-epic; F1 already covers epics) has no
+      ``frontier_program_ref``, or the ref is dangling, or the referenced
+      bead does not itself carry ``metadata.frontier_program == "active"``
+      — the leaf cannot be grouped into a valid program.
+  F3  an ``in_progress`` bead has had no recorded activity
+      (``updated_at``) within the configurable stale-claim window (default
+      7 days, ``--stale-claim-days``) — a likely abandoned/session-killed
+      claim that should be re-verified or released.
+  F4  an open bead marked ``metadata.frontier_program == "active"`` has
+      zero open active leaves whose ``frontier_program_ref`` points back
+      at it — a program admitted with no admitted members ("program
+      grouping derives frontier_program=active from its member leaves",
+      polylogue-8jg9.1 AC3).
+
+Three-view policy (polylogue-8jg9.1 AC1): *full ambition* is every open bead
+in the export regardless of admission (unaffected by this module — nothing
+here demotes or hides a bead); the *active set* is every open non-epic leaf
+carrying ``metadata.frontier == "active"`` (F1/F2/F4 police its structural
+validity, ``compute_active_set_summary()`` reports its size); *execution
+focus* is the smaller ``status=in_progress`` claim-backed subset (F3 polices
+claim liveness). Active-set *size* is soft operating guidance, never a hard
+cap: ``compute_active_set_summary()`` compares the current active-leaf count
+to a configurable target (default 30) and warn threshold (default 50) and
+returns informational diagnostics only — it is not part of ``Finding``/
+``collect_findings()`` and can never fail the gate, truncate the set, or
+hide a bead. Only F1/F2/F3/F4 structural violations are hard findings.
 
 (8jg9.1's design names five conceptual classes: (a) P0/P1 missing AC = P1;
 (b) decision-type bead stuck past adopted/decided = B1; (c) no area:* label =
@@ -74,6 +104,7 @@ import sys
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from devtools import repo_root as _get_root
@@ -91,6 +122,14 @@ _DEFAULT_ISSUES_RELPATH = ".beads/issues.jsonl"
 _DEFAULT_ALLOWLIST_RELPATH = "devtools/data/bead-lint-allow.txt"
 _DEFAULT_RECEIPTS_RELPATH = ".cache/bd-sync-receipts"
 
+# Active-set soft operating bands (polylogue-8jg9.1 AC1): informational only,
+# never a hard cap. See compute_active_set_summary().
+_DEFAULT_ACTIVE_TARGET = 30
+_DEFAULT_ACTIVE_WARN = 50
+# F3 stale-claim window: an in_progress bead with no updated_at activity in
+# this many days is flagged for re-verification, not auto-released.
+_DEFAULT_STALE_CLAIM_DAYS = 7
+
 # The unclean outcome kinds a SyncReceipt.to_dict() row can carry (see
 # devtools/bd_reimport_guard.py:RowOutcome/SyncReceipt). Duplicated here as
 # string literals rather than imported, since this module reads the receipt
@@ -107,6 +146,24 @@ class Finding:
 
 
 def _load(path: Path) -> tuple[dict[str, dict[str, object]], list[tuple[str, str, str]]]:
+    """Parse the exported jsonl snapshot into an in-memory issue/dep index.
+
+    Bounded-enumeration note (polylogue-8jg9.1 remaining scope item 2): this
+    reads one already-exported, finite local file (``.beads/issues.jsonl``,
+    ~1,100 rows / ~5 MB at present backlog scale) with a single
+    ``read_text().splitlines()`` pass, never a live, potentially-unbounded
+    `bd list`/`bd ready` query. That distinction matters — the 2026-07-15
+    incident recorded on this bead was a read-only `bd list --status open
+    --limit 500` process reaching 7.88 GB RSS + 20.3 GB swap against the live
+    Dolt-backed `bd` server, not against this exported-file path. Every
+    check in this module (including the new F1-F4 active-set/execution-focus
+    checks below) is derived from this same bounded, already-materialized
+    dict — none of them shell out to `bd` per-issue or re-query a live
+    unbounded source. If the exported jsonl itself grows to a size where a
+    single-pass in-memory dict is no longer bounded for realistic backlog
+    scale, that is the trigger to switch this loader to a streaming/paged
+    parse; at ~5 MB for ~1,100 issues it is not currently warranted.
+    """
     issues: dict[str, dict[str, object]] = {}
     deps: list[tuple[str, str, str]] = []
     for line in path.read_text().splitlines():
@@ -149,6 +206,28 @@ def _labels_of(d: dict[str, object]) -> set[str]:
 def _priority_of(d: dict[str, object]) -> int:
     prio = d.get("priority", 2)
     return int(prio) if isinstance(prio, int | float | str) and str(prio).lstrip("-").isdigit() else 2
+
+
+def _metadata_of(d: dict[str, object]) -> dict[str, object]:
+    raw = d.get("metadata")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _is_active_leaf(d: dict[str, object]) -> bool:
+    return _metadata_of(d).get("frontier") == "active"
+
+
+def _is_active_program(d: dict[str, object]) -> bool:
+    return _metadata_of(d).get("frontier_program") == "active"
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _load_allowlist(allow_path: Path) -> set[tuple[str, str]]:
@@ -242,14 +321,21 @@ def collect_findings(
     allow_path: Path | None = None,
     checks: set[str] | None = None,
     receipts_path: Path | None = None,
+    stale_claim_days: int = _DEFAULT_STALE_CLAIM_DAYS,
+    now: datetime | None = None,
 ) -> list[Finding]:
-    """Run all 16 backlog-hygiene checks against a Beads jsonl export.
+    """Run all 20 backlog-hygiene checks against a Beads jsonl export.
 
     ``path`` defaults to ``.beads/issues.jsonl`` under the repo root;
     ``allow_path`` defaults to ``devtools/data/bead-lint-allow.txt``;
     ``receipts_path`` (S1) defaults to ``.cache/bd-sync-receipts/`` under the
-    repo root.
+    repo root. ``stale_claim_days`` (F3) defaults to
+    ``_DEFAULT_STALE_CLAIM_DAYS``; ``now`` (F3) defaults to the current UTC
+    time and exists so tests can pin a fixed clock instead of the host wall
+    clock.
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
     root = _get_root()
     if path is None:
         path = root / _DEFAULT_ISSUES_RELPATH
@@ -295,6 +381,65 @@ def collect_findings(
     for n in list(graph):
         if color[n] == white:
             dfs(n, [n])
+
+    # F1/F2/F4: active-set (frontier=active) and program-grouping structure.
+    # active_leaf_ids are open beads admitted into the active set; epics among
+    # them are F1 violations (epics are not work) rather than valid leaves.
+    active_leaf_ids = [i for i in open_ids if _is_active_leaf(issues[i])]
+    # Reverse index: program id -> admitted non-epic leaves referencing it,
+    # used by F4 to check a program's frontier_program=active claim is backed
+    # by at least one member (polylogue-8jg9.1 AC3: program grouping is
+    # derived from member leaves, not asserted independently of them).
+    program_leaves: dict[str, list[str]] = defaultdict(list)
+    for i in active_leaf_ids:
+        d = issues[i]
+        if d.get("issue_type") == "epic":
+            add(
+                "F1",
+                i,
+                "epic carries frontier=active as a leaf (epics are not work; mark the epic "
+                "frontier_program=active instead and admit its member leaves)",
+            )
+            continue
+        ref = _metadata_of(d).get("frontier_program_ref")
+        if not isinstance(ref, str) or not ref:
+            add("F2", i, "active leaf has no frontier_program_ref (cannot be grouped into a program)")
+        elif ref not in issues:
+            add("F2", i, f"active leaf's frontier_program_ref -> {ref} does not exist")
+        elif not _is_active_program(issues[ref]):
+            add("F2", i, f"active leaf's frontier_program_ref -> {ref} is not itself frontier_program=active")
+        else:
+            program_leaves[ref].append(i)
+
+    for i in open_ids:
+        d = issues[i]
+        if _is_active_program(d) and not program_leaves.get(i):
+            add(
+                "F4",
+                i,
+                "frontier_program=active with no open active leaf referencing it via "
+                "frontier_program_ref (stale program admission -- derive frontier_program=active "
+                "from member leaves, not the reverse)",
+            )
+
+    # F3: stale in_progress claims (no recorded updated_at activity within
+    # the configured window). Defined purely from bd's own updated_at field
+    # -- bd does not persist a separate "last activity" timestamp, and
+    # updated_at already advances on every field/status/note mutation.
+    for i, d in issues.items():
+        if d.get("status") != "in_progress":
+            continue
+        updated = _parse_timestamp(d.get("updated_at"))
+        if updated is None:
+            continue
+        age_days = (now - updated).total_seconds() / 86400
+        if age_days > stale_claim_days:
+            add(
+                "F3",
+                i,
+                f"in_progress with no recorded activity for {age_days:.1f}d "
+                f"(> {stale_claim_days}d stale-claim threshold) -- re-verify claim liveness or release it",
+            )
 
     # Per-issue checks.
     titles: dict[str, list[str]] = defaultdict(list)
@@ -370,6 +515,79 @@ def collect_findings(
     return findings
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveSetSummary:
+    """Soft-band size report over the active set (polylogue-8jg9.1 AC1).
+
+    Never a `Finding`: exceeding ``target``/``warn`` is informational
+    guidance, not a structural violation, a truncation, or a gate failure.
+    """
+
+    active_leaf_count: int
+    target: int
+    warn: int
+    band: str
+    programs: dict[str, int]
+    diagnostics: list[str]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "active_leaf_count": self.active_leaf_count,
+            "target": self.target,
+            "warn": self.warn,
+            "band": self.band,
+            "programs": self.programs,
+            "diagnostics": self.diagnostics,
+        }
+
+
+def compute_active_set_summary(
+    path: Path | None = None,
+    *,
+    target: int = _DEFAULT_ACTIVE_TARGET,
+    warn: int = _DEFAULT_ACTIVE_WARN,
+) -> ActiveSetSummary:
+    """Report active-set size against soft target/warn bands.
+
+    Reads the same bounded, already-exported jsonl as `collect_findings`
+    (see `_load`'s bounded-enumeration note) -- no additional `bd` query.
+    Non-epic open leaves only (epics-as-leaves are F1 findings, not counted
+    here as legitimate active work).
+    """
+    root = _get_root()
+    if path is None:
+        path = root / _DEFAULT_ISSUES_RELPATH
+    issues, _deps = _load(path)
+    open_ids = {i for i, d in issues.items() if d.get("status") in ("open", "in_progress")}
+    active_leaf_ids = [i for i in open_ids if _is_active_leaf(issues[i]) and issues[i].get("issue_type") != "epic"]
+
+    programs: dict[str, int] = defaultdict(int)
+    for i in active_leaf_ids:
+        ref = _metadata_of(issues[i]).get("frontier_program_ref")
+        programs[str(ref)] += 1
+
+    count = len(active_leaf_ids)
+    diagnostics: list[str] = []
+    if count > warn:
+        band = "above-warn"
+        diagnostics.append(
+            f"{count} active leaves exceeds the soft warn threshold of {warn}. This is a diagnostic, "
+            "not a failure -- review whether the growth is explained (a new program admitted, a "
+            "reconciliation sweep) or is unexplained backlog drift worth pruning."
+        )
+    elif count > target:
+        band = "above-target"
+        diagnostics.append(
+            f"{count} active leaves exceeds the soft target of {target}. Informational only; no action "
+            f"required unless growth continues unexplained toward the warn threshold of {warn}."
+        )
+    else:
+        band = "within-target"
+    return ActiveSetSummary(
+        active_leaf_count=count, target=target, warn=warn, band=band, programs=dict(programs), diagnostics=diagnostics
+    )
+
+
 def _format_report(findings: list[Finding], *, issues_scanned: int) -> str:
     if not findings:
         return f"backlog hygiene: zero unhandled findings across {issues_scanned} issues scanned."
@@ -403,6 +621,24 @@ def main(argv: list[str] | None = None) -> int:
         help="run `bd export -o <path>` first (bd updates do not immediately re-export the jsonl)",
     )
     parser.add_argument(
+        "--stale-claim-days",
+        type=int,
+        default=_DEFAULT_STALE_CLAIM_DAYS,
+        help=f"F3 stale-claim window in days (default {_DEFAULT_STALE_CLAIM_DAYS})",
+    )
+    parser.add_argument(
+        "--active-target",
+        type=int,
+        default=_DEFAULT_ACTIVE_TARGET,
+        help=f"active-set soft target leaf count, informational only (default {_DEFAULT_ACTIVE_TARGET})",
+    )
+    parser.add_argument(
+        "--active-warn",
+        type=int,
+        default=_DEFAULT_ACTIVE_WARN,
+        help=f"active-set soft warn leaf count, informational only (default {_DEFAULT_ACTIVE_WARN})",
+    )
+    parser.add_argument(
         "path",
         nargs="?",
         default=None,
@@ -428,18 +664,28 @@ def main(argv: list[str] | None = None) -> int:
         path=path,
         allow_path=root / _DEFAULT_ALLOWLIST_RELPATH,
         checks=args.checks,
+        stale_claim_days=args.stale_claim_days,
     )
     issues_scanned = len(_load(path)[0])
+    active_set = compute_active_set_summary(path=path, target=args.active_target, warn=args.active_warn)
 
     if args.json:
         payload = {
             "ok": not findings,
             "issues_scanned": issues_scanned,
             "findings": [{"check": f.check, "id": f.bead_id, "msg": f.message} for f in findings],
+            "active_set": active_set.to_dict(),
         }
         print(json.dumps(payload, indent=2))
     else:
         print(_format_report(findings, issues_scanned=issues_scanned))
+        print(
+            f"\nactive set: {active_set.active_leaf_count} leaf/leaves "
+            f"(target~{active_set.target}, warn~{active_set.warn}, band={active_set.band}) "
+            f"across {len(active_set.programs)} program(s)"
+        )
+        for diag in active_set.diagnostics:
+            print(f"  note: {diag}")
 
     return 1 if findings else 0
 
