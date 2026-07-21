@@ -151,6 +151,7 @@ def raw_authority_detail_command(
 
 @click.command("raw-authority-blockers")
 @click.option("--limit", type=click.IntRange(1, 500), default=100, show_default=True)
+@click.option("--offset", type=click.IntRange(min=0), default=0, show_default=True)
 @click.option(
     "--output-format",
     "output_format",
@@ -159,31 +160,40 @@ def raw_authority_detail_command(
     show_default=True,
 )
 @click.pass_obj
-def raw_authority_blockers_command(env: AppEnv, limit: int, output_format: str) -> None:
+def raw_authority_blockers_command(env: AppEnv, limit: int, offset: int, output_format: str) -> None:
     """List unresolved raw-authority blockers (read-only operator discovery surface).
 
-    Distinguishes ``stale_plan`` blockers (replan against current evidence)
-    from ``frontier_judgment`` blockers (require an accepted judgment
-    assertion + disposition) so an operator can find a ``--blocker-id`` for
-    ``raw-authority-blocker-resolve`` without page-walking
-    ``raw-authority-census``/``raw-authority-detail`` or writing an ad hoc
-    script against the live archive.
+    Distinguishes ``stale_plan`` blockers (replan against current evidence),
+    ``frontier_judgment`` blockers (require an accepted judgment assertion +
+    disposition), and ``frontier_obligation`` blockers (other frontier
+    obligation states -- missing bytes, unresolved provenance, corrupt --
+    that resolve without a judgment assertion) so an operator can find a
+    ``--blocker-id`` for ``raw-authority-blocker-resolve`` without
+    page-walking ``raw-authority-census``/``raw-authority-detail`` or writing
+    an ad hoc script against the live archive.
+
+    Bounded to ``--limit`` (1-500) per call. If ``truncated`` is true in the
+    output, pass ``--offset <next_offset>`` to read the next page.
     """
     try:
-        blockers = raw_authority.list_blockers(env.config.archive_root, limit=limit)
+        payload = raw_authority.list_blockers(env.config.archive_root, limit=limit, offset=offset)
     except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     if output_format == "json":
-        click.echo(json.dumps({"blockers": blockers}, indent=2, sort_keys=True))
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
-    if not blockers:
+    blockers = payload["blockers"]
+    if not isinstance(blockers, list) or not blockers:
         click.echo("No unresolved raw-authority blockers.")
         return
-    for blocker in blockers:
-        click.echo(
-            f"{blocker['blocker_id']}  kind={blocker['kind']}  plan={blocker['plan_id']}  census={blocker['census_id']}"
-        )
-        click.echo(f"  reason: {blocker['reason']}")
+    for item in blockers:
+        if not isinstance(item, dict):
+            continue
+        click.echo(f"{item['blocker_id']}  kind={item['kind']}  plan={item['plan_id']}  census={item['census_id']}")
+        click.echo(f"  reason: {item['reason']}")
+    click.echo(f"({payload['returned_count']} of {payload['total_count']} unresolved)")
+    if payload.get("truncated"):
+        click.echo(f"Truncated: pass --offset {payload['next_offset']} for the next page.")
 
 
 @click.command("raw-authority-blocker-resolve")

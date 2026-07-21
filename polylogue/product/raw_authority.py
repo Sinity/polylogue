@@ -155,11 +155,17 @@ def resolve_blocker(
     )
 
 
-def list_blockers(archive_root: Path, *, limit: int = 100) -> list[JSONDocument]:
-    """Read-only inventory of unresolved raw-authority blockers (operator discovery surface)."""
+def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> JSONDocument:
+    """Read-only, paginated inventory of unresolved raw-authority blockers (operator discovery surface).
+
+    Returns an envelope (``blockers``, ``offset``, ``limit``, ``returned_count``,
+    ``total_count``, ``truncated``, ``next_offset``) rather than a bare list so
+    a caller with more than ``limit`` unresolved blockers can tell rows were
+    dropped and page to the next batch instead of only ever seeing page one.
+    """
     from polylogue.storage.raw_authority import list_unresolved_raw_authority_blockers
 
-    return list_unresolved_raw_authority_blockers(archive_root, limit=limit)
+    return list_unresolved_raw_authority_blockers(archive_root, limit=limit, offset=offset)
 
 
 __all__ = [

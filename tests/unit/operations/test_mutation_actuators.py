@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -551,11 +552,20 @@ def _seed_raw_authority_blocker(
     plan_id: str,
     census_id: str,
     frontier: bool = False,
+    judgment_assertion_id: str | None = None,
     reason: str = "immutable source/index preconditions changed after the census",
 ) -> None:
     """Seed one real, unresolved ``raw_authority_blockers`` row (plus the plan/census
     rows it references and one real ``raw_sessions`` row so a non-frontier
-    resolution can genuinely replan it)."""
+    resolution can genuinely replan it).
+
+    ``frontier`` alone seeds a ``frontier_obligation``-kind blocker (missing
+    bytes / unresolved provenance / corrupt -- no judgment assertion
+    required). Pass ``judgment_assertion_id`` too to seed a genuine
+    ``frontier_judgment`` blocker, matching how
+    ``_reconcile_frontier_obligations`` only writes that key into
+    ``observed_json`` for ``CONFLICTING_AUTHORITY_NEEDS_JUDGMENT`` plans.
+    """
     raw_id = f"raw-{blocker_id}"
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         payload = (
@@ -571,6 +581,7 @@ def _seed_raw_authority_blocker(
             raw_id=raw_id,
         )
     witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
+    observed_json = json.dumps({"judgment_assertion_id": judgment_assertion_id}) if judgment_assertion_id else "{}"
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         next_sequence_no = int(
@@ -603,9 +614,9 @@ def _seed_raw_authority_blocker(
             """
             INSERT INTO raw_authority_blockers (
                 blocker_id, plan_id, census_id, reason, expected_json, observed_json, created_at_ms
-            ) VALUES (?, ?, ?, ?, '{}', '{}', 1000)
+            ) VALUES (?, ?, ?, ?, '{}', ?, 1000)
             """,
-            (blocker_id, plan_id, census_id, reason),
+            (blocker_id, plan_id, census_id, reason, observed_json),
         )
         conn.commit()
 
@@ -849,6 +860,9 @@ class TestBlockerResolveActuator:
             executor.execute(actuator, plan, authorization, args)
 
     def test_frontier_judgment_kind_is_classified(self, tmp_path: Path) -> None:
+        """A frontier-schema blocker with a judgment_assertion_id (the only
+        state resolve_raw_authority_blocker actually demands one for --
+        CONFLICTING_AUTHORITY_NEEDS_JUDGMENT) is frontier_judgment."""
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         with ArchiveStore(archive_root):
@@ -859,6 +873,7 @@ class TestBlockerResolveActuator:
             plan_id="raw-replay:frontier-plan",
             census_id="raw-authority-census:frontier",
             frontier=True,
+            judgment_assertion_id="judgment:frontier-conflict",
             reason="conflicting canonical authority",
         )
 
@@ -867,3 +882,101 @@ class TestBlockerResolveActuator:
         plan = actuator.prepare(args)
 
         assert plan.context["kind"] == "frontier_judgment"
+
+    def test_frontier_obligation_without_judgment_assertion_is_not_misclassified(self, tmp_path: Path) -> None:
+        """A frontier-schema blocker WITHOUT a judgment_assertion_id (missing
+        bytes / unresolved provenance / corrupt) must not be classified
+        frontier_judgment -- resolve_raw_authority_blocker enforces no
+        accepted-assertion requirement for these, so telling an operator
+        otherwise would be misleading (Codex review, PR #3258)."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore(archive_root):
+            pass
+        _seed_raw_authority_blocker(
+            archive_root,
+            blocker_id="blocker-obligation",
+            plan_id="raw-replay:obligation-plan",
+            census_id="raw-authority-census:obligation",
+            frontier=True,
+            reason="missing bytes require reacquisition",
+        )
+
+        actuator = BlockerResolveActuator()
+        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-obligation", resolution="ack")
+        plan = actuator.prepare(args)
+
+        assert plan.context["kind"] == "frontier_obligation"
+
+        # And it resolves without an assertion id, exactly like
+        # resolve_raw_authority_blocker allows for non-judgment frontier
+        # obligations.
+        executor = OperationExecutor()
+        authorization = executor.authorize(
+            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+        )
+        receipt = executor.execute(actuator, plan, authorization, args)
+        assert receipt.status == "applied"
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            resolved = conn.execute(
+                "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?", ("blocker-obligation",)
+            ).fetchone()[0]
+        assert resolved is not None
+
+
+class TestListUnresolvedRawAuthorityBlockersPagination:
+    """Anti-vacuity for the Codex-flagged hard 500-row cap (PR #3258): prove
+    truncated/total_count/next_offset let a caller page past --limit rather
+    than silently losing rows beyond the first page."""
+
+    def test_pagination_metadata_reflects_a_second_page(self, tmp_path: Path) -> None:
+        from polylogue.storage.raw_authority import list_unresolved_raw_authority_blockers
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore(archive_root):
+            pass
+        for index in range(3):
+            _seed_raw_authority_blocker(
+                archive_root,
+                blocker_id=f"blocker-page-{index}",
+                plan_id=f"raw-replay:page-plan-{index}",
+                census_id=f"raw-authority-census:page-{index}",
+            )
+
+        first_page = list_unresolved_raw_authority_blockers(archive_root, limit=2, offset=0)
+        assert first_page["total_count"] == 3
+        assert first_page["returned_count"] == 2
+        assert first_page["truncated"] is True
+        assert first_page["next_offset"] == 2
+
+        second_page = list_unresolved_raw_authority_blockers(archive_root, limit=2, offset=2)
+        assert second_page["returned_count"] == 1
+        assert second_page["truncated"] is False
+        assert second_page["next_offset"] is None
+
+        first_blockers = cast("list[dict[str, object]]", first_page["blockers"])
+        second_blockers = cast("list[dict[str, object]]", second_page["blockers"])
+        first_ids = {row["blocker_id"] for row in first_blockers}
+        second_ids = {row["blocker_id"] for row in second_blockers}
+        assert first_ids.isdisjoint(second_ids)
+        assert first_ids | second_ids == {"blocker-page-0", "blocker-page-1", "blocker-page-2"}
+
+    def test_no_blockers_reports_untruncated_empty_page(self, tmp_path: Path) -> None:
+        from polylogue.storage.raw_authority import list_unresolved_raw_authority_blockers
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore(archive_root):
+            pass
+
+        payload = list_unresolved_raw_authority_blockers(archive_root)
+        assert payload == {
+            "blockers": [],
+            "offset": 0,
+            "limit": 100,
+            "returned_count": 0,
+            "total_count": 0,
+            "truncated": False,
+            "next_offset": None,
+        }

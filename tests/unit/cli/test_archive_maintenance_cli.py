@@ -147,6 +147,7 @@ def _seed_raw_authority_blocker(
     plan_id: str = "raw-replay:cli-test-plan",
     census_id: str = "raw-authority-census:cli-test",
     frontier: bool = False,
+    judgment_assertion_id: str | None = None,
     reason: str = "immutable source/index preconditions changed after the census",
 ) -> None:
     """Directly seed one real, unresolved ``raw_authority_blockers`` row.
@@ -159,6 +160,12 @@ def _seed_raw_authority_blocker(
     path) -- sufficient to exercise ``BlockerResolveActuator.prepare``'s real
     read against ``source.db`` and, for non-frontier blockers,
     ``resolve_raw_authority_blocker``'s real replan.
+
+    ``frontier`` alone seeds a ``frontier_obligation``-kind blocker (missing
+    bytes / unresolved provenance / corrupt); pass ``judgment_assertion_id``
+    too for a genuine ``frontier_judgment`` blocker, matching how
+    ``_reconcile_frontier_obligations`` only writes that key for
+    ``CONFLICTING_AUTHORITY_NEEDS_JUDGMENT`` plans.
     """
     raw_id = f"raw-{blocker_id}"
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -176,6 +183,7 @@ def _seed_raw_authority_blocker(
         )
 
     witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
+    observed_json = json.dumps({"judgment_assertion_id": judgment_assertion_id}) if judgment_assertion_id else "{}"
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         next_sequence_no = int(
@@ -208,9 +216,9 @@ def _seed_raw_authority_blocker(
             """
             INSERT INTO raw_authority_blockers (
                 blocker_id, plan_id, census_id, reason, expected_json, observed_json, created_at_ms
-            ) VALUES (?, ?, ?, ?, '{}', '{}', 1000)
+            ) VALUES (?, ?, ?, ?, '{}', ?, 1000)
             """,
-            (blocker_id, plan_id, census_id, reason),
+            (blocker_id, plan_id, census_id, reason, observed_json),
         )
         conn.commit()
 
@@ -282,7 +290,16 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         plan_id="raw-replay:frontier-plan",
         census_id="raw-authority-census:frontier-test",
         frontier=True,
+        judgment_assertion_id="judgment:frontier-conflict",
         reason="conflicting canonical authority",
+    )
+    _seed_raw_authority_blocker(
+        root,
+        blocker_id="blocker-obligation",
+        plan_id="raw-replay:obligation-plan",
+        census_id="raw-authority-census:obligation-test",
+        frontier=True,
+        reason="missing bytes require reacquisition",
     )
 
     result = cli_runner.invoke(
@@ -295,6 +312,9 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
     by_id = {row["blocker_id"]: row for row in payload["blockers"]}
     assert by_id["blocker-stale"]["kind"] == "stale_plan"
     assert by_id["blocker-frontier"]["kind"] == "frontier_judgment"
+    assert by_id["blocker-obligation"]["kind"] == "frontier_obligation"
+    assert payload["total_count"] == 3
+    assert payload["truncated"] is False
 
     # Resolving one blocker removes it from the unresolved listing.
     resolve = cli_runner.invoke(
@@ -319,8 +339,81 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
         catch_exceptions=False,
     )
-    remaining = {row["blocker_id"] for row in json.loads(after.output)["blockers"]}
-    assert remaining == {"blocker-frontier"}
+    after_payload = json.loads(after.output)
+    remaining = {row["blocker_id"] for row in after_payload["blockers"]}
+    assert remaining == {"blocker-frontier", "blocker-obligation"}
+    assert after_payload["total_count"] == 2
+
+
+def test_raw_authority_blockers_cli_paginates_past_the_limit(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """Anti-vacuity for the Codex-flagged hard cap (PR #3258): --limit below
+    the total unresolved count must still expose every blocker via
+    --offset, with truncated/next_offset telling the operator to page."""
+    root = cli_workspace["archive_root"]
+    for index in range(3):
+        _seed_raw_authority_blocker(
+            root,
+            blocker_id=f"blocker-page-{index}",
+            plan_id=f"raw-replay:page-plan-{index}",
+            census_id=f"raw-authority-census:page-{index}",
+        )
+
+    first = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-blockers",
+            "--limit",
+            "2",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    first_payload = json.loads(first.output)
+    assert first_payload["returned_count"] == 2
+    assert first_payload["total_count"] == 3
+    assert first_payload["truncated"] is True
+    next_offset = first_payload["next_offset"]
+    assert next_offset == 2
+
+    second = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-blockers",
+            "--limit",
+            "2",
+            "--offset",
+            str(next_offset),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    second_payload = json.loads(second.output)
+    assert second_payload["returned_count"] == 1
+    assert second_payload["truncated"] is False
+
+    seen_ids = {row["blocker_id"] for row in first_payload["blockers"]} | {
+        row["blocker_id"] for row in second_payload["blockers"]
+    }
+    assert seen_ids == {"blocker-page-0", "blocker-page-1", "blocker-page-2"}
+
+    # Plain-mode output surfaces the truncation notice too.
+    plain_first = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "raw-authority-blockers", "--limit", "2"],
+        catch_exceptions=False,
+    )
+    assert "Truncated: pass --offset 2" in plain_first.output
 
 
 def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:

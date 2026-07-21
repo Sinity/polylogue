@@ -466,10 +466,16 @@ polylogue ops maintenance raw-authority-blockers --output-format json
 ```
 
 Each row's `kind` distinguishes `stale_plan` (replan against current
-source/index evidence is enough) from `frontier_judgment` (requires an
-accepted judgment assertion id plus `disposition=retain_canonical_authority`,
-per the conflicting-authority frontier). After inspecting the census URI and
-current evidence, explicitly reopen replanning with a recorded rationale:
+source/index evidence is enough), `frontier_judgment` (requires an accepted
+judgment assertion id plus `disposition=retain_canonical_authority`, per the
+conflicting-authority frontier), and `frontier_obligation` (the other
+frontier obligation states -- missing bytes, unresolved provenance, corrupt
+-- which resolve like an ordinary blocker: no judgment assertion is
+required). The listing is bounded to `--limit` (1-500, default 100) per
+call; if the response's `truncated` field is `true`, pass
+`--offset <next_offset>` to read the next page. After inspecting the census
+URI and current evidence, explicitly reopen replanning with a recorded
+rationale:
 
 ```bash
 polylogue ops maintenance raw-authority-blocker-resolve \

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v1"
@@ -1449,6 +1449,29 @@ def recover_interrupted_raw_authority_censuses(
 _FRONTIER_WITNESS_SCHEMA = "polylogue.raw-authority-frontier-plan.v1"
 
 
+def _blocker_kind(*, witness_schema: str, has_judgment_assertion: bool) -> str:
+    """Classify a blocker exactly as :func:`resolve_raw_authority_blocker` enforces it.
+
+    Frontier plans (``authority_witness_json.schema ==
+    polylogue.raw-authority-frontier-plan.v1``) cover four obligation states
+    (``missing_bytes_reacquire``, ``conflicting_authority_needs_judgment``,
+    ``unresolved_provenance``, ``corrupt`` --
+    ``polylogue.storage.raw_reconciler._OBLIGATION_STATES``), but only
+    ``conflicting_authority_needs_judgment`` ever writes a
+    ``judgment_assertion_id`` into the blocker's ``observed_json``
+    (``_reconcile_frontier_obligations``). ``resolve_raw_authority_blocker``
+    only demands an accepted assertion id + disposition when that key is
+    present -- so classification must key off the same signal, not merely
+    "is this a frontier-schema plan at all". A frontier blocker without a
+    ``judgment_assertion_id`` (missing-bytes/unresolved-provenance/corrupt)
+    resolves like an ordinary blocker and must not tell an operator that an
+    accepted judgment assertion is required when the resolver enforces none.
+    """
+    if witness_schema != _FRONTIER_WITNESS_SCHEMA:
+        return "stale_plan"
+    return "frontier_judgment" if has_judgment_assertion else "frontier_obligation"
+
+
 def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSONDocument | None:
     """Read-only lookup of one unresolved blocker's resolution-eligibility shape.
 
@@ -1471,7 +1494,8 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
         row = conn.execute(
             """
             SELECT b.blocker_id, b.plan_id, b.census_id, b.reason, b.created_at_ms,
-                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema
+                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema,
+                   json_extract(b.observed_json, '$.judgment_assertion_id') AS judgment_assertion_id
             FROM raw_authority_blockers AS b
             JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
@@ -1480,7 +1504,9 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
         ).fetchone()
     if row is None:
         return None
-    kind = "frontier_judgment" if str(row["witness_schema"]) == _FRONTIER_WITNESS_SCHEMA else "stale_plan"
+    kind = _blocker_kind(
+        witness_schema=str(row["witness_schema"]), has_judgment_assertion=row["judgment_assertion_id"] is not None
+    )
     return json_document(
         {
             "blocker_id": str(row["blocker_id"]),
@@ -1493,43 +1519,71 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
     )
 
 
-def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 100) -> JSONDocumentList:
-    """Read-only inventory of every unresolved raw-authority blocker.
+def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> JSONDocument:
+    """Read-only, paginated inventory of unresolved raw-authority blockers.
 
     Distinguishes ``frontier_judgment`` blockers (require an accepted
     judgment assertion id + ``retain_canonical_authority`` disposition, per
-    :func:`resolve_raw_authority_blocker`) from ordinary ``stale_plan``
-    blockers (replanning against current source/index evidence is enough).
-    This is the operator discovery surface the CLI's exact-``--blocker-id``
-    resolve command lacked -- previously the only way to learn an unresolved
+    :func:`resolve_raw_authority_blocker`) from ``frontier_obligation``
+    blockers (other frontier obligation states -- missing bytes, unresolved
+    provenance, corrupt -- that resolve without a judgment assertion) and
+    ordinary ``stale_plan`` blockers. See :func:`_blocker_kind`. This is the
+    operator discovery surface the CLI's exact-``--blocker-id`` resolve
+    command lacked -- previously the only way to learn an unresolved
     ``blocker_id`` was ``raw-authority-census``/``raw-authority-detail``
     page-walking or a hand-written script against the live archive.
+
+    Bounded to ``limit`` rows (1-500) per call like every other raw-authority
+    reader in this module; ``offset`` plus the returned ``total_count``/
+    ``truncated``/``next_offset`` let a caller page through an archive with
+    more than 500 unresolved blockers instead of only ever seeing the first
+    page.
     """
     if not 1 <= limit <= 500:
         raise ValueError("raw authority blocker list limit must be between 1 and 500")
+    if offset < 0:
+        raise ValueError("raw authority blocker list offset must be non-negative")
+
+    def _empty_page() -> JSONDocument:
+        return json_document(
+            {
+                "blockers": [],
+                "offset": offset,
+                "limit": limit,
+                "returned_count": 0,
+                "total_count": 0,
+                "truncated": False,
+                "next_offset": None,
+            }
+        )
+
     source_db = archive_root / "source.db"
     if not source_db.is_file():
-        return []
+        return _empty_page()
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
         ).fetchone()
         if exists is None:
-            return []
+            return _empty_page()
         conn.row_factory = sqlite3.Row
+        total_count = int(
+            conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0]
+        )
         rows = conn.execute(
             """
             SELECT b.blocker_id, b.plan_id, b.census_id, b.reason, b.created_at_ms,
-                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema
+                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema,
+                   json_extract(b.observed_json, '$.judgment_assertion_id') AS judgment_assertion_id
             FROM raw_authority_blockers AS b
             JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.resolved_at_ms IS NULL
             ORDER BY b.created_at_ms, b.blocker_id
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (limit,),
+            (limit, offset),
         ).fetchall()
-    return [
+    blockers = [
         json_document(
             {
                 "blocker_id": str(row["blocker_id"]),
@@ -1537,14 +1591,27 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
                 "census_id": str(row["census_id"]),
                 "reason": str(row["reason"]),
                 "created_at_ms": int(row["created_at_ms"]),
-                "kind": (
-                    "frontier_judgment" if str(row["witness_schema"]) == _FRONTIER_WITNESS_SCHEMA else "stale_plan"
+                "kind": _blocker_kind(
+                    witness_schema=str(row["witness_schema"]),
+                    has_judgment_assertion=row["judgment_assertion_id"] is not None,
                 ),
                 "detail_query_handle": raw_authority_detail_query_handle(str(row["census_id"]), str(row["plan_id"])),
             }
         )
         for row in rows
     ]
+    next_offset = offset + len(blockers)
+    return json_document(
+        {
+            "blockers": blockers,
+            "offset": offset,
+            "limit": limit,
+            "returned_count": len(blockers),
+            "total_count": total_count,
+            "truncated": next_offset < total_count,
+            "next_offset": next_offset if next_offset < total_count else None,
+        }
+    )
 
 
 def resolve_raw_authority_blocker(
