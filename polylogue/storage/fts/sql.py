@@ -28,6 +28,47 @@ FTS_MESSAGES_TABLE_SQL = """
     );
 """
 
+# polylogue-1xc.12: identity recipe version consumed by messages_fts_identity
+# rows (see FTS_MESSAGES_IDENTITY_TABLE_SQL below). Bump this string -- not
+# INDEX_SCHEMA_VERSION -- whenever tokenizer/fold semantics change in a way
+# that invalidates previously-ledgered rows without changing table shape;
+# exact reconciliation compares a ledgered row's stored recipe_id against the
+# CURRENT value of this constant, so an archive that never rebuilt after a
+# recipe bump shows up as drift instead of silently serving results folded
+# under the stale recipe.
+FTS_MESSAGES_IDENTITY_RECIPE_ID = "messages_fts.v1:unicode61-remove_diacritics2+pl_fold"
+
+# polylogue-1xc.12: rowid-keyed shadow ledger binding each `messages_fts`
+# rowid to the block_id it was populated from. `messages_fts` is a
+# CONTENTLESS FTS5 table (content=''): UNINDEXED columns such as `block_id`
+# are write-only and never retrievable by a later SELECT (verified
+# empirically -- `SELECT block_id FROM messages_fts` returns NULL even
+# though the INSERT supplied a value). SQLite reuses freed rowids (deleting
+# the highest-rowid block then inserting a new one commonly gets the SAME
+# rowid back -- exactly what a full-session-replace does), so a bare rowid
+# cannot prove which block a `messages_fts` row currently represents. Count-
+# only reconciliation (source_rows == indexed_rows) is blind to this: both
+# sides still balance even when a stale rowid has silently rebound to a
+# different block. This ledger makes block identity legible again so exact
+# reconciliation can join on rowid AND block_id, not rowid alone.
+# `source_hash` reuses the existing `blocks.content_hash` evidence hash (see
+# storage/sqlite/archive_tiers/index.py) as the source-identity component,
+# and `recipe_id` is FTS_MESSAGES_IDENTITY_RECIPE_ID as the recipe-identity
+# component -- the same subject/source/recipe separation
+# storage/derivation_identity.py formalizes for polylogue-wmsc's
+# DerivationKey, applied here as a lightweight per-row ledger (not a full
+# DerivationKey digest -- too expensive to compute per trigger-fired row) and
+# never as a shared cross-domain table: FTS keeps its own ledger and repair
+# lifecycle.
+FTS_MESSAGES_IDENTITY_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS messages_fts_identity (
+        rowid       INTEGER PRIMARY KEY,
+        block_id    TEXT NOT NULL UNIQUE,
+        source_hash BLOB,
+        recipe_id   TEXT NOT NULL
+    ) STRICT;
+"""
+
 FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
 FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM messages_fts_docsize"
 FTS_INDEXABLE_MESSAGE_COUNT_SQL = """
@@ -49,21 +90,34 @@ _FTS_BULK_GUARD_NOT_SET = (
 )
 
 # FTS trigger DDL for message/block FTS maintenance.
+#
+# polylogue-1xc.12: each arm also maintains messages_fts_identity in the SAME
+# trigger body as its messages_fts write, so the two can never observe
+# different block/rowid bindings -- one atomic statement sequence per event,
+# not a second pass. ad/au explicitly DELETE the identity row by rowid before
+# any re-insert so a reused rowid never inherits a stale block_id.
 BLOCKS_FTS_TRIGGER_DDL = [
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ai
        AFTER INSERT ON blocks WHEN new.search_text != '' AND {_FTS_BULK_GUARD_NOT_SET} BEGIN
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
            VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
+           INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
+           VALUES (new.rowid, new.block_id, new.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}');
        END""",
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ad
        AFTER DELETE ON blocks WHEN old.search_text != '' AND {_FTS_BULK_GUARD_NOT_SET} BEGIN
            DELETE FROM messages_fts WHERE rowid = old.rowid;
+           DELETE FROM messages_fts_identity WHERE rowid = old.rowid;
        END""",
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_au
        AFTER UPDATE ON blocks WHEN {_FTS_BULK_GUARD_NOT_SET} BEGIN
            DELETE FROM messages_fts WHERE rowid = old.rowid;
+           DELETE FROM messages_fts_identity WHERE rowid = old.rowid;
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
            SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
+           WHERE new.search_text != '';
+           INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
+           SELECT new.rowid, new.block_id, new.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
            WHERE new.search_text != '';
        END""",
 ]
@@ -203,6 +257,146 @@ def excess_message_rows_sql(limit: int) -> str:
     """
 
 
+# polylogue-1xc.12: identity-ledger companions to the messages_fts bulk SQL
+# above. Every place that bulk-writes/deletes messages_fts rows outside the
+# per-row triggers (rebuild, batched missing/excess repair, session-scoped
+# repair) pairs its call with the matching function here so
+# messages_fts_identity never lags messages_fts for those paths. `FTS_REBUILD_SQL`
+# (``DELETE FROM messages_fts``) has no companion constant; use
+# ``FTS_IDENTITY_REBUILD_SQL`` alongside it.
+FTS_IDENTITY_REBUILD_SQL = "DELETE FROM messages_fts_identity"
+
+
+def insert_all_message_identity_rows_sql() -> str:
+    """Bulk (re)populate ``messages_fts_identity`` from ``blocks``.
+
+    Companion to :func:`insert_all_message_rows_sql`; callers clear the
+    table first with :data:`FTS_IDENTITY_REBUILD_SQL`, matching the
+    ``messages_fts`` rebuild shape.
+    """
+    return f"""
+        INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
+        SELECT rowid, block_id, content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
+        FROM blocks
+        WHERE search_text != ''
+    """
+
+
+def delete_session_identity_rows_sql(chunk_size: int) -> str:
+    """Companion to :func:`delete_session_rows_sql` for ``messages_fts_identity``."""
+    placeholders = ", ".join("?" for _ in range(chunk_size))
+    return f"""
+        DELETE FROM messages_fts_identity
+        WHERE rowid IN (
+            SELECT blocks.rowid
+            FROM blocks
+            WHERE blocks.session_id IN ({placeholders})
+        )
+    """
+
+
+def insert_session_identity_rows_sql(chunk_size: int) -> str:
+    """Companion to :func:`insert_session_rows_sql` for ``messages_fts_identity``."""
+    values = ", ".join("(?)" for _ in range(chunk_size))
+    return f"""
+        WITH raw_target_sessions(session_id) AS (
+            VALUES {values}
+        ),
+        target_sessions AS (
+            SELECT DISTINCT session_id
+            FROM raw_target_sessions
+        )
+        INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
+        SELECT b.rowid, b.block_id, b.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
+        FROM blocks AS b
+        JOIN target_sessions AS target
+          ON target.session_id = b.session_id
+        WHERE b.search_text != ''
+    """
+
+
+def repair_message_identity_rows_range_sql() -> str:
+    """UPSERT ``messages_fts_identity`` for indexed rows in a bounded rowid window.
+
+    Unlike :func:`insert_missing_message_rows_range_sql` (INSERT-only, for
+    rows entirely absent from ``messages_fts``), this also *overwrites* an
+    existing identity row whose ``block_id``/``source_hash``/``recipe_id``
+    no longer matches the current block -- the exact rowid-reuse and
+    changed-text/changed-recipe cases polylogue-1xc.12 exists to catch and
+    self-heal. Scoped to already-indexed rows (present in
+    ``messages_fts_docsize``) within ``(?, ?]`` so a bounded repair pass
+    over a huge archive stays bounded.
+    """
+    return f"""
+        INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
+        SELECT b.rowid, b.block_id, b.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
+        FROM blocks AS b
+        JOIN messages_fts_docsize AS d ON d.id = b.rowid
+        WHERE b.search_text != ''
+          AND b.rowid > ?
+          AND b.rowid <= ?
+        ON CONFLICT(rowid) DO UPDATE SET
+            block_id = excluded.block_id,
+            source_hash = excluded.source_hash,
+            recipe_id = excluded.recipe_id
+        WHERE messages_fts_identity.block_id != excluded.block_id
+           OR messages_fts_identity.source_hash IS NOT excluded.source_hash
+           OR messages_fts_identity.recipe_id != excluded.recipe_id
+    """
+
+
+def message_identity_mismatch_sql() -> str:
+    """Exact rowid+block_id+source+recipe identity CONFLICT check for ``messages_fts``.
+
+    Two independent failure classes, summed: (1) an indexed row
+    (``messages_fts_docsize`` joined with a still-indexable ``blocks`` row)
+    whose identity ledger entry EXISTS but is bound to a different
+    ``block_id``, or carries a stale ``source_hash``/``recipe_id`` -- the
+    rowid-reuse/changed-text/changed-recipe cases count-only reconciliation
+    cannot see because both sides still balance; (2) an identity ledger row
+    left over for a rowid no longer present in ``messages_fts_docsize`` at
+    all (an orphan, e.g. from a partial/interrupted write).
+
+    Deliberately NOT counted: an indexed row with NO identity ledger entry
+    at all. Every per-row trigger arm and bulk companion writes the ledger
+    alongside its ``messages_fts`` write, but
+    ``storage/sqlite/archive_tiers/write.py``'s non-bulk full-session-replace
+    fast path (``delete_session_rows_sql``/``insert_session_rows_sql``
+    called directly, outside this module -- see the polylogue-1xc.12 note in
+    ``docs/internals.md``) does not yet call the identity companions inline,
+    so a session written through that path is coverage-incomplete until the
+    next repair backfills it. A missing entry is provably safe on its own:
+    nothing reads block identity FROM this ledger except this
+    reconciliation query itself, and the next trigger-fired mutation at that
+    rowid (delete or update) creates a correct fresh row regardless of
+    whether one existed before. Only a PRESENT-but-WRONG entry is the
+    dangerous rowid-reuse signature this check exists to catch -- a
+    consumer trusting the ledger would see a real but incorrect binding, not
+    an absence. Counting missing rows here would make ``ready`` permanently
+    false on any archive that writes through the ordinary session-replace
+    path, which defeats the point of a readiness signal.
+    """
+    return f"""
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM messages_fts_docsize AS d
+                JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
+                JOIN messages_fts_identity AS i ON i.rowid = d.id
+                WHERE i.block_id != b.block_id
+                   OR i.source_hash IS NOT b.content_hash
+                   OR i.recipe_id != '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
+            )
+            +
+            (
+                SELECT COUNT(*)
+                FROM messages_fts_identity AS i
+                LEFT JOIN messages_fts_docsize AS d ON d.id = i.rowid
+                WHERE d.id IS NULL
+            )
+    """
+
+
 # polylogue-v6i3: ``blocks_command_trigram`` is an EXTERNAL-CONTENT FTS5 table
 # (content='blocks'), unlike contentless ``messages_fts``. A bare
 # ``DELETE FROM blocks_command_trigram`` does not fully release its shadow
@@ -231,9 +425,12 @@ def insert_all_trigram_rows_sql() -> str:
 __all__ = [
     "BLOCKS_FTS_TRIGGER_DDL",
     "FTS_BULK_SESSION_WRITE_GUARD",
+    "FTS_IDENTITY_REBUILD_SQL",
     "FTS_INDEXABLE_MESSAGE_COUNT_SQL",
     "FTS_INDEX_DOC_COUNT_SQL",
     "FTS_INDEX_EXISTS_SQL",
+    "FTS_MESSAGES_IDENTITY_RECIPE_ID",
+    "FTS_MESSAGES_IDENTITY_TABLE_SQL",
     "FTS_MESSAGES_TABLE_SQL",
     "FTS_REBUILD_SQL",
     "FTS_TRIGGER_DDL",
@@ -242,11 +439,16 @@ __all__ = [
     "THREAD_FTS_TRIGGER_DDL",
     "TRIGRAM_REBUILD_DELETE_ALL_SQL",
     "chunked",
+    "delete_session_identity_rows_sql",
     "delete_session_rows_sql",
     "excess_message_rows_sql",
+    "insert_all_message_identity_rows_sql",
     "insert_all_message_rows_sql",
     "insert_all_trigram_rows_sql",
     "insert_missing_message_rows_range_sql",
     "insert_missing_message_rows_sql",
+    "insert_session_identity_rows_sql",
     "insert_session_rows_sql",
+    "message_identity_mismatch_sql",
+    "repair_message_identity_rows_range_sql",
 ]

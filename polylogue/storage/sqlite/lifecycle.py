@@ -272,6 +272,30 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # (`polylogue ops reset --index && polylogued run`).
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=43,
+        # Adds the messages_fts_identity rowid/block_id ledger
+        # (polylogue-1xc.12) and refreshes the messages_fts trigger bodies to
+        # also maintain it. Every ledgered field (block_id, source_hash,
+        # recipe_id) is derivable from already-persisted blocks columns
+        # (block_id, content_hash) plus the FTS_MESSAGES_IDENTITY_RECIPE_ID
+        # constant -- no raw reparse needed, so this is a clone-safe rebuild
+        # of a derived surface, the same shape as v35's FTS tokenizer
+        # reindex.
+        classes=(DerivedDeltaClass.FTS_REINDEX,),
+        operations=(
+            FastForwardOperation(
+                name="v43-messages-fts-identity",
+                kind=FastForwardOperationKind.REBUILD_FTS,
+                objects=(
+                    ("table", "messages_fts_identity"),
+                    ("trigger", "messages_fts_ai"),
+                    ("trigger", "messages_fts_ad"),
+                    ("trigger", "messages_fts_au"),
+                ),
+            ),
+        ),
+    ),
 )
 
 

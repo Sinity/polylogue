@@ -23,6 +23,13 @@ _COLUMN_UPGRADES: tuple[tuple[str, str], ...] = (
     ("missing_rows", "INTEGER NOT NULL DEFAULT 0"),
     ("excess_rows", "INTEGER NOT NULL DEFAULT 0"),
     ("duplicate_rows", "INTEGER NOT NULL DEFAULT 0"),
+    # polylogue-1xc.12: rowid-reuse/changed-text/changed-recipe drift the
+    # messages_fts_identity ledger catches. A row upgraded from before this
+    # column existed defaults to 0 (trusted ready under the prior, weaker
+    # invariant) and is re-validated the next time an exact snapshot runs --
+    # the same backward-compatible-default shape the other counters already
+    # use here.
+    ("identity_mismatch_rows", "INTEGER NOT NULL DEFAULT 0"),
     ("detail", "TEXT"),
 )
 
@@ -58,22 +65,28 @@ def freshness_ready_record_trusted(
     excess_rows: int,
     duplicate_rows: int,
     source_has_rows: bool | None,
+    identity_mismatch_rows: int = 0,
 ) -> bool:
     """Return whether a durable freshness row is safe to use as ready.
 
     A ``ready`` row must be internally clean. The historical poisoned shape
     ``source_rows=0`` and ``indexed_rows=0`` is trusted only after proving the
     source table has no rows; otherwise readiness is unknown and must be
-    recomputed by repair/search paths.
+    recomputed by repair/search paths. ``identity_mismatch_rows`` (default 0,
+    polylogue-1xc.12) is the rowid-reuse/changed-text/changed-recipe check the
+    ledger provides beyond a plain count comparison -- callers that never
+    compute it (bounded startup/repair paths that only compare counts) keep
+    the historical behavior by construction; callers that DID compute a
+    nonzero value must not silently drop it here.
     """
     if state != READY:
         return False
-    counters = (source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows)
+    counters = (source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows)
     if any(counter < 0 for counter in counters):
         return False
     if source_rows != indexed_rows:
         return False
-    if missing_rows != 0 or excess_rows != 0 or duplicate_rows != 0:
+    if missing_rows != 0 or excess_rows != 0 or duplicate_rows != 0 or identity_mismatch_rows != 0:
         return False
     return not (source_rows == 0 and indexed_rows == 0 and source_has_rows is not False)
 
@@ -175,6 +188,7 @@ def record_fts_surface_state_sync(
     missing_rows: int = 0,
     excess_rows: int = 0,
     duplicate_rows: int = 0,
+    identity_mismatch_rows: int = 0,
     detail: str | None = None,
 ) -> None:
     ensure_fts_freshness_table_sync(conn)
@@ -182,9 +196,9 @@ def record_fts_surface_state_sync(
         """
         INSERT INTO fts_freshness_state (
             surface, state, checked_at, source_rows, indexed_rows,
-            missing_rows, excess_rows, duplicate_rows, detail
+            missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, detail
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(surface) DO UPDATE SET
             state=excluded.state,
             checked_at=excluded.checked_at,
@@ -193,6 +207,7 @@ def record_fts_surface_state_sync(
             missing_rows=excluded.missing_rows,
             excess_rows=excluded.excess_rows,
             duplicate_rows=excluded.duplicate_rows,
+            identity_mismatch_rows=excluded.identity_mismatch_rows,
             detail=excluded.detail
         """,
         (
@@ -204,6 +219,7 @@ def record_fts_surface_state_sync(
             int(missing_rows),
             int(excess_rows),
             int(duplicate_rows),
+            int(identity_mismatch_rows),
             detail,
         ),
     )
@@ -219,6 +235,7 @@ async def record_fts_surface_state_async(
     missing_rows: int = 0,
     excess_rows: int = 0,
     duplicate_rows: int = 0,
+    identity_mismatch_rows: int = 0,
     detail: str | None = None,
 ) -> None:
     await ensure_fts_freshness_table_async(conn)
@@ -226,9 +243,9 @@ async def record_fts_surface_state_async(
         """
         INSERT INTO fts_freshness_state (
             surface, state, checked_at, source_rows, indexed_rows,
-            missing_rows, excess_rows, duplicate_rows, detail
+            missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, detail
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(surface) DO UPDATE SET
             state=excluded.state,
             checked_at=excluded.checked_at,
@@ -237,6 +254,7 @@ async def record_fts_surface_state_async(
             missing_rows=excluded.missing_rows,
             excess_rows=excluded.excess_rows,
             duplicate_rows=excluded.duplicate_rows,
+            identity_mismatch_rows=excluded.identity_mismatch_rows,
             detail=excluded.detail
         """,
         (
@@ -248,6 +266,7 @@ async def record_fts_surface_state_async(
             int(missing_rows),
             int(excess_rows),
             int(duplicate_rows),
+            int(identity_mismatch_rows),
             detail,
         ),
     )
@@ -264,6 +283,7 @@ def record_fts_invariant_snapshot_sync(conn: sqlite3.Connection, snapshot: Any) 
             missing_rows=int(surface.missing_rows),
             excess_rows=int(surface.excess_rows),
             duplicate_rows=int(surface.duplicate_rows),
+            identity_mismatch_rows=int(getattr(surface, "identity_mismatch_rows", 0)),
             detail=None if bool(surface.ready) else "exact invariant failed",
         )
 
@@ -325,7 +345,14 @@ def _message_fts_record_sync(conn: sqlite3.Connection) -> dict[str, object] | No
         return None
     columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})").fetchall()}
     selected = ["state"]
-    for name in ("source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"):
+    for name in (
+        "source_rows",
+        "indexed_rows",
+        "missing_rows",
+        "excess_rows",
+        "duplicate_rows",
+        "identity_mismatch_rows",
+    ):
         if name in columns:
             selected.append(name)
     row = conn.execute(
@@ -343,7 +370,14 @@ async def _message_fts_record_async(conn: aiosqlite.Connection) -> dict[str, obj
     rows = await (await conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})")).fetchall()
     columns = {str(row[1]) for row in rows}
     selected = ["state"]
-    for name in ("source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"):
+    for name in (
+        "source_rows",
+        "indexed_rows",
+        "missing_rows",
+        "excess_rows",
+        "duplicate_rows",
+        "identity_mismatch_rows",
+    ):
         if name in columns:
             selected.append(name)
     row = await (
@@ -371,6 +405,7 @@ def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, objec
         missing_rows=_recorded_counter(record, "missing_rows"),
         excess_rows=_recorded_counter(record, "excess_rows"),
         duplicate_rows=_recorded_counter(record, "duplicate_rows"),
+        identity_mismatch_rows=_recorded_counter(record, "identity_mismatch_rows"),
         source_has_rows=_message_fts_source_has_rows_sync(conn) if source_rows == 0 and indexed_rows == 0 else False,
     )
 
@@ -385,6 +420,7 @@ async def _recorded_ready_state_async(conn: aiosqlite.Connection, record: dict[s
         missing_rows=_recorded_counter(record, "missing_rows"),
         excess_rows=_recorded_counter(record, "excess_rows"),
         duplicate_rows=_recorded_counter(record, "duplicate_rows"),
+        identity_mismatch_rows=_recorded_counter(record, "identity_mismatch_rows"),
         source_has_rows=await _message_fts_source_has_rows_async(conn)
         if source_rows == 0 and indexed_rows == 0
         else False,

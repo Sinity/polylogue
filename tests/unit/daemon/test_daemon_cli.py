@@ -2367,7 +2367,7 @@ def test_archive_message_fts_startup_records_known_stale_ledger_without_global_c
                 triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
                 return FakeCursor(triggers[0], rows=triggers)
             if query.startswith("SELECT state, source_rows, indexed_rows"):
-                return FakeCursor(("stale", 250_000, 100_000, 150_000, 0, 0))
+                return FakeCursor(("stale", 250_000, 100_000, 150_000, 0, 0, 0))
             raise AssertionError(f"unexpected query: {query}")
 
     conn = FakeConnection()
@@ -2437,7 +2437,7 @@ def test_archive_message_fts_startup_downgrades_inconsistent_ready_ledger_withou
                 triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
                 return FakeCursor(triggers[0], rows=triggers)
             if query.startswith("SELECT state, source_rows, indexed_rows"):
-                return FakeCursor(("ready", 250_000, 100_000, 0, 0, 0))
+                return FakeCursor(("ready", 250_000, 100_000, 0, 0, 0, 0))
             raise AssertionError(f"unexpected query: {query}")
 
     conn = FakeConnection()
@@ -2526,7 +2526,7 @@ def test_archive_message_fts_startup_records_poisoned_stale_zero_ledger_without_
                 triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
                 return FakeCursor(triggers[0], rows=triggers)
             if query.startswith("SELECT state, source_rows, indexed_rows"):
-                return FakeCursor(("stale", 0, 0, 0, 0, 0))
+                return FakeCursor(("stale", 0, 0, 0, 0, 0, 0))
             if query == "SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1":
                 return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
@@ -2695,7 +2695,8 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
                         (5, "missing_rows"),
                         (6, "excess_rows"),
                         (7, "duplicate_rows"),
-                        (8, "detail"),
+                        (8, "identity_mismatch_rows"),
+                        (9, "detail"),
                     ],
                 )
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
@@ -2711,7 +2712,7 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
                 ]
                 return FakeCursor(None, rows=triggers)
             if query.startswith("SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows"):
-                return FakeCursor(("ready", 10, 10, 0, 0, 0))
+                return FakeCursor(("ready", 10, 10, 0, 0, 0, 0))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:

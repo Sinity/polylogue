@@ -50,6 +50,11 @@ varies on a known-bounded dimension):
 - ``polylogue_fts_trigger_present`` (gauge) — labels: trigger
 - ``polylogue_fts_triggers_all_present`` (gauge, 0/1)
 - ``polylogue_fts_freshness_ready`` (gauge, 0/1) — labels: surface
+- ``polylogue_fts_drift_rows`` (gauge) — labels: surface, kind
+  (missing/excess/duplicate/identity_mismatch). Drift MAGNITUDE, not just the
+  boolean ready/stale of ``polylogue_fts_freshness_ready`` above; read O(1)
+  from the ``fts_freshness_state`` ledger, no scan on scrape
+  (polylogue-1xc.12).
 - ``polylogue_live_ingest_memory_mebibytes`` (gauge) — labels: kind
 - ``polylogue_stale_cursor_writes_total`` (counter)
 - ``polylogue_embedding_sessions`` (gauge) — labels: state
@@ -444,6 +449,45 @@ def _fts_freshness_ready(conn: sqlite3.Connection) -> list[tuple[str, int]]:
     for surface, payload in sorted(surfaces.items()):
         ready = bool(payload.get("ready")) if isinstance(payload, dict) else False
         samples.append((str(surface), 1 if ready else 0))
+    return samples
+
+
+# polylogue-1xc.12: drift MAGNITUDE gauges, not just the boolean
+# polylogue_fts_freshness_ready above. Reads straight from the
+# fts_freshness_state ledger row (O(1), no COUNT(*) on scrape) written by
+# the same exact-invariant/repair paths that already populate that table --
+# this function never recomputes anything itself.
+_FTS_DRIFT_KINDS: tuple[str, ...] = ("missing", "excess", "duplicate", "identity_mismatch")
+
+
+def _fts_drift_magnitude(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
+    if not _table_exists(conn, "fts_freshness_state"):
+        return []
+    columns = _columns(conn, "fts_freshness_state")
+    kind_columns = {
+        "missing": "missing_rows",
+        "excess": "excess_rows",
+        "duplicate": "duplicate_rows",
+        "identity_mismatch": "identity_mismatch_rows",
+    }
+    available = {kind: column for kind, column in kind_columns.items() if column in columns}
+    if not available:
+        return []
+    selected = ["surface", *available.values()]
+    try:
+        rows = conn.execute(f"SELECT {', '.join(selected)} FROM fts_freshness_state ORDER BY surface").fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("metrics: fts drift magnitude query failed: %s", exc, exc_info=True)
+        return []
+    samples: list[tuple[str, str, int]] = []
+    for row in rows:
+        surface = str(row[0])
+        for index, kind in enumerate(available, start=1):
+            try:
+                value = int(row[index] or 0)
+            except (TypeError, ValueError):
+                value = 0
+            samples.append((surface, kind, value))
     return samples
 
 
@@ -1023,6 +1067,10 @@ def format_metrics(
             ),
             ("polylogue_fts_triggers_all_present", "All expected FTS sync triggers are installed."),
             ("polylogue_fts_freshness_ready", "1 when the daemon freshness ledger marks an FTS surface ready."),
+            (
+                "polylogue_fts_drift_rows",
+                "FTS drift magnitude by surface and kind, read O(1) from fts_freshness_state.",
+            ),
             ("polylogue_live_ingest_memory_mebibytes", "Latest live ingest memory sample in MiB by kind."),
             ("polylogue_stale_cursor_writes_total", "Total stale-cursor writes observed across ingest attempts."),
             ("polylogue_embedding_sessions", "Embedding session counts by state."),
@@ -1154,6 +1202,18 @@ def format_metrics(
             samples=[({"surface": surface}, ready) for surface, ready in freshness],
         )
 
+        drift = _fts_drift_magnitude(conn)
+        _emit_metric(
+            lines,
+            name="polylogue_fts_drift_rows",
+            help_text=(
+                "FTS drift magnitude by surface and kind (missing/excess/duplicate/"
+                "identity_mismatch), read O(1) from the fts_freshness_state ledger."
+            ),
+            metric_type="gauge",
+            samples=[({"surface": surface, "kind": kind}, value) for surface, kind, value in drift],
+        )
+
         memory = _latest_ingest_memory(conn, ops_db=ops_db)
         _emit_metric(
             lines,
@@ -1245,6 +1305,10 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
         ("polylogue_fts_trigger_present", "1 when the named FTS sync trigger is installed in index.db."),
         ("polylogue_fts_triggers_all_present", "All expected FTS sync triggers are installed."),
         ("polylogue_fts_freshness_ready", "1 when the daemon freshness ledger marks an FTS surface ready."),
+        (
+            "polylogue_fts_drift_rows",
+            "FTS drift magnitude by surface and kind, read O(1) from fts_freshness_state.",
+        ),
         ("polylogue_embedding_sessions", "Embedding session counts by state."),
         ("polylogue_embedding_messages", "Embedding message counts by state."),
         ("polylogue_embedding_coverage_percent", "Percent of sessions with current embeddings."),

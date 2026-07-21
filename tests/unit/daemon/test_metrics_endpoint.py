@@ -58,6 +58,7 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_fts_trigger_present",
         "polylogue_fts_triggers_all_present",
         "polylogue_fts_freshness_ready",
+        "polylogue_fts_drift_rows",
         "polylogue_live_ingest_memory_mebibytes",
         "polylogue_stale_cursor_writes_total",
         "polylogue_embedding_sessions",

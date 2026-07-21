@@ -13,9 +13,11 @@ import aiosqlite
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     BLOCKS_FTS_TRIGGER_DDL,
+    FTS_IDENTITY_REBUILD_SQL,
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEX_EXISTS_SQL,
     FTS_INDEXABLE_MESSAGE_COUNT_SQL,
+    FTS_MESSAGES_IDENTITY_TABLE_SQL,
     FTS_MESSAGES_TABLE_SQL,
     FTS_REBUILD_SQL,
     FTS_TRIGGER_DDL,
@@ -24,12 +26,17 @@ from polylogue.storage.fts.sql import (
     TRIGRAM_REBUILD_DELETE_ALL_SQL,
     IndexedMessage,
     chunked,
+    delete_session_identity_rows_sql,
     delete_session_rows_sql,
     excess_message_rows_sql,
+    insert_all_message_identity_rows_sql,
     insert_all_message_rows_sql,
     insert_all_trigram_rows_sql,
     insert_missing_message_rows_range_sql,
+    insert_session_identity_rows_sql,
     insert_session_rows_sql,
+    message_identity_mismatch_sql,
+    repair_message_identity_rows_range_sql,
 )
 
 _chunked = chunked
@@ -125,6 +132,12 @@ class FtsSurfaceInvariant:
     missing_rows: int = 0
     excess_rows: int = 0
     duplicate_rows: int = 0
+    # polylogue-1xc.12: rowid-reuse/changed-text/changed-recipe drift the
+    # messages_fts_identity ledger catches that missing_rows/excess_rows
+    # cannot -- both sides still balance when a stale rowid has silently
+    # rebound to a different block. Zero for surfaces without an identity
+    # ledger (only messages_fts has one today).
+    identity_mismatch_rows: int = 0
 
     @property
     def ready(self) -> bool:
@@ -136,6 +149,7 @@ class FtsSurfaceInvariant:
             and self.missing_rows == 0
             and self.excess_rows == 0
             and self.duplicate_rows == 0
+            and self.identity_mismatch_rows == 0
         )
 
 
@@ -269,12 +283,14 @@ def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
 def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Ensure the FTS5 tables and triggers exist on a sync SQLite connection."""
     conn.execute(FTS_MESSAGES_TABLE_SQL)
+    conn.execute(FTS_MESSAGES_IDENTITY_TABLE_SQL)
     ensure_fts_triggers_sync(conn)
 
 
 async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
     """Ensure the FTS5 tables and triggers exist on an async SQLite connection."""
     await conn.execute(FTS_MESSAGES_TABLE_SQL)
+    await conn.execute(FTS_MESSAGES_IDENTITY_TABLE_SQL)
     for ddl in await _fts_trigger_ddl_for_existing_surfaces_async(conn):
         if ";" in ddl:
             await conn.executescript(ddl)
@@ -325,11 +341,17 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     ensure_fts_index_sync(conn)
     conn.execute(FTS_REBUILD_SQL)
     conn.execute(insert_all_message_rows_sql())
+    conn.execute(FTS_IDENTITY_REBUILD_SQL)
+    conn.execute(insert_all_message_identity_rows_sql())
     _rebuild_session_work_events_fts_sync(conn)
     _rebuild_threads_fts_sync(conn)
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+    from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
+
+    sample_fts_drift_to_ops_sync(conn)
 
 
 def rebuild_command_trigram_index_sync(conn: sqlite3.Connection) -> None:
@@ -362,6 +384,8 @@ def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     conn.execute("DROP TABLE IF EXISTS messages_fts")
     conn.execute(FTS_MESSAGES_TABLE_SQL)
+    conn.execute("DROP TABLE IF EXISTS messages_fts_identity")
+    conn.execute(FTS_MESSAGES_IDENTITY_TABLE_SQL)
     if _table_exists_sync(conn, "blocks"):
         for ddl in _BLOCKS_FTS_TRIGGER_DDL:
             conn.execute(ddl)
@@ -385,6 +409,19 @@ def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
     )
 
 
+def _blocks_content_hash_available_sync(conn: sqlite3.Connection) -> bool:
+    """Whether ``blocks.content_hash`` exists (identity ledger source-hash input).
+
+    Some low-level tests exercise ``messages_fts`` repair against a minimal
+    hand-rolled ``blocks`` table (a handful of TEXT columns, no
+    ``content_hash``) rather than the full archive schema -- the identity
+    ledger is additive there: skip populating it rather than erroring, the
+    same accommodation already made for other optional derived surfaces
+    (``session_work_events_fts``/``threads_fts`` existence checks above).
+    """
+    return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)").fetchall())
+
+
 def insert_missing_message_rows_batched_sync(
     conn: sqlite3.Connection,
     *,
@@ -397,6 +434,7 @@ def insert_missing_message_rows_batched_sync(
         raise ValueError("batch_rows must be positive")
 
     ensure_fts_index_sync(conn)
+    identity_supported = _blocks_content_hash_available_sync(conn)
     before = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0) if measure_counts else 0
     max_rowid = _row_int(
         conn.execute(
@@ -409,13 +447,19 @@ def insert_missing_message_rows_batched_sync(
         0,
     )
     sql = insert_missing_message_rows_range_sql()
+    identity_sql = repair_message_identity_rows_range_sql()
     lower = 0
     while lower < max_rowid:
         upper = min(lower + batch_rows, max_rowid)
         changes_before = conn.total_changes
         conn.execute(sql, (lower, upper))
         inserted = conn.total_changes - changes_before
-        if inserted:
+        identity_changed = 0
+        if identity_supported:
+            identity_changes_before = conn.total_changes
+            conn.execute(identity_sql, (lower, upper))
+            identity_changed = conn.total_changes - identity_changes_before
+        if inserted or identity_changed:
             conn.commit()
             _passive_wal_checkpoint_sync(conn)
         if progress_callback is not None:
@@ -448,6 +492,7 @@ def delete_excess_message_rows_batched_sync(
         placeholders = ", ".join("?" for _ in rowids)
         changes_before = conn.total_changes
         conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", tuple(rowids))
+        conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", tuple(rowids))
         deleted = max(0, conn.total_changes - changes_before)
         deleted_total += deleted
         if deleted:
@@ -468,6 +513,10 @@ def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+    from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
+
+    sample_fts_drift_to_ops_sync(conn)
 
 
 def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
@@ -515,6 +564,8 @@ async def rebuild_fts_index_async(
         return
     await conn.execute(FTS_REBUILD_SQL)
     await conn.execute(insert_all_message_rows_sql())
+    await conn.execute(FTS_IDENTITY_REBUILD_SQL)
+    await conn.execute(insert_all_message_identity_rows_sql())
     readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_async
 
@@ -547,12 +598,18 @@ def repair_message_fts_index_sync(
     for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
         conn.execute(delete_session_rows_sql(len(chunk)), params)
+        conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
         conn.execute(insert_session_rows_sql(len(chunk)), params)
+        conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
     if not record_exact_snapshot:
         return
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+    from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
+
+    sample_fts_drift_to_ops_sync(conn)
 
 
 def repair_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
@@ -577,7 +634,9 @@ async def repair_fts_index_async(
     for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
         await conn.execute(delete_session_rows_sql(len(chunk)), params)
+        await conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
         await conn.execute(insert_session_rows_sql(len(chunk)), params)
+        await conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
         processed += len(chunk)
         if progress_callback is not None:
             desc = progress_desc(processed, total) if progress_desc is not None else None
@@ -596,11 +655,18 @@ def replace_fts_rows_for_messages_sync(
 
     session_ids = sorted({_indexed_message_parts(message)[1] for message in messages})
     for chunk in chunked(session_ids, size=500):
-        conn.execute(delete_session_rows_sql(len(chunk)), tuple(chunk))
-        conn.execute(insert_session_rows_sql(len(chunk)), tuple(chunk))
+        params = tuple(chunk)
+        conn.execute(delete_session_rows_sql(len(chunk)), params)
+        conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
+        conn.execute(insert_session_rows_sql(len(chunk)), params)
+        conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+    from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
+
+    sample_fts_drift_to_ops_sync(conn)
 
 
 async def _record_message_fts_exact_state_async(conn: aiosqlite.Connection) -> None:
@@ -850,6 +916,7 @@ def _trigger_invariant_sync(
     missing_sql: str | None = None,
     excess_sql: str | None = None,
     duplicate_sql: str | None = None,
+    identity_sql: str | None = None,
 ) -> FtsSurfaceInvariant:
     source_exists = _table_exists_sync(conn, source_table_name)
     exists = _table_exists_sync(conn, table_name)
@@ -858,6 +925,11 @@ def _trigger_invariant_sync(
     missing_rows = _row_int(conn.execute(missing_sql).fetchone(), 0) if source_exists and exists and missing_sql else 0
     excess_rows = _row_int(conn.execute(excess_sql).fetchone(), 0) if source_exists and exists and excess_sql else 0
     duplicate_rows = _row_int(conn.execute(duplicate_sql).fetchone(), 0) if exists and duplicate_sql else 0
+    identity_mismatch_rows = (
+        _row_int(conn.execute(identity_sql).fetchone(), 0)
+        if source_exists and exists and identity_sql and _table_exists_sync(conn, "messages_fts_identity")
+        else 0
+    )
     return FtsSurfaceInvariant(
         name=name,
         source_exists=source_exists,
@@ -868,6 +940,7 @@ def _trigger_invariant_sync(
         missing_rows=missing_rows,
         excess_rows=excess_rows,
         duplicate_rows=duplicate_rows,
+        identity_mismatch_rows=identity_mismatch_rows,
     )
 
 
@@ -914,6 +987,7 @@ def _fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsh
                 LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
                 WHERE b.rowid IS NULL
             """,
+            identity_sql=message_identity_mismatch_sql(),
         )
     else:
         message_surface = _messages_fts_invariant_sync(conn)
@@ -1012,6 +1086,7 @@ def _messages_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvarian
             LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
             WHERE b.rowid IS NULL
         """,
+        identity_sql=message_identity_mismatch_sql(),
     )
 
 
