@@ -98,6 +98,10 @@ class OriginSpec:
     coverage_refs: tuple[str, ...]
     fidelity_notes: tuple[str, ...]
     semantic_reparse: str
+    #: Short operator-facing description used by user surfaces (for example
+    #: CLI ``--origin`` shell completion). Declared here so no surface keeps a
+    #: second hand-maintained per-origin description inventory.
+    display_description: str
     artifact_rules: tuple[OriginArtifactRule, ...] = ()
     completeness_modes: tuple[OriginCompletenessMode, ...] = ()
     #: ``"module/path.py:ClassName"`` for the ``ProviderAssemblySpec`` this
@@ -343,6 +347,7 @@ def _claude_code_spec() -> OriginSpec:
             ),
         ),
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
+        display_description="Claude Code local sessions (lab: Anthropic)",
     )
 
 
@@ -397,6 +402,7 @@ def _chatgpt_spec() -> OriginSpec:
         coverage_refs=("provider-package:chatgpt-export/takeout-json@v1",),
         fidelity_notes=("Browser capture remains an acquisition mode and is not a new public origin.",),
         semantic_reparse="reparse when ChatGPT document parsing fingerprints change",
+        display_description="ChatGPT web exports (lab: OpenAI)",
     )
 
 
@@ -418,6 +424,7 @@ def _grok_spec() -> OriginSpec:
             "provider_session_id/provider_message_id are synthesized from file-relative position.",
             "The export drops attachments/images by xAI's own documentation; only text turns are recoverable.",
         ),
+        display_description="Grok account-data exports (lab: xAI)",
     )
 
 
@@ -430,6 +437,7 @@ def _executable_spec(
     acquisition_modes: tuple[str, ...],
     parser_paths: tuple[str, ...],
     fixture_paths: tuple[str, ...],
+    display_description: str,
     stream_parser_path: str | None = None,
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
@@ -451,6 +459,7 @@ def _executable_spec(
         fidelity_notes=fidelity_notes,
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
         assembly_spec_path=assembly_spec_path,
+        display_description=display_description,
     )
 
 
@@ -465,6 +474,7 @@ def _codex_spec() -> OriginSpec:
         fixture_paths=("tests/unit/sources/test_parsers_codex.py", "tests/data/codex_event_stream"),
         stream_parser_path="polylogue/sources/parsers/codex.py:parse_codex_stream",
         assembly_spec_path="polylogue/sources/assembly_codex.py:CodexAssemblySpec",
+        display_description="Codex CLI local sessions (lab: OpenAI)",
     )
 
 
@@ -477,6 +487,7 @@ def _gemini_cli_spec() -> OriginSpec:
         acquisition_modes=("local-agent-document",),
         parser_paths=("polylogue/sources/parsers/local_agent.py",),
         fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
+        display_description="Gemini CLI local sessions (lab: Google)",
     )
 
 
@@ -502,6 +513,7 @@ def _hermes_spec() -> OriginSpec:
             "tests/fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.jsonl",
         ),
         stream_parser_path="polylogue/sources/parsers/hermes_spans.py:parse_atof_stream",
+        display_description="Hermes agent sessions",
     )
 
 
@@ -517,6 +529,7 @@ def _antigravity_spec() -> OriginSpec:
             "tests/unit/sources/test_antigravity_language_server.py",
             "tests/unit/sources/parsers/test_antigravity.py",
         ),
+        display_description="Antigravity brain artifacts",
     )
 
 
@@ -530,6 +543,7 @@ def _beads_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/beads.py",),
         fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
         stream_parser_path="polylogue/sources/parsers/beads.py:parse_beads_stream",
+        display_description="Beads issue exports (non-chat work artifacts)",
     )
 
 
@@ -542,6 +556,7 @@ def _claude_ai_spec() -> OriginSpec:
         acquisition_modes=("export-json",),
         parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
         fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),
+        display_description="Claude web exports (lab: Anthropic)",
     )
 
 
@@ -563,6 +578,7 @@ def _aistudio_drive_spec() -> OriginSpec:
         fidelity_notes=("Provider reverse mapping remains intentionally non-injective.",),
         semantic_reparse="reparse when Drive parser fingerprints change",
         assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
+        display_description="Google AI Studio / Drive exports (lab: Google)",
     )
 
 
@@ -587,6 +603,7 @@ def _unknown_spec() -> OriginSpec:
             "Fallback is explicit; browser capture resolves a provider-specific origin before archive materialization.",
         ),
         semantic_reparse="no direct parser; retain unknown evidence until a concrete source adapter is admitted",
+        display_description="Unrecognized fallback exports",
     )
 
 
