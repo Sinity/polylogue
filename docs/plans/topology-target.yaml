@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6606
+    loc: 6744
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -772,19 +772,23 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 603
+    loc: 654
     target: polylogue/browser_capture/models.py
+    owner: stable
+  - path: polylogue/browser_capture/pairing.py
+    loc: 224
+    target: polylogue/browser_capture/pairing.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
     loc: 877
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
-    loc: 279
+    loc: 329
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 729
+    loc: 844
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -1254,7 +1258,7 @@ files:
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 644
+    loc: 638
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/cli/shell_words.py
@@ -1270,7 +1274,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 2799
+    loc: 2864
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1488,7 +1492,7 @@ files:
     target: polylogue/daemon/blob_integrity_alerts.py
     owner: stable
   - path: polylogue/daemon/browser_capture.py
-    loc: 257
+    loc: 327
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/bulk_rebuild.py
@@ -1500,7 +1504,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2575
+    loc: 2740
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -2295,7 +2299,7 @@ files:
     target: polylogue/operations/import_operations.py
     owner: stable
   - path: polylogue/operations/mutation_actuators.py
-    loc: 334
+    loc: 761
     target: polylogue/operations/mutation_actuators.py
     owner: stable
   - path: polylogue/operations/mutation_transaction.py
@@ -2315,7 +2319,7 @@ files:
     target: polylogue/operations/route_observation.py
     owner: stable
   - path: polylogue/operations/specs.py
-    loc: 975
+    loc: 1046
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/operations/status_protocol.py
@@ -2327,11 +2331,11 @@ files:
     target: polylogue/operations/work_effect_reconciliation.py
     owner: stable
   - path: polylogue/paths/__init__.py
-    loc: 80
+    loc: 82
     target: polylogue/paths/__init__.py
     owner: stable
   - path: polylogue/paths/_roots.py
-    loc: 251
+    loc: 264
     target: polylogue/paths/_roots.py
     owner: stable
   - path: polylogue/paths/sanitize.py
@@ -2489,7 +2493,7 @@ files:
     target: polylogue/product/continuity_scenarios.py
     owner: stable
   - path: polylogue/product/raw_authority.py
-    loc: 138
+    loc: 167
     target: polylogue/product/raw_authority.py
     owner: stable
   - path: polylogue/product/workflows.py
@@ -3252,7 +3256,7 @@ files:
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
-    loc: 940
+    loc: 1013
     target: polylogue/sources/origin_specs.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -3421,7 +3425,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 1634
+    loc: 1652
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3773,7 +3777,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 6649
+    loc: 6729
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3993,7 +3997,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 12707
+    loc: 12718
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py

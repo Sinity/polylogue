@@ -175,6 +175,19 @@ def browser_capture_receiver_identity_path() -> Path:
     return archive_root() / "browser-capture-receiver-id"
 
 
+def browser_capture_pairing_state_path() -> Path:
+    """Path for the receiver's ephemeral one-time pairing-code state.
+
+    Scoped under ``archive_root()`` like the bearer token and identity above,
+    so two ``polylogued`` instances with different ``POLYLOGUE_ARCHIVE_ROOT``
+    values never share a pairing window. Holds at most one pending code's
+    hash + expiry + attempt count at a time (polylogue-gnie): a fresh
+    ``pairing start`` overwrites any prior unredeemed code. The file never
+    stores the plaintext code or the bearer token itself.
+    """
+    return archive_root() / "browser-capture-pairing"
+
+
 def archive_root() -> Path:
     """Archive root (overridable via POLYLOGUE_ARCHIVE_ROOT)."""
     return _xdg_path("POLYLOGUE_ARCHIVE_ROOT", data_home())

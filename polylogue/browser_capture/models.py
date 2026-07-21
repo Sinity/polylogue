@@ -344,6 +344,57 @@ class BrowserCaptureErrorPayload(BaseModel):
     error: str
 
 
+class BrowserCapturePairingRedeemRequest(BaseModel):
+    """One-time pairing-code exchange request (polylogue-gnie)."""
+
+    code: str = Field(min_length=1, max_length=32)
+
+
+class BrowserCapturePairingRedeemPayload(BaseModel):
+    """Successful pairing-code exchange: the receiver's current bearer token.
+
+    Deliberately does not echo the redeemed code back, and callers must not
+    log this payload -- it carries the same secret as `token show`.
+    """
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    auth_token: str
+    receiver_id: str
+
+
+#: Capture-health telemetry kinds the extension may report (polylogue-3v1).
+#: `capture_gap` is the completeness mismatch (page shows more messages than
+#: were captured); `capture_error` is a failed capture attempt; `spool_backlog`
+#: is the extension reporting its own offline-spool depth crossing a
+#: self-chosen watermark (the receiver does not compute this -- it has no
+#: visibility into the extension's local queue).
+BrowserCaptureHealthEventKind = Literal["capture_gap", "capture_error", "spool_backlog", "provider_auth_broken"]
+
+
+class BrowserCaptureHealthEventRequest(BaseModel):
+    """One capture-health telemetry event reported by the extension."""
+
+    event: BrowserCaptureHealthEventKind
+    provider: str | None = None
+    provider_session_id: str | None = None
+    extension_instance_id: str | None = None
+    visible_count: int | None = Field(default=None, ge=0)
+    captured_count: int | None = Field(default=None, ge=0)
+    reason: str | None = None
+    detail: dict[str, object] = Field(default_factory=dict)
+
+
+class BrowserCaptureHealthEventAcceptedPayload(BaseModel):
+    """Accepted capture-health event, echoing the ledger id it landed at."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    event_id: int
+
+
 BrowserActionProvider = Literal["chatgpt", "claude"]
 BrowserActionOperation = Literal["conversation.create", "conversation.reply"]
 BrowserActionSubmitPolicy = Literal["stage_only", "submit_once"]

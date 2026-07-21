@@ -47,6 +47,18 @@ from polylogue.browser_capture.models import (
     BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
+    BrowserCaptureHealthEventAcceptedPayload,
+    BrowserCaptureHealthEventRequest,
+    BrowserCapturePairingRedeemPayload,
+    BrowserCapturePairingRedeemRequest,
+)
+from polylogue.browser_capture.pairing import (
+    PairingCodeAlreadyUsedError,
+    PairingCodeError,
+    PairingCodeExpiredError,
+    PairingCodeInvalidError,
+    PairingCodeRateLimitedError,
+    redeem_pairing_code,
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
@@ -62,6 +74,13 @@ from polylogue.browser_capture.receiver import (
 from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import get_logger
+
+# polylogue.daemon.events is imported lazily inside the capture-health route
+# handlers below, not at module scope: polylogue.daemon's package __init__
+# imports polylogue.daemon.cli, which imports this module for
+# BrowserCaptureHTTPServer/make_server -- a module-level import here would
+# be a circular import at package-init time.
+CAPTURE_HEALTH_EVENT_KIND = "browser_capture_health"
 
 logger = get_logger(__name__)
 
@@ -278,6 +297,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if parsed.path == "/v1/capture-health":
+            self._capture_health_list()
+            return
         if parsed.path == "/v1/browser-actions/capabilities":
             self._send_json(
                 HTTPStatus.OK,
@@ -423,9 +445,22 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         return parsed
 
     def _do_post(self) -> None:
-        if self._reject_origin() or self._reject_token():
+        if self._reject_origin():
             return
         path = urlparse(self.path).path
+        # Pairing redemption is deliberately unauthenticated -- its whole
+        # purpose is bootstrapping the bearer token an unpaired extension
+        # does not have yet (polylogue-gnie). Origin is still enforced above;
+        # the pairing code itself (short-lived, single-use, rate-limited) is
+        # the credential for this one route.
+        if path == "/v1/pairing/redeem":
+            self._pairing_redeem()
+            return
+        if self._reject_token():
+            return
+        if path == "/v1/capture-health":
+            self._capture_health_report()
+            return
         if path == "/v1/browser-actions":
             self._browser_action_enqueue()
             return
@@ -697,6 +732,87 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             bytes_written=accepted.bytes_written,
         )
         self._send_json(HTTPStatus.ACCEPTED, accepted.model_dump(mode="json"))
+
+    def _pairing_redeem(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserCapturePairingRedeemRequest.model_validate(payload)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_pairing_request")
+            return
+        try:
+            token = redeem_pairing_code(request.code)
+        except (PairingCodeExpiredError, PairingCodeAlreadyUsedError, PairingCodeInvalidError) as exc:
+            logger.warning(
+                "browser_capture.pairing_redeem_rejected", request_id=self._request_id(), reason=type(exc).__name__
+            )
+            self._safe_error(HTTPStatus.UNAUTHORIZED, "pairing_code_rejected")
+            return
+        except PairingCodeRateLimitedError:
+            logger.warning("browser_capture.pairing_redeem_rate_limited", request_id=self._request_id())
+            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "pairing_code_rate_limited")
+            return
+        except PairingCodeError as exc:
+            logger.warning("browser_capture.pairing_redeem_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "pairing_failed")
+            return
+        logger.debug("browser_capture.pairing_redeemed", request_id=self._request_id())
+        self._send_json(
+            HTTPStatus.OK,
+            BrowserCapturePairingRedeemPayload(
+                auth_token=token,
+                receiver_id=receiver_identity(self.server.config),
+            ).model_dump(mode="json"),
+        )
+
+    def _capture_health_report(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserCaptureHealthEventRequest.model_validate(payload)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_health_event")
+            return
+        from polylogue.daemon.events import emit_daemon_event, get_latest_event_id
+
+        emit_daemon_event(
+            CAPTURE_HEALTH_EVENT_KIND,
+            operation_id=request.extension_instance_id,
+            payload={
+                "event": request.event,
+                "provider": request.provider,
+                "provider_session_id": request.provider_session_id,
+                "visible_count": request.visible_count,
+                "captured_count": request.captured_count,
+                "reason": request.reason,
+                "detail": request.detail,
+            },
+        )
+        logger.debug(
+            "browser_capture.capture_health_reported",
+            request_id=self._request_id(),
+            event=request.event,
+            provider=request.provider,
+            provider_session_id=request.provider_session_id,
+        )
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            BrowserCaptureHealthEventAcceptedPayload(event_id=get_latest_event_id()).model_dump(mode="json"),
+        )
+
+    def _capture_health_list(self) -> None:
+        params = parse_qs(urlparse(self.path).query)
+        try:
+            limit = max(1, min(500, int(params.get("limit", ["100"])[0])))
+        except ValueError:
+            limit = 100
+        from polylogue.daemon.events import query_daemon_events
+
+        events = query_daemon_events(kind=CAPTURE_HEALTH_EVENT_KIND, limit=limit)
+        self._send_json(HTTPStatus.OK, {"ok": True, "events": events})
 
 
 def make_server(
