@@ -43,6 +43,18 @@ in
       description = "The polylogue package to use.";
     };
 
+    installPackage = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether to add ``package`` to ``home.packages`` (user PATH).
+        Disable when the daemon runs a different build than the
+        interactive CLI on PATH — e.g. a free-threaded 3.14t daemon
+        alongside a standard-CPython CLI wrapper — so the two packages
+        do not collide on ``bin/polylogue`` in the profile.
+      '';
+    };
+
     autoStart = mkOption {
       type = types.bool;
       default = true;
@@ -78,7 +90,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+    home.packages = lib.mkIf cfg.installPackage [ cfg.package ];
 
     xdg.configFile = lib.mkIf useXdg {
       ${xdgRelPath} = {
