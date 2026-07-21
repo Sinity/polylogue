@@ -11,7 +11,7 @@ explicitly out of this command's scope (polylogue-303r.6); see
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import click
 
@@ -195,7 +195,19 @@ def excise_command(
         )
         return
 
-    from polylogue.security.excision import LineageDependentsError, apply_session_excision, plan_session_excision
+    from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
+    from polylogue.operations.mutation_transaction import OperationExecutor
+    from polylogue.security.excision import plan_session_excision
+
+    actuator = SessionExcisionActuator()
+    executor = OperationExecutor()
+    excision_args = SessionExcisionArgs(
+        archive_root=root,
+        session_id=session_id,
+        reason=reason,
+        actor=actor,
+        cascade_lineage=cascade_lineage,
+    )
 
     if dry_run:
         plan = plan_session_excision(root, session_id)
@@ -293,32 +305,51 @@ def excise_command(
             env.ui.console.print("Aborted.")
             return
 
-    try:
-        receipt = apply_session_excision(root, session_id, reason=reason, actor=actor, cascade_lineage=cascade_lineage)
-    except LineageDependentsError as exc:
+    # Route the real mutation through OperationExecutor (polylogue-t46.9/
+    # kwsb.2): PREPARE re-resolves the plan against live state (catching a
+    # session that changed between the plan/confirm above and now), AUTHORIZE
+    # binds this operator's --yes confirmation to that exact plan hash, and
+    # EXECUTE revalidates the hash immediately before mutating -- a stale or
+    # tampered authorization refuses (``PlanStaleError``) rather than excising
+    # the wrong target set.
+    executor_plan = executor.prepare(actuator, excision_args)
+    authorization = executor.authorize(
+        actuator,
+        executor_plan,
+        actor=actor,
+        role="write",
+        capability="archive.excise_session",
+        confirmation_strength="confirm_flag",
+    )
+    executor_receipt = executor.execute(actuator, executor_plan, authorization, excision_args)
+    if executor_receipt.status == "blocked":
         _emit(
             env,
             status="aborted",
             session_id=session_id,
             affected_count=0,
             output_format=output_format,
-            plain_message=str(exc),
+            plain_message=executor_receipt.detail or "Excision refused: lineage dependents present.",
         )
         return
-    if not receipt.found:
+    if executor_receipt.status == "unknown":
         fail("excise", f"Session {session_id!r} disappeared between plan and apply.")
         return
-    detail_message = f"Excised session {session_id}: {receipt.counts} (receipt: {receipt.receipt_assertion_id})"
-    if receipt.cascaded_session_ids:
-        detail_message += f"; also excised lineage-dependent session(s): {', '.join(receipt.cascaded_session_ids)}"
+    domain_receipt = executor_receipt.domain_receipt
+    cascaded_session_ids: tuple[str, ...] = tuple(cast("list[str]", domain_receipt.get("cascaded_session_ids", ())))
+    detail_message = (
+        f"Excised session {session_id}: {domain_receipt.get('counts', {})} (receipt: {executor_receipt.receipt_ref})"
+    )
+    if cascaded_session_ids:
+        detail_message += f"; also excised lineage-dependent session(s): {', '.join(cascaded_session_ids)}"
     _emit(
         env,
         status="ok",
         session_id=session_id,
-        affected_count=receipt.counts.get("index_sessions", 0),
+        affected_count=executor_receipt.affected_count,
         output_format=output_format,
         plain_message=detail_message,
-        detail=receipt.receipt_assertion_id,
+        detail=executor_receipt.receipt_ref,
     )
 
 

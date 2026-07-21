@@ -1,0 +1,171 @@
+# Mutation census (polylogue-kwsb.2 AC1).
+#
+# Classifies every destructive/mutating public operation and adapter:
+# `executor-routed` (drives OperationExecutor + a MutationActuator),
+# `declared-not-routed` (still enforces authorization independently -- named
+# Phase 2 debt, not silent absence), or `typed-exemption` (a reviewed reason
+# it cannot/should not route through MutationTransaction).
+#
+# `tests/unit/operations/test_mutation_census.py` enforces:
+#   - every row's `operation` exists in `polylogue.operations.specs`'s
+#     declared catalog when `spec_name` is set, and its `executor_status`
+#     matches this row's `status`.
+#   - every row has a `status` in the closed vocabulary above and, for
+#     `typed-exemption`, a non-empty `reason`.
+#
+# This census is Phase 1 (t46.9/kwsb.2) scope: the two named routes (session
+# delete/excision, derived identity reset) are fully executor-routed on every
+# surface that exposes them. Every other destructive operation below is
+# inventoried honestly as `declared-not-routed` -- visible debt for the
+# Phase 2 migration named in the PR body, not a claim of completion.
+
+schema_version: 1
+
+rows:
+  # --- Phase 1: executor-routed (t46.9 AC2 named routes) ---------------------
+  - operation: mutate-delete-session
+    spec_name: mutate-delete-session
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.SessionDeleteActuator
+    surfaces: [cli, mcp, api]
+    adapters:
+      - polylogue.cli.archive_query._emit_delete
+      - polylogue.api.archive.PolylogueArchiveMixin.delete_session_safe
+      - polylogue.mcp.server_cutover._dispatch_write (operation=delete_session, via delete_session_safe)
+
+  - operation: mutate-session-excision
+    spec_name: mutate-session-excision
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.SessionExcisionActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.excise.excise_command
+
+  - operation: mutate-identity-reset
+    spec_name: mutate-identity-reset
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.IdentityResetActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.reset.reset_command (--session/--source)
+
+  # --- Phase 2 debt: declared-not-routed --------------------------------------
+  # Reversible tag/metadata mutations. Idempotent, role-gated
+  # (write_role_required), no confirm/dry-run today; low blast radius (undo =
+  # another write) but not yet executor-routed.
+  - operation: mutate-add-tag
+    spec_name: mutate-add-tag
+    status: declared-not-routed
+    surfaces: [facade, mcp, api]
+    reason: >
+      Reversible write; Phase 2 candidate for a role_only-strength executor
+      route once reversible-class confirmation floors are settled.
+
+  - operation: mutate-remove-tag
+    spec_name: mutate-remove-tag
+    status: declared-not-routed
+    surfaces: [facade, mcp, api]
+
+  - operation: mutate-bulk-tag-sessions
+    spec_name: mutate-bulk-tag-sessions
+    status: declared-not-routed
+    surfaces: [mcp, api]
+
+  - operation: mutate-set-metadata
+    spec_name: mutate-set-metadata
+    status: declared-not-routed
+    surfaces: [facade, mcp, api]
+
+  - operation: mutate-delete-metadata
+    spec_name: mutate-delete-metadata
+    status: declared-not-routed
+    surfaces: [mcp, api]
+
+  # MCP-only mutation family with no OperationSpec entry yet (pre-existing
+  # gap, not introduced by this PR). jn40's confirm-boolean sweep is the
+  # interim mitigation for the destructive members of this family
+  # (delete_annotation, delete_saved_view, delete_recall_pack,
+  # delete_workspace); it does not satisfy executor-routing.
+  - operation: add_mark / remove_mark
+    status: declared-not-routed
+    surfaces: [mcp]
+    adapters: [polylogue.mcp.server_cutover._dispatch_write]
+    reason: Reversible user-state write; jn40 out of scope (not in its named-ten list).
+
+  - operation: save_annotation / delete_annotation
+    status: declared-not-routed
+    surfaces: [mcp]
+    adapters: [polylogue.mcp.server_cutover._dispatch_write]
+    reason: delete_annotation confirm-gated by jn40; not yet executor-routed.
+
+  - operation: capture_assertion_candidate
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: Additive candidate capture, not destructive; tracked for completeness.
+
+  - operation: blackboard_post
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: Additive append-only write, not destructive.
+
+  - operation: import_annotation_batch
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: Additive batch import with its own provenance/versioning contract.
+
+  - operation: save_saved_view / delete_saved_view
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: delete_saved_view confirm-gated by jn40; not yet executor-routed.
+
+  - operation: save_recall_pack / delete_recall_pack
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: delete_recall_pack confirm-gated by jn40; not yet executor-routed.
+
+  - operation: save_workspace / delete_workspace
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: delete_workspace confirm-gated by jn40; not yet executor-routed.
+
+  - operation: record_correction / clear_corrections
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: User-correction overlay write; low blast radius (single-target overwrite).
+
+  - operation: delete_metadata (MCP admin alias)
+    status: declared-not-routed
+    surfaces: [mcp]
+    reason: jn40 confirm-gated (delete_metadata is in the named-ten list); not yet executor-routed.
+
+  - operation: rebuild_index / update_index / rebuild_insights (maintenance_execute family)
+    status: declared-not-routed
+    surfaces: [mcp, daemon]
+    reason: >
+      jn40 confirm-gated (maintenance_execute/rebuild_index/
+      rebuild_session_insights in the named-ten list); internal
+      idempotent-rebuild maintenance, not a data-loss operation in the same
+      sense as delete/excise/reset. OperationSpec entries
+      index-message-fts/materialize-session-insights already declare
+      declared-not-routed.
+
+  - operation: ops reset --database/--index/--blob/--assets/--cache/--auth
+    status: declared-not-routed
+    surfaces: [cli]
+    adapters: [polylogue.cli.commands.reset.reset_command]
+    reason: >
+      Bulk filesystem-tier deletion (whole .db/cache/blob-store files, not
+      addressable session/message/block object refs). Already has --yes
+      gating and a preview listing; Phase 2 should decide whether to extend
+      MutationPlan's target-ref vocabulary to file-tier targets or keep this
+      a typed exemption permanently (it is closer to an operator
+      infrastructure command than a content mutation).
+
+  # --- Reviewed exemptions -----------------------------------------------------
+  - operation: seed-demo-archive
+    spec_name: seed-demo-archive
+    status: typed-exemption
+    surfaces: [cli, tests, validation-lane]
+    reason: >
+      Test/demo fixture seeding into a disposable demo archive root, not a
+      production destructive route; no real user evidence at risk.
