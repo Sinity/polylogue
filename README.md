@@ -9,6 +9,7 @@
   <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/badge/docs-live-2563eb" alt="Live documentation"></a>
 </p>
 
+<!-- public-claim:category.local-evidence-system -->
 **Polylogue archives your AI conversations — all of them, in one place, on your machine.**
 
 Every AI tool keeps its own history in its own format in its own corner:
