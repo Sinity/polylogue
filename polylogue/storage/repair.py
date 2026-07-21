@@ -6321,6 +6321,12 @@ def repair_raw_materialization(
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
                 commit_batch_size=commit_batch_size,
+                # Same guard-gated bulk FTS as the live ingest path
+                # (polylogue-crd8): byte-identical by the parity suite, and
+                # the daemon whale pass (polylogue-t93b) replays multi-GB
+                # components through here — per-row trigger mode would
+                # detonate exactly like the 2026-07-22 live-writer stall.
+                bulk_fts=True,
             )
         except RawRevisionReplayResourceBlockedError as exc:
             metrics["raw_materialization_resource_blocked_count"] = max(
