@@ -7,12 +7,14 @@ from dataclasses import replace
 import pytest
 
 from polylogue.core.enums import Origin, Provider
+from polylogue.sources.assembly import get_assembly_spec
 from polylogue.sources.dispatch import RECORD_DETECTOR_PROVIDER_ORDER, STREAM_RECORD_PROVIDERS
 from polylogue.sources.origin_specs import (
     ORIGIN_SPEC_REGISTRY,
     ORIGIN_SPECS,
     OriginSpecRegistry,
     artifact_suffixes_for_provider,
+    validate_assembly_spec_parity,
     validate_dispatch_precedence,
     validate_stream_parser_parity,
 )
@@ -169,3 +171,42 @@ def test_origin_specs_are_parity_checked_against_stream_record_providers() -> No
     }
     assert {item.origin for item in diagnostics} == stream_origins
     assert stream_origins  # sanity: the production set is non-empty today
+
+
+def test_origin_specs_declare_the_claude_and_codex_assembly_extension_hooks() -> None:
+    """Production dependency: Claude Code and Codex admit their sidecar/title enrichment hook via OriginSpec.
+
+    This is the one typed admission point polylogue-2qx.2, polylogue-j2zz, and
+    polylogue-ih67 build their assembly/orchestration/title/action extensions
+    on, rather than a private inventory.
+    """
+    by_origin = {spec.origin: spec for spec in ORIGIN_SPECS}
+
+    assert by_origin[Origin.CLAUDE_CODE_SESSION].assembly_spec_path == (
+        "polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec"
+    )
+    assert by_origin[Origin.CODEX_SESSION].assembly_spec_path == (
+        "polylogue/sources/assembly_codex.py:CodexAssemblySpec"
+    )
+    assert by_origin[Origin.AISTUDIO_DRIVE].assembly_spec_path == (
+        "polylogue/sources/assembly_gemini.py:GeminiAssemblySpec"
+    )
+    assert by_origin[Origin.GEMINI_CLI_SESSION].assembly_spec_path is None
+    assert by_origin[Origin.CHATGPT_EXPORT].assembly_spec_path is None
+
+
+def test_origin_specs_are_parity_checked_against_the_live_assembly_registry() -> None:
+    """Production dependency: declared assembly_spec_path matches polylogue.sources.assembly.get_assembly_spec.
+
+    Anti-vacuity mutation: a resolver that never returns an assembly spec makes
+    every origin that declares assembly_spec_path (Claude Code, Codex, AI
+    Studio/Drive) report a mismatch.
+    """
+    assert validate_assembly_spec_parity(get_assembly_spec) == ()
+
+    diagnostics = validate_assembly_spec_parity(lambda _provider: None)
+
+    assert {item.code for item in diagnostics} == {"assembly_spec_parity_mismatch"}
+    declared_origins = {spec.origin for spec in ORIGIN_SPECS if spec.assembly_spec_path is not None}
+    assert {item.origin for item in diagnostics} == declared_origins
+    assert declared_origins  # sanity: the production set is non-empty today

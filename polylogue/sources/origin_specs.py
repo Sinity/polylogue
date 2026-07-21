@@ -19,6 +19,7 @@ compatibility-only.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -99,6 +100,15 @@ class OriginSpec:
     semantic_reparse: str
     artifact_rules: tuple[OriginArtifactRule, ...] = ()
     completeness_modes: tuple[OriginCompletenessMode, ...] = ()
+    #: ``"module/path.py:ClassName"`` for the ``ProviderAssemblySpec`` this
+    #: origin's provider wire binds in ``polylogue.sources.assembly.get_assembly_spec``,
+    #: or ``None`` when no sidecar/title/orchestration enrichment hook exists.
+    #: This is the one typed admission point for the assembly-layer
+    #: orchestration/title extensions that polylogue-2qx.2, polylogue-j2zz, and
+    #: polylogue-ih67 build on -- it is validated against the live
+    #: ``get_assembly_spec`` registry by :func:`validate_assembly_spec_parity`
+    #: rather than replacing that registry with a second one.
+    assembly_spec_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +342,7 @@ def _claude_code_spec() -> OriginSpec:
                 path_suffixes=(".jsonl", ".ndjson"),
             ),
         ),
+        assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
     )
 
 
@@ -422,6 +433,7 @@ def _executable_spec(
     stream_parser_path: str | None = None,
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
+    assembly_spec_path: str | None = None,
 ) -> OriginSpec:
     return OriginSpec(
         origin=origin,
@@ -438,6 +450,7 @@ def _executable_spec(
         coverage_refs=(f"origin:{origin.value}:admitted",),
         fidelity_notes=fidelity_notes,
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
+        assembly_spec_path=assembly_spec_path,
     )
 
 
@@ -451,6 +464,7 @@ def _codex_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/codex.py",),
         fixture_paths=("tests/unit/sources/test_parsers_codex.py", "tests/data/codex_event_stream"),
         stream_parser_path="polylogue/sources/parsers/codex.py:parse_codex_stream",
+        assembly_spec_path="polylogue/sources/assembly_codex.py:CodexAssemblySpec",
     )
 
 
@@ -548,6 +562,7 @@ def _aistudio_drive_spec() -> OriginSpec:
         coverage_refs=("origin:aistudio-drive:admitted",),
         fidelity_notes=("Provider reverse mapping remains intentionally non-injective.",),
         semantic_reparse="reparse when Drive parser fingerprints change",
+        assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
     )
 
 
@@ -923,6 +938,46 @@ def validate_stream_parser_parity(stream_record_providers: frozenset[Provider]) 
     return tuple(sorted(diagnostics, key=lambda item: (item.origin.value, item.code)))
 
 
+def validate_assembly_spec_parity(
+    assembly_spec_resolver: Callable[[Provider], object | None],
+) -> tuple[OriginSpecDiagnostic, ...]:
+    """Check declared ``assembly_spec_path`` presence against the live assembly registry.
+
+    ``polylogue.sources.assembly.get_assembly_spec`` is the current production
+    per-provider sidecar/title/orchestration enrichment factory consumed by
+    ingest (``source_walk.py``, ``emitter.py``, ``ingest_worker.py``). This is
+    the one typed admission point polylogue-2qx.2, polylogue-j2zz, and
+    polylogue-ih67 build their assembly/orchestration/title/action extensions
+    on: a declared ``assembly_spec_path`` that must agree with whether the live
+    registry actually returns an assembly spec for the origin's provider
+    wire(s), rather than a second parallel provider-to-assembly-spec registry
+    living in this module.
+    """
+
+    diagnostics: list[OriginSpecDiagnostic] = []
+    for spec in ORIGIN_SPECS:
+        if spec.lifecycle != "executable":
+            continue
+        declares_assembly = spec.assembly_spec_path is not None
+        has_live_assembly = any(assembly_spec_resolver(provider) is not None for provider in spec.provider_wires)
+        if declares_assembly == has_live_assembly:
+            continue
+        diagnostics.append(
+            OriginSpecDiagnostic(
+                code="assembly_spec_parity_mismatch",
+                message=(
+                    f"{spec.origin.value}: live assembly registry returns a spec "
+                    f"({has_live_assembly}) but OriginSpec declares "
+                    f"assembly_spec_path={spec.assembly_spec_path!r}"
+                ),
+                origin=spec.origin,
+                owner_path=spec.declaration.owner_path,
+                repair_command=spec.declaration.repair_command,
+            )
+        )
+    return tuple(sorted(diagnostics, key=lambda item: (item.origin.value, item.code)))
+
+
 __all__ = [
     "ORIGIN_SPECS",
     "ORIGIN_SPEC_REGISTRY",
@@ -935,6 +990,7 @@ __all__ = [
     "origin_specs",
     "artifact_rule_for_path",
     "artifact_suffixes_for_provider",
+    "validate_assembly_spec_parity",
     "validate_dispatch_precedence",
     "validate_stream_parser_parity",
 ]

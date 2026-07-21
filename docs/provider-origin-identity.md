@@ -62,6 +62,30 @@ replace archive object identity.
 | Repo/workspace context | repo name, cwd, git branch, workspace, working directories | User-work context attached to a session/action/run. | Yes as filters | Use `repo`, `cwd`, `workspace`, and related fields for query/successor-context context. They are not source identity. |
 | Privacy/disclosure posture | raw-path redaction, browser capture auth, web shell raw preview policy, MCP role, export policy | What can be shown, exported, logged, or sent across a surface. | Yes as policy/status | Make disclosure explicit in route/read payloads. Do not infer safe exposure from provider, origin, or source path. |
 
+## Origin admission (`polylogue/sources/origin_specs.py`)
+
+`polylogue/sources/origin_specs.py` is the one typed admission declaration for
+every current `Origin` token (`claude-code-session`, `codex-session`,
+`gemini-cli-session`, `hermes-session`, `antigravity-session`, `beads-issue`,
+`grok-export`, `chatgpt-export`, `claude-ai-export`, `aistudio-drive`,
+`unknown-export`): lifecycle (`executable` / `reserved` / `unsupported` /
+`compatibility-only`), acquisition modes, detector tightness, parser/stream-
+parser/assembly bindings, non-injective provider-wire collision policy,
+coverage refs, fixtures, and semantic-reparse consequence. It is registered
+once, checked for exact `Origin`-enum parity at import time
+(`OriginSpecRegistry.diagnostics()`), and is the single source that
+`polylogue/sources/provider_completeness.py`'s package-mode rows and this
+doc's per-origin facts should trace back to — do not hand-maintain a second
+per-origin token list elsewhere in the codebase. Two properties this doc's
+"Current Code Invariants" below depend on are parity-checked against live
+production code rather than merely declared: `validate_dispatch_precedence`
+checks detector tightness against `sources/dispatch.py`'s actual record-shape
+branch order, and `validate_assembly_spec_parity` checks each origin's
+declared `assembly_spec_path` against the live per-provider
+`ProviderAssemblySpec` returned by `polylogue.sources.assembly.get_assembly_spec`
+(the Claude Code, Codex, and AI Studio/Drive sidecar/title/orchestration
+enrichment hook that polylogue-2qx.2/j2zz/ih67 extend).
+
 ## Current Code Invariants
 
 - `Origin` is the public archive source-origin vocabulary. Query specs,
