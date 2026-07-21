@@ -2869,3 +2869,227 @@ def test_offline_maintenance_preview_allowed_with_live_daemon(monkeypatch: pytes
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].repaired_count == 2
+
+
+# polylogue-t93b: the daemon whale pass. A component whose aggregate raw
+# payload exceeds the ordinary fast-path envelope must not stay
+# permanently resource-blocked when every member is stream-record-safe --
+# ``raw_materialization_whale_pass_candidate`` selects it for a dedicated,
+# single-component pass at a widened envelope, and the very same
+# ``repair_raw_materialization`` entrypoint (now ``raw_artifact_id``-scoped)
+# converges it. Non-stream-safe oversized components must never be
+# selected and must carry a distinct typed reason instead.
+
+
+def test_raw_materialization_whale_pass_candidate_selects_stream_safe_blocked_component(tmp_path: Path) -> None:
+    from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
+
+    raw_ids = build_revision_chain_corpus(tmp_path, superseded_count=9, final_payload_bytes=2_000)
+    config = _config(tmp_path)
+
+    # Envelope wide enough to admit the whole chain: nothing is oversized,
+    # no escalation needed.
+    assert (
+        repair_mod.raw_materialization_whale_pass_candidate(
+            config, ordinary_max_payload_bytes=10_000_000, whale_max_payload_bytes=10_000_000
+        )
+        is None
+    )
+
+    # Ordinary envelope too small for the chain, but the whale envelope is
+    # wide enough and every member is stream-safe (Provider.CODEX, .jsonl):
+    # the earliest-acquired raw (the fairness seed) is selected.
+    seed = repair_mod.raw_materialization_whale_pass_candidate(
+        config, ordinary_max_payload_bytes=500, whale_max_payload_bytes=10_000_000
+    )
+    assert seed == raw_ids[0]
+
+    # Whale envelope also too small: genuinely still blocked, no candidate.
+    assert (
+        repair_mod.raw_materialization_whale_pass_candidate(
+            config, ordinary_max_payload_bytes=500, whale_max_payload_bytes=500
+        )
+        is None
+    )
+
+
+def test_raw_materialization_whale_pass_candidate_excludes_non_stream_safe_component(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    payload = json.dumps({"mapping": {}, "title": "non-stream-safe-whale"}).encode() + b"x" * 2_000
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path="chatgpt-export/conversations.json",
+            acquired_at_ms=1,
+        )
+    config = _config(tmp_path)
+
+    # Oversized under the ordinary envelope, within the whale envelope, but
+    # ChatGPT export + non-jsonl source path is not stream-record-safe --
+    # must never be selected for escalation, at any whale envelope width.
+    assert (
+        repair_mod.raw_materialization_whale_pass_candidate(
+            config, ordinary_max_payload_bytes=500, whale_max_payload_bytes=1_000_000_000
+        )
+        is None
+    )
+    del raw_id
+
+
+def test_raw_materialization_ordinary_pass_census_detail_distinguishes_escalation_eligibility(
+    tmp_path: Path,
+) -> None:
+    """The durable census detail must say which of the two blocked reasons
+    applies, for one individually-oversized raw of each kind (Codex .jsonl
+    -- stream-safe -- versus ChatGPT .json -- not)."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        stream_safe_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"t93b-stream-safe"}}\n',
+            source_path="codex/t93b-stream-safe.jsonl",
+            acquired_at_ms=1,
+        )
+        non_stream_safe_raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps({"mapping": {}, "title": "t93b-non-stream-safe"}).encode(),
+            source_path="chatgpt-export/conversations.json",
+            acquired_at_ms=2,
+        )
+    ordinary_limit = 500
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            ((ordinary_limit + 1, raw_id) for raw_id in (stream_safe_raw_id, non_stream_safe_raw_id)),
+        )
+        conn.commit()
+
+    stream_safe_result = repair_mod.repair_raw_materialization(
+        _config(tmp_path), raw_artifact_id=stream_safe_raw_id, max_payload_bytes=ordinary_limit
+    )
+    non_stream_safe_result = repair_mod.repair_raw_materialization(
+        _config(tmp_path), raw_artifact_id=non_stream_safe_raw_id, max_payload_bytes=ordinary_limit
+    )
+
+    assert stream_safe_result.success is False
+    assert non_stream_safe_result.success is False
+    assert stream_safe_result.metrics.get("raw_materialization_stream_oversized_count", 0.0) >= 1.0
+    assert non_stream_safe_result.metrics.get("raw_materialization_non_stream_safe_oversized_count", 0.0) >= 1.0
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        stream_safe_detail = conn.execute(
+            "SELECT detail FROM raw_authority_parser_census WHERE raw_id = ?", (stream_safe_raw_id,)
+        ).fetchone()[0]
+        non_stream_safe_detail = conn.execute(
+            "SELECT detail FROM raw_authority_parser_census WHERE raw_id = ?", (non_stream_safe_raw_id,)
+        ).fetchone()[0]
+
+    assert "escalation-eligible: stream-safe" in stream_safe_detail
+    assert "escalation-blocked: non-stream-safe" in non_stream_safe_detail
+
+
+def test_raw_materialization_whale_pass_converges_blocked_component_to_resolved_head(tmp_path: Path) -> None:
+    """The escalation-tier whale pass (raw_artifact_id-scoped, widened
+    envelope) must converge a component the ordinary envelope permanently
+    resource-blocks -- reusing the exact same convergence entrypoint, not a
+    parallel/offline code path.
+
+    Anti-vacuity: removing the ``raw_artifact_id`` escalation scoping (i.e.
+    running the archive-wide ordinary pass at ``max_payload_bytes=whale_limit``
+    without narrowing to one component -- simulated below by asserting the
+    ordinary-envelope call fails first) reproduces the permanently-blocked
+    bug this closes.
+    """
+    from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
+
+    raw_ids = build_revision_chain_corpus(tmp_path, superseded_count=9, final_payload_bytes=2_000)
+    config = _config(tmp_path)
+    ordinary_limit = 500
+    whale_limit = 10_000_000
+
+    # The ordinary fast-path envelope permanently blocks the whole chain.
+    blocked = repair_mod.repair_raw_materialization(
+        config, raw_artifact_id=raw_ids[0], max_payload_bytes=ordinary_limit
+    )
+    assert blocked.success is False
+
+    seed = repair_mod.raw_materialization_whale_pass_candidate(
+        config, ordinary_max_payload_bytes=ordinary_limit, whale_max_payload_bytes=whale_limit
+    )
+    assert seed is not None
+
+    converged = repair_mod.repair_raw_materialization(config, raw_artifact_id=seed, max_payload_bytes=whale_limit)
+
+    assert converged.success is True
+    assert converged.repaired_count >= 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        row = conn.execute(
+            "SELECT native_id, origin FROM sessions WHERE native_id = ?", ("nh44-chain-session",)
+        ).fetchone()
+    assert row is not None
+    assert row[1] == "codex-session"
+
+    # Fully converged: no longer a whale-pass candidate at any envelope.
+    assert (
+        repair_mod.raw_materialization_whale_pass_candidate(
+            config, ordinary_max_payload_bytes=ordinary_limit, whale_max_payload_bytes=whale_limit
+        )
+        is None
+    )
+
+
+def test_raw_materialization_whale_pass_commit_batches_bounded(tmp_path: Path) -> None:
+    """The whale pass must honor ``commit_batch_size`` -- shrinking the batch
+    must shrink writer-hold length within the escalated component (more,
+    smaller commit-boundary transactions), not commit the whole hundreds-raw
+    chain as one unbounded transaction regardless of the config knob.
+
+    Anti-vacuity: if the whale-pass call path silently dropped
+    ``commit_batch_size`` (e.g. always resolving the single-big-batch
+    default no matter what the caller passed), ``fine_count`` and
+    ``coarse_count`` below would come out equal -- verified by asserting
+    they differ and that finer batching produces strictly more explicit
+    commits.
+    """
+    import unittest.mock as mock
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
+
+    whale_limit = 10_000_000
+
+    def _run(root: Path, *, commit_batch_size: int) -> tuple[int, int]:
+        raw_ids = build_revision_chain_corpus(root, superseded_count=11, final_payload_bytes=2_000)
+        commit_count = 0
+        original_commit = ArchiveStore.commit
+
+        def counting_commit(self: ArchiveStore) -> None:
+            nonlocal commit_count
+            commit_count += 1
+            original_commit(self)
+
+        with mock.patch.object(ArchiveStore, "commit", counting_commit):
+            result = repair_mod.repair_raw_materialization(
+                _config(root),
+                raw_artifact_id=raw_ids[0],
+                max_payload_bytes=whale_limit,
+                commit_batch_size=commit_batch_size,
+            )
+        assert result.success is True
+        return commit_count, len(raw_ids)
+
+    fine_count, raw_count = _run(tmp_path / "fine", commit_batch_size=3)
+    coarse_count, _raw_count = _run(tmp_path / "coarse", commit_batch_size=1_000)
+
+    assert coarse_count >= 1
+    assert fine_count > coarse_count
+    assert fine_count <= raw_count

@@ -3977,6 +3977,20 @@ def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, r
     return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)
 
 
+def _raw_materialization_component_stream_safe(
+    candidates: RawMaterializationCandidates, component: tuple[str, ...]
+) -> bool:
+    """Whether every member of an authority component is stream-record-safe.
+
+    polylogue-t93b: the daemon's escalation-tier whale pass requires this to
+    be true for the whole component before widening the resource-block
+    envelope for it -- a mixed component with even one non-stream-safe
+    member stays permanently blocked (typed distinctly) rather than risking
+    an unbounded eager parse of the non-stream-safe member.
+    """
+    return all(_raw_materialization_stream_safe(candidates, raw_id) for raw_id in component)
+
+
 def _raw_materialization_retryable_missing_blob_error(parse_error: object) -> bool:
     if not isinstance(parse_error, str):
         return False
@@ -4031,6 +4045,55 @@ def _raw_materialization_component_seed(
 
 def _raw_materialization_component_blob_bytes(candidates: RawMaterializationCandidates, raw_id: str) -> int:
     return candidates.expanded_blob_bytes.get(raw_id, candidates.raw_blob_bytes.get(raw_id, 0))
+
+
+def raw_materialization_whale_pass_candidate(
+    config: Config,
+    *,
+    ordinary_max_payload_bytes: int,
+    whale_max_payload_bytes: int,
+) -> str | None:
+    """Read-only: pick one component for the daemon's escalation-tier whale pass.
+
+    polylogue-t93b: the ordinary fast-path envelope (``ordinary_max_payload_bytes``,
+    the daemon's ``_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES``) permanently
+    resource-blocks any component whose aggregate payload exceeds it -- a
+    policy bug per the automagic-invariants doctrine when the daemon owns
+    raw->index convergence. This selects the highest-fairness-priority
+    component that is:
+
+    - oversized under the ordinary envelope (otherwise the regular trickle
+      pass already converges it, no escalation needed);
+    - within the wider ``whale_max_payload_bytes`` escalation envelope
+      (still bounded -- a genuinely unbounded component stays blocked); and
+    - entirely stream-record-safe (every member), so the parse dispatch that
+      already exists for stream-record providers keeps parse memory bounded
+      without any new streaming code path.
+
+    Returns the component's seed raw id (the same "one seed expands to the
+    whole logical component via membership" convention
+    ``repair_raw_materialization``'s ``raw_artifact_id`` scoping already
+    uses), or ``None`` if no component currently qualifies. Opens only
+    ``mode=ro`` connections -- safe to call without the writer hold, exactly
+    like ``raw_materialization_pending_census_raw_ids``.
+    """
+    archive_root = _raw_materialization_archive_root(config)
+    if not (archive_root / "source.db").exists() or not (archive_root / "index.db").exists():
+        return None
+    candidates = _raw_materialization_candidate_ids(config)
+    if not candidates.raw_ids:
+        return None
+    ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+    for component in ordered_components:
+        total_bytes = sum(_raw_materialization_component_blob_bytes(candidates, member) for member in component)
+        if total_bytes <= ordinary_max_payload_bytes:
+            continue
+        if total_bytes > whale_max_payload_bytes:
+            continue
+        if not _raw_materialization_component_stream_safe(candidates, component):
+            continue
+        return _raw_materialization_component_seed(candidates, component)
+    return None
 
 
 def _raw_authority_scope(
@@ -5844,6 +5907,7 @@ def repair_raw_materialization(
                     tuple(sorted(uncensused_raw_ids.intersection(component))),
                     max_payload_bytes=max_payload_bytes,
                     total_payload_bytes=exc.total_bytes,
+                    stream_safe=_raw_materialization_component_stream_safe(candidates, component),
                 )
             except Exception:
                 logger.exception("raw authority census failed for component containing %s", seed)
@@ -5918,6 +5982,14 @@ def repair_raw_materialization(
                 }
                 if stream_oversized:
                     metrics["raw_materialization_stream_oversized_count"] = float(len(stream_oversized))
+                non_stream_oversized = oversized - stream_oversized
+                if non_stream_oversized:
+                    # polylogue-t93b: distinguishes "waiting for a bounded
+                    # daemon whale pass" (stream-safe) from "genuinely
+                    # cannot converge automatically" (non-stream-safe) at
+                    # the census surface, mirroring the durable detail text
+                    # persisted by ``record_resource_blocked_revision_census``.
+                    metrics["raw_materialization_non_stream_safe_oversized_count"] = float(len(non_stream_oversized))
         detail = (
             f"Raw replay planning paused until the persisted parser census completes for "
             f"{len(census_pending_raw_ids):,} relevant raw(s)"
@@ -6023,6 +6095,14 @@ def repair_raw_materialization(
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
     if oversized_stream_safe_raw_ids:
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
+    oversized_non_stream_safe_raw_ids = [
+        raw_id for raw_id in oversized_candidate_raw_ids if raw_id not in set(oversized_stream_safe_raw_ids)
+    ]
+    if oversized_non_stream_safe_raw_ids:
+        # polylogue-t93b: complements the stream-safe count so the census
+        # distinguishes escalation-eligible from genuinely-blocked oversized
+        # candidates at this (post-plan) surface too.
+        metrics["raw_materialization_non_stream_safe_oversized_count"] = float(len(oversized_non_stream_safe_raw_ids))
     if deferred_plan_ids:
         metrics["raw_materialization_deferred_plan_count"] = float(len(deferred_plan_ids))
     scope = _raw_authority_scope(

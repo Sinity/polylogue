@@ -76,6 +76,7 @@ def repair_materialization(
     raw_artifact_limit: int,
     max_payload_bytes: int,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    raw_artifact_id: str | None = None,
 ) -> Any:
     """Run one bounded raw source->index convergence pass.
 
@@ -83,6 +84,12 @@ def repair_materialization(
     caller substitute parse output already computed off the writer hold for
     this pass's census phase; see
     ``polylogue.sources.revision_backfill.RawParsePrefetchCache``.
+
+    ``raw_artifact_id`` (polylogue-t93b, default ``None``) scopes the pass to
+    the single logical authority component containing that raw -- the
+    daemon's escalation-tier whale pass uses this to converge one
+    resource-blocked component at a time under a widened ``max_payload_bytes``
+    envelope instead of re-scanning the whole archive-wide backlog.
     """
     from polylogue.storage.repair import repair_raw_materialization
 
@@ -92,6 +99,28 @@ def repair_materialization(
         raw_artifact_limit=raw_artifact_limit,
         max_payload_bytes=max_payload_bytes,
         prefetch_cache=prefetch_cache,
+        raw_artifact_id=raw_artifact_id,
+    )
+
+
+def whale_pass_candidate(
+    config: Config,
+    *,
+    ordinary_max_payload_bytes: int,
+    whale_max_payload_bytes: int,
+) -> str | None:
+    """Read-only: pick one resource-blocked, stream-safe component to escalate.
+
+    polylogue-t93b. See
+    ``polylogue.storage.repair.raw_materialization_whale_pass_candidate`` for
+    the selection contract; safe to call without the writer hold.
+    """
+    from polylogue.storage.repair import raw_materialization_whale_pass_candidate
+
+    return raw_materialization_whale_pass_candidate(
+        config,
+        ordinary_max_payload_bytes=ordinary_max_payload_bytes,
+        whale_max_payload_bytes=whale_max_payload_bytes,
     )
 
 

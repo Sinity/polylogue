@@ -620,6 +620,21 @@ class PolylogueConfig:
         return int(str(value))
 
     @property
+    def raw_authority_whale_payload_bytes(self) -> int | None:
+        """Escalation-tier payload envelope (bytes) for the daemon whale pass (polylogue-t93b).
+
+        ``None``/absent falls back to the caller's hardcoded default. The
+        ordinary daemon fast-path blob limit is unaffected by this value --
+        it only widens the envelope for a dedicated, single-component pass
+        (stream-safe members only) run when the ordinary trickle conveyor
+        is otherwise quiescent. See ``daemon_whale_raw_materialization``.
+        """
+        value = self._data.get("raw_authority_whale_payload_bytes")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
     def revision_parse_dispatch_max_bytes(self) -> int | None:
         """Payload-size ceiling (bytes) for pool-eligible revision parse dispatch.
 
@@ -748,6 +763,24 @@ class PolylogueConfig:
         ``polylogue.daemon.bulk_rebuild``.
         """
         return bool(self._data.get("daemon_bulk_rebuild_routing"))
+
+    @property
+    def daemon_whale_raw_materialization(self) -> bool:
+        """Escalation tier for whale-scale resource-blocked raw components (polylogue-t93b).
+
+        On by default: a raw-authority component permanently resource-blocked
+        at the ordinary daemon fast-path envelope converges through a
+        dedicated, bounded pass (single component, stream-safe members only,
+        commit-batched replay via ``raw_authority_commit_batch_size``) once
+        the ordinary trickle conveyor is otherwise quiescent -- a permanent
+        offline-only requirement is a policy bug per the automagic-invariants
+        doctrine (operator ruling, live witness codex:019f49d8, 6.33GB/788
+        raws with zero index presence). Set TOML
+        ``[daemon.raw_materialization] whale_convergence = false`` or
+        ``POLYLOGUE_DAEMON_WHALE_RAW_MATERIALIZATION=0`` to hold whale
+        components fully offline-manual instead.
+        """
+        return _require_bool_config_value(self._data, "daemon_whale_raw_materialization")
 
     @property
     def judgment_automation_enabled(self) -> bool:
@@ -1376,6 +1409,19 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
+        "raw_authority_whale_payload_bytes",
+        toml_path="pipeline.raw_authority.whale_payload_bytes",
+        env_var="POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Escalation-tier payload envelope (bytes) for the daemon whale "
+            "pass (polylogue-t93b); widens the resource-block envelope for "
+            "a dedicated single-component stream-safe-gated pass only. "
+            "<=0/absent falls back to the adaptive default."
+        ),
+    ),
+    ConfigInventoryEntry(
         "revision_parse_dispatch_max_bytes",
         toml_path="pipeline.revision_parse.dispatch_max_bytes",
         env_var="POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES",
@@ -1506,6 +1552,21 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
+        "daemon_whale_raw_materialization",
+        toml_path="daemon.raw_materialization.whale_convergence",
+        env_var="POLYLOGUE_DAEMON_WHALE_RAW_MATERIALIZATION",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Escalation tier (polylogue-t93b): on by default. Once the "
+            "ordinary trickle conveyor is quiescent, run a dedicated "
+            "bounded pass for one resource-blocked, stream-safe raw "
+            "authority component at a time instead of leaving it "
+            "permanently offline-manual. Non-stream-safe oversized "
+            "components remain blocked with a distinct typed reason."
+        ),
+    ),
+    ConfigInventoryEntry(
         "daemon_bulk_rebuild_routing",
         toml_path="daemon.raw_materialization.bulk_rebuild_routing",
         env_var="POLYLOGUE_DAEMON_BULK_REBUILD_ROUTING",
@@ -1583,6 +1644,7 @@ _INT_CONFIG_KEYS = frozenset(
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
         "raw_authority_commit_batch_size",
+        "raw_authority_whale_payload_bytes",
         "revision_parse_dispatch_max_bytes",
         "revision_parse_pool_min_bytes",
         "daemon_parse_stage_workers",
@@ -1612,6 +1674,7 @@ _BOOL_CONFIG_KEYS = frozenset(
         "observability_enabled",
         "daemon_parse_stage_split",
         "daemon_bulk_rebuild_routing",
+        "daemon_whale_raw_materialization",
         "mcp_write_enabled",
         "mcp_judge_enabled",
         "mcp_maintenance_enabled",
@@ -1813,6 +1876,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "ingest_parse_workers": default_parse_workers,
         "live_full_ingest_workers": 1,
         "raw_authority_commit_batch_size": None,
+        "raw_authority_whale_payload_bytes": None,
         "revision_parse_dispatch_max_bytes": None,
         "revision_parse_pool_min_bytes": None,
         "subscription_plans": (),
@@ -1822,6 +1886,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "daemon_parse_stage_max_cached_tree_bytes": None,
         "daemon_parse_stage_warm_timeout_seconds": None,
         "daemon_bulk_rebuild_routing": False,
+        "daemon_whale_raw_materialization": True,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,
         "mcp_maintenance_enabled": False,
