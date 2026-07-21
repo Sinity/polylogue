@@ -738,7 +738,237 @@ class MarkRemoveActuator:
         )
 
 
+# ---------------------------------------------------------------------------
+# Annotation mutations (mutate-save-annotation / mutate-delete-annotation) --
+# phase 3 (t46.9/kwsb.2): the annotation family's second member (mark) was
+# already routed in phase 2; this closes save/delete annotation, the census
+# "save_annotation / delete_annotation" declared-not-routed row.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationSaveArgs:
+    """Shared prepare/apply argument shape for annotation create/update.
+
+    ``target_type``/``target_id`` are resolved once by the caller (mirroring
+    ``MarkArgs``) via ``PolylogueArchiveMixin._resolve_user_state_target``
+    before the actuator runs.
+    """
+
+    archive: ArchiveStore
+    annotation_id: str
+    target_type: str
+    target_id: str
+    note_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationSaveActuator:
+    """Actuator for ``mutate-save-annotation``: reversible user.db annotation upsert.
+
+    Real production mutation: ``ArchiveStore.save_annotation``, the same
+    primitive ``PolylogueArchiveMixin.save_annotation`` already calls. Every
+    apply writes (create-or-update is inherently a write, not a no-op-when-
+    unchanged idempotency check like tags/metadata), so the receipt's
+    ``created``-vs-``updated`` distinction lives in ``domain_receipt`` rather
+    than in ``status``. Undo is ``mutate-delete-annotation`` (soft-delete via
+    the same assertion row), so this is ``reversible``-class, role_only
+    confirmation.
+    """
+
+    operation: str = "mutate-save-annotation"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: AnnotationSaveArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"annotation:{args.annotation_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "annotation_id": args.annotation_id,
+                "target_type": args.target_type,
+                "target_id": args.target_id,
+                "note_text": args.note_text,
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: AnnotationSaveArgs) -> MutationReceipt:
+        annotation_id = str(plan.context["annotation_id"])
+        target_type = str(plan.context["target_type"])
+        target_id = str(plan.context["target_id"])
+        note_text = str(plan.context["note_text"])
+        created = args.archive.save_annotation(annotation_id, target_type, target_id, note_text)
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"created": created},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationDeleteArgs:
+    """Shared prepare/apply argument shape for annotation deletion."""
+
+    archive: ArchiveStore
+    annotation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationDeleteActuator:
+    """Actuator for ``mutate-delete-annotation``: reversible user.db annotation retraction.
+
+    Real production mutation: ``ArchiveStore.delete_annotation``, which marks
+    the annotation's assertion row deleted rather than physically removing
+    it (undo = ``mutate-save-annotation``).
+    """
+
+    operation: str = "mutate-delete-annotation"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: AnnotationDeleteArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"annotation:{args.annotation_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"annotation_id": args.annotation_id},
+        )
+
+    def apply(self, plan: MutationPlan, args: AnnotationDeleteArgs) -> MutationReceipt:
+        annotation_id = str(plan.context["annotation_id"])
+        deleted = args.archive.delete_annotation(annotation_id)
+        status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=1 if deleted else 0,
+            detail=None if deleted else "annotation_not_found",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"deleted": deleted},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Raw-authority blocker resolution (mutate-resolve-raw-authority-blocker) --
+# phase 3 (t46.9/kwsb.2): closes the tonight-discovered operator gap where
+# ``resolve_raw_authority_blocker`` had a CLI adapter (``raw-authority-
+# blocker-resolve``) but no census entry and no authorization path shared
+# with any other destructive route.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BlockerResolveArgs:
+    """Shared prepare/apply argument shape for raw-authority blocker resolution."""
+
+    archive_root: Path
+    blocker_id: str
+    resolution: str
+    assertion_id: str | None = None
+    judgment_disposition: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BlockerResolveActuator:
+    """Actuator for ``mutate-resolve-raw-authority-blocker``: reopen raw replanning.
+
+    Real production mutation: ``raw_authority.resolve_raw_authority_blocker``
+    -- the durable ``source.db`` acknowledgement that lets a stale-plan or
+    frontier-judgment raw-authority blocker be replanned against current
+    evidence. Classified ``reset`` (not ``reversible``: an operator cannot
+    literally un-resolve a blocker once acknowledged; not ``delete``/
+    ``excise``: no archive content or evidence row is removed, only the
+    blocked state is tombstoned so replanning can resume), requiring
+    ``confirm_flag`` -- matching the CLI's pre-existing ``--yes`` gate this
+    actuator now authorizes through instead of leaving unauthorized.
+    Frontier-judgment blockers layer additional accepted-assertion-id and
+    ``retain_canonical_authority``-disposition enforcement inside the
+    primitive itself (unchanged, domain-owned -- the executor's job here is
+    authorization strength and TOCTOU staleness detection, not re-deriving
+    that domain policy).
+    """
+
+    operation: str = "mutate-resolve-raw-authority-blocker"
+    destructive_class: DestructiveClass = "reset"
+    required_confirmation: ConfirmationStrength = "confirm_flag"
+
+    def prepare(self, args: BlockerResolveArgs) -> MutationPlan:
+        from polylogue.storage.raw_authority import describe_raw_authority_blocker
+
+        described = describe_raw_authority_blocker(args.archive_root, args.blocker_id)
+        target_refs = (f"raw-authority-blocker:{args.blocker_id}",) if described is not None else ()
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reset",
+            target_refs=target_refs,
+            affected_tiers=("source",),
+            reversible=False,
+            context={
+                "blocker_id": args.blocker_id,
+                "found": described is not None,
+                "kind": described["kind"] if described is not None else None,
+                "resolution": args.resolution,
+                "assertion_id": args.assertion_id,
+                "judgment_disposition": args.judgment_disposition,
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: BlockerResolveArgs) -> MutationReceipt:
+        from polylogue.storage.raw_authority import resolve_raw_authority_blocker
+
+        if not plan.context.get("found"):
+            return MutationReceipt(
+                operation=self.operation,
+                plan_hash=plan.plan_hash,
+                status="already_satisfied",
+                target_refs=plan.target_refs,
+                affected_count=0,
+                detail="blocker_not_found_or_already_resolved",
+                receipt_ref=None,
+                applied_at=plan.prepared_at,
+            )
+        receipt = resolve_raw_authority_blocker(
+            args.archive_root,
+            args.blocker_id,
+            resolution=args.resolution,
+            assertion_id=args.assertion_id,
+            judgment_disposition=args.judgment_disposition,
+        )
+        receipt_dict = dict(receipt)
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=str(receipt_dict.get("detail_query_handle") or "") or None,
+            applied_at=plan.prepared_at,
+            domain_receipt=receipt_dict,
+        )
+
+
 __all__ = [
+    "AnnotationDeleteActuator",
+    "AnnotationDeleteArgs",
+    "AnnotationSaveActuator",
+    "AnnotationSaveArgs",
+    "BlockerResolveActuator",
+    "BlockerResolveArgs",
     "BulkTagActuator",
     "BulkTagArgs",
     "IdentityResetActuator",
