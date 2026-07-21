@@ -1500,7 +1500,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2566
+    loc: 2568
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1566,6 +1566,10 @@ files:
   - path: polylogue/daemon/fts_automerge.py
     loc: 115
     target: polylogue/daemon/fts_automerge.py
+    owner: stable
+  - path: polylogue/daemon/fts_identity_convergence.py
+    loc: 168
+    target: polylogue/daemon/fts_identity_convergence.py
     owner: stable
   - path: polylogue/daemon/fts_startup.py
     loc: 465
@@ -3618,7 +3622,7 @@ files:
     target: polylogue/storage/fts/session_repair.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
-    loc: 454
+    loc: 455
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
@@ -3963,7 +3967,7 @@ files:
     target: polylogue/storage/search_providers/sqlite_vec_support.py
     owner: stable
   - path: polylogue/storage/session_replacement.py
-    loc: 218
+    loc: 225
     target: polylogue/storage/session_replacement.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -4101,7 +4105,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 5189
+    loc: 5215
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py

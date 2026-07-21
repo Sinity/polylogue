@@ -47,7 +47,9 @@ from polylogue.storage.fts.fts_lifecycle import (
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
+    delete_session_identity_rows_sql,
     delete_session_rows_sql,
+    insert_session_identity_rows_sql,
     insert_session_rows_sql,
 )
 from polylogue.storage.runtime import (
@@ -836,9 +838,19 @@ def _purge_session_message_fts_when_delete_trigger_missing(conn: sqlite3.Connect
     ).fetchall()
     if {str(row[0]) for row in table_rows} != {"messages_fts", "messages_fts_docsize"}:
         return
-    from polylogue.storage.fts.sql import delete_session_rows_sql
+    from polylogue.storage.fts.sql import (
+        delete_session_identity_rows_sql,
+        delete_session_rows_sql,
+    )
 
     conn.execute(delete_session_rows_sql(1), (session_id,))
+    # polylogue-miwv: pair the messages_fts delete with its identity-ledger
+    # companion -- the blocks this session owns are about to be deleted too
+    # (see the caller, ``_clear_session_projection_rows``), so an unpaired
+    # delete here would leave orphaned ``messages_fts_identity`` rows (the
+    # "left-over ledger row" failure class ``message_identity_mismatch_sql``
+    # detects).
+    conn.execute(delete_session_identity_rows_sql(1), (session_id,))
 
 
 def upsert_session_profile_costs(
@@ -1955,6 +1967,11 @@ def _replace_full_session_messages_and_blocks(
     if use_scoped_fts_rebuild:
         t0 = time.perf_counter()
         conn.execute(delete_session_rows_sql(1), (session_id,))
+        # polylogue-miwv: identity-ledger companion, same chunk params as the
+        # messages_fts delete above -- see message_identity_mismatch_sql's
+        # docstring for why this non-bulk full-session-replace fast path must
+        # keep messages_fts_identity paired with messages_fts.
+        conn.execute(delete_session_identity_rows_sql(1), (session_id,))
         add_timing("fts_delete", t0)
         t0 = time.perf_counter()
         suspend_message_fts_triggers_sync(conn)
@@ -1999,6 +2016,9 @@ def _replace_full_session_messages_and_blocks(
         if use_scoped_fts_rebuild:
             t0 = time.perf_counter()
             conn.execute(insert_session_rows_sql(1), (session_id,))
+            # polylogue-miwv: identity-ledger companion, same chunk params as
+            # the messages_fts insert above.
+            conn.execute(insert_session_identity_rows_sql(1), (session_id,))
             add_timing("fts_insert", t0)
     finally:
         if use_scoped_fts_rebuild:
@@ -4161,6 +4181,9 @@ def _bulk_fts_session_guard(
         yield
         return
     conn.execute(delete_session_rows_sql(1), (session_id,))
+    # polylogue-miwv: identity-ledger companion, same chunk params as the
+    # messages_fts delete above.
+    conn.execute(delete_session_identity_rows_sql(1), (session_id,))
     conn.execute(
         "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
         (FTS_BULK_SESSION_WRITE_GUARD,),
@@ -4169,6 +4192,9 @@ def _bulk_fts_session_guard(
         yield
     finally:
         conn.execute(insert_session_rows_sql(1), (session_id,))
+        # polylogue-miwv: identity-ledger companion, same chunk params as the
+        # messages_fts insert above.
+        conn.execute(insert_session_identity_rows_sql(1), (session_id,))
         conn.execute(
             "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
             (FTS_BULK_SESSION_WRITE_GUARD,),

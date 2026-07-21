@@ -96,12 +96,29 @@ _FTS_BULK_GUARD_NOT_SET = (
 # different block/rowid bindings -- one atomic statement sequence per event,
 # not a second pass. ad/au explicitly DELETE the identity row by rowid before
 # any re-insert so a reused rowid never inherits a stale block_id.
+#
+# polylogue-miwv: the identity INSERTs use ``INSERT OR REPLACE`` (not a bare
+# INSERT), not merely the rowid-scoped delete above. ``messages_fts_identity``
+# has TWO independent uniqueness constraints -- the `rowid` INTEGER PRIMARY
+# KEY and the `block_id TEXT ... UNIQUE` column -- and the ad/au DELETE only
+# ever targets the rowid side. Any write path that leaves a stale
+# ``(old_rowid, block_id=X)`` ledger row behind (a delete that ran with FTS
+# triggers/companions suppressed and no matching bulk cleanup for that exact
+# rowid -- e.g. an interrupted bulk-guarded delete, or an orphan the next
+# repair pass hasn't reached yet) means a LATER insert for a *different* new
+# rowid computing that same block_id X hits `UNIQUE constraint failed:
+# messages_fts_identity.block_id`, aborting the write outright -- reproduced
+# directly in ``tests/unit/storage/test_fts_identity_ledger.py::
+# TestIdentityLedgerBlockIdCollisionRepro``. ``INSERT OR REPLACE`` evicts
+# whichever pre-existing row (by either constraint) is in the way before
+# inserting, so the incoming write always wins and self-heals the ledger
+# instead of aborting.
 BLOCKS_FTS_TRIGGER_DDL = [
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ai
        AFTER INSERT ON blocks WHEN new.search_text != '' AND {_FTS_BULK_GUARD_NOT_SET} BEGIN
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
            VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
-           INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
+           INSERT OR REPLACE INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
            VALUES (new.rowid, new.block_id, new.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}');
        END""",
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ad
@@ -116,7 +133,7 @@ BLOCKS_FTS_TRIGGER_DDL = [
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
            SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
            WHERE new.search_text != '';
-           INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
+           INSERT OR REPLACE INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
            SELECT new.rowid, new.block_id, new.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
            WHERE new.search_text != '';
        END""",
@@ -272,10 +289,14 @@ def insert_all_message_identity_rows_sql() -> str:
 
     Companion to :func:`insert_all_message_rows_sql`; callers clear the
     table first with :data:`FTS_IDENTITY_REBUILD_SQL`, matching the
-    ``messages_fts`` rebuild shape.
+    ``messages_fts`` rebuild shape. ``INSERT OR REPLACE`` (polylogue-miwv,
+    see :data:`BLOCKS_FTS_TRIGGER_DDL`'s note) is defense-in-depth here even
+    though the documented clear-first contract already makes the table empty
+    at call time -- a caller that violates that precondition self-heals
+    instead of aborting the rebuild.
     """
     return f"""
-        INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
+        INSERT OR REPLACE INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
         SELECT rowid, block_id, content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
         FROM blocks
         WHERE search_text != ''
@@ -296,7 +317,18 @@ def delete_session_identity_rows_sql(chunk_size: int) -> str:
 
 
 def insert_session_identity_rows_sql(chunk_size: int) -> str:
-    """Companion to :func:`insert_session_rows_sql` for ``messages_fts_identity``."""
+    """Companion to :func:`insert_session_rows_sql` for ``messages_fts_identity``.
+
+    ``INSERT OR REPLACE`` (polylogue-miwv, see :data:`BLOCKS_FTS_TRIGGER_DDL`'s
+    note): :func:`delete_session_identity_rows_sql` only removes ledger rows
+    whose rowid matches a block *currently* in ``blocks`` for this session --
+    an orphaned ledger row left behind by some other path (rowid no longer
+    backed by any live block) is invisible to that delete. If this session's
+    fresh block set happens to compute a ``block_id`` that orphan still
+    holds, a bare INSERT hits ``UNIQUE constraint failed:
+    messages_fts_identity.block_id`` and aborts the whole write. REPLACE
+    evicts the stale holder instead.
+    """
     values = ", ".join("(?)" for _ in range(chunk_size))
     return f"""
         WITH raw_target_sessions(session_id) AS (
@@ -306,7 +338,7 @@ def insert_session_identity_rows_sql(chunk_size: int) -> str:
             SELECT DISTINCT session_id
             FROM raw_target_sessions
         )
-        INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
+        INSERT OR REPLACE INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
         SELECT b.rowid, b.block_id, b.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
         FROM blocks AS b
         JOIN target_sessions AS target
@@ -326,6 +358,17 @@ def repair_message_identity_rows_range_sql() -> str:
     self-heal. Scoped to already-indexed rows (present in
     ``messages_fts_docsize``) within ``(?, ?]`` so a bounded repair pass
     over a huge archive stays bounded.
+
+    Two ``ON CONFLICT`` clauses (polylogue-miwv, SQLite 3.35+ multi-target
+    UPSERT -- this project already requires 3.43+ for FTS5
+    ``contentless_delete``): the first repairs the common rowid-reuse case
+    in place, preserving the original "only write if actually different"
+    optimization via its ``WHERE``. The second handles the class the single-
+    clause form could not -- an existing row holding this exact ``block_id``
+    at a *different*, now-stale rowid (an orphan some other path left
+    behind) -- by moving that row's identity onto the correct rowid instead
+    of raising ``UNIQUE constraint failed: messages_fts_identity.block_id``
+    and aborting the whole repair pass.
     """
     return f"""
         INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
@@ -342,6 +385,10 @@ def repair_message_identity_rows_range_sql() -> str:
         WHERE messages_fts_identity.block_id != excluded.block_id
            OR messages_fts_identity.source_hash IS NOT excluded.source_hash
            OR messages_fts_identity.recipe_id != excluded.recipe_id
+        ON CONFLICT(block_id) DO UPDATE SET
+            rowid = excluded.rowid,
+            source_hash = excluded.source_hash,
+            recipe_id = excluded.recipe_id
     """
 
 
@@ -359,22 +406,23 @@ def message_identity_mismatch_sql() -> str:
 
     Deliberately NOT counted: an indexed row with NO identity ledger entry
     at all. Every per-row trigger arm and bulk companion writes the ledger
-    alongside its ``messages_fts`` write, but
+    alongside its ``messages_fts`` write; as of polylogue-miwv,
     ``storage/sqlite/archive_tiers/write.py``'s non-bulk full-session-replace
     fast path (``delete_session_rows_sql``/``insert_session_rows_sql``
     called directly, outside this module -- see the polylogue-1xc.12 note in
-    ``docs/internals.md``) does not yet call the identity companions inline,
-    so a session written through that path is coverage-incomplete until the
-    next repair backfills it. A missing entry is provably safe on its own:
-    nothing reads block identity FROM this ledger except this
-    reconciliation query itself, and the next trigger-fired mutation at that
-    rowid (delete or update) creates a correct fresh row regardless of
-    whether one existed before. Only a PRESENT-but-WRONG entry is the
-    dangerous rowid-reuse signature this check exists to catch -- a
-    consumer trusting the ledger would see a real but incorrect binding, not
-    an absence. Counting missing rows here would make ``ready`` permanently
-    false on any archive that writes through the ordinary session-replace
-    path, which defeats the point of a readiness signal.
+    ``docs/internals.md``) also pairs each call with its identity companion
+    inline, so this coverage gap no longer accrues on ordinary writes. The
+    boundary still exists deliberately, as defense-in-depth for archives
+    written before polylogue-1xc.12 introduced the ledger (a missing entry
+    there is provably safe on its own: nothing reads block identity FROM
+    this ledger except this reconciliation query itself, and the next
+    trigger-fired mutation at that rowid -- delete or update -- creates a
+    correct fresh row regardless of whether one existed before). Only a
+    PRESENT-but-WRONG entry is the dangerous rowid-reuse signature this
+    check exists to catch -- a consumer trusting the ledger would see a real
+    but incorrect binding, not an absence. Counting missing rows here would
+    make ``ready`` permanently false on any archive with pre-ledger history
+    still in its rowid space, which defeats the point of a readiness signal.
     """
     return f"""
         SELECT

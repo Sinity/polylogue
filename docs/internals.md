@@ -251,17 +251,30 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   session-scoped repair in `storage/fts/fts_lifecycle.py`) pair their
   `messages_fts` writes with the matching identity companion SQL, and the
   batched missing-row repair also opportunistically UPSERTs a correct entry
-  for any indexed rowid whose ledger entry is missing or wrong. The one
-  exception is `storage/sqlite/archive_tiers/write.py`'s non-bulk
-  full-session-replace fast path (`delete_session_rows_sql`/
-  `insert_session_rows_sql` called directly, bypassing the suspended block
-  triggers): it does not yet call the identity companions inline, so a
-  session written through that path is coverage-incomplete (not
-  conflicting) until the next repair backfills it — a STOP-and-report gap
-  (polylogue-1xc.12): closing it fully needs one additional paired
-  `delete_session_identity_rows_sql`/`insert_session_identity_rows_sql`
-  call at each of write.py's four `delete_session_rows_sql`/
-  `insert_session_rows_sql` call sites. Existing index tiers must
+  for any indexed rowid whose ledger entry is missing or wrong.
+  `storage/sqlite/archive_tiers/write.py`'s non-bulk full-session-replace
+  fast path (`delete_session_rows_sql`/`insert_session_rows_sql` called
+  directly, bypassing the suspended block triggers) was the one exception at
+  ship time — a STOP-and-report gap (polylogue-1xc.12) closed by
+  polylogue-miwv: every `delete_session_rows_sql`/`insert_session_rows_sql`
+  call in write.py (the scoped fast-path pair in
+  `_replace_full_session_messages_and_blocks`, the bulk-fts-guard pair in
+  `_suspend_message_fts_for_session`, and the trigger-missing purge in
+  `_purge_session_message_fts_when_delete_trigger_missing`) is now paired
+  with the matching `delete_session_identity_rows_sql`/
+  `insert_session_identity_rows_sql` call, and the sync/async twin purge
+  helpers in `storage/session_replacement.py` are paired the same way.
+  Sessions written through the ordinary session-replace path are no longer
+  identity-coverage-incomplete; `message_identity_mismatch_sql` still
+  deliberately does not count a missing ledger entry as a conflict (see its
+  docstring) as defense-in-depth for archives with pre-polylogue-1xc.12
+  history still occupying rowid space. A polylogue-miwv periodic
+  convergence-adjacent stage additionally recomputes the exact
+  `fts_invariant_snapshot_sync` snapshot on a quiet cadence, so a recorded
+  `identity_mismatch_rows` count is refreshed by full reconciliation rather
+  than only ever moving via ingest-time repair or the
+  `daemon/fts_startup.py` bounded STALE-write path (which can reset a
+  nonzero count to 0 without recomputing it). Existing index tiers must
   be rebuilt from source evidence (`polylogue ops reset --index && polylogued
   run`) to populate the new ledger for already-indexed rows; a declared
   clone-safe fast-forward exists (`IndexDeltaDeclaration` v43 in

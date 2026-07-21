@@ -55,9 +55,14 @@ def _purge_message_fts_sync(conn: sqlite3.Connection, session_id: str) -> None:
         return
     if not _table_exists_sync(conn, "messages_fts") or not _table_exists_sync(conn, "messages_fts_docsize"):
         return
-    from polylogue.storage.fts.sql import delete_session_rows_sql
+    from polylogue.storage.fts.sql import delete_session_identity_rows_sql, delete_session_rows_sql
 
     conn.execute(delete_session_rows_sql(1), (session_id,))
+    # polylogue-miwv: identity-ledger companion -- the caller deletes this
+    # session's ``blocks`` rows right after this purge (see
+    # ``replace_session_runtime_state_sync``), so an unpaired delete here
+    # would leave orphaned ``messages_fts_identity`` rows.
+    conn.execute(delete_session_identity_rows_sql(1), (session_id,))
 
 
 async def _purge_message_fts_async(conn: aiosqlite.Connection, session_id: str) -> None:
@@ -67,9 +72,11 @@ async def _purge_message_fts_async(conn: aiosqlite.Connection, session_id: str) 
         conn, "messages_fts_docsize"
     ):
         return
-    from polylogue.storage.fts.sql import delete_session_rows_sql
+    from polylogue.storage.fts.sql import delete_session_identity_rows_sql, delete_session_rows_sql
 
     await conn.execute(delete_session_rows_sql(1), (session_id,))
+    # polylogue-miwv: identity-ledger companion, see _purge_message_fts_sync.
+    await conn.execute(delete_session_identity_rows_sql(1), (session_id,))
 
 
 def _invalidate_embedding_state_sync(conn: sqlite3.Connection, session_id: str) -> None:
