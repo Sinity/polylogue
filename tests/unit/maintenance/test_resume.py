@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 import pytest
 
-import polylogue.maintenance.replay as replay_module
 from polylogue.config import Config
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.planner import BackfillStatus
@@ -31,6 +30,7 @@ from polylogue.maintenance.replay import (
     load_state,
     state_path_for,
 )
+from polylogue.storage import repair as repair_module
 from polylogue.storage.repair import RepairResult
 
 
@@ -81,10 +81,7 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
         return _run
 
     fake_dispatch = {name: stub(name) for name in calls}
-    with patch(
-        "polylogue.maintenance.replay._REPLAY_DISPATCH",
-        fake_dispatch,
-    ):
+    with patch.object(repair_module, "REPAIR_HANDLERS", fake_dispatch):
         yield calls
 
 
@@ -123,7 +120,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
         "orphaned_messages": patched_dispatch_callable(patched_dispatch, "orphaned_messages"),
     }
 
-    with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake_dispatch):
+    with patch.object(repair_module, "REPAIR_HANDLERS", fake_dispatch):
         first = execute_replay(
             config,
             targets=("session_insights", "message_type_backfill", "orphaned_messages"),
@@ -147,7 +144,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
 
     # Second invocation with same id and a "fixed" dispatch must skip
     # the already-completed first target.
-    with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", patched_dispatch_table(patched_dispatch)):
+    with patch.object(repair_module, "REPAIR_HANDLERS", patched_dispatch_table(patched_dispatch)):
         second = execute_replay(
             config,
             targets=("session_insights", "message_type_backfill", "orphaned_messages"),
@@ -227,7 +224,7 @@ def test_session_insight_progress_is_forwarded_within_target(
 
     monkeypatch.setattr("polylogue.maintenance.replay.repair_session_insights", repair_with_progress)
     monkeypatch.setitem(
-        replay_module._REPLAY_DISPATCH,
+        repair_module.REPAIR_HANDLERS,
         "session_insights",
         repair_with_progress,
     )
@@ -269,7 +266,7 @@ def test_replay_operation_metrics_include_result_metrics(
         )
 
     monkeypatch.setitem(
-        replay_module._REPLAY_DISPATCH,
+        repair_module.REPAIR_HANDLERS,
         "session_insights",
         repair_with_metrics,
     )

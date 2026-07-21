@@ -207,7 +207,7 @@ class TestOrphanedBlobsCatalogRouting:
 
     818-A6: ``polylogue ops doctor --repair --target orphaned_blobs`` resolves
     via ``MaintenanceTargetCatalog`` to the ``orphaned_blobs`` spec and
-    the ``_REPAIR_HANDLERS["orphaned_blobs"]`` entry. A regression that
+    the ``REPAIR_HANDLERS["orphaned_blobs"]`` entry. A regression that
     deletes the spec, deletes the handler dict entry, drops the destructive
     flag, or splits the name across the two structures would not be
     caught by handler-only unit tests.
@@ -231,15 +231,15 @@ class TestOrphanedBlobsCatalogRouting:
         )
 
     def test_repair_handler_dict_routes_orphaned_blobs(self) -> None:
-        """``_REPAIR_HANDLERS["orphaned_blobs"]`` must dispatch to the
+        """``REPAIR_HANDLERS["orphaned_blobs"]`` must dispatch to the
         function under test in ``TestRepairOrphanedBlobsHandler``.
         """
         from polylogue.storage import repair
 
-        assert "orphaned_blobs" in repair._REPAIR_HANDLERS
-        assert repair._REPAIR_HANDLERS["orphaned_blobs"] is repair.repair_orphaned_blobs
-        assert "orphaned_blobs" in repair._PREVIEW_HANDLERS
-        assert repair._PREVIEW_HANDLERS["orphaned_blobs"] is repair.preview_orphaned_blobs
+        assert "orphaned_blobs" in repair.REPAIR_HANDLERS
+        assert repair.REPAIR_HANDLERS["orphaned_blobs"] is repair.repair_orphaned_blobs
+        assert "orphaned_blobs" in repair.PREVIEW_HANDLERS
+        assert repair.PREVIEW_HANDLERS["orphaned_blobs"] is repair.preview_orphaned_blobs
 
     def test_catalog_resolution_drives_end_to_end_cleanup(self, cli_workspace: CliWorkspace) -> None:
         """End-to-end via catalog → handler dict → handler call.
@@ -267,7 +267,7 @@ class TestOrphanedBlobsCatalogRouting:
         catalog = build_maintenance_target_catalog()
         spec = catalog.resolve_name("orphaned_blobs")
         assert spec is not None
-        handler = repair._REPAIR_HANDLERS[spec.name]
+        handler = repair.REPAIR_HANDLERS[spec.name]
 
         result = handler(get_config(), dry_run=False)
         assert result.name == "orphaned_blobs"

@@ -5191,7 +5191,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         from polylogue.config import Config
         from polylogue.maintenance.envelope import envelope_from_operation
-        from polylogue.maintenance.planner import execute_backfill
+        from polylogue.maintenance.planner import BackfillStatus, execute_backfill
         from polylogue.maintenance.scope import MaintenanceScopeFilter
         from polylogue.paths import archive_root, render_root
 
@@ -5208,7 +5208,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
         result = execute_backfill(config, targets=targets, dry_run=dry_run, scope_filter=scope_filter)
         envelope = envelope_from_operation(result, origin="daemon", mode="execute")
-        self._send_json(HTTPStatus.OK, envelope.to_dict())
+        # A failed maintenance envelope is a semantic failure of this
+        # request, not a successful response describing a failure --
+        # surface it as 422 so callers do not have to parse the body to
+        # notice (polylogue-71ey AC 4).
+        status = HTTPStatus.UNPROCESSABLE_ENTITY if result.status is BackfillStatus.FAILED else HTTPStatus.OK
+        self._send_json(status, envelope.to_dict())
 
     @daemon_safe_handler
     def _handle_rebuild_index(self) -> None:

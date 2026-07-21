@@ -61,18 +61,16 @@ from polylogue.maintenance.planner import (
 )
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import (
+    CLEANUP_TARGETS,
     MAINTENANCE_TARGET_NAMES,
+    SAFE_REPAIR_TARGETS,
     MaintenanceTargetSpec,
     build_maintenance_target_catalog,
 )
+from polylogue.storage import repair as _repair
 from polylogue.storage.repair import (
     RepairResult,
     offline_maintenance_blockers,
-    repair_empty_sessions,
-    repair_message_type_backfill,
-    repair_orphaned_attachments,
-    repair_orphaned_blobs,
-    repair_orphaned_messages,
     repair_session_insights,
 )
 
@@ -117,34 +115,38 @@ _REBUILD_COMMIT_BATCH_UNITS: Final[int] = 200
 _RepairFn = Callable[[Config, bool], RepairResult]
 
 
-#: Concrete repair dispatch table. Targets listed here are the ones the
-#: PR #1147 AC names explicitly: messages FTS and session insights.
-#: ``message_type_backfill`` is included because the underlying repair function
-#: is already idempotent and the executor would otherwise refuse a perfectly
-#: valid target name that the catalog advertises.
-#:
-#: Targets that are not yet wired into this dispatch raise
-#: :class:`UnsupportedReplayTargetError` when requested — the planner will
-#: still preview them, but :func:`execute_replay` will record the
-#: missing dispatch as a typed failure sample rather than silently
-#: succeeding.
-_REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
-    "session_insights": repair_session_insights,
-    "message_type_backfill": repair_message_type_backfill,
-    "orphaned_messages": repair_orphaned_messages,
-    "empty_sessions": repair_empty_sessions,
-    "orphaned_attachments": repair_orphaned_attachments,
-    "orphaned_blobs": repair_orphaned_blobs,
-}
+def _replay_handler_for(target_name: str, *, replayable: bool) -> _RepairFn | None:
+    """Look up the concrete repair callable for one target.
+
+    The catalog (:mod:`polylogue.maintenance.targets`) is the single
+    source for target *identity* and replay *capability*
+    (``MaintenanceTargetSpec.replayable``); the concrete handler
+    implementation lives in :data:`polylogue.storage.repair.REPAIR_HANDLERS`
+    (the same dict the non-resumable ``run_selected_maintenance`` path
+    uses). There is deliberately no independent, hand-maintained replay
+    dispatch table any more (polylogue-71ey) -- a target that is
+    ``replayable`` in the catalog but missing from ``REPAIR_HANDLERS``
+    (or vice versa) is a bug caught by
+    ``tests/unit/maintenance/test_targets.py``'s catalog-equality test,
+    not silently tolerated here.
+    """
+    if not replayable:
+        return None
+    return _repair.REPAIR_HANDLERS.get(target_name)
 
 
 def supported_replay_targets() -> tuple[str, ...]:
     """Names of targets the replay executor knows how to execute.
 
-    Stable contract for callers and tests — adding a target to
-    :data:`_REPLAY_DISPATCH` extends this set.
+    Derived from the catalog's declared ``replayable`` targets, filtered
+    to those with a real handler in
+    :data:`polylogue.storage.repair.REPAIR_HANDLERS`. Stable contract
+    for callers and tests.
     """
-    return tuple(_REPLAY_DISPATCH)
+    catalog = build_maintenance_target_catalog()
+    return tuple(
+        spec.name for spec in catalog.specs if _replay_handler_for(spec.name, replayable=spec.replayable) is not None
+    )
 
 
 async def rebuild_index_from_source(
@@ -468,7 +470,12 @@ def execute_replay(
 
     op_id = operation_id or str(uuid.uuid4())
     catalog = build_maintenance_target_catalog()
-    resolved_specs = catalog.resolve(tuple(targets))
+    # Empty ``targets`` means "no explicit scope" and expands to the
+    # documented run-all set (every catalog target); an explicit but
+    # unresolvable name still fails closed with an empty resolution
+    # (polylogue-71ey bug 2: targetless ``maintenance run`` used to
+    # resolve to zero targets and report ``status=failed``).
+    resolved_specs = catalog.resolve_or_default(tuple(targets))
     resolved_names = tuple(spec.name for spec in resolved_specs)
     effective_filter = scope_filter or MaintenanceScopeFilter()
 
@@ -484,8 +491,8 @@ def execute_replay(
 
     blockers = offline_maintenance_blockers(
         config,
-        repair=any(name in _REPLAY_DISPATCH for name in resolved_names),
-        cleanup=False,
+        repair=any(name in SAFE_REPAIR_TARGETS for name in resolved_names),
+        cleanup=any(name in CLEANUP_TARGETS for name in resolved_names),
         dry_run=dry_run,
         targets=resolved_names,
     )
@@ -661,15 +668,17 @@ def _run_one_target(
     """Execute one target, recording success or a typed failure sample."""
 
     target_name = spec.name
-    repair_fn = _REPLAY_DISPATCH.get(target_name)
+    repair_fn = _replay_handler_for(target_name, replayable=spec.replayable)
     if repair_fn is None:
+        reason = (
+            spec.non_replayable_reason
+            if not spec.replayable and spec.non_replayable_reason
+            else (f"Target {target_name!r} is not yet wired into polylogue.storage.repair.REPAIR_HANDLERS.")
+        )
         sample = FailureSample(
             kind=UnsupportedReplayTargetError.__name__,
             locator=f"target:{target_name}",
-            message=(
-                f"Target {target_name!r} is not yet wired into the replay dispatch table. "
-                "Add an entry to polylogue.maintenance.replay._REPLAY_DISPATCH to enable it."
-            ),
+            message=reason,
         )
         _record_failure(state, sample, target=target_name, config=config)
         logger.warning(

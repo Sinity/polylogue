@@ -438,7 +438,7 @@ def preview_backfill(
 
     operation_id = str(uuid.uuid4())
     catalog = build_maintenance_target_catalog()
-    resolved = catalog.resolve(targets)
+    resolved = catalog.resolve_or_default(targets)
     resolved_names = tuple(spec.name for spec in resolved)
     effective_filter = scope_filter or MaintenanceScopeFilter()
 
@@ -541,7 +541,7 @@ def execute_backfill(
 
     operation_id = str(uuid.uuid4())
     catalog = build_maintenance_target_catalog()
-    resolved = catalog.resolve(targets)
+    resolved = catalog.resolve_or_default(targets)
     resolved_names = tuple(spec.name for spec in resolved)
     effective_filter = scope_filter or MaintenanceScopeFilter()
 

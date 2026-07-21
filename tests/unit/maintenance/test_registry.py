@@ -191,12 +191,12 @@ class TestReplayWritesRegistryReadableState:
 
     def test_explicit_failure_via_unsupported_target(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
-        # Patch the dispatch table for the duration of this test to
+        # Patch the real handler dict for the duration of this test to
         # inject an unknown-target failure deterministically.
-        from polylogue.maintenance import replay as replay_mod
+        from polylogue.storage import repair as repair_mod
 
-        original = dict(replay_mod._REPLAY_DISPATCH)
-        replay_mod._REPLAY_DISPATCH.clear()
+        original = dict(repair_mod.REPAIR_HANDLERS)
+        repair_mod.REPAIR_HANDLERS.clear()
         try:
             result = execute_replay(
                 config,
@@ -205,8 +205,8 @@ class TestReplayWritesRegistryReadableState:
                 persist_state=True,
             )
         finally:
-            replay_mod._REPLAY_DISPATCH.clear()
-            replay_mod._REPLAY_DISPATCH.update(original)
+            repair_mod.REPAIR_HANDLERS.clear()
+            repair_mod.REPAIR_HANDLERS.update(original)
 
         # The empty dispatch table makes catalog resolution fail (no
         # supported targets), which surfaces as a FAILED operation

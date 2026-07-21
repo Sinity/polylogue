@@ -85,6 +85,7 @@ def run_command(
     pick up an interrupted operation from its last checkpoint.
     """
     from polylogue.maintenance.envelope import envelope_from_operation
+    from polylogue.maintenance.planner import BackfillStatus
     from polylogue.maintenance.replay import execute_replay
 
     configure_logging()
@@ -126,6 +127,8 @@ def run_command(
     if output_format == "json":
         envelope = envelope_from_operation(result, origin="cli", mode="execute")
         click.echo(json.dumps(envelope.to_dict(), indent=2, sort_keys=True))
+        if result.status is BackfillStatus.FAILED:
+            raise SystemExit(1)
         return
 
     action = "Would affect" if dry_run else "Processed"
@@ -165,3 +168,6 @@ def run_command(
             completed = datetime.fromisoformat(result.completed_at)
             elapsed = (completed - started).total_seconds()
             click.echo(f"\nElapsed: {elapsed:.1f}s")
+
+    if result.status is BackfillStatus.FAILED:
+        raise SystemExit(1)

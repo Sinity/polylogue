@@ -6481,7 +6481,7 @@ def repair_message_type_backfill(config: Config, dry_run: bool = False) -> Repai
     return _to_repair_result(run_backfill(config, dry_run=dry_run))
 
 
-_PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
+PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
     "message_type_backfill": preview_message_type_backfill,
     "orphaned_messages": preview_orphaned_messages,
@@ -6492,7 +6492,7 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 }
 
 
-_REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
+REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
     "orphaned_messages": repair_orphaned_messages,
@@ -6524,11 +6524,11 @@ def run_safe_repairs(
         if target_name not in selected:
             continue
         if dry_run and target_name in preview_counts:
-            preview = _PREVIEW_HANDLERS.get(target_name)
+            preview = PREVIEW_HANDLERS.get(target_name)
             if preview is not None:
                 results.append(preview(count=preview_counts[target_name]))
                 continue
-        repair = _REPAIR_HANDLERS[target_name]
+        repair = REPAIR_HANDLERS[target_name]
         if target_name == "session_insights":
             results.append(
                 repair(
@@ -6557,9 +6557,9 @@ def run_archive_cleanup(
         if target_name not in selected:
             continue
         if dry_run and target_name in preview_counts:
-            results.append(_PREVIEW_HANDLERS[target_name](count=preview_counts[target_name]))
+            results.append(PREVIEW_HANDLERS[target_name](count=preview_counts[target_name]))
             continue
-        results.append(_REPAIR_HANDLERS[target_name](config, dry_run=dry_run))
+        results.append(REPAIR_HANDLERS[target_name](config, dry_run=dry_run))
     return results
 
 
@@ -6606,6 +6606,8 @@ def run_selected_maintenance(
 
 __all__ = [
     "ArchiveDebtStatus",
+    "PREVIEW_HANDLERS",
+    "REPAIR_HANDLERS",
     "RepairResult",
     "collect_archive_debt_statuses_sync",
     "count_empty_sessions_sync",

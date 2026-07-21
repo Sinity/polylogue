@@ -32,6 +32,7 @@ from polylogue.maintenance.replay import (
     execute_replay,
     supported_replay_targets,
 )
+from polylogue.storage import repair as repair_mod
 from polylogue.storage.repair import RepairResult
 
 
@@ -85,7 +86,7 @@ def converging_dispatch() -> Iterator[dict[str, int]]:
         "session_insights": stub("session_insights", 7),
         "message_type_backfill": stub("message_type_backfill", 5),
     }
-    with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake):
+    with patch.object(repair_mod, "REPAIR_HANDLERS", fake):
         yield converged
 
 
@@ -135,7 +136,7 @@ def test_single_target_failure_does_not_abort_others(tmp_path: Path) -> None:
         "message_type_backfill": bad,
         "orphaned_messages": good("orphaned_messages"),
     }
-    with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake):
+    with patch.object(repair_mod, "REPAIR_HANDLERS", fake):
         op = execute_replay(
             config,
             targets=("session_insights", "message_type_backfill", "orphaned_messages"),
@@ -165,10 +166,7 @@ def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> N
             detail="schema mismatch",
         )
 
-    with patch(
-        "polylogue.maintenance.replay._REPLAY_DISPATCH",
-        {"message_type_backfill": reports_failure},
-    ):
+    with patch.object(repair_mod, "REPAIR_HANDLERS", {"message_type_backfill": reports_failure}):
         op = execute_replay(
             config,
             targets=("message_type_backfill",),
@@ -200,7 +198,7 @@ def test_replay_refuses_offline_repair_while_daemon_runs(monkeypatch: pytest.Mon
 def test_unwired_target_is_typed_failure_not_silent(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
 
-    with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", {}):
+    with patch.object(repair_mod, "REPAIR_HANDLERS", {}):
         op = execute_replay(
             config,
             targets=("session_insights",),
@@ -243,11 +241,16 @@ def test_failure_samples_remain_bounded(tmp_path: Path) -> None:
     class _FakeSpec:
         def __init__(self, name: str) -> None:
             self.name = name
+            self.replayable = True
+            self.non_replayable_reason = ""
 
     fake_specs = tuple(_FakeSpec(name) for name in target_names)
 
     class _FakeCatalog:
         def resolve(self, _names: tuple[str, ...]) -> tuple[_FakeSpec, ...]:
+            return fake_specs
+
+        def resolve_or_default(self, _names: tuple[str, ...]) -> tuple[_FakeSpec, ...]:
             return fake_specs
 
     fake_dispatch = dict.fromkeys(target_names, always_raises)
@@ -256,10 +259,7 @@ def test_failure_samples_remain_bounded(tmp_path: Path) -> None:
             "polylogue.maintenance.replay.build_maintenance_target_catalog",
             return_value=_FakeCatalog(),
         ),
-        patch(
-            "polylogue.maintenance.replay._REPLAY_DISPATCH",
-            fake_dispatch,
-        ),
+        patch.object(repair_mod, "REPAIR_HANDLERS", fake_dispatch),
     ):
         op = execute_replay(
             config,
