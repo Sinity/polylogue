@@ -87,6 +87,17 @@ _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
 # (candidate discovery, component ordering, receipt) over more components.
 _RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
+# polylogue-t93b: escalation-tier envelope for the whale pass. A component
+# permanently resource-blocked at the ordinary fast-path limit above
+# converges through a dedicated, single-component pass at this wider
+# envelope instead -- still bounded (a genuinely unbounded component stays
+# blocked), gated on every member being stream-record-safe (bounded parse
+# memory via the existing RawParsePrefetchCache/whale-spill machinery) and
+# on the ordinary trickle conveyor being otherwise quiescent (bounded writer
+# contention). 8 GiB comfortably covers the live witness (codex:019f49d8,
+# 6.33GB/788 raws) with headroom; override via
+# ``raw_authority_whale_payload_bytes`` / POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES.
+_RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES = 8 * 1024 * 1024 * 1024
 _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
@@ -784,6 +795,12 @@ async def _periodic_raw_materialization_convergence() -> None:
             await asyncio.sleep(_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS)
             continue
         recover = True
+        # polylogue-t93b: set True only at the genuine-quiescence break below
+        # (no progress AND no remaining ordinary-envelope candidates this
+        # tick) -- never on the bulk-rebuild-in-flight or spool-pending
+        # breaks, which are deferrals for unrelated reasons, not evidence the
+        # ordinary backlog is settled.
+        quiescent = False
         try:
             while True:
                 # polylogue-gd6v residual: while the daemon's own bulk-rebuild
@@ -861,6 +878,7 @@ async def _periodic_raw_materialization_convergence() -> None:
                         materialized.remaining_candidates,
                     )
                 if materialized.remaining_candidates <= 0 or not materialized.made_progress:
+                    quiescent = True
                     break
                 if _browser_capture_spool_has_pending_files():
                     break
@@ -872,6 +890,17 @@ async def _periodic_raw_materialization_convergence() -> None:
                 logger.warning("raw materialization: convergence check failed", exc_info=True)
         except Exception:
             logger.warning("raw materialization: convergence check failed", exc_info=True)
+        # polylogue-t93b: escalate a resource-blocked, stream-safe component
+        # only once the ordinary trickle conveyor is genuinely quiescent for
+        # this tick (see ``quiescent`` above) and not yielding to pending
+        # browser-capture spool files -- keeps the whale pass from ever
+        # competing with ordinary-scale backlog or live-capture ingest for
+        # the writer hold.
+        if quiescent and not _browser_capture_spool_has_pending_files():
+            try:
+                await _maybe_run_raw_materialization_whale_pass()
+            except Exception:
+                logger.warning("raw materialization: whale-pass scheduling failed", exc_info=True)
         await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
 
 
@@ -1023,6 +1052,142 @@ def _drain_raw_materialization_once(
         candidate_count=int(metrics.get("raw_materialization_candidate_count", 0)),
         pending_blob_bytes=int(metrics.get("raw_materialization_total_blob_bytes", 0)),
     )
+
+
+def _resolve_raw_materialization_whale_blob_limit_bytes() -> int:
+    """Resolve the whale-pass escalation envelope (polylogue-t93b)."""
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().raw_authority_whale_payload_bytes
+    if configured is None or configured <= 0:
+        return _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
+    return configured
+
+
+def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payload_bytes: int) -> Any:
+    """Run one bounded, single-component whale pass under the writer hold.
+
+    polylogue-t93b. Mirrors ``_drain_raw_materialization_once`` but scoped to
+    exactly the logical authority component containing ``raw_artifact_id``
+    (the same "one seed expands to the whole component via membership"
+    convention the CLI's ``--raw-artifact-id`` single-source repair already
+    uses), at the widened whale envelope instead of the ordinary fast-path
+    limit. ``raw_artifact_limit=1`` bounds selection to that one component --
+    writer-hold length within it is bounded by
+    ``raw_authority_commit_batch_size`` (PR #3248), unchanged by this call.
+
+    Deliberately skips the general (unscoped) interrupted-frontier recovery
+    and cross-archive frontier convergence that ``_drain_raw_materialization_once``
+    performs: those are ordinary-pass hygiene over the whole backlog, not
+    specific to this one escalated component, and the ordinary pass already
+    runs them on its own cadence.
+    """
+    from polylogue.config import Config
+    from polylogue.paths import archive_root, render_root
+    from polylogue.product import raw_authority
+
+    archive = archive_root()
+    config = Config(archive_root=archive, render_root=render_root(), sources=[])
+    try:
+        result = raw_authority.repair_materialization(
+            config,
+            dry_run=False,
+            raw_artifact_limit=1,
+            max_payload_bytes=max_payload_bytes,
+            raw_artifact_id=raw_artifact_id,
+        )
+    finally:
+        _close_raw_materialization_fts(config.archive_root / "index.db")
+    _emit_raw_materialization_pass(result)
+    if not result.success:
+        logger.warning("raw materialization: whale pass for %s incomplete: %s", raw_artifact_id, result.detail)
+    return result
+
+
+async def _maybe_run_raw_materialization_whale_pass() -> bool:
+    """Escalate one resource-blocked, stream-safe component when quiescent.
+
+    polylogue-t93b: called only after the ordinary trickle conveyor has
+    drained to quiescence for this tick (see
+    ``_periodic_raw_materialization_convergence``), so a whale pass never
+    competes with ordinary-scale backlog for the writer hold. Off switch:
+    ``daemon_whale_raw_materialization`` (on by default -- a permanent
+    offline-only requirement for whale components is the policy bug this
+    closes).
+
+    Returns whether a pass was genuinely attempted this call, mirroring
+    ``_maybe_route_daemon_bulk_rebuild``'s return-value contract so the
+    caller can decide burst-vs-outer-interval pacing the same way.
+    """
+    from polylogue.config import load_polylogue_config
+
+    if not load_polylogue_config().daemon_whale_raw_materialization:
+        return False
+    from polylogue.config import Config
+    from polylogue.daemon.events import emit_daemon_event
+    from polylogue.paths import archive_root, render_root
+    from polylogue.product import raw_authority
+
+    root = archive_root()
+    config = Config(archive_root=root, render_root=render_root(), sources=[])
+    whale_limit = _resolve_raw_materialization_whale_blob_limit_bytes()
+    try:
+        candidate = await asyncio.to_thread(
+            raw_authority.whale_pass_candidate,
+            config,
+            ordinary_max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+            whale_max_payload_bytes=whale_limit,
+        )
+    except Exception:
+        logger.warning("raw materialization: whale-pass candidate lookup failed", exc_info=True)
+        return False
+    if candidate is None:
+        return False
+    logger.info(
+        "raw materialization: starting whale pass for component seeded by %s (envelope=%d bytes)",
+        candidate,
+        whale_limit,
+    )
+    emit_daemon_event(
+        "raw_materialization_whale_pass_started",
+        payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
+    )
+    try:
+        result = await daemon_write_coordinator().run_sync(
+            "maintenance.raw_materialization_whale",
+            functools.partial(
+                _run_raw_materialization_whale_pass_once,
+                raw_artifact_id=candidate,
+                max_payload_bytes=whale_limit,
+            ),
+        )
+    except sqlite3.OperationalError as exc:
+        if is_transient_sqlite_lock(exc):
+            logger.info("raw materialization: whale pass deferred, archive busy: %s", exc)
+        else:
+            logger.warning("raw materialization: whale pass failed", exc_info=True)
+        emit_daemon_event(
+            "raw_materialization_whale_pass_completed",
+            payload={"seed_raw_id": candidate, "success": False, "detail": str(exc)},
+        )
+        return True
+    except Exception as exc:
+        logger.warning("raw materialization: whale pass failed", exc_info=True)
+        emit_daemon_event(
+            "raw_materialization_whale_pass_completed",
+            payload={"seed_raw_id": candidate, "success": False, "detail": str(exc)},
+        )
+        return True
+    emit_daemon_event(
+        "raw_materialization_whale_pass_completed",
+        payload={
+            "seed_raw_id": candidate,
+            "success": bool(result.success),
+            "repaired_count": int(result.repaired_count),
+            "detail": str(result.detail),
+        },
+    )
+    return True
 
 
 def _browser_capture_spool_has_pending_files() -> bool:

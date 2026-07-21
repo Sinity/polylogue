@@ -228,6 +228,7 @@ def record_resource_blocked_revision_census(
     *,
     max_payload_bytes: int,
     total_payload_bytes: int,
+    stream_safe: bool | None = None,
 ) -> None:
     """Persist a non-terminal no-retry receipt for immutable oversized bytes.
 
@@ -235,13 +236,30 @@ def record_resource_blocked_revision_census(
     the payload.  The fingerprint binds that fact to the exact admission
     envelope, so increasing the envelope (or changing the parser identity)
     re-admits the raw without a timer-driven retry storm.
+
+    ``stream_safe`` (polylogue-t93b, default ``None`` for callers that have
+    not classified it) records whether every member of the blocked
+    component is stream-record-safe -- the daemon's escalation-tier whale
+    pass (``daemon_whale_raw_materialization``) only ever selects
+    stream-safe components, so this distinguishes "waiting for a bounded
+    whale pass" from "genuinely cannot converge automatically" directly in
+    the durable census detail, without changing the admission fingerprint
+    (which stays keyed on the envelope alone, preserving the existing
+    re-admission-on-wider-envelope invariant).
     """
     if not raw_ids:
         return
     fingerprint = _resource_blocked_parser_fingerprint(max_payload_bytes)
+    escalation_note = (
+        "; escalation-eligible: stream-safe, awaiting a bounded daemon whale pass"
+        if stream_safe
+        else "; escalation-blocked: non-stream-safe, requires manual/offline convergence"
+        if stream_safe is False
+        else ""
+    )
     detail = (
         "current parser census deferred before blob open: "
-        f"component payload {total_payload_bytes} exceeds envelope {max_payload_bytes}"
+        f"component payload {total_payload_bytes} exceeds envelope {max_payload_bytes}{escalation_note}"
     )
     with sqlite3.connect(archive_root / "source.db") as conn, conn:
         for raw_id in raw_ids:

@@ -552,6 +552,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         raw_artifact_limit: int,
         max_payload_bytes: int,
         prefetch_cache: object = None,
+        raw_artifact_id: str | None = None,
     ) -> FakeResult:
         order.append("materialize")
         calls["archive_root"] = config.archive_root
@@ -560,6 +561,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["raw_artifact_limit"] = raw_artifact_limit
         calls["max_payload_bytes"] = max_payload_bytes
         calls["prefetch_cache"] = prefetch_cache
+        calls["raw_artifact_id"] = raw_artifact_id
         return FakeResult()
 
     def fake_recover(config: Config) -> tuple[str, ...]:
@@ -605,6 +607,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "raw_artifact_limit": 11,
         "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
         "prefetch_cache": None,
+        "raw_artifact_id": None,
         "recover_archive_root": tmp_path / "archive",
         "frontier_archive_root": tmp_path / "archive",
         "frontier_limit": 8,
@@ -4200,3 +4203,196 @@ def test_periodic_raw_materialization_convergence_resumes_trickle_once_bulk_rebu
 
     assert trickle_calls == ["maintenance.raw_materialization"]
     assert len(routed) >= 1  # the suppression branch drove at least one bulk pass first
+
+
+# polylogue-t93b: the daemon's whale-pass escalation tier. A component
+# permanently resource-blocked at the ordinary fast-path envelope must not
+# stay blocked forever -- the periodic conveyor schedules a dedicated,
+# bounded pass for it once (and only once) the ordinary trickle backlog is
+# genuinely quiescent for the tick.
+
+
+def test_periodic_raw_materialization_convergence_schedules_whale_pass_on_quiescence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quiescence (no remaining candidates, no progress) must trigger exactly
+    one whale-pass attempt per tick, after the trickle burst settles.
+
+    Anti-vacuity: deleting the ``if quiescent and not ...: await
+    _maybe_run_raw_materialization_whale_pass()`` call this test patches
+    (i.e. reverting the daemon wiring in polylogue/daemon/cli.py) makes
+    ``whale_calls == [1]`` fail with an empty list -- verified by running
+    this exact assertion against the unmodified pre-patch source tree
+    during implementation.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    whale_calls: list[int] = []
+
+    async def fake_whale_pass() -> bool:
+        whale_calls.append(1)
+        return False
+
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        return RawMaterializationCounts(remaining_candidates=0)
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale_pass)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert whale_calls == [1]
+
+
+def test_periodic_raw_materialization_convergence_skips_whale_pass_mid_burst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While the ordinary trickle conveyor is still making progress (not
+    quiescent), the whale pass must not be attempted -- it only runs once
+    the ordinary backlog settles for the tick."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import RawMaterializationCounts
+
+    whale_calls: list[int] = []
+
+    async def fake_whale_pass() -> bool:
+        whale_calls.append(1)
+        return False
+
+    remaining_schedule = [5, 0]
+
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        remaining = remaining_schedule.pop(0)
+        return RawMaterializationCounts(repaired_sessions=1, remaining_candidates=remaining)
+
+    async def fake_sleep(seconds: float) -> None:
+        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale_pass)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert remaining_schedule == []
+    # Quiescence is only reached on the SECOND pass (remaining=0); the whale
+    # pass fires exactly once, after the burst settles -- not on the first,
+    # still-progressing pass.
+    assert whale_calls == [1]
+
+
+def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A found whale candidate must run through the writer coordinator
+    scoped to that one raw id at the resolved whale envelope, and emit
+    start/completion daemon events carrying the seed id and envelope."""
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(daemon_whale_raw_materialization=True, raw_authority_whale_payload_bytes=None),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.whale_pass_candidate",
+        lambda _config, **_kwargs: "whale-seed-raw-id",
+    )
+
+    run_sync_calls: list[tuple[str, str, int]] = []
+
+    async def fake_run_sync(actor: str, func: object, *_args: object, **_kwargs: object) -> object:
+        partial = cast("functools.partial[object]", func)
+        run_sync_calls.append((actor, partial.keywords["raw_artifact_id"], partial.keywords["max_payload_bytes"]))
+        return SimpleNamespace(success=True, repaired_count=3, detail="whale converged")
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+
+    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
+
+    assert attempted is True
+    assert run_sync_calls == [
+        (
+            "maintenance.raw_materialization_whale",
+            "whale-seed-raw-id",
+            daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+        )
+    ]
+    kinds = [kind for kind, _payload in events]
+    assert kinds == ["raw_materialization_whale_pass_started", "raw_materialization_whale_pass_completed"]
+    assert events[0][1] == {
+        "seed_raw_id": "whale-seed-raw-id",
+        "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+    }
+    assert events[1][1] == {
+        "seed_raw_id": "whale-seed-raw-id",
+        "success": True,
+        "repaired_count": 3,
+        "detail": "whale converged",
+    }
+
+
+def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No qualifying component this tick must never touch the writer
+    coordinator -- the read-only candidate lookup is the only thing that
+    runs."""
+    from polylogue.daemon import cli as daemon_cli
+
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(daemon_whale_raw_materialization=True, raw_authority_whale_payload_bytes=None),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.whale_pass_candidate",
+        lambda _config, **_kwargs: None,
+    )
+
+    def fail_coordinator() -> object:
+        pytest.fail("no candidate found -- must not touch the writer coordinator")
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", fail_coordinator)
+
+    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
+
+    assert attempted is False
+
+
+def test_maybe_run_raw_materialization_whale_pass_respects_off_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``daemon_whale_raw_materialization=False`` must hold a whale
+    component fully offline-manual (the pre-polylogue-t93b behavior) --
+    neither the candidate lookup nor the writer coordinator run."""
+    from polylogue.daemon import cli as daemon_cli
+
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(daemon_whale_raw_materialization=False, raw_authority_whale_payload_bytes=None),
+    )
+
+    def fail_candidate_lookup(_config: object, **_kwargs: object) -> object:
+        pytest.fail("off switch must short-circuit before the candidate lookup")
+
+    monkeypatch.setattr("polylogue.product.raw_authority.whale_pass_candidate", fail_candidate_lookup)
+
+    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
+
+    assert attempted is False
