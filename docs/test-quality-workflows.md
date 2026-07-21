@@ -31,9 +31,9 @@ Current registry snapshot:
 - covered declared operation targets: `46`
 - uncovered runtime paths: `thread-query-loop`, `tool-usage-query-loop`
 - uncovered runtime artifacts: `thread_results`, `tool_usage_results`
-- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-identity-reset`, `mutate-remove-tag`, `mutate-session-excision`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
+- uncovered runtime operations: `mutate-add-mark`, `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-identity-reset`, `mutate-remove-mark`, `mutate-remove-tag`, `mutate-session-excision`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
 - uncovered maintenance targets: `empty_sessions`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `superseded_raw_snapshots`
-- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-identity-reset`, `mutate-remove-tag`, `mutate-session-excision`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
+- uncovered declared operation targets: `mutate-add-mark`, `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-identity-reset`, `mutate-remove-mark`, `mutate-remove-tag`, `mutate-session-excision`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
 
 Inspect the full authored map with:
 

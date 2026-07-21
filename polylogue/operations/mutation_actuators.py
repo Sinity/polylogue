@@ -1,11 +1,20 @@
-"""Domain actuators for the two t46.9/kwsb.2 named routes.
+"""Domain actuators for the t46.9/kwsb.2 named routes.
 
 Each actuator wraps exactly one existing low-level mutation primitive
 (``ArchiveStore.delete_sessions``, ``security.excision``, the identity-reset
-tombstone helpers) behind the :class:`~polylogue.operations.mutation_transaction
-.MutationActuator` protocol. Actuators own target resolution and the real
-mutation; they never enforce authorization -- every surface drives them
-through :class:`~polylogue.operations.mutation_transaction.OperationExecutor`.
+tombstone helpers, the ``ArchiveStore`` tag/metadata/mark writers) behind the
+:class:`~polylogue.operations.mutation_transaction.MutationActuator` protocol.
+Actuators own target resolution and the real mutation; they never enforce
+authorization -- every surface drives them through
+:class:`~polylogue.operations.mutation_transaction.OperationExecutor`.
+
+Phase 1 (PR #3249) shipped ``SessionDeleteActuator``/``SessionExcisionActuator``/
+``IdentityResetActuator`` for the ``delete``/``excise``/``reset`` destructive
+classes, all requiring ``confirm_flag``-strength authorization. Phase 2
+(polylogue-t46.9/polylogue-kwsb.2) adds the ``reversible``-class tag, metadata,
+and mark actuators below: their ``required_confirmation`` is ``role_only`` --
+AC4 requires reversible writes not acquire unnecessary interactive
+confirmation, since undo is another write through the same actuator.
 """
 
 from __future__ import annotations
@@ -324,11 +333,429 @@ def _resolve_existing_session_ids(archive_root: Path, session_ids: tuple[str, ..
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Tag mutations (mutate-add-tag / mutate-remove-tag / mutate-bulk-tag-sessions)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TagAddArgs:
+    """Shared prepare/apply argument shape for single-session tag add."""
+
+    archive: ArchiveStore
+    session_id: str
+    tag: str
+    author_ref: str | None = None
+    author_kind: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TagAddActuator:
+    """Actuator for ``mutate-add-tag``: reversible user.db tag assertion.
+
+    Real production mutation: ``ArchiveStore.add_user_tags`` -- the same
+    primitive ``PolylogueArchiveMixin.add_tag`` (reached by CLI's
+    ``apply_modifiers``/query-mutation path and MCP's
+    ``write(operation='add_tag')``) already calls. Undo is
+    ``mutate-remove-tag`` through the same primitive family, so this is
+    ``reversible``-class and requires only ``role_only`` confirmation (AC4).
+    """
+
+    operation: str = "mutate-add-tag"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: TagAddArgs) -> MutationPlan:
+        resolved = args.archive.resolve_session_id(args.session_id)
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(make_target_ref("session", resolved),),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"session_id": resolved, "tag": args.tag},
+        )
+
+    def apply(self, plan: MutationPlan, args: TagAddArgs) -> MutationReceipt:
+        session_id = str(plan.context["session_id"])
+        tag = str(plan.context["tag"])
+        changed = args.archive.add_user_tags(
+            (session_id,), (tag,), author_ref=args.author_ref, author_kind=args.author_kind
+        )
+        status: MutationTargetStatus = "applied" if changed else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=changed,
+            detail=None if changed else "already_present",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"changed": changed},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TagRemoveArgs:
+    """Shared prepare/apply argument shape for single-session tag remove."""
+
+    archive: ArchiveStore
+    session_id: str
+    tag: str
+
+
+@dataclass(frozen=True, slots=True)
+class TagRemoveActuator:
+    """Actuator for ``mutate-remove-tag``: reversible user.db tag retraction.
+
+    Real production mutation: ``ArchiveStore.remove_user_tags`` -- marks the
+    tag assertion deleted rather than physically removing it, so this is
+    itself reversible via ``mutate-add-tag``.
+    """
+
+    operation: str = "mutate-remove-tag"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: TagRemoveArgs) -> MutationPlan:
+        resolved = args.archive.resolve_session_id(args.session_id)
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(make_target_ref("session", resolved),),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"session_id": resolved, "tag": args.tag},
+        )
+
+    def apply(self, plan: MutationPlan, args: TagRemoveArgs) -> MutationReceipt:
+        session_id = str(plan.context["session_id"])
+        tag = str(plan.context["tag"])
+        changed = args.archive.remove_user_tags((session_id,), (tag,))
+        status: MutationTargetStatus = "applied" if changed else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=changed,
+            detail=None if changed else "tag_not_present",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"changed": changed},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BulkTagArgs:
+    """Shared prepare/apply argument shape for multi-session bulk tagging."""
+
+    archive: ArchiveStore
+    session_ids: tuple[str, ...]
+    tags: tuple[str, ...]
+    author_ref: str | None = None
+    author_kind: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BulkTagActuator:
+    """Actuator for ``mutate-bulk-tag-sessions``: reversible multi-target tagging.
+
+    Real production mutation: ``ArchiveStore.add_user_tags`` applied per
+    resolved session, mirroring ``PolylogueArchiveMixin.bulk_tag_sessions``'s
+    existing skip-unresolved behavior -- ``prepare`` only plans sessions that
+    resolve against live state right now, same pattern as
+    ``SessionDeleteActuator``.
+    """
+
+    operation: str = "mutate-bulk-tag-sessions"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: BulkTagArgs) -> MutationPlan:
+        resolved: list[str] = []
+        for session_id in dict.fromkeys(args.session_ids):
+            try:
+                resolved.append(args.archive.resolve_session_id(session_id))
+            except KeyError:
+                continue
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=tuple(make_target_ref("session", sid) for sid in resolved),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "session_ids": resolved,
+                "tags": list(args.tags),
+                "requested_session_count": len(args.session_ids),
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: BulkTagArgs) -> MutationReceipt:
+        session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
+        tags: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("tags") or ()))
+        requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        affected = 0
+        for session_id in session_ids:
+            if (
+                args.archive.add_user_tags(
+                    (session_id,), tags, author_ref=args.author_ref, author_kind=args.author_kind
+                )
+                > 0
+            ):
+                affected += 1
+        status: MutationTargetStatus = "applied" if affected else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=affected,
+            detail=None if affected else "no_sessions_changed",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={
+                "session_count": requested_count,
+                "tag_count": len(tags),
+                "affected_count": affected,
+                "skipped_count": requested_count - affected,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Metadata mutations (mutate-set-metadata / mutate-delete-metadata)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataSetArgs:
+    """Shared prepare/apply argument shape for session metadata set."""
+
+    archive: ArchiveStore
+    session_id: str
+    key: str
+    value: object
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataSetActuator:
+    """Actuator for ``mutate-set-metadata``: reversible user.db metadata write.
+
+    Real production mutation: ``ArchiveStore.set_user_metadata``. Key
+    validation (``validate_metadata_key``) stays in the adapter layer, run
+    before the actuator is constructed, matching the existing
+    ``PolylogueArchiveMixin.set_metadata`` contract.
+    """
+
+    operation: str = "mutate-set-metadata"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: MetadataSetArgs) -> MutationPlan:
+        resolved = args.archive.resolve_session_id(args.session_id)
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(make_target_ref("session", resolved),),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"session_id": resolved, "key": args.key, "value": args.value},
+        )
+
+    def apply(self, plan: MutationPlan, args: MetadataSetArgs) -> MutationReceipt:
+        session_id = str(plan.context["session_id"])
+        key = str(plan.context["key"])
+        value = plan.context["value"]
+        changed = args.archive.set_user_metadata((session_id,), ((key, value),))
+        status: MutationTargetStatus = "applied" if changed else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=changed,
+            detail=None if changed else "value_unchanged",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"changed": changed},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataDeleteArgs:
+    """Shared prepare/apply argument shape for session metadata delete."""
+
+    archive: ArchiveStore
+    session_id: str
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataDeleteActuator:
+    """Actuator for ``mutate-delete-metadata``: reversible user.db metadata retraction.
+
+    Real production mutation: ``ArchiveStore.delete_user_metadata``, which
+    marks the metadata assertion deleted (undo = ``mutate-set-metadata``).
+    """
+
+    operation: str = "mutate-delete-metadata"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: MetadataDeleteArgs) -> MutationPlan:
+        resolved = args.archive.resolve_session_id(args.session_id)
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(make_target_ref("session", resolved),),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"session_id": resolved, "key": args.key},
+        )
+
+    def apply(self, plan: MutationPlan, args: MetadataDeleteArgs) -> MutationReceipt:
+        session_id = str(plan.context["session_id"])
+        key = str(plan.context["key"])
+        changed = args.archive.delete_user_metadata(session_id, key)
+        status: MutationTargetStatus = "applied" if changed else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=changed,
+            detail=None if changed else "key_not_found",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"changed": changed},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mark mutations (mutate-add-mark / mutate-remove-mark) -- the first
+# MCP no-spec mutation family (census "add_mark / remove_mark" row) to gain
+# an OperationSpec and executor route.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MarkArgs:
+    """Shared prepare/apply argument shape for mark add/remove.
+
+    ``target_type``/``target_id`` are resolved once by the caller (mirroring
+    ``IdentityResetActuator``'s "resolve once, preview and mutate the
+    identical set" pattern) via
+    ``PolylogueArchiveMixin._resolve_user_state_target`` before the actuator
+    ever runs -- a mark target can be a session, message, or block, and that
+    resolution is async (may consult insight-derived indexes), while
+    ``MutationActuator.prepare``/``apply`` are synchronous.
+    """
+
+    archive: ArchiveStore
+    target_type: str
+    target_id: str
+    mark_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class MarkAddActuator:
+    """Actuator for ``mutate-add-mark``: reversible user.db mark assertion.
+
+    Real production mutation: ``ArchiveStore.add_mark``, the same primitive
+    ``PolylogueArchiveMixin.add_mark`` (reached by MCP's
+    ``write(operation='add_mark')``) already calls. Undo is
+    ``mutate-remove-mark``.
+    """
+
+    operation: str = "mutate-add-mark"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: MarkArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"{args.target_type}:{args.target_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"target_type": args.target_type, "target_id": args.target_id, "mark_type": args.mark_type},
+        )
+
+    def apply(self, plan: MutationPlan, args: MarkArgs) -> MutationReceipt:
+        added = args.archive.add_mark(args.target_type, args.target_id, args.mark_type)
+        status: MutationTargetStatus = "applied" if added else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=1 if added else 0,
+            detail=None if added else "already_present",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"added": added},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MarkRemoveActuator:
+    """Actuator for ``mutate-remove-mark``: reversible user.db mark retraction.
+
+    Real production mutation: ``ArchiveStore.remove_mark`` (undo =
+    ``mutate-add-mark``).
+    """
+
+    operation: str = "mutate-remove-mark"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: MarkArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"{args.target_type}:{args.target_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"target_type": args.target_type, "target_id": args.target_id, "mark_type": args.mark_type},
+        )
+
+    def apply(self, plan: MutationPlan, args: MarkArgs) -> MutationReceipt:
+        removed = args.archive.remove_mark(args.target_type, args.target_id, args.mark_type)
+        status: MutationTargetStatus = "applied" if removed else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=1 if removed else 0,
+            detail=None if removed else "not_present",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"removed": removed},
+        )
+
+
 __all__ = [
+    "BulkTagActuator",
+    "BulkTagArgs",
     "IdentityResetActuator",
     "IdentityResetArgs",
+    "MarkAddActuator",
+    "MarkArgs",
+    "MarkRemoveActuator",
+    "MetadataDeleteActuator",
+    "MetadataDeleteArgs",
+    "MetadataSetActuator",
+    "MetadataSetArgs",
     "SessionDeleteActuator",
     "SessionDeleteArgs",
     "SessionExcisionActuator",
     "SessionExcisionArgs",
+    "TagAddActuator",
+    "TagAddArgs",
+    "TagRemoveActuator",
+    "TagRemoveArgs",
 ]
