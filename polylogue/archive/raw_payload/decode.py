@@ -15,8 +15,6 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
 
-_HERMES_STATE_DB_MARKER = "hermes_state_db"
-
 WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
 
@@ -289,17 +287,16 @@ def build_raw_payload_envelope(
     Python list. This avoids reading the whole file into one byte string,
     but grouped-provider parses still hold the decoded records in memory.
     """
-    if isinstance(raw_content, Path) and _looks_like_hermes_state_db(raw_content):
-        marker: JSONDocument = {"polylogue_artifact": _HERMES_STATE_DB_MARKER, "state_db_path": str(raw_content)}
-        if source_path is not None:
-            marker["profile_root"] = str(Path(source_path).parent)
-        provider = Provider.HERMES
-        return RawPayloadEnvelope(
-            payload=marker,
-            provider=provider,
-            wire_format="json",
-            artifact=classify_artifact(marker, provider=provider, source_path=source_path),
-        )
+    if isinstance(raw_content, Path):
+        hermes_marker = _hermes_sqlite_marker_payload(raw_content, source_path=source_path)
+        if hermes_marker is not None:
+            provider = Provider.HERMES
+            return RawPayloadEnvelope(
+                payload=hermes_marker,
+                provider=provider,
+                wire_format="json",
+                artifact=classify_artifact(hermes_marker, provider=provider, source_path=source_path),
+            )
     normalized_path = str(source_path or "").lower()
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
     preferred_provider = payload_provider or fallback_provider
@@ -332,14 +329,33 @@ def build_raw_payload_envelope(
     )
 
 
-def _looks_like_hermes_state_db(path: Path) -> bool:
-    # Import lazily: ``dispatch`` imports the Hermes parser while this module
-    # imports ``dispatch`` for ordinary JSON provider detection. At runtime the
-    # module graph is complete, and delegating here keeps raw inspection on the
-    # same versioned structural contract as actual parsing.
-    from polylogue.sources.parsers import hermes_state
+def _hermes_sqlite_marker_payload(path: Path, *, source_path: str | Path | None) -> JSONDocument | None:
+    """Route a raw Hermes SQLite blob (state.db / verification_evidence.db) to its marker payload.
 
-    return hermes_state.looks_like_state_db_path(path)
+    Binary-capable detection BEFORE any text decode, mirroring the rebuild
+    path's provider dispatch (``sources.revision_backfill._parse_one``, which
+    probes ``looks_like_sqlite_bytes`` then the same per-artifact
+    ``looks_like_*_path`` structural checks used here). ``ingest_record``
+    (``pipeline/services/ingest_worker.py``) calls ``build_raw_payload_envelope``
+    for every raw, including binary ones, so this is the single place that
+    must recognize a SQLite-backed Hermes artifact before the generic
+    JSON/JSONL decode path runs and rejects the bytes as invalid UTF-8
+    (polylogue-zoc3: ingest and rebuild previously disagreed here for
+    ``verification_evidence.db`` raws, which only the rebuild path handled).
+
+    Import lazily: ``dispatch`` imports the Hermes parsers while this module
+    imports ``dispatch`` for ordinary JSON provider detection. At runtime the
+    module graph is complete, and delegating here keeps raw inspection on the
+    same versioned structural contract as actual parsing.
+    """
+    from polylogue.sources.parsers import hermes_state, hermes_verification
+
+    profile_root = Path(source_path).parent if source_path is not None else None
+    if hermes_state.looks_like_state_db_path(path):
+        return hermes_state.marker_payload(path, profile_root=profile_root)
+    if hermes_verification.looks_like_verification_evidence_db_path(path):
+        return hermes_verification.marker_payload(path, profile_root=profile_root)
+    return None
 
 
 __all__ = [

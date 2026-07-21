@@ -131,6 +131,24 @@ def classify_artifact(
 ) -> ArtifactClassification:
     """Classify a payload/document into a session or sidecar cohort."""
     provider_token = Provider.from_string(provider)
+
+    # Hermes SQLite marker payloads (state.db / verification_evidence.db)
+    # must win over the path-only "SQLite evidence sidecar" classification
+    # below (polylogue-zoc3). The raw *.db path itself always classifies as
+    # a non-session sidecar (its bytes are still opaque SQLite, not a JSON
+    # marker) -- see `classify_artifact_path`'s "Hermes SQLite evidence
+    # sidecar" branch -- but once the raw payload has been decoded into the
+    # synthetic marker dict (`build_raw_payload_envelope`'s
+    # `_hermes_sqlite_marker_payload`), `source_path` still points at the
+    # same *.db filename. Checking the marker dict first, before consulting
+    # `classify_artifact_path`, keeps that positive session classification
+    # from being shadowed by the path-only sidecar rule for the exact same
+    # filename.
+    if isinstance(payload, dict):
+        marker_classification = _classify_hermes_sqlite_marker(payload, provider=provider_token)
+        if marker_classification is not None:
+            return marker_classification
+
     explicit = classify_artifact_path(source_path, provider=provider_token)
     if explicit is not None:
         return explicit
@@ -244,6 +262,41 @@ def _classify_list(
     )
 
 
+def _classify_hermes_sqlite_marker(
+    payload: JSONDocument,
+    *,
+    provider: Provider,
+) -> ArtifactClassification | None:
+    """Classify a decoded Hermes SQLite marker payload (state.db / verification_evidence.db).
+
+    Shared by `classify_artifact` (checked before the path-only sidecar rule,
+    polylogue-zoc3) and `_classify_dict` (the ordinary dict-classification
+    fallthrough), so both call sites agree on the marker shape.
+    """
+    if provider is not Provider.HERMES:
+        return None
+    artifact_marker = payload.get("polylogue_artifact")
+    if artifact_marker == _HERMES_STATE_DB_MARKER:
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="Hermes state.db SQLite archive marker",
+        )
+    if artifact_marker == _HERMES_VERIFICATION_DB_MARKER:
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="Hermes verification_evidence.db SQLite archive marker",
+        )
+    return None
+
+
 def _classify_dict(
     payload: JSONDocument,
     *,
@@ -274,25 +327,8 @@ def _classify_dict(
             reason="Antigravity language-server Markdown export",
         )
 
-    if provider is Provider.HERMES and payload.get("polylogue_artifact") == _HERMES_STATE_DB_MARKER:
-        return ArtifactClassification(
-            provider=provider,
-            kind=ArtifactKind.SESSION_DOCUMENT,
-            parse_as_session=True,
-            schema_eligible=True,
-            default_priority=120,
-            reason="Hermes state.db SQLite archive marker",
-        )
-
-    if provider is Provider.HERMES and payload.get("polylogue_artifact") == _HERMES_VERIFICATION_DB_MARKER:
-        return ArtifactClassification(
-            provider=provider,
-            kind=ArtifactKind.SESSION_DOCUMENT,
-            parse_as_session=True,
-            schema_eligible=True,
-            default_priority=120,
-            reason="Hermes verification_evidence.db SQLite archive marker",
-        )
+    if (marker_classification := _classify_hermes_sqlite_marker(payload, provider=provider)) is not None:
+        return marker_classification
 
     # Deferred import: `sources.parsers.hermes_spans` sits downstream of
     # `sources/__init__.py` (drive -> dispatch -> decoders -> decoder_zip),
