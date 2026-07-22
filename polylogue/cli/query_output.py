@@ -22,7 +22,7 @@ from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
 from polylogue.cli.query_semantic import (
     SemanticStatsSlice,
-    action_matches_slice,
+    action_matches_dimension_filters,
     filtered_actions,
     normalized_tool_name,
     output_stats_by_semantic_ids,
@@ -31,11 +31,6 @@ from polylogue.cli.query_semantic import (
 )
 from polylogue.cli.query_stats import (
     emit_structured_stats,
-    output_stats_by_profile_ids,
-    output_stats_by_profile_query,
-    output_stats_by_profile_summaries,
-    output_stats_by_sessions,
-    output_stats_by_summaries,
     output_stats_sql,
 )
 from polylogue.core.json import JSONDocument
@@ -918,7 +913,6 @@ def output_results(
 
 # Internal aliases used by query.py and tests
 _output_summary_list = output_summary_list
-_output_stats_by = output_stats_by_sessions
 _write_message_streaming = write_message_streaming
 _copy_to_clipboard = copy_to_clipboard
 _open_in_browser = open_in_browser
@@ -948,7 +942,7 @@ def _send_output(
 
 __all__ = [
     "SemanticStatsSlice",
-    "action_matches_slice",
+    "action_matches_dimension_filters",
     "sessions_to_csv",
     "copy_to_clipboard",
     "deliver_query_output",
@@ -963,14 +957,9 @@ __all__ = [
     "output_results",
     "format_search_envelope",
     "output_search_hits",
-    "output_stats_by_sessions",
-    "output_stats_by_profile_ids",
-    "output_stats_by_profile_query",
-    "output_stats_by_profile_summaries",
     "output_stats_by_semantic_ids",
     "output_stats_by_semantic_query",
     "output_stats_by_semantic_summaries",
-    "output_stats_by_summaries",
     "output_stats_sql",
     "output_summary_list",
     "render_session_rich",

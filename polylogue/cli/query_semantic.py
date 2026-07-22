@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.archive.query.runtime_matching import paths_match_referenced_terms
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_stats import emit_structured_stats
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from polylogue.archive.actions.actions import Action
     from polylogue.archive.models import SessionSummary
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -60,19 +63,24 @@ def normalized_tool_name(action: Action) -> str:
     return action.normalized_tool_name
 
 
-def referenced_path_matches_slice(action: Action, referenced_path: tuple[str, ...]) -> bool:
-    if not referenced_path:
-        return True
-    affected_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
-    if not affected_paths:
-        return False
-    return any(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in referenced_path)
+def session_matches_referenced_path(actions: Sequence[Action], referenced_path: tuple[str, ...]) -> bool:
+    """Session-level referenced-path membership, via the shared substrate predicate.
+
+    Aggregates affected paths across every action in the session before matching,
+    matching ``archive.query.runtime_matching.matches_referenced_path`` exactly so
+    the semantic-stats surface selects the same session set as the query filter.
+    """
+    affected_paths = tuple(path for action in actions for path in action.affected_paths)
+    return paths_match_referenced_terms(affected_paths, referenced_path)
 
 
-def action_matches_slice(action: Action, semantic_slice: SemanticStatsSlice) -> bool:
-    if not referenced_path_matches_slice(action, semantic_slice.referenced_path):
-        return False
+def action_matches_dimension_filters(action: Action, semantic_slice: SemanticStatsSlice) -> bool:
+    """Non-path dimension filters (action/tool/text terms) for a single action.
 
+    Referenced-path matching is deliberately not part of this function — it is a
+    session-level concern (see ``session_matches_referenced_path``), not a
+    per-action one.
+    """
     if "none" in semantic_slice.action_terms:
         return False
     required_action_terms = {term for term in semantic_slice.action_terms if term != "none"}
@@ -102,7 +110,9 @@ def filtered_actions(
 ) -> tuple[Action, ...]:
     if not semantic_slice.has_filters():
         return facts.actions
-    return tuple(action for action in facts.actions if action_matches_slice(action, semantic_slice))
+    if not session_matches_referenced_path(facts.actions, semantic_slice.referenced_path):
+        return ()
+    return tuple(action for action in facts.actions if action_matches_dimension_filters(action, semantic_slice))
 
 
 # ---------------------------------------------------------------------------
@@ -177,14 +187,15 @@ async def output_stats_by_semantic_ids(
         batch_ids = session_ids[offset : offset + batch_size]
         # Actions are derived on read from each session's tool blocks.
         actions_by_session = await poly.get_actions_batch(batch_ids)
-        session_actions = {
-            session_id: tuple(
-                action
-                for action in actions_by_session.get(session_id, ())
-                if action_matches_slice(action, semantic_slice)
+        session_actions: dict[str, tuple[Action, ...]] = {}
+        for session_id in batch_ids:
+            actions = actions_by_session.get(session_id, ())
+            if not session_matches_referenced_path(actions, semantic_slice.referenced_path):
+                session_actions[session_id] = ()
+                continue
+            session_actions[session_id] = tuple(
+                action for action in actions if action_matches_dimension_filters(action, semantic_slice)
             )
-            for session_id in batch_ids
-        }
 
         for session_id in batch_ids:
             filtered_actions = session_actions.get(session_id, ())
@@ -254,11 +265,11 @@ async def output_stats_by_semantic_ids(
 
 __all__ = [
     "SemanticStatsSlice",
-    "action_matches_slice",
+    "action_matches_dimension_filters",
     "filtered_actions",
     "normalized_tool_name",
     "output_stats_by_semantic_ids",
     "output_stats_by_semantic_query",
     "output_stats_by_semantic_summaries",
-    "referenced_path_matches_slice",
+    "session_matches_referenced_path",
 ]
