@@ -1043,9 +1043,9 @@ def _apply_strategy(
         _inspect_browser_capture_origin_strategy,
         _inspect_duplicate_raw_identity,
         _inspect_quarantined_accepted_raw,
+        _partition_quarantined_raw_repair_blob_budget,
         _stage_browser_origin_copy_forward_source,
         _stage_quarantined_census_cohort,
-        _validate_quarantined_raw_repair_blob_budget,
         _verify_browser_origin_copy_forward_source_stage,
     )
 
@@ -1166,7 +1166,13 @@ def _apply_strategy(
             _attach_repair_index(source_conn, index_db)
             source_conn.execute("BEGIN IMMEDIATE")
             try:
-                _validate_quarantined_raw_repair_blob_budget(source_conn, [item.raw_id])
+                # Apply-side stays fail-closed: an authorized plan whose single
+                # target trips the blob budget must abort, not silently skip.
+                _, budget_excluded = _partition_quarantined_raw_repair_blob_budget(source_conn, [item.raw_id])
+                if budget_excluded:
+                    raise RuntimeError(
+                        f"quarantine repair blob budget refused {item.raw_id}: {budget_excluded[0].reason}"
+                    )
                 quarantine_locked = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
                 if _quarantine_strategy_witness(quarantine_locked) != item.strategy_witness:
                     raise RuntimeError("quarantine strategy proof changed after plan authorization")
