@@ -2913,6 +2913,28 @@ def test_raw_materialization_whale_pass_candidate_selects_stream_safe_blocked_co
     )
 
 
+def test_stream_safe_resolves_non_candidate_component_members_via_expanded_maps() -> None:
+    """A component's already-materialized (non-candidate) members are absent from
+    raw_origins/raw_source_paths (candidate-only) but present in the expanded
+    maps. Stream-safety must resolve them there, not read origin=None and judge a
+    fully stream-safe codex component non-safe -- the bug that made the daemon
+    whale pass skip the 6.33GB codex witness component (polylogue-t93b)."""
+    candidates = repair_mod.RawMaterializationCandidates(
+        raw_ids=["cand"],
+        missing_blobs=0,
+        already_parsed=0,
+        raw_origins={"cand": "codex-session"},
+        raw_source_paths={"cand": "/c/rollout-2026-a.jsonl"},
+        expanded_origins={"cand": "codex-session", "noncand": "codex-session"},
+        expanded_source_paths={"cand": "/c/rollout-2026-a.jsonl", "noncand": "/c/rollout-2026-b.jsonl"},
+    )
+    # Candidate member: stream-safe as before.
+    assert repair_mod._raw_materialization_stream_safe(candidates, "cand") is True
+    # Non-candidate member present ONLY in the expanded maps must ALSO be
+    # judged by its real codex origin -- True, not False from a missing lookup.
+    assert repair_mod._raw_materialization_stream_safe(candidates, "noncand") is True
+
+
 def test_raw_materialization_whale_pass_candidate_excludes_non_stream_safe_component(tmp_path: Path) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
