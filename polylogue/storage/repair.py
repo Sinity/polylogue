@@ -304,8 +304,22 @@ def _attach_repair_index(conn: sqlite3.Connection, index_db: Path) -> None:
     conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
 
 
-def _validate_quarantined_raw_repair_blob_budget(conn: sqlite3.Connection, raw_ids: list[str]) -> None:
-    """Reject a bounded repair set before any retained blob is loaded into memory."""
+def _partition_quarantined_raw_repair_blob_budget(
+    conn: sqlite3.Connection, raw_ids: list[str]
+) -> tuple[list[str], list[QuarantinedAcceptedRawRepairItem]]:
+    """Split a repair set into (inspectable, budget-excluded) before any
+    retained blob is loaded into memory.
+
+    Live incident 2026-07-22: a single 298 MB codex whale raw over the
+    256 MiB per-target limit made this check (then a hard ``RuntimeError``)
+    abort the daemon's entire raw-authority frontier convergence pass every
+    cycle — one oversized target poisoned the whole batch, so NOTHING on the
+    frontier could converge. Whale targets and aggregate-budget overflow are
+    per-target *classifications* (typed ineligible items the caller reports
+    and retries/escalates), never batch-fatal exceptions. The memory-safety
+    guarantee is unchanged: excluded targets are returned before any blob
+    load happens.
+    """
     rows = conn.execute(
         """
         SELECT raw_id, blob_size FROM raw_sessions
@@ -313,16 +327,34 @@ def _validate_quarantined_raw_repair_blob_budget(conn: sqlite3.Connection, raw_i
         """,
         (json.dumps(raw_ids),),
     ).fetchall()
-    oversized = [
-        str(row["raw_id"]) for row in rows if int(row["blob_size"]) > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
-    ]
-    if oversized:
-        raise RuntimeError(
-            "quarantined accepted raw repair exceeds the per-target retained-blob limit: " + ", ".join(oversized)
-        )
-    total = sum(int(row["blob_size"]) for row in rows)
-    if total > _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES:
-        raise RuntimeError("quarantined accepted raw repair exceeds the aggregate retained-blob limit")
+    sizes = {str(row["raw_id"]): int(row["blob_size"]) for row in rows}
+    inspectable: list[str] = []
+    excluded: list[QuarantinedAcceptedRawRepairItem] = []
+    total = 0
+    for raw_id in raw_ids:
+        size = sizes.get(raw_id)
+        if size is not None and size > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES:
+            excluded.append(
+                _quarantined_raw_item(
+                    raw_id,
+                    f"retained blob ({size} bytes) exceeds the per-target repair limit "
+                    f"({_QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES} bytes)",
+                )
+            )
+            continue
+        if size is not None and total + size > _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES:
+            # Retryable in a later batch, not a property of the target itself.
+            excluded.append(
+                _quarantined_raw_item(
+                    raw_id,
+                    "deferred: aggregate retained-blob repair budget exhausted by earlier targets in this batch",
+                )
+            )
+            continue
+        if size is not None:
+            total += size
+        inspectable.append(raw_id)
+    return inspectable, excluded
 
 
 def _proof_digest(item: QuarantinedAcceptedRawRepairItem) -> str:
@@ -1149,8 +1181,12 @@ def inspect_quarantined_accepted_raws(
         raise RuntimeError("source or index tier is missing")
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         _attach_repair_index(conn, index_db)
-        _validate_quarantined_raw_repair_blob_budget(conn, raw_ids)
-        return tuple(_inspect_quarantined_accepted_raw(archive_root, raw_id, conn=conn) for raw_id in raw_ids)
+        inspectable, excluded = _partition_quarantined_raw_repair_blob_budget(conn, raw_ids)
+        by_id = {item.raw_id: item for item in excluded}
+        by_id.update(
+            {raw_id: _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=conn) for raw_id in inspectable}
+        )
+        return tuple(by_id[raw_id] for raw_id in raw_ids)
 
 
 def _browser_origin_ineligible(raw_id: str, reason: str) -> BrowserCaptureOriginRepairItem:
