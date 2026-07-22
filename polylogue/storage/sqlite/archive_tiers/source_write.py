@@ -533,6 +533,54 @@ def write_source_raw_session(
         return resolved_raw_id
 
 
+def write_source_hook_event(
+    conn: sqlite3.Connection,
+    *,
+    origin: Origin | str,
+    source_path: str,
+    payload: bytes,
+    acquired_at_ms: int,
+    raw_id: str,
+    hook_event: ArchiveHookEvent,
+    blob_publication_receipt_id: str | None = None,
+    manage_transaction: bool = True,
+) -> str:
+    """Persist a hook event WITHOUT minting a session.
+
+    A hook event (PreToolUse / PostToolUse / UserPromptSubmit / …) is evidence
+    *within* an existing session (identified by ``hook_event.session_native_id``),
+    never a conversation of its own. It therefore gets a durable ``raw_payload``
+    blob ref (so blob GC + copy-forward treat it like any other retained bytes)
+    and a ``raw_hook_events`` row, but — unlike :func:`write_source_raw_session` —
+    NO ``raw_sessions`` row. Writing a ``raw_sessions`` row per hook is exactly
+    the defect that inflated the archive with tens of thousands of empty
+    session shells (polylogue-31r1); ``raw_hook_events`` has no FK to
+    ``raw_sessions``, so the linkage stands on its own via ``session_native_id``.
+    """
+    conn.execute("PRAGMA foreign_keys = ON")
+    if _enum_value(origin) is None:
+        raise ValueError("origin is required for hook events")
+    blob_hash = deterministic_blob_hash(payload)
+    if is_blob_hash_excised(conn, blob_hash):
+        raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
+    blob_size = len(payload)
+    with conn if manage_transaction else nullcontext():
+        _insert_blob_ref(
+            conn,
+            ArchiveSourceBlobRef(
+                blob_hash=blob_hash,
+                raw_id=raw_id,
+                ref_type="raw_payload",
+                source_path=source_path,
+                size_bytes=blob_size,
+                acquired_at_ms=acquired_at_ms,
+                publication_receipt_id=blob_publication_receipt_id,
+            ),
+        )
+        _insert_hook_event(conn, raw_id, hook_event)
+    return raw_id
+
+
 def write_source_raw_session_blob_ref(
     conn: sqlite3.Connection,
     *,
