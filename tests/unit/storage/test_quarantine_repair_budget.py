@@ -67,6 +67,25 @@ def test_aggregate_overflow_defers_tail_targets(conn: sqlite3.Connection) -> Non
     assert "deferred" in excluded[0].reason
 
 
+def test_small_late_target_is_never_starved_by_large_earlier_ones(conn: sqlite3.Connection) -> None:
+    """Admission is smallest-first: a small target listed after two large ones
+    is still inspected, and the deferred tail is the largest target -- so a
+    stable input order can never permanently starve small targets."""
+    big_a, big_b, small = "a" * 64, "b" * 64, "c" * 64
+    big_size = _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
+    # Two per-target-cap blobs fill the aggregate budget exactly; the small
+    # target's 1024 bytes tip whichever big one is admitted last over the edge.
+    assert 2 * big_size == _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES
+    _seed(conn, {big_a: big_size, big_b: big_size, small: 1024})
+
+    inspectable, excluded = _partition_quarantined_raw_repair_blob_budget(conn, [big_a, big_b, small])
+
+    assert small in inspectable
+    assert len(inspectable) == 2
+    assert [item.raw_id for item in excluded] == [big_b]
+    assert "deferred" in excluded[0].reason
+
+
 def test_within_budget_set_is_fully_inspectable(conn: sqlite3.Connection) -> None:
     ids = ["c" * 64, "d" * 64]
     _seed(conn, dict.fromkeys(ids, 4096))

@@ -331,7 +331,15 @@ def _partition_quarantined_raw_repair_blob_budget(
     inspectable: list[str] = []
     excluded: list[QuarantinedAcceptedRawRepairItem] = []
     total = 0
-    for raw_id in raw_ids:
+    # Aggregate admission runs smallest-first (review finding on this PR):
+    # it maximizes how many targets each cycle inspects, guarantees a small
+    # target can never be starved by a larger earlier one, and naturally
+    # latches — once one target overflows the aggregate budget, every later
+    # (larger-or-equal) target overflows too, so "exhausted" is truthful for
+    # the whole deferred tail. Ties/unknown sizes keep input order (stable
+    # sort; unknown sizes cost 0 and are admitted for downstream typed
+    # missing-row reporting).
+    for raw_id in sorted(raw_ids, key=lambda rid: sizes.get(rid, 0)):
         size = sizes.get(raw_id)
         if size is not None and size > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES:
             excluded.append(
@@ -347,7 +355,7 @@ def _partition_quarantined_raw_repair_blob_budget(
             excluded.append(
                 _quarantined_raw_item(
                     raw_id,
-                    "deferred: aggregate retained-blob repair budget exhausted by earlier targets in this batch",
+                    "deferred: aggregate retained-blob repair budget exhausted by smaller targets in this batch",
                 )
             )
             continue
