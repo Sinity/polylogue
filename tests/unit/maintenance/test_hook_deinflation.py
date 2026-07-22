@@ -5,7 +5,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import Origin
+from polylogue.maintenance import hook_deinflation
 from polylogue.maintenance.hook_deinflation import repair_hook_session_inflation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -100,3 +103,27 @@ def test_repair_removes_hook_sessions_keeps_evidence_and_real_sessions(tmp_path:
     with sqlite3.connect(index_db) as conn:
         rows = {r[0] for r in conn.execute("SELECT native_id FROM sessions")}
     assert rows == {"conv-real", "empty-real"}  # hook shells gone, real + empty-real kept
+
+
+def test_repair_refuses_to_race_a_running_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """apply must refuse when the sole-writer daemon is live (Codex review)."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        _seed_hook_raw(archive, event_id="evt-a", session_id="sess-1")
+        archive.commit()
+
+    monkeypatch.setattr(
+        hook_deinflation,
+        "offline_maintenance_block_reason",
+        lambda *a, **k: "Refusing offline maintenance while polylogued PID 999 is running.",
+    )
+
+    with pytest.raises(RuntimeError, match="polylogued"):
+        repair_hook_session_inflation(tmp_path, dry_run=False)
+
+    # Nothing was mutated: the hook raw row still stands.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+
+    # dry_run still works while a daemon is "running" (read-only).
+    assert repair_hook_session_inflation(tmp_path, dry_run=True).applied is False

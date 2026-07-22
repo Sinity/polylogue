@@ -29,7 +29,19 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-_HOOK_RAW_PREDICATE = "source_path LIKE '%/hooks/pending/%'"
+from polylogue.config import Config
+from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
+from polylogue.paths import render_root
+from polylogue.storage.archive_identity import ArchiveLocation
+
+# A raw is a verified hook raw ONLY when it lives under the hook spool AND a
+# raw_hook_events row was written from the same spool file (same source_path).
+# The path pattern alone is not sufficient authority to delete a durable row: a
+# legitimate raw whose path merely contains the substring would otherwise be
+# removed even without hook evidence (Codex review, PR #3265).
+_HOOK_RAW_PREDICATE = (
+    "source_path LIKE '%/hooks/pending/%' AND source_path IN (SELECT source_path FROM raw_hook_events)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +112,22 @@ def repair_hook_session_inflation(archive_root: Path, *, dry_run: bool = True) -
                 applied=False,
             )
 
-    # --- Apply: index first (rebuildable), then durable source. ---
+    # --- Apply: refuse to race the sole-writer daemon. ---
+    # The repair mutates two tiers in separate transactions after collecting
+    # candidate ids; a live daemon could ingest/materialize in between, deleting
+    # source rows for sessions it just created or leaving a cross-tier snapshot
+    # the repair never examined (Codex review, PR #3265). Require the daemon to
+    # be stopped, matching every other offline maintenance mutation.
+    active_config = Config(
+        archive_root=archive_root,
+        render_root=render_root(),
+        sources=[],
+        db_path=ArchiveLocation.resolve(archive_root).active_index_path,
+    )
+    if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
+        raise RuntimeError(reason)
+
+    # --- Index first (rebuildable), then durable source. ---
     if index_session_ids:
         with sqlite3.connect(index_db) as idx:
             idx.execute("PRAGMA foreign_keys = ON")
