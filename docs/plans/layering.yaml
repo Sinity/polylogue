@@ -48,7 +48,7 @@ writer_modules:
           interruption: atomic
       entrypoints:
         [apply_source_raw_state_update, bind_source_raw_revision, record_excised_blob_hash, write_history_sidecar,
-        write_source_blob_refs, write_source_raw_session, write_source_raw_session_blob_ref]
+        write_source_blob_refs, write_source_hook_event, write_source_raw_session, write_source_raw_session_blob_ref]
     - path: polylogue/storage/sqlite/archive_tiers/write.py
       surfaces:
         - tier: index

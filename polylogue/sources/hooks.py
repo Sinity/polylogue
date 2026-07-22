@@ -36,7 +36,7 @@ from polylogue.logging import get_logger
 from polylogue.paths import hooks_sidecar_dir
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent, write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 
 logger = get_logger(__name__)
 
@@ -270,20 +270,17 @@ def _persist_record(archive: ArchiveStore, path: Path, record: dict[str, object]
         raise HookSpoolRecordError("hook spool envelope has an invalid observed timestamp")
     observed_at_ms = observed_at_ms_value
     source_path = str(path)
-    raw_id = archive.write_raw_payload(
+    # A hook event is evidence WITHIN a session, keyed to it by
+    # ``session_native_id`` -- never a session of its own. Persisting it as a
+    # raw_sessions row (as this path once did) minted an empty standalone
+    # session per hook and inflated the archive with tens of thousands of
+    # content-less session shells (polylogue-31r1). ``write_hook_event`` keeps
+    # the durable blob + raw_hook_events row and skips the raw_sessions insert.
+    archive.write_hook_event(
         provider=provider,
         payload=payload,
         source_path=source_path,
         acquired_at_ms=observed_at_ms,
-    )
-    write_source_raw_session(
-        archive._ensure_source_conn(),
-        origin=origin,
-        source_path=source_path,
-        source_index=0,
-        payload=payload,
-        acquired_at_ms=observed_at_ms,
-        raw_id=raw_id,
         hook_event=ArchiveHookEvent(
             hook_event_id=f"hook:{record['event_id']}",
             origin=origin,

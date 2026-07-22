@@ -168,10 +168,14 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
     record_revision_application_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveHookEvent,
     ArchiveSourceBlobRef,
     apply_source_raw_state_update,
     bind_source_raw_revision,
+    deterministic_blob_hash,
+    deterministic_raw_session_id,
     write_source_blob_refs,
+    write_source_hook_event,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -1794,6 +1798,48 @@ class ArchiveStore:
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            manage_transaction=True,
+        )
+
+    def write_hook_event(
+        self,
+        *,
+        provider: Provider,
+        payload: bytes,
+        source_path: str,
+        acquired_at_ms: int,
+        hook_event: ArchiveHookEvent,
+        source_index: int = 0,
+    ) -> str:
+        """Persist a hook event as session-linked evidence, not a session.
+
+        Publishes the raw bytes (durable blob) and writes a ``raw_hook_events``
+        row keyed to its parent session via ``hook_event.session_native_id`` —
+        but NO ``raw_sessions`` row, so a hook can never materialize into a
+        standalone empty session (polylogue-31r1).
+        """
+        if self._blob_publisher is None:
+            raise RuntimeError("raw archive writes require a writable archive publisher")
+        raw_hash, _raw_size = self._blob_publisher.write_from_bytes(payload)
+        receipt_id = self._blob_publisher.receipt_id(raw_hash)
+        self._blob_publisher.flush()
+        origin = origin_from_provider(provider)
+        raw_id = deterministic_raw_session_id(
+            origin,
+            source_path,
+            source_index,
+            deterministic_blob_hash(payload),
+            hook_event.native_id,
+        )
+        return write_source_hook_event(
+            self._ensure_source_conn(),
+            origin=origin,
+            source_path=source_path,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            raw_id=raw_id,
+            hook_event=hook_event,
+            blob_publication_receipt_id=receipt_id,
             manage_transaction=True,
         )
 

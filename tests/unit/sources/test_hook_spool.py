@@ -72,6 +72,38 @@ def test_hook_spool_acknowledges_only_after_source_tier_materialization(
     assert rows == [(expected_origin, session_id, event_type)]
 
 
+@pytest.mark.parametrize("provider", ["claude-code", "codex", "hermes"])
+def test_hook_spool_does_not_mint_a_session_row(tmp_path: Path, provider: str) -> None:
+    """A hook event is session-linked evidence, never a session of its own.
+
+    Regression guard for polylogue-31r1: persisting each hook as a
+    ``raw_sessions`` row minted an empty standalone session per hook and
+    inflated the archive with ~65K content-less session shells. The event must
+    still be durably retained (raw_hook_events row + raw_payload blob ref keyed
+    to its parent session), just without a raw_sessions row.
+    """
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    enqueue_hook_event(
+        event_id=f"{provider}-evt",
+        provider=provider,
+        event_type="PostToolUse",
+        session_id="sess-9",
+        timestamp="2026-07-22T10:00:00Z",
+        payload={"tool_name": "Bash", "tool_call_id": "call-1"},
+        root=spool_root,
+    )
+
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("sess-9",)
+        # durable retention: the raw bytes are anchored by a blob ref so blob GC
+        # keeps them, even without a raw_sessions row.
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'raw_payload'").fetchone() == (1,)
+
+
 def test_hook_spool_keeps_event_pending_when_source_tier_write_fails(tmp_path: Path) -> None:
     """A failed receiver write cannot falsely acknowledge a hook event."""
 
