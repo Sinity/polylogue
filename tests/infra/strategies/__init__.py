@@ -41,12 +41,10 @@ from tests.infra.strategies.cli import (
     QueryMutationCase,
     SendOutputCase,
     SummaryOutputCase,
-    SummaryStatsCase,
     query_delete_case_strategy,
     query_mutation_case_strategy,
     send_output_case_strategy,
     summary_output_case_strategy,
-    summary_stats_case_strategy,
 )
 from tests.infra.strategies.filters import (
     exclude_tag_filter_arg_strategy,
@@ -265,12 +263,10 @@ __all__ = [
     "QueryMutationCase",
     "SendOutputCase",
     "SummaryOutputCase",
-    "SummaryStatsCase",
     "query_delete_case_strategy",
     "query_mutation_case_strategy",
     "send_output_case_strategy",
     "summary_output_case_strategy",
-    "summary_stats_case_strategy",
     # Search
     "fts5_match_text_strategy",
     "search_query_strategy",
