@@ -47,12 +47,24 @@ from polylogue.operations.mutation_actuators import (
     MetadataDeleteArgs,
     MetadataSetActuator,
     MetadataSetArgs,
+    RecallPackDeleteActuator,
+    RecallPackDeleteArgs,
+    RecallPackSaveActuator,
+    RecallPackSaveArgs,
+    SavedViewDeleteActuator,
+    SavedViewDeleteArgs,
+    SavedViewSaveActuator,
+    SavedViewSaveArgs,
     SessionDeleteActuator,
     SessionDeleteArgs,
     TagAddActuator,
     TagAddArgs,
     TagRemoveActuator,
     TagRemoveArgs,
+    WorkspaceDeleteActuator,
+    WorkspaceDeleteArgs,
+    WorkspaceSaveActuator,
+    WorkspaceSaveArgs,
 )
 from polylogue.operations.mutation_transaction import ConfirmationRequiredError, OperationExecutor, PlanStaleError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -980,3 +992,236 @@ class TestListUnresolvedRawAuthorityBlockersPagination:
             "truncated": False,
             "next_offset": None,
         }
+
+
+class TestSavedViewActuators:
+    def test_save_then_delete_round_trips_through_user_db(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+
+            save_actuator = SavedViewSaveActuator()
+            save_args = SavedViewSaveArgs(
+                archive=archive, view_id="view-1", name="my view", query_json='{"origin":"codex-session"}'
+            )
+            save_plan = executor.prepare(save_actuator, save_args)
+            save_authorization = executor.authorize(
+                save_actuator,
+                save_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            save_receipt = executor.execute(save_actuator, save_plan, save_authorization, save_args)
+            assert save_receipt.status == "applied"
+            assert save_receipt.domain_receipt["created"] is True
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'saved_query'").fetchone()
+            assert row[0] != "deleted"
+            assert row[1] == "my view"
+
+            delete_actuator = SavedViewDeleteActuator()
+            delete_args = SavedViewDeleteArgs(archive=archive, view_id="view-1")
+            delete_plan = executor.prepare(delete_actuator, delete_args)
+            delete_authorization = executor.authorize(
+                delete_actuator,
+                delete_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
+            assert delete_receipt.status == "applied"
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                status = conn.execute("SELECT status FROM assertions WHERE kind = 'saved_query'").fetchone()[0]
+            assert status == "deleted"
+
+    def test_delete_missing_view_is_already_satisfied(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = SavedViewDeleteActuator()
+            args = SavedViewDeleteArgs(archive=archive, view_id="does-not-exist")
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        assert receipt.status == "already_satisfied"
+
+    def test_role_only_authorize_succeeds(self, tmp_path: Path) -> None:
+        """AC4: saved views are reversible class -- role_only, not confirm_flag."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = SavedViewSaveActuator()
+            args = SavedViewSaveArgs(archive=archive, view_id="v", name="n", query_json="{}")
+            plan = executor.prepare(actuator, args)
+            executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+
+
+class TestRecallPackActuators:
+    def test_save_then_delete_round_trips_through_user_db(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+
+            save_actuator = RecallPackSaveActuator()
+            save_args = RecallPackSaveArgs(
+                archive=archive,
+                pack_id="pack-1",
+                label="my pack",
+                session_ids_json="[]",
+                payload_json='{"schema_version":1,"label":"my pack","items":[]}',
+            )
+            save_plan = executor.prepare(save_actuator, save_args)
+            save_authorization = executor.authorize(
+                save_actuator,
+                save_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            save_receipt = executor.execute(save_actuator, save_plan, save_authorization, save_args)
+            assert save_receipt.status == "applied"
+            assert save_receipt.domain_receipt["created"] is True
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'recall_pack'").fetchone()
+            assert row[0] != "deleted"
+            assert row[1] == "my pack"
+
+            delete_actuator = RecallPackDeleteActuator()
+            delete_args = RecallPackDeleteArgs(archive=archive, pack_id="pack-1")
+            delete_plan = executor.prepare(delete_actuator, delete_args)
+            delete_authorization = executor.authorize(
+                delete_actuator,
+                delete_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
+            assert delete_receipt.status == "applied"
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                status = conn.execute("SELECT status FROM assertions WHERE kind = 'recall_pack'").fetchone()[0]
+            assert status == "deleted"
+
+    def test_delete_missing_pack_is_already_satisfied(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = RecallPackDeleteActuator()
+            args = RecallPackDeleteArgs(archive=archive, pack_id="does-not-exist")
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        assert receipt.status == "already_satisfied"
+
+
+class TestWorkspaceActuators:
+    def test_save_then_delete_round_trips_through_user_db(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+
+            save_actuator = WorkspaceSaveActuator()
+            save_args = WorkspaceSaveArgs(
+                archive=archive,
+                workspace_id="ws-1",
+                name="my workspace",
+                mode="tabs",
+                open_targets_json="[]",
+                layout_json="{}",
+                active_target_json="{}",
+            )
+            save_plan = executor.prepare(save_actuator, save_args)
+            save_authorization = executor.authorize(
+                save_actuator,
+                save_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            save_receipt = executor.execute(save_actuator, save_plan, save_authorization, save_args)
+            assert save_receipt.status == "applied"
+            assert save_receipt.domain_receipt["created"] is True
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'workspace_note'").fetchone()
+            assert row[0] != "deleted"
+            assert row[1] == "my workspace"
+
+            delete_actuator = WorkspaceDeleteActuator()
+            delete_args = WorkspaceDeleteArgs(archive=archive, workspace_id="ws-1")
+            delete_plan = executor.prepare(delete_actuator, delete_args)
+            delete_authorization = executor.authorize(
+                delete_actuator,
+                delete_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
+            assert delete_receipt.status == "applied"
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                status = conn.execute("SELECT status FROM assertions WHERE kind = 'workspace_note'").fetchone()[0]
+            assert status == "deleted"
+
+    def test_delete_missing_workspace_is_already_satisfied(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = WorkspaceDeleteActuator()
+            args = WorkspaceDeleteArgs(archive=archive, workspace_id="does-not-exist")
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        assert receipt.status == "already_satisfied"
+
+    def test_role_only_authorize_succeeds(self, tmp_path: Path) -> None:
+        """AC4: workspaces are reversible class -- role_only, not confirm_flag."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = WorkspaceSaveActuator()
+            args = WorkspaceSaveArgs(
+                archive=archive,
+                workspace_id="ws",
+                name="n",
+                mode="tabs",
+                open_targets_json="[]",
+                layout_json="{}",
+                active_target_json="{}",
+            )
+            plan = executor.prepare(actuator, args)
+            executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )

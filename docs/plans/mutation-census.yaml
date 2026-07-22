@@ -21,10 +21,13 @@
 # confirmation). Phase 3 adds the annotation family (reversible, role_only)
 # and raw-authority blocker resolution (reset class, confirm_flag --
 # discovered mid-session as an unclassified mutating operation, not merely
-# an un-migrated one: it had a CLI adapter but no census row at all).
-# Every remaining operation below is inventoried honestly as
-# `declared-not-routed` -- visible debt for a later phase, not a claim of
-# completion.
+# an un-migrated one: it had a CLI adapter but no census row at all). Phase 4
+# adds the saved-view/recall-pack/workspace family (same reversible/role_only
+# pattern; each pair's ArchiveStore primitive is a create-or-update upsert
+# paired with a soft-delete). Phases 1-4 land as separate PRs
+# (#3249/#3253/#3258/#3262). Every remaining operation below is inventoried
+# honestly as `declared-not-routed` -- visible debt for a later phase, not a
+# claim of completion.
 
 schema_version: 1
 
@@ -157,14 +160,70 @@ rows:
     adapters:
       - polylogue.cli.commands.maintenance._raw_identity.raw_authority_blocker_resolve_command
 
-  # --- Phase 3 debt: declared-not-routed --------------------------------------
+  # --- Phase 4: executor-routed (saved-view/recall-pack/workspace family) ----
+
+  - operation: mutate-save-saved-view
+    spec_name: mutate-save-saved-view
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.SavedViewSaveActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.save_view
+      - polylogue.mcp.server_cutover._dispatch_write (operation=save_saved_view, via save_view)
+
+  - operation: mutate-delete-saved-view
+    spec_name: mutate-delete-saved-view
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.SavedViewDeleteActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.delete_view
+      - polylogue.mcp.server_cutover._dispatch_write (operation=delete_saved_view, via delete_view)
+
+  - operation: mutate-save-recall-pack
+    spec_name: mutate-save-recall-pack
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.RecallPackSaveActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.create_recall_pack
+      - polylogue.mcp.server_cutover._dispatch_write (operation=save_recall_pack, via create_recall_pack)
+
+  - operation: mutate-delete-recall-pack
+    spec_name: mutate-delete-recall-pack
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.RecallPackDeleteActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.delete_recall_pack
+      - polylogue.mcp.server_cutover._dispatch_write (operation=delete_recall_pack, via delete_recall_pack)
+
+  - operation: mutate-save-workspace
+    spec_name: mutate-save-workspace
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.WorkspaceSaveActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.save_workspace
+      - polylogue.mcp.server_cutover._dispatch_write (operation=save_workspace, via save_workspace)
+
+  - operation: mutate-delete-workspace
+    spec_name: mutate-delete-workspace
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.WorkspaceDeleteActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.delete_workspace
+      - polylogue.mcp.server_cutover._dispatch_write (operation=delete_workspace, via delete_workspace)
+
+  # --- Phase 3+ debt: declared-not-routed -------------------------------------
   # MCP-only mutation family with no OperationSpec entry yet (pre-existing
-  # gap, not introduced by this PR). jn40's confirm-boolean sweep is the
-  # interim mitigation for the destructive members of this family
-  # (delete_saved_view, delete_recall_pack, delete_workspace); it does not
-  # satisfy executor-routing. add_mark/remove_mark (phase 2) and
-  # save_annotation/delete_annotation (phase 3) are executor-routed above;
-  # the rest of this family remains Phase 3+ debt.
+  # gap, not introduced by this PR). jn40's confirm-boolean sweep was the
+  # interim mitigation for the destructive members of this family. add_mark/
+  # remove_mark (phase 2), save_annotation/delete_annotation (phase 3), and
+  # the saved-view/recall-pack/workspace family (phase 4, above) are all
+  # executor-routed now; the rest of this family remains debt for a later
+  # phase.
 
   - operation: capture_assertion_candidate
     status: declared-not-routed
@@ -180,21 +239,6 @@ rows:
     status: declared-not-routed
     surfaces: [mcp]
     reason: Additive batch import with its own provenance/versioning contract.
-
-  - operation: save_saved_view / delete_saved_view
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: delete_saved_view confirm-gated by jn40; not yet executor-routed.
-
-  - operation: save_recall_pack / delete_recall_pack
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: delete_recall_pack confirm-gated by jn40; not yet executor-routed.
-
-  - operation: save_workspace / delete_workspace
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: delete_workspace confirm-gated by jn40; not yet executor-routed.
 
   - operation: record_correction / clear_corrections
     status: declared-not-routed
