@@ -13,6 +13,8 @@ from polylogue.archive.query.predicate import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from polylogue.archive.actions.actions import Action
     from polylogue.archive.models import Session
     from polylogue.archive.query.plan import SessionQueryPlan
@@ -25,15 +27,27 @@ def _actions_for(session: Session) -> tuple[Action, ...]:
     return facts.actions
 
 
+def paths_match_referenced_terms(affected_paths: Iterable[str], terms: tuple[str, ...]) -> bool:
+    """The shared referenced-path predicate: every term (AND) must appear in some path.
+
+    This is the single source of truth for referenced-path matching semantics —
+    every surface that filters by ``referenced_path`` (the substrate session-query
+    filter, the CLI semantic-stats surface, ...) must route through this function
+    so they agree on which sessions/actions match a multi-term ``--path`` filter.
+    """
+    if not terms:
+        return True
+    normalized_paths = tuple(path.lower().replace("\\", "/") for path in affected_paths)
+    if not normalized_paths:
+        return False
+    return all(any(term.lower().replace("\\", "/") in path for path in normalized_paths) for term in terms)
+
+
 def matches_referenced_path(plan: SessionQueryPlan, session: Session) -> bool:
     if not plan.referenced_path:
         return True
-    affected_paths = tuple(
-        path.lower().replace("\\", "/") for action in _actions_for(session) for path in action.affected_paths
-    )
-    if not affected_paths:
-        return False
-    return all(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in plan.referenced_path)
+    affected_paths = tuple(path for action in _actions_for(session) for path in action.affected_paths)
+    return paths_match_referenced_terms(affected_paths, plan.referenced_path)
 
 
 def matches_action_terms(plan: SessionQueryPlan, session: Session) -> bool:
@@ -181,4 +195,5 @@ __all__ = [
     "matches_action_text_terms",
     "matches_referenced_path",
     "matches_tool_terms",
+    "paths_match_referenced_terms",
 ]

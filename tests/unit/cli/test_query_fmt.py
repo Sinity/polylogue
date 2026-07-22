@@ -6,10 +6,11 @@ This file owns pure formatting/projection behavior:
 - single-session formatting across output formats
 - list formatting across output formats
 - streaming record rendering
-- grouped stats rendering
 
 Query execution, routing, transforms, and output destination handling live in
-``test_query_exec_laws.py``.
+``test_query_exec_laws.py``. Grouped-stats rendering (origin/date/semantic/
+profile) was removed with the dead ``output_stats_by_sessions`` family
+(polylogue-t46.6) — see ``polylogue/cli/query_stats.py``'s module docstring.
 """
 
 from __future__ import annotations
@@ -19,11 +20,10 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
-from rich.console import Console
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
@@ -34,7 +34,6 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.query_contracts import describe_query_filters
 from polylogue.cli.query_output import (
     _format_list,
-    _output_stats_by,
     _write_message_streaming,
     format_search_hit_list,
     format_summary_list,
@@ -209,94 +208,6 @@ STREAM_CASES = (
     ("plaintext", "[ASSISTANT]", "Hello from assistant"),
     ("markdown", "## Assistant", "Hello from assistant"),
     ("json-lines", '"type": "message"', '"role": "assistant"'),
-)
-
-StatItem = str | dict[str, object]
-StatsCaseRow = tuple[str, str, datetime, list[StatItem]]
-
-
-STATS_CASES = (
-    (
-        "origin",
-        [
-            ("conv-1", "claude-ai", datetime(2025, 3, 1, tzinfo=timezone.utc), ["hello there", "more words"]),
-            ("conv-2", "chatgpt", datetime(2025, 2, 1, tzinfo=timezone.utc), ["other text"]),
-            ("conv-3", "claude-ai", datetime(2025, 1, 1, tzinfo=timezone.utc), ["final message"]),
-        ],
-        ("Matched: 3 sessions (by origin)", "claude-ai-export", "chatgpt-export", "TOTAL"),
-    ),
-    (
-        "month",
-        [
-            ("conv-1", "claude-ai", datetime(2025, 3, 5, tzinfo=timezone.utc), ["month three"]),
-            ("conv-2", "claude-ai", datetime(2025, 1, 6, tzinfo=timezone.utc), ["month one"]),
-        ],
-        ("Matched: 2 sessions (by month)", "2025-03", "2025-01", "TOTAL"),
-    ),
-    (
-        "action",
-        [
-            (
-                "conv-1",
-                "claude-ai",
-                datetime(2025, 3, 5, tzinfo=timezone.utc),
-                [{"text": "read one", "semantic_type": "file_read"}, {"text": "search one", "semantic_type": "search"}],
-            ),
-            (
-                "conv-2",
-                "claude-ai",
-                datetime(2025, 3, 6, tzinfo=timezone.utc),
-                [{"text": "read two", "semantic_type": "file_read"}],
-            ),
-            (
-                "conv-3",
-                "chatgpt",
-                datetime(2025, 3, 7, tzinfo=timezone.utc),
-                [{"text": "plain"}],
-            ),
-        ],
-        (
-            "Matched: 3 sessions (by action)",
-            "file_read",
-            "search",
-            "none",
-            "MATCHED",
-            "Facts",
-            "Note: sessions may appear in multiple action groups.",
-        ),
-    ),
-    (
-        "tool",
-        [
-            (
-                "conv-1",
-                "claude-ai",
-                datetime(2025, 3, 5, tzinfo=timezone.utc),
-                [{"text": "read one", "semantic_type": "file_read", "tool_name": "Read"}],
-            ),
-            (
-                "conv-2",
-                "claude-ai",
-                datetime(2025, 3, 6, tzinfo=timezone.utc),
-                [{"text": "grep one", "semantic_type": "search", "tool_name": "Grep"}],
-            ),
-            (
-                "conv-3",
-                "chatgpt",
-                datetime(2025, 3, 7, tzinfo=timezone.utc),
-                [{"text": "plain"}],
-            ),
-        ],
-        (
-            "Matched: 3 sessions (by tool)",
-            "read",
-            "grep",
-            "none",
-            "MATCHED",
-            "Facts",
-            "Note: sessions may appear in multiple tool groups.",
-        ),
-    ),
 )
 
 
@@ -762,162 +673,3 @@ class TestStreamingOutput:
         assert emitted == 2
         for token in expected_tokens:
             assert token in rendered
-
-
-class TestGroupedStatsOutput:
-    @pytest.mark.parametrize("dimension,raw_cases,expected_tokens", STATS_CASES, ids=[case[0] for case in STATS_CASES])
-    def test_output_stats_by_contract_matrix(
-        self,
-        dimension: str,
-        raw_cases: list[StatsCaseRow],
-        expected_tokens: tuple[str, ...],
-    ) -> None:
-        sessions = []
-        for conv_id, provider, updated_at, texts in raw_cases:
-            messages = []
-            for index, item in enumerate(texts):
-                if isinstance(item, str):
-                    messages.append(_make_msg("assistant", item, id=f"{conv_id}-{index}"))
-                    continue
-                messages.append(
-                    _make_msg(
-                        "assistant",
-                        str(item.get("text", "")),
-                        id=f"{conv_id}-{index}",
-                        blocks=[
-                            {
-                                "type": "tool_use",
-                                "tool_name": item.get("tool_name", item.get("semantic_type", "unknown")),
-                                "tool_input": item.get("tool_input", {}),
-                                "semantic_type": item.get("semantic_type"),
-                            }
-                        ]
-                        if item.get("semantic_type")
-                        else [],
-                    )
-                )
-            sessions.append(
-                _make_conv(
-                    id=conv_id,
-                    provider=provider,
-                    updated_at=updated_at,
-                    messages=messages,
-                )
-            )
-        console_buffer = io.StringIO()
-        env = MagicMock()
-        env.ui.console = Console(file=console_buffer, force_terminal=False, color_system=None, width=120)
-
-        _output_stats_by(env, sessions, dimension)
-
-        output = console_buffer.getvalue()
-        for token in expected_tokens:
-            assert token in output
-
-    def test_output_stats_by_empty_contract(self) -> None:
-        env = MagicMock()
-        env.ui.console = MagicMock()
-        with pytest.raises(SystemExit) as exc_info:
-            _output_stats_by(env, [], "origin")
-        assert exc_info.value.code == 2
-        env.ui.console.print.assert_called_once_with("No sessions matched.")
-
-    def test_output_stats_by_action_json_contract(self) -> None:
-        sessions = [
-            _make_conv(
-                id="conv-1",
-                provider="claude-ai",
-                updated_at=datetime(2025, 3, 5, tzinfo=timezone.utc),
-                messages=[
-                    _make_msg(
-                        "assistant",
-                        "read one",
-                        id="conv-1-0",
-                        blocks=[
-                            {
-                                "type": "tool_use",
-                                "tool_name": "Read",
-                                "tool_input": {"path": "/tmp/a"},
-                                "semantic_type": "file_read",
-                            }
-                        ],
-                    ),
-                ],
-            ),
-            _make_conv(
-                id="conv-2",
-                provider="claude-ai",
-                updated_at=datetime(2025, 3, 6, tzinfo=timezone.utc),
-                messages=[_make_msg("assistant", "plain", id="conv-2-0")],
-            ),
-        ]
-        env = MagicMock()
-        env.ui.console = MagicMock()
-
-        with patch("click.echo") as mock_echo:
-            _output_stats_by(env, sessions, "action", output_format="json")
-
-        payload = json.loads(mock_echo.call_args.args[0])
-        assert payload["dimension"] == "action"
-        assert payload["multi_membership"] is True
-        env.ui.console.print.assert_not_called()
-        assert payload["summary"] == {
-            "group": "MATCHED",
-            "sessions": 2,
-            "facts": 1,
-            "messages": 1,
-        }
-        assert payload["rows"] == [
-            {"group": "file_read", "sessions": 1, "facts": 1, "messages": 1},
-            {"group": "none", "sessions": 1, "facts": 0, "messages": 0},
-        ]
-
-    def test_output_stats_by_tool_json_contract(self) -> None:
-        sessions = [
-            _make_conv(
-                id="conv-1",
-                provider="claude-ai",
-                updated_at=datetime(2025, 3, 5, tzinfo=timezone.utc),
-                messages=[
-                    _make_msg(
-                        "assistant",
-                        "grep one",
-                        id="conv-1-0",
-                        blocks=[
-                            {
-                                "type": "tool_use",
-                                "tool_name": "Grep",
-                                "tool_input": {"pattern": "needle"},
-                                "semantic_type": "search",
-                            }
-                        ],
-                    ),
-                ],
-            ),
-            _make_conv(
-                id="conv-2",
-                provider="claude-ai",
-                updated_at=datetime(2025, 3, 6, tzinfo=timezone.utc),
-                messages=[_make_msg("assistant", "plain", id="conv-2-0")],
-            ),
-        ]
-        env = MagicMock()
-        env.ui.console = MagicMock()
-
-        with patch("click.echo") as mock_echo:
-            _output_stats_by(env, sessions, "tool", output_format="json")
-
-        payload = json.loads(mock_echo.call_args.args[0])
-        assert payload["dimension"] == "tool"
-        assert payload["multi_membership"] is True
-        env.ui.console.print.assert_not_called()
-        assert payload["summary"] == {
-            "group": "MATCHED",
-            "sessions": 2,
-            "facts": 1,
-            "messages": 1,
-        }
-        assert payload["rows"] == [
-            {"group": "grep", "sessions": 1, "facts": 1, "messages": 1},
-            {"group": "none", "sessions": 1, "facts": 0, "messages": 0},
-        ]

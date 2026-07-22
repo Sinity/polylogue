@@ -228,31 +228,77 @@ def test_query_semantic_matches_none_blocked_text_and_referenced_path() -> None:
     action = _action()
 
     assert (
-        query_semantic.action_matches_slice(action, query_semantic.SemanticStatsSlice(action_terms=("none",))) is False
+        query_semantic.action_matches_dimension_filters(
+            action, query_semantic.SemanticStatsSlice(action_terms=("none",))
+        )
+        is False
     )
     assert (
-        query_semantic.action_matches_slice(
+        query_semantic.action_matches_dimension_filters(
             action,
             query_semantic.SemanticStatsSlice(excluded_action_terms=("shell",)),
         )
         is False
     )
     assert (
-        query_semantic.action_matches_slice(
+        query_semantic.action_matches_dimension_filters(
             action,
             query_semantic.SemanticStatsSlice(action_text_terms=("missing",)),
         )
         is False
     )
     assert (
-        query_semantic.action_matches_slice(
+        query_semantic.action_matches_dimension_filters(
             action,
             query_semantic.SemanticStatsSlice(tool_terms=("none",)),
         )
         is False
     )
-    assert query_semantic.referenced_path_matches_slice(action, ("demo.py",)) is True
-    assert query_semantic.referenced_path_matches_slice(action, ("missing.py",)) is False
+    assert query_semantic.session_matches_referenced_path((action,), ("demo.py",)) is True
+    assert query_semantic.session_matches_referenced_path((action,), ("missing.py",)) is False
+
+
+def test_semantic_stats_referenced_path_matches_substrate_query_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-t46.6 AC: a two-term ``referenced_path`` query must select the
+    same session set from the semantic-stats surface (``query_semantic``) as
+    from the substrate query filter (``archive.query.runtime_matching``).
+
+    Before the fix, ``query_semantic.referenced_path_matches_slice`` used
+    ``any(term...)`` (OR-of-terms) while the substrate's
+    ``matches_referenced_path`` used ``all(term...)`` (AND-of-terms): a
+    session whose actions only ever satisfy ONE of the two ``--path`` terms
+    was wrongly counted as matching by the stats surface while the actual
+    query filter correctly excluded it. Reverting either surface back to
+    hand-rolled OR/AND logic (instead of the shared
+    ``paths_match_referenced_terms`` predicate) makes this test fail.
+    """
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.query.runtime_matching import matches_referenced_path
+    from polylogue.archive.session.domain_models import Session as ArchiveSession
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
+
+    def _substrate_session_matches(actions: tuple[Action, ...], terms: tuple[str, ...]) -> bool:
+        session = ArchiveSession(
+            id=SessionId("conv"), origin=Origin.CLAUDE_CODE_SESSION, messages=MessageCollection.empty()
+        )
+        monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: actions)
+        return matches_referenced_path(SessionQueryPlan(referenced_path=terms), session)
+
+    terms = ("foo.py", "bar.py")
+
+    # Only one of the two terms is ever satisfied by this session's actions.
+    only_foo = _action(affected_paths=("/tmp/foo.py",))
+    assert _substrate_session_matches((only_foo,), terms) is False
+    assert query_semantic.session_matches_referenced_path((only_foo,), terms) is False
+
+    # Both terms are satisfied, but by two *different* actions in the same
+    # session (aggregate-across-actions semantics, matching the substrate).
+    action_foo = _action(affected_paths=("/tmp/foo.py",))
+    action_bar = _action(affected_paths=("/tmp/bar.py",))
+    assert _substrate_session_matches((action_foo, action_bar), terms) is True
+    assert query_semantic.session_matches_referenced_path((action_foo, action_bar), terms) is True
 
 
 @pytest.mark.asyncio
@@ -283,7 +329,7 @@ async def test_query_semantic_stats_render_from_native_actions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_query_stats_helpers_cover_structured_sql_and_profile_paths() -> None:
+async def test_query_stats_helpers_cover_structured_and_sql_paths() -> None:
     with patch("click.echo") as echo:
         assert (
             query_stats.emit_structured_stats(
@@ -304,8 +350,6 @@ async def test_query_stats_helpers_cover_structured_sql_and_profile_paths() -> N
             is True
         )
     assert echo.call_count == 2
-    with pytest.raises(TypeError, match="must be int"):
-        query_stats._count_value({"messages": "two"}, "messages")
 
     env = _env()
     filter_chain = SimpleNamespace(
@@ -353,34 +397,6 @@ async def test_query_stats_helpers_cover_structured_sql_and_profile_paths() -> N
     sql_lines = [call.args[0] for call in console_print.call_args_list if call.args]
     assert any("Embeddings: 3/4 convs, 9 msgs (75.0%), pending 1, stale 2" in line for line in sql_lines)
     assert any("Date range: 2024-04-23 to 2024-04-24" in line for line in sql_lines)
-
-    env = _env()
-    profile_repo = SimpleNamespace(
-        get_session_profiles_batch=AsyncMock(return_value={}),
-        get_many=AsyncMock(return_value=[make_conv(id="conv-1", provider="claude-code")]),
-    )
-    profile = SimpleNamespace(
-        repo_names=("repo-a", "repo-b"), auto_tags=("kind:implementation",), work_events=[1], message_count=3
-    )
-    with (
-        patch("polylogue.archive.session.session_profile.build_session_profile", return_value=profile),
-        patch("polylogue.cli.query_stats._emit_grouped_stats_table") as emit_table,
-        patch("polylogue.cli.query_stats.emit_no_results"),
-    ):
-        await query_stats.output_stats_by_profile_ids(env, ["conv-1"], profile_repo, "repo")
-        await query_stats.output_stats_by_profile_ids(env, ["conv-1"], profile_repo, "work-kind")
-        await query_stats.output_stats_by_profile_summaries(env, [_summary()], profile_repo, "repo")
-        await query_stats.output_stats_by_profile_query(env, ["conv-1"], profile_repo, "work-kind")
-
-    repo_call = emit_table.call_args_list[0].kwargs
-    work_kind_call = emit_table.call_args_list[1].kwargs
-    assert repo_call["multi_membership"] is True
-    assert repo_call["note"] == "Note: sessions may appear in multiple repo groups."
-    assert work_kind_call["multi_membership"] is False
-    assert work_kind_call["note"] is None
-
-    with pytest.raises(ValueError, match="Unsupported profile stats dimension"):
-        await query_stats.output_stats_by_profile_ids(env, ["conv-1"], profile_repo, "origin")
 
 
 @pytest.mark.asyncio

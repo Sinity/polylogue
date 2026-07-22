@@ -49,14 +49,6 @@ class SummaryOutputCase:
 
 
 @dataclass(frozen=True)
-class SummaryStatsCase:
-    """Generated summary-grouping input for _output_stats_by_summaries."""
-
-    summaries: tuple[SessionSummarySpec, ...]
-    dimension: str
-
-
-@dataclass(frozen=True)
 class SendOutputCase:
     """Generated destination routing case for _send_output."""
 
@@ -140,15 +132,6 @@ def summary_output_case_strategy(draw: st.DrawFn) -> SummaryOutputCase:
         summaries=draw(session_summary_batch_strategy(min_size=1, max_size=5)),
         output_format=draw(st.sampled_from(("json", "yaml"))),
         selected_fields=selected,
-    )
-
-
-@st.composite
-def summary_stats_case_strategy(draw: st.DrawFn) -> SummaryStatsCase:
-    """Generate a grouped-summary stats request."""
-    return SummaryStatsCase(
-        summaries=draw(session_summary_batch_strategy(min_size=1, max_size=8)),
-        dimension=draw(st.sampled_from(("provider", "month", "year", "day", "all"))),
     )
 
 
