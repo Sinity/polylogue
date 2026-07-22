@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -103,6 +105,54 @@ def test_repair_removes_hook_sessions_keeps_evidence_and_real_sessions(tmp_path:
     with sqlite3.connect(index_db) as conn:
         rows = {r[0] for r in conn.execute("SELECT native_id FROM sessions")}
     assert rows == {"conv-real", "empty-real"}  # hook shells gone, real + empty-real kept
+
+
+def _seed_authority_plan(source_db: Path, *, plan_id: str, input_raw_id: str, with_blocker: bool) -> None:
+    """Seed a raw-authority frontier plan (and optional blocker) for a raw."""
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")  # seeding only; repair runs with FK on
+        conn.execute(
+            "INSERT OR IGNORE INTO raw_authority_censuses (census_id, sequence_no, scope_json, residual_json, "
+            "parser_fingerprint, mode, lifecycle_status, quiescent, inventory_digest, residual_digest, "
+            "plan_count, executable_plan_count, residual_plan_count, created_at_ms) "
+            "VALUES ('c1',1,'{}','{}','fp','census','finalized',1,'d','d',1,1,0,1)"
+        )
+        digest = hashlib.sha256(plan_id.encode()).hexdigest()  # 64 hex chars (CHECK)
+        conn.execute(
+            "INSERT INTO raw_authority_plans (plan_id, input_digest, input_raw_ids_json, logical_keys_json, "
+            "authority_witness_json, source_preconditions_json, index_preconditions_json, created_at_ms) "
+            "VALUES (?,?,?,?,?,?,?,1)",
+            (plan_id, digest, json.dumps([input_raw_id]), "[]", "{}", "{}", "{}"),
+        )
+        if with_blocker:
+            conn.execute(
+                "INSERT INTO raw_authority_blockers (blocker_id, plan_id, census_id, reason, expected_json, "
+                "observed_json, created_at_ms) VALUES (?,?, 'c1', 'r', '{}', '{}', 1)",
+                (f"blk:{plan_id}", plan_id),
+            )
+
+
+def test_repair_prunes_orphaned_raw_authority_plans(tmp_path: Path) -> None:
+    """Deleting hook raws leaves their frontier plans dangling (no FK); the repair
+    must prune them or the daemon reconciler throws on the dangling plan."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        hook_raw = _seed_hook_raw(archive, event_id="evt-a", session_id="sess-1")
+        real_raw = _seed_real_raw(archive, native="conv-real")
+        archive.commit()
+
+    source_db = tmp_path / "source.db"
+    _seed_authority_plan(source_db, plan_id="plan-hook", input_raw_id=hook_raw, with_blocker=True)
+    _seed_authority_plan(source_db, plan_id="plan-real", input_raw_id=real_raw, with_blocker=False)
+
+    report = repair_hook_session_inflation(tmp_path, dry_run=False)
+    assert report.orphaned_authority_plans == 1  # only the hook plan is orphaned
+
+    with sqlite3.connect(source_db) as conn:
+        plans = {r[0] for r in conn.execute("SELECT plan_id FROM raw_authority_plans")}
+        blockers = conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0]
+    assert plans == {"plan-real"}  # hook plan pruned, real plan kept
+    assert blockers == 0  # the hook plan's blocker pruned with it
 
 
 def test_repair_refuses_to_race_a_running_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

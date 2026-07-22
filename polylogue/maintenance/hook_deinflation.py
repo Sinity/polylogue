@@ -43,6 +43,27 @@ _HOOK_RAW_PREDICATE = (
     "source_path LIKE '%/hooks/pending/%' AND source_path IN (SELECT source_path FROM raw_hook_events)"
 )
 
+# Raw-authority tables reference raws by JSON string (input_raw_ids_json), not by
+# FK, so deleting a raw does NOT cascade-clean its frontier plans/blockers/census
+# rows. A plan whose EVERY input raw is gone is unprocessable and must be pruned,
+# or the daemon reconciler throws ("duplicate strategy did not reach its typed
+# terminal postcondition") on the dangling plan (live incident 2026-07-22, first
+# convergence pass after the hook de-inflation). These are children of
+# raw_authority_plans with NO ACTION (RESTRICT) FKs, so delete children first.
+# Set-based (single pass, LEFT JOIN on the raw_id PK): expand each plan's input
+# raws, GROUP BY plan, keep plans whose inputs are ALL missing. The equivalent
+# correlated-subquery form ran ~26 billion ops (>1h) on the live archive; this
+# form completes in ~0.3s. A plan with empty inputs produces no json_each rows
+# and is correctly excluded (it is not orphaned-by-missing-raw).
+_PURELY_ORPHANED_PLANS_SQL = """
+    SELECT p.plan_id
+    FROM raw_authority_plans p, json_each(p.input_raw_ids_json) j
+    LEFT JOIN raw_sessions r ON r.raw_id = j.value
+    GROUP BY p.plan_id
+    HAVING SUM(CASE WHEN r.raw_id IS NULL THEN 1 ELSE 0 END) > 0
+       AND SUM(CASE WHEN r.raw_id IS NOT NULL THEN 1 ELSE 0 END) = 0
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class HookDeinflationReport:
@@ -53,6 +74,7 @@ class HookDeinflationReport:
     raw_hook_events_before: int
     raw_hook_events_after: int
     hook_blob_refs_retained: int
+    orphaned_authority_plans: int
     applied: bool
 
 
@@ -63,6 +85,46 @@ def _hook_raw_ids(source_conn: sqlite3.Connection) -> list[str]:
 def _load_ids(conn: sqlite3.Connection, table: str, ids: list[str]) -> None:
     conn.execute(f"CREATE TEMP TABLE {table} (id TEXT PRIMARY KEY)")
     conn.executemany(f"INSERT OR IGNORE INTO {table}(id) VALUES (?)", ((rid,) for rid in ids))
+
+
+def _count_orphaned_authority_plans(conn: sqlite3.Connection) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM ({_PURELY_ORPHANED_PLANS_SQL})").fetchone()[0])
+
+
+def _delete_orphaned_authority(conn: sqlite3.Connection) -> int:
+    """Prune raw-authority plans whose every input raw is gone, plus their
+    blocker/census children. Children first (NO ACTION FKs to plans).
+
+    ``_orphan_plans`` is created WITH a primary-key index on ``plan_id``: the
+    child tables (census_plans ~405k, census_post_plans ~324k rows) don't index
+    ``plan_id`` as a leading column, so each ``DELETE ... WHERE plan_id IN
+    (SELECT plan_id FROM _orphan_plans)`` full-scans the child once and needs an
+    O(log) membership probe per row. Without the PK the probe degrades to a full
+    scan of the 64k-row orphan set — ~26 billion ops, observed as a >1h hang on
+    the live archive."""
+    conn.execute("CREATE TEMP TABLE _orphan_plans (plan_id TEXT PRIMARY KEY)")
+    conn.execute(f"INSERT INTO _orphan_plans (plan_id) {_PURELY_ORPHANED_PLANS_SQL}")
+    count = int(conn.execute("SELECT COUNT(*) FROM _orphan_plans").fetchone()[0])
+    # Existing child indexes on plan_id are partial (WHERE resolved_at_ms IS NULL
+    # / WHERE selected = 1) or non-leading (PK is (census_id, plan_id)), so the FK
+    # RESTRICT check on the parent plan delete would full-scan each child per plan
+    # (~51 billion ops, the observed >1h hang). Full temporary plan_id indexes make
+    # both the IN-delete and the RESTRICT check index-driven; dropped before commit
+    # so the durable schema is unchanged.
+    child_indexes = {
+        "_tmp_hookdeflate_blk_plan": "raw_authority_blockers",
+        "_tmp_hookdeflate_cp_plan": "raw_authority_census_plans",
+        "_tmp_hookdeflate_cpp_plan": "raw_authority_census_post_plans",
+    }
+    for index_name, table in child_indexes.items():
+        conn.execute(f"CREATE INDEX {index_name} ON {table}(plan_id)")
+    for table in child_indexes.values():
+        conn.execute(f"DELETE FROM {table} WHERE plan_id IN (SELECT plan_id FROM _orphan_plans)")
+    conn.execute("DELETE FROM raw_authority_plans WHERE plan_id IN (SELECT plan_id FROM _orphan_plans)")
+    for index_name in child_indexes:
+        conn.execute(f"DROP INDEX {index_name}")
+    conn.execute("DROP TABLE _orphan_plans")
+    return count
 
 
 def repair_hook_session_inflation(archive_root: Path, *, dry_run: bool = True) -> HookDeinflationReport:
@@ -109,6 +171,9 @@ def repair_hook_session_inflation(archive_root: Path, *, dry_run: bool = True) -
                 raw_hook_events_before=raw_hook_events_before,
                 raw_hook_events_after=raw_hook_events_before,
                 hook_blob_refs_retained=hook_blob_refs,
+                # Currently-orphaned plans (e.g. a prior incomplete repair left
+                # some); apply also prunes any this run newly orphans.
+                orphaned_authority_plans=_count_orphaned_authority_plans(source_conn),
                 applied=False,
             )
 
@@ -140,6 +205,11 @@ def repair_hook_session_inflation(archive_root: Path, *, dry_run: bool = True) -
         # write_source_hook_event path) and raw_hook_events. Delete only the
         # spurious session rows; FK cascade removes their parser-census rows.
         source_conn.execute(f"DELETE FROM raw_sessions WHERE {_HOOK_RAW_PREDICATE}")
+        # Prune raw-authority plans/blockers/census now dangling on the deleted
+        # raws (no FK to raw_sessions, so no cascade did this). Runs in the same
+        # transaction, after the raw delete, so "orphaned" is computed against
+        # the post-delete raw set.
+        orphaned_authority = _delete_orphaned_authority(source_conn)
         raw_hook_events_after = int(source_conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0])
         hook_blob_refs = int(
             source_conn.execute(
@@ -153,5 +223,6 @@ def repair_hook_session_inflation(archive_root: Path, *, dry_run: bool = True) -
         raw_hook_events_before=raw_hook_events_before,
         raw_hook_events_after=raw_hook_events_after,
         hook_blob_refs_retained=hook_blob_refs,
+        orphaned_authority_plans=orphaned_authority,
         applied=True,
     )
