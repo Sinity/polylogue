@@ -3619,6 +3619,13 @@ class RawMaterializationCandidates:
     byte_authority_pending: int = 0
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = field(default_factory=dict)
+    # Origin/source_path for EVERY member of an expanded authority component,
+    # including already-materialized non-candidate members that raw_origins /
+    # raw_source_paths (candidate-only) omit. Without these, the whale-pass
+    # stream-safety check judged a fully stream-safe codex component non-safe
+    # because its non-candidate members resolved to origin=None (polylogue-t93b).
+    expanded_origins: dict[str, str] = field(default_factory=dict)
+    expanded_source_paths: dict[str, str] = field(default_factory=dict)
     authority_components: tuple[tuple[str, ...], ...] = ()
     missing_blob_raw_ids: tuple[str, ...] = ()
     adoption_deferred_raw_ids: tuple[str, ...] = ()
@@ -3700,6 +3707,8 @@ def _raw_materialization_candidate_ids(
     byte_authority_pending_raw_ids: list[str] = []
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = {}
+    expanded_origins: dict[str, str] = {}
+    expanded_source_paths: dict[str, str] = {}
     authority_components: tuple[tuple[str, ...], ...] = ()
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
@@ -3892,13 +3901,14 @@ def _raw_materialization_candidate_ids(
         expanded_raw_ids = tuple(sorted({raw_id for component in authority_components for raw_id in component}))
         if expanded_raw_ids:
             placeholders = ",".join("?" for _ in expanded_raw_ids)
-            expanded_blob_bytes = {
-                str(row[0]): int(row[1] or 0)
-                for row in conn.execute(
-                    f"SELECT raw_id, blob_size FROM raw_sessions WHERE raw_id IN ({placeholders})",
-                    expanded_raw_ids,
-                )
-            }
+            for row in conn.execute(
+                f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                expanded_raw_ids,
+            ):
+                rid = str(row[0])
+                expanded_blob_bytes[rid] = int(row[1] or 0)
+                expanded_origins[rid] = str(row[2] or "")
+                expanded_source_paths[rid] = str(row[3] or "")
     return RawMaterializationCandidates(
         raw_ids=raw_ids,
         missing_blobs=missing_blobs,
@@ -3916,6 +3926,8 @@ def _raw_materialization_candidate_ids(
         byte_authority_pending=byte_authority_pending,
         expanded_raw_ids=expanded_raw_ids,
         expanded_blob_bytes=expanded_blob_bytes,
+        expanded_origins=expanded_origins,
+        expanded_source_paths=expanded_source_paths,
         authority_components=authority_components,
         missing_blob_raw_ids=tuple(sorted(missing_blob_raw_ids)),
         adoption_deferred_raw_ids=tuple(sorted(adoption_deferred_raw_ids)),
@@ -4016,9 +4028,15 @@ def raw_materialization_readonly_descriptors(
 def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, raw_id: str) -> bool:
     from polylogue.sources.dispatch import is_stream_record_provider
 
-    origin = Origin.from_string(candidates.raw_origins.get(raw_id))
-    provider = provider_from_origin(origin)
-    return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)
+    # Fall back to the expanded (full-component) maps for already-materialized
+    # non-candidate members, which raw_origins/raw_source_paths (candidate-only)
+    # omit -- mirroring _raw_materialization_component_blob_bytes. Without this a
+    # fully stream-safe codex whale component reads origin=None for its
+    # non-candidate members and is wrongly judged non-stream-safe (polylogue-t93b).
+    origin_token = candidates.expanded_origins.get(raw_id, candidates.raw_origins.get(raw_id))
+    source_path = candidates.expanded_source_paths.get(raw_id, candidates.raw_source_paths.get(raw_id))
+    provider = provider_from_origin(Origin.from_string(origin_token))
+    return is_stream_record_provider(source_path, provider)
 
 
 def _raw_materialization_component_stream_safe(
