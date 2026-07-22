@@ -20,12 +20,42 @@ from pathlib import Path
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v1"
 RAW_AUTHORITY_CENSUS_QUERY_PREFIX = "polylogue://raw-authority-census/"
 RAW_AUTHORITY_DETAIL_QUERY_PREFIX = "polylogue://raw-authority-detail/"
 RAW_AUTHORITY_DETAIL_CHUNK_CHARS = 16_384
 logger = get_logger(__name__)
+
+_RESET_LEDGER_TABLES_CHILD_FIRST = (
+    "raw_authority_blockers",
+    "raw_authority_census_plans",
+    "raw_authority_census_post_plans",
+    "raw_authority_plans",
+    "raw_authority_censuses",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RawAuthorityCensusResetCounts:
+    """Counts for a reset of derived raw-authority census bookkeeping."""
+
+    censuses: int
+    plans: int
+    blockers: int
+    census_plans: int
+    census_post_plans: int
+
+
+@dataclass(frozen=True, slots=True)
+class OrphanedIndexRevisionSeedCounts:
+    """Counts for rebuildable revision-seed rows absent from source authority."""
+
+    revision_heads: int
+    revision_applications: int
 
 
 class RawReplayPlanStatus(StrEnum):
@@ -1847,12 +1877,89 @@ def reject_invalid_raw_replay_application(
     return outcome
 
 
+def reset_raw_authority_census_ledger(
+    archive_root: Path,
+    *,
+    backup_manifest: Path | None,
+    dry_run: bool,
+) -> RawAuthorityCensusResetCounts:
+    """Reset derived census bookkeeping after authenticating a source backup."""
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        raise FileNotFoundError(source_db)
+    with closing(sqlite3.connect(source_db)) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        counts = {
+            "raw_authority_censuses": int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0]),
+            "raw_authority_plans": int(conn.execute("SELECT COUNT(*) FROM raw_authority_plans").fetchone()[0]),
+            "raw_authority_blockers": int(conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0]),
+            "raw_authority_census_plans": int(
+                conn.execute("SELECT COUNT(*) FROM raw_authority_census_plans").fetchone()[0]
+            ),
+            "raw_authority_census_post_plans": int(
+                conn.execute("SELECT COUNT(*) FROM raw_authority_census_post_plans").fetchone()[0]
+            ),
+        }
+        if not dry_run:
+            if backup_manifest is None:
+                raise ValueError("raw-authority census reset requires a verified source backup manifest")
+            validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=conn)
+            for table in _RESET_LEDGER_TABLES_CHILD_FIRST:
+                conn.execute(f"DELETE FROM {table}")
+            conn.commit()
+    return RawAuthorityCensusResetCounts(
+        censuses=counts["raw_authority_censuses"],
+        plans=counts["raw_authority_plans"],
+        blockers=counts["raw_authority_blockers"],
+        census_plans=counts["raw_authority_census_plans"],
+        census_post_plans=counts["raw_authority_census_post_plans"],
+    )
+
+
+def prune_orphaned_index_revision_seeds(
+    archive_root: Path,
+    *,
+    dry_run: bool,
+) -> OrphanedIndexRevisionSeedCounts:
+    """Prune rebuildable revision seeds that no longer have source authority."""
+    source_db = archive_root / "source.db"
+    index_db = ArchiveLocation.resolve(archive_root).active_index_path
+    if not source_db.is_file() or not index_db.is_file():
+        raise FileNotFoundError(source_db if not source_db.is_file() else index_db)
+    with closing(sqlite3.connect(index_db)) as conn:
+        conn.execute("ATTACH DATABASE ? AS src", (str(source_db),))
+        heads = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_revision_heads WHERE accepted_raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
+            ).fetchone()[0]
+        )
+        applications = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
+            ).fetchone()[0]
+        )
+        if not dry_run:
+            conn.execute(
+                "DELETE FROM raw_revision_heads WHERE accepted_raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
+            )
+            conn.execute(
+                "DELETE FROM raw_revision_applications WHERE raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
+            )
+            conn.commit()
+    return OrphanedIndexRevisionSeedCounts(
+        revision_heads=heads,
+        revision_applications=applications,
+    )
+
+
 __all__ = [
     "RAW_AUTHORITY_CENSUS_QUERY_PREFIX",
     "RAW_AUTHORITY_DETAIL_CHUNK_CHARS",
     "RAW_AUTHORITY_DETAIL_QUERY_PREFIX",
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
     "RawAuthorityCensusReceipt",
+    "RawAuthorityCensusResetCounts",
+    "OrphanedIndexRevisionSeedCounts",
     "RawReplayPlan",
     "RawReplayPlanOutcome",
     "RawReplayPlanStatus",
@@ -1872,6 +1979,8 @@ __all__ = [
     "read_raw_authority_detail",
     "record_raw_authority_census",
     "record_raw_replay_outcome",
+    "reset_raw_authority_census_ledger",
+    "prune_orphaned_index_revision_seeds",
     "reject_invalid_raw_replay_application",
     "reject_stale_raw_replay_plan",
     "resolve_raw_authority_blocker",

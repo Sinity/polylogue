@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from polylogue.maintenance.raw_authority_reset import (
     prune_orphaned_index_revision_seeds,
     reset_raw_authority_census,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _seed_ledger(source_db: Path) -> None:
@@ -43,7 +47,7 @@ def _seed_ledger(source_db: Path) -> None:
         )
 
 
-def test_reset_empties_ledger_but_preserves_accepted_state(tmp_path: Path) -> None:
+def test_reset_empties_ledger_but_preserves_accepted_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     initialize_active_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
     _seed_ledger(source_db)
@@ -61,8 +65,18 @@ def test_reset_empties_ledger_but_preserves_accepted_state(tmp_path: Path) -> No
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0] == 1  # dry: nothing deleted
 
-    report = reset_raw_authority_census(tmp_path, dry_run=False)
+    validated: list[tuple[Path, object]] = []
+
+    def validate(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        validated.append((manifest, tier))
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        return manifest.with_name("verification-receipt.json")
+
+    monkeypatch.setattr("polylogue.storage.raw_authority.validate_migration_backup_manifest", validate)
+    manifest = tmp_path / "verified-backup" / "manifest.json"
+    report = reset_raw_authority_census(tmp_path, backup_manifest=manifest, dry_run=False)
     assert report.applied is True
+    assert validated == [(manifest, ArchiveTier.SOURCE)]
 
     with sqlite3.connect(source_db) as conn:
         for table in (
@@ -76,6 +90,17 @@ def test_reset_empties_ledger_but_preserves_accepted_state(tmp_path: Path) -> No
         # Accepted state preserved.
         row = conn.execute("SELECT revision_authority FROM raw_sessions WHERE raw_id='r-keep'").fetchone()
         assert row == ("byte_proven",)
+
+
+def test_reset_refuses_to_delete_without_verified_backup_manifest(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+
+    with pytest.raises(ValueError, match="verified source backup manifest"):
+        reset_raw_authority_census(tmp_path, dry_run=False)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
 
 
 def test_prune_orphaned_index_revision_seeds(tmp_path: Path) -> None:
@@ -104,12 +129,19 @@ def test_prune_orphaned_index_revision_seeds(tmp_path: Path) -> None:
                 (f"d-{raw_id}", raw_id, f"s-{raw_id}", f"k-{raw_id}"),
             )
 
+    active_index = tmp_path / "active-generation" / "index.db"
+    active_index.parent.mkdir()
+    shutil.copy2(index_db, active_index)
+    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
     dry = prune_orphaned_index_revision_seeds(tmp_path, dry_run=True)
     assert (dry.revision_heads, dry.revision_applications, dry.applied) == (1, 1, False)
 
     report = prune_orphaned_index_revision_seeds(tmp_path, dry_run=False)
     assert report.applied is True and report.revision_heads == 1 and report.revision_applications == 1
 
-    with sqlite3.connect(index_db) as conn:
+    with sqlite3.connect(active_index) as conn:
         assert {r[0] for r in conn.execute("SELECT accepted_raw_id FROM raw_revision_heads")} == {"r-present"}
         assert {r[0] for r in conn.execute("SELECT raw_id FROM raw_revision_applications")} == {"r-present"}
+    with sqlite3.connect(index_db) as conn:
+        assert {r[0] for r in conn.execute("SELECT accepted_raw_id FROM raw_revision_heads")} == {"r-present", "r-gone"}

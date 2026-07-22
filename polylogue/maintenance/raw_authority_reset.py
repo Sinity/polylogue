@@ -24,26 +24,14 @@ census-cycle bookkeeping, and the whale pass consumes it.
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
-from polylogue.storage.archive_identity import ArchiveLocation
-
-# Children before parents: blockers/census_plans/census_post_plans reference
-# raw_authority_plans via NO ACTION (RESTRICT) FKs; census_plans/post_plans also
-# CASCADE from raw_authority_censuses. Deleting in this order with foreign_keys
-# ON leaves no dangling reference.
-_LEDGER_TABLES_CHILD_FIRST = (
-    "raw_authority_blockers",
-    "raw_authority_census_plans",
-    "raw_authority_census_post_plans",
-    "raw_authority_plans",
-    "raw_authority_censuses",
-)
+from polylogue.storage.raw_authority import prune_orphaned_index_revision_seeds as _prune_orphaned_index_revision_seeds
+from polylogue.storage.raw_authority import reset_raw_authority_census_ledger
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,40 +46,33 @@ class RawAuthorityResetReport:
     applied: bool
 
 
-def _counts(conn: sqlite3.Connection) -> dict[str, int]:
-    return {
-        table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in _LEDGER_TABLES_CHILD_FIRST
-    }
+def _offline_config(archive_root: Path) -> Config:
+    return Config(archive_root=archive_root, render_root=render_root(), sources=[])
 
 
-def reset_raw_authority_census(archive_root: Path, *, dry_run: bool = True) -> RawAuthorityResetReport:
+def reset_raw_authority_census(
+    archive_root: Path,
+    *,
+    backup_manifest: Path | None = None,
+    dry_run: bool = True,
+) -> RawAuthorityResetReport:
     """Empty the census planning ledger. ``dry_run`` reports counts only."""
-    source_db = archive_root / "source.db"
-    if not source_db.is_file():
-        raise FileNotFoundError(source_db)
-
-    with sqlite3.connect(source_db) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        before = _counts(conn)
-
-        if not dry_run:
-            active_config = Config(
-                archive_root=archive_root,
-                render_root=render_root(),
-                sources=[],
-                db_path=ArchiveLocation.resolve(archive_root).active_index_path,
-            )
-            if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
-                raise RuntimeError(reason)
-            for table in _LEDGER_TABLES_CHILD_FIRST:
-                conn.execute(f"DELETE FROM {table}")
+    if not dry_run and (
+        reason := offline_maintenance_block_reason(_offline_config(archive_root), active=True, dry_run=False)
+    ):
+        raise RuntimeError(reason)
+    before = reset_raw_authority_census_ledger(
+        archive_root,
+        backup_manifest=backup_manifest,
+        dry_run=dry_run,
+    )
 
     return RawAuthorityResetReport(
-        censuses=before["raw_authority_censuses"],
-        plans=before["raw_authority_plans"],
-        blockers=before["raw_authority_blockers"],
-        census_plans=before["raw_authority_census_plans"],
-        census_post_plans=before["raw_authority_census_post_plans"],
+        censuses=before.censuses,
+        plans=before.plans,
+        blockers=before.blockers,
+        census_plans=before.census_plans,
+        census_post_plans=before.census_post_plans,
         applied=not dry_run,
     )
 
@@ -116,37 +97,13 @@ def prune_orphaned_index_revision_seeds(archive_root: Path, *, dry_run: bool = T
     ``raw_id`` no longer exists in ``source.raw_sessions`` restores a clean
     frontier; seeds for present raws are untouched.
     """
-    index_db = archive_root / "index.db"
-    source_db = archive_root / "source.db"
-    if not index_db.exists() or not source_db.is_file():
-        raise FileNotFoundError(index_db if not index_db.exists() else source_db)
-
-    with sqlite3.connect(index_db) as conn:
-        conn.execute("ATTACH DATABASE ? AS src", (str(source_db),))
-        heads = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM raw_revision_heads WHERE accepted_raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
-            ).fetchone()[0]
-        )
-        apps = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
-            ).fetchone()[0]
-        )
-        if not dry_run:
-            active_config = Config(
-                archive_root=archive_root,
-                render_root=render_root(),
-                sources=[],
-                db_path=ArchiveLocation.resolve(archive_root).active_index_path,
-            )
-            if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
-                raise RuntimeError(reason)
-            conn.execute(
-                "DELETE FROM raw_revision_heads WHERE accepted_raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
-            )
-            conn.execute(
-                "DELETE FROM raw_revision_applications WHERE raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
-            )
-
-    return IndexSeedPruneReport(revision_heads=heads, revision_applications=apps, applied=not dry_run)
+    if not dry_run and (
+        reason := offline_maintenance_block_reason(_offline_config(archive_root), active=True, dry_run=False)
+    ):
+        raise RuntimeError(reason)
+    counts = _prune_orphaned_index_revision_seeds(archive_root, dry_run=dry_run)
+    return IndexSeedPruneReport(
+        revision_heads=counts.revision_heads,
+        revision_applications=counts.revision_applications,
+        applied=not dry_run,
+    )
