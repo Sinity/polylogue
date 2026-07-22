@@ -138,6 +138,12 @@ from polylogue.sources.dispatch import merge_parsed_session_chunks
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
+from polylogue.storage.fts.sql import (
+    FTS_BULK_SESSION_WRITE_GUARD,
+    delete_session_identity_rows_sql,
+    delete_session_rows_sql,
+    trigram_delete_session_rows_sql,
+)
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
@@ -6775,6 +6781,48 @@ class ArchiveStore:
 
         User-tier overlays are intentionally left in ``user.db``; the user
         overlay orphan checker owns follow-up visibility for those durable rows.
+
+        polylogue-meoz: a plain per-session ``DELETE FROM sessions`` detonates
+        the per-row derived-refresh triggers -- ``blocks_action_pairs_ad``
+        (gated on the ``'session-write'`` guard, see ``index.py``) fires once
+        per deleted ``blocks`` row (both the explicit block cascade and the FK
+        ``ON DELETE CASCADE`` from ``messages``/``sessions`` still invoke AFTER
+        DELETE triggers per row) and, on each firing, deletes+rebuilds the
+        *entire session's* ``action_pairs`` via two window-function scans and
+        re-derives ``delegation_facts``. Live incident 2026-07-21: deleting 91
+        sessions ran 3h, 375GB reads, zero commit, before being killed.
+        ``messages_fts``/``blocks_command_trigram`` are external-content FTS5
+        tables with no FK cascade at all, so those triggers would fire and
+        maintain per-row postings unless suppressed the same way.
+
+        This mirrors ``_bulk_fts_session_guard``'s delete-then-guard-then-
+        mutate shape (``write.py``): explicit session-scoped FTS/identity/
+        trigram deletes run first (while ``blocks`` rows still exist -- the
+        trigram table needs the OLD text to locate its postings), then BOTH
+        ``derived_refresh_guard`` rows are set for the whole batch --
+        ``'session-write'`` (suppresses ``blocks_action_pairs_a{i,d,u}`` and
+        the ``delegation_facts`` triggers) and ``'fts-bulk-session-write'``
+        (suppresses the ``messages_fts``/``blocks_command_trigram`` trigger
+        BODIES, redundant here since those rows are already gone, but kept for
+        parity with the guard contract and defense-in-depth against any block
+        row that slips past the explicit pre-delete). ``action_pairs``/
+        ``delegation_facts`` are also explicitly cleared by session id --
+        belt-and-suspenders alongside the ``ON DELETE CASCADE`` FKs those
+        tables already carry against ``sessions``/``blocks``, and it keeps the
+        post-condition legible without depending on cascade timing. The
+        physical ``sessions``/``messages``/``blocks`` rows are then removed by
+        one ``DELETE FROM sessions`` per id, relying on indexed FK cascades
+        (not per-row trigger logic) for the tree removal; guard rows are
+        cleared and the transaction commits once for the whole batch.
+
+        The per-row ``query_unit_frame_{sessions,messages,blocks}_delete``
+        epoch-bump triggers (``index.py``) are NOT gated by either guard --
+        they still fire once per deleted row. Each firing is a single
+        primary-key ``UPDATE query_unit_frame_state SET epoch = epoch + 1
+        WHERE singleton = 1`` against a one-row table, not a window-function
+        rebuild, so it is O(1) per row rather than O(session_size) per row;
+        left ungated deliberately rather than folding a third guard in for a
+        cost that was never implicated by the incident.
         """
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
@@ -6786,8 +6834,29 @@ class ArchiveStore:
         try:
             with conn:
                 for session_id in resolved_session_ids:
-                    cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                    deleted += max(int(cursor.rowcount), 0)
+                    # Must run before the blocks rows are removed below --
+                    # external-content FTS5 deletion needs the OLD text/rowid
+                    # mapping to locate the postings to remove.
+                    conn.execute(delete_session_rows_sql(1), (session_id,))
+                    conn.execute(delete_session_identity_rows_sql(1), (session_id,))
+                    conn.execute(trigram_delete_session_rows_sql(), (session_id,))
+                conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
+                conn.execute(
+                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+                    (FTS_BULK_SESSION_WRITE_GUARD,),
+                )
+                try:
+                    for session_id in resolved_session_ids:
+                        conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
+                        conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
+                        cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+                        deleted += max(int(cursor.rowcount), 0)
+                finally:
+                    conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+                    conn.execute(
+                        "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                        (FTS_BULK_SESSION_WRITE_GUARD,),
+                    )
         finally:
             conn.close()
         return deleted
