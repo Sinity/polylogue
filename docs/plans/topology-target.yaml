@@ -2107,7 +2107,7 @@ files:
     target: polylogue/maintenance/failure_routing.py
     owner: stable
   - path: polylogue/maintenance/hook_deinflation.py
-    loc: 130
+    loc: 157
     target: polylogue/maintenance/hook_deinflation.py
     owner: stable
   - path: polylogue/maintenance/invalidation.py
@@ -2129,6 +2129,10 @@ files:
   - path: polylogue/maintenance/preview.py
     loc: 505
     target: polylogue/maintenance/preview.py
+    owner: stable
+  - path: polylogue/maintenance/raw_authority_reset.py
+    loc: 152
+    target: polylogue/maintenance/raw_authority_reset.py
     owner: stable
   - path: polylogue/maintenance/rebuild_index.py
     loc: 507
