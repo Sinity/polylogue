@@ -701,6 +701,78 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-save-annotation",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Create or update an annotation on a session, message, or block. Every apply writes; "
+            "created-vs-updated is a receipt detail, not an idempotency short-circuit. Routed through "
+            "OperationExecutor/AnnotationSaveActuator (reversible class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("annotation-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.save_annotation",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.AnnotationSaveActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-delete-annotation",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Soft-delete an annotation (marks its assertion row deleted). Idempotent — returns not-found "
+            "when already absent. Routed through OperationExecutor/AnnotationDeleteActuator (reversible "
+            "class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("annotation-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.delete_annotation",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.AnnotationDeleteActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-resolve-raw-authority-blocker",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Explicitly acknowledge current source/index evidence and reopen replanning for one "
+            "unresolved raw-authority blocker (stale-plan or frontier-judgment). Routed through "
+            "OperationExecutor/BlockerResolveActuator; requires --yes/confirm-flag. Frontier-judgment "
+            "blockers additionally require their exact accepted assertion id and "
+            "disposition=retain_canonical_authority, enforced by the primitive itself."
+        ),
+        consumes=("raw_authority_plans", "raw_authority_blockers"),
+        produces=("raw_authority_blocker_resolution",),
+        path_targets=("raw-authority-blocker-resolution-loop",),
+        code_refs=(
+            "polylogue.storage.raw_authority.resolve_raw_authority_blocker",
+            "polylogue.cli.commands.maintenance._raw_identity.raw_authority_blocker_resolve_command",
+            "polylogue.operations.mutation_actuators.BlockerResolveActuator",
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
         name="mutate-delete-session",
         kind=OperationKind.MAINTENANCE,
         description=(

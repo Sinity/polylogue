@@ -6033,11 +6033,21 @@ class PolylogueArchiveMixin:
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> bool:
-        """Create or update an annotation. Returns ``True`` if newly created."""
+        """Create or update an annotation. Returns ``True`` if newly created.
+
+        Routed through ``OperationExecutor``/``AnnotationSaveActuator``
+        (t46.9 phase 3); see :meth:`add_mark` for the shared-contract
+        rationale. Target resolution stays here (async, may consult
+        insight-derived indexes) and runs once before the actuator sees an
+        already-resolved ``target_type``/``target_id`` pair.
+        """
         if not annotation_id.strip():
             raise ValueError("annotation_id must not be empty")
         if not note_text.strip():
             raise ValueError("note_text must not be empty")
+        from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
+
         target = await self._resolve_user_state_target(
             session_id,
             target_type=target_type,
@@ -6047,12 +6057,26 @@ class PolylogueArchiveMixin:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.save_annotation(
-                annotation_id,
-                str(target["target_type"]),
-                str(target["target_id"]),
-                note_text,
+            actuator = AnnotationSaveActuator()
+            executor = OperationExecutor()
+            args = AnnotationSaveArgs(
+                archive=archive,
+                annotation_id=annotation_id,
+                target_type=str(target["target_type"]),
+                target_id=str(target["target_id"]),
+                note_text=note_text,
             )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.save_annotation",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return bool(receipt.domain_receipt.get("created"))
 
     async def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
         """Get an annotation by ID."""
@@ -6102,11 +6126,31 @@ class PolylogueArchiveMixin:
         )
 
     async def delete_annotation(self, annotation_id: str) -> bool:
-        """Delete an annotation. Returns ``True`` if deleted."""
+        """Delete an annotation. Returns ``True`` if deleted.
+
+        Routed through ``OperationExecutor``/``AnnotationDeleteActuator``
+        (t46.9 phase 3); see :meth:`add_mark` for the shared-contract
+        rationale.
+        """
+        from polylogue.operations.mutation_actuators import AnnotationDeleteActuator, AnnotationDeleteArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.delete_annotation(annotation_id)
+            actuator = AnnotationDeleteActuator()
+            executor = OperationExecutor()
+            args = AnnotationDeleteArgs(archive=archive, annotation_id=annotation_id)
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.delete_annotation",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return receipt.status == "applied"
 
     # ------------------------------------------------------------------
     # Saved views

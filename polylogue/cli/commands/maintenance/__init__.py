@@ -72,6 +72,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Read a bounded chunk of a complete raw-authority ledger record.",
     ),
     (
+        "raw-authority-blockers",
+        "_raw_identity",
+        "raw_authority_blockers_command",
+        "List unresolved raw-authority blockers (frontier-judgment vs stale-plan). Read-only.",
+    ),
+    (
         "raw-authority-blocker-resolve",
         "_raw_identity",
         "raw_authority_blocker_resolve_command",

@@ -18,7 +18,11 @@
 # surface that exposes them. Phase 2 adds the `reversible`-class tag,
 # metadata, and mark mutation families (role_only-strength executor routes,
 # per AC4: reversible writes must not acquire unnecessary interactive
-# confirmation). Every remaining operation below is inventoried honestly as
+# confirmation). Phase 3 adds the annotation family (reversible, role_only)
+# and raw-authority blocker resolution (reset class, confirm_flag --
+# discovered mid-session as an unclassified mutating operation, not merely
+# an un-migrated one: it had a CLI adapter but no census row at all).
+# Every remaining operation below is inventoried honestly as
 # `declared-not-routed` -- visible debt for a later phase, not a claim of
 # completion.
 
@@ -116,19 +120,51 @@ rows:
       - polylogue.api.archive.PolylogueArchiveMixin.remove_mark
       - polylogue.mcp.server_cutover._dispatch_write (operation=remove_mark, via remove_mark)
 
+  # --- Phase 3: executor-routed (annotation family; reversible class) --------
+
+  - operation: mutate-save-annotation
+    spec_name: mutate-save-annotation
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.AnnotationSaveActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.save_annotation
+      - polylogue.mcp.server_cutover._dispatch_write (operation=save_annotation, via save_annotation)
+
+  - operation: mutate-delete-annotation
+    spec_name: mutate-delete-annotation
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.AnnotationDeleteActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.delete_annotation
+      - polylogue.mcp.server_cutover._dispatch_write (operation=delete_annotation, via delete_annotation)
+
+  # --- Phase 3: executor-routed (raw-authority blocker resolution) -----------
+  # Tonight-discovered operator gap (2026-07-21/22): resolve_raw_authority_
+  # blocker had a working CLI adapter (raw-authority-blocker-resolve, its own
+  # --yes gate) but NO census entry and no authorization path shared with any
+  # other destructive route -- an unclassified mutating operation, not merely
+  # an un-migrated one. Also added: raw-authority-blockers (read-only list,
+  # no census row needed) so an operator can discover an unresolved
+  # --blocker-id without page-walking raw-authority-census/-detail or writing
+  # an ad hoc script against the live archive.
+  - operation: mutate-resolve-raw-authority-blocker
+    spec_name: mutate-resolve-raw-authority-blocker
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.BlockerResolveActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.maintenance._raw_identity.raw_authority_blocker_resolve_command
+
   # --- Phase 3 debt: declared-not-routed --------------------------------------
   # MCP-only mutation family with no OperationSpec entry yet (pre-existing
   # gap, not introduced by this PR). jn40's confirm-boolean sweep is the
   # interim mitigation for the destructive members of this family
-  # (delete_annotation, delete_saved_view, delete_recall_pack,
-  # delete_workspace); it does not satisfy executor-routing. add_mark/
-  # remove_mark are executor-routed above (t46.9 phase 2); the rest of this
-  # family remains Phase 3 debt.
-  - operation: save_annotation / delete_annotation
-    status: declared-not-routed
-    surfaces: [mcp]
-    adapters: [polylogue.mcp.server_cutover._dispatch_write]
-    reason: delete_annotation confirm-gated by jn40; not yet executor-routed.
+  # (delete_saved_view, delete_recall_pack, delete_workspace); it does not
+  # satisfy executor-routing. add_mark/remove_mark (phase 2) and
+  # save_annotation/delete_annotation (phase 3) are executor-routed above;
+  # the rest of this family remains Phase 3+ debt.
 
   - operation: capture_assertion_candidate
     status: declared-not-routed

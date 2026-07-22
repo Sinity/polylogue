@@ -455,8 +455,27 @@ moved-path component has one crash-safe identity across preview and apply. It
 never selects or applies an index replay plan.
 
 A stale precondition or incomplete application receipt creates a durable,
-fail-closed blocker. After inspecting the census URI and current evidence,
-explicitly reopen replanning with a recorded rationale:
+fail-closed blocker. List unresolved blockers before resolving one -- this is
+the read-only discovery surface for an operator who does not already know an
+exact `--blocker-id` (previously the only way to find one was page-walking
+`raw-authority-census`/`raw-authority-detail` or writing an ad hoc script
+against the live archive):
+
+```bash
+polylogue ops maintenance raw-authority-blockers --output-format json
+```
+
+Each row's `kind` distinguishes `stale_plan` (replan against current
+source/index evidence is enough), `frontier_judgment` (requires an accepted
+judgment assertion id plus `disposition=retain_canonical_authority`, per the
+conflicting-authority frontier), and `frontier_obligation` (the other
+frontier obligation states -- missing bytes, unresolved provenance, corrupt
+-- which resolve like an ordinary blocker: no judgment assertion is
+required). The listing is bounded to `--limit` (1-500, default 100) per
+call; if the response's `truncated` field is `true`, pass
+`--offset <next_offset>` to read the next page. After inspecting the census
+URI and current evidence, explicitly reopen replanning with a recorded
+rationale:
 
 ```bash
 polylogue ops maintenance raw-authority-blocker-resolve \
@@ -467,7 +486,12 @@ polylogue ops maintenance raw-authority-blocker-resolve \
 
 Resolution never applies the stale plan. It stores the replacement plan
 witness in the resolution receipt; the next ordinary convergence pass plans
-and validates current evidence normally.
+and validates current evidence normally. Both commands route through
+`OperationExecutor`/`BlockerResolveActuator` (polylogue-t46.9 phase 3):
+PREPARE previews the exact blocker target and EXECUTE requires a
+confirm-flag-strength authorization bound to that plan's hash, refusing
+(`preview_stale`) if the blocker was concurrently resolved between preview
+and confirm.
 
 ### Draining the convergence-debt queue
 
