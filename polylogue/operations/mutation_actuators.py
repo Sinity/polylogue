@@ -962,6 +962,356 @@ class BlockerResolveActuator:
         )
 
 
+# ---------------------------------------------------------------------------
+# Saved-view mutations (mutate-save-saved-view / mutate-delete-saved-view) --
+# phase 4 (t46.9/kwsb.2): the saved-view/recall-pack/workspace family (MCP
+# operations save_saved_view/delete_saved_view, save_recall_pack/
+# delete_recall_pack, save_workspace/delete_workspace) was declared-not-routed
+# debt through phase 3. Each pair follows the exact reversible-class pattern
+# already proven for tag/metadata/mark/annotation: the underlying ArchiveStore
+# primitive is a create-or-update upsert paired with a soft-delete
+# (mark_assertion_status ... "deleted"), so undo is always the paired actuator
+# through the same primitive -- role_only confirmation per AC4.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SavedViewSaveArgs:
+    """Shared prepare/apply argument shape for saved-view create/update."""
+
+    archive: ArchiveStore
+    view_id: str
+    name: str
+    query_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class SavedViewSaveActuator:
+    """Actuator for ``mutate-save-saved-view``: reversible user.db saved-view upsert.
+
+    Real production mutation: ``ArchiveStore.save_view``, the same primitive
+    ``PolylogueArchiveMixin.save_view`` already calls. Every apply writes
+    (create-or-update), so ``created``-vs-``updated`` is a receipt detail
+    (mirrors ``AnnotationSaveActuator``), not an idempotency short-circuit.
+    """
+
+    operation: str = "mutate-save-saved-view"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: SavedViewSaveArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"saved_view:{args.view_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"view_id": args.view_id, "name": args.name, "query_json": args.query_json},
+        )
+
+    def apply(self, plan: MutationPlan, args: SavedViewSaveArgs) -> MutationReceipt:
+        view_id = str(plan.context["view_id"])
+        name = str(plan.context["name"])
+        query_json = str(plan.context["query_json"])
+        created = args.archive.save_view(view_id, name, query_json)
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"created": created},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SavedViewDeleteArgs:
+    """Shared prepare/apply argument shape for saved-view deletion."""
+
+    archive: ArchiveStore
+    view_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SavedViewDeleteActuator:
+    """Actuator for ``mutate-delete-saved-view``: reversible user.db saved-view retraction.
+
+    Real production mutation: ``ArchiveStore.delete_view``, which marks the
+    saved-view's assertion row deleted (undo = ``mutate-save-saved-view``).
+    """
+
+    operation: str = "mutate-delete-saved-view"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: SavedViewDeleteArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"saved_view:{args.view_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"view_id": args.view_id},
+        )
+
+    def apply(self, plan: MutationPlan, args: SavedViewDeleteArgs) -> MutationReceipt:
+        view_id = str(plan.context["view_id"])
+        deleted = args.archive.delete_view(view_id)
+        status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=1 if deleted else 0,
+            detail=None if deleted else "saved_view_not_found",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"deleted": deleted},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Recall-pack mutations (mutate-save-recall-pack / mutate-delete-recall-pack)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPackSaveArgs:
+    """Shared prepare/apply argument shape for recall-pack create/update.
+
+    ``session_ids_json``/``payload_json`` are the already-normalized values
+    ``PolylogueArchiveMixin._build_recall_pack_payload`` produces (async item
+    resolution happens once by the caller before the actuator runs, mirroring
+    ``MarkArgs``/``AnnotationSaveArgs``'s "resolve once, plan and mutate the
+    identical set" pattern).
+    """
+
+    archive: ArchiveStore
+    pack_id: str
+    label: str
+    session_ids_json: str
+    payload_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPackSaveActuator:
+    """Actuator for ``mutate-save-recall-pack``: reversible user.db recall-pack upsert.
+
+    Real production mutation: ``ArchiveStore.save_recall_pack``, the same
+    primitive ``PolylogueArchiveMixin.create_recall_pack`` already calls.
+    """
+
+    operation: str = "mutate-save-recall-pack"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: RecallPackSaveArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"recall_pack:{args.pack_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "pack_id": args.pack_id,
+                "label": args.label,
+                "session_ids_json": args.session_ids_json,
+                "payload_json": args.payload_json,
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: RecallPackSaveArgs) -> MutationReceipt:
+        pack_id = str(plan.context["pack_id"])
+        label = str(plan.context["label"])
+        session_ids_json = str(plan.context["session_ids_json"])
+        payload_json = str(plan.context["payload_json"])
+        created = args.archive.save_recall_pack(pack_id, label, session_ids_json, payload_json)
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"created": created},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPackDeleteArgs:
+    """Shared prepare/apply argument shape for recall-pack deletion."""
+
+    archive: ArchiveStore
+    pack_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPackDeleteActuator:
+    """Actuator for ``mutate-delete-recall-pack``: reversible user.db recall-pack retraction.
+
+    Real production mutation: ``ArchiveStore.delete_recall_pack`` (undo =
+    ``mutate-save-recall-pack``).
+    """
+
+    operation: str = "mutate-delete-recall-pack"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: RecallPackDeleteArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"recall_pack:{args.pack_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"pack_id": args.pack_id},
+        )
+
+    def apply(self, plan: MutationPlan, args: RecallPackDeleteArgs) -> MutationReceipt:
+        pack_id = str(plan.context["pack_id"])
+        deleted = args.archive.delete_recall_pack(pack_id)
+        status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=1 if deleted else 0,
+            detail=None if deleted else "recall_pack_not_found",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"deleted": deleted},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Workspace mutations (mutate-save-workspace / mutate-delete-workspace)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSaveArgs:
+    """Shared prepare/apply argument shape for reader-workspace create/update.
+
+    ``open_targets_json``/``active_target_json`` are the already-normalized
+    values ``PolylogueArchiveMixin._build_workspace_targets``/
+    ``_build_workspace_active_target`` produce (async item resolution happens
+    once by the caller before the actuator runs).
+    """
+
+    archive: ArchiveStore
+    workspace_id: str
+    name: str
+    mode: str
+    open_targets_json: str
+    layout_json: str
+    active_target_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSaveActuator:
+    """Actuator for ``mutate-save-workspace``: reversible user.db workspace upsert.
+
+    Real production mutation: ``ArchiveStore.save_workspace``, the same
+    primitive ``PolylogueArchiveMixin.save_workspace`` already calls.
+    """
+
+    operation: str = "mutate-save-workspace"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: WorkspaceSaveArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"workspace:{args.workspace_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "workspace_id": args.workspace_id,
+                "name": args.name,
+                "mode": args.mode,
+                "open_targets_json": args.open_targets_json,
+                "layout_json": args.layout_json,
+                "active_target_json": args.active_target_json,
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: WorkspaceSaveArgs) -> MutationReceipt:
+        created = args.archive.save_workspace(
+            workspace_id=str(plan.context["workspace_id"]),
+            name=str(plan.context["name"]),
+            mode=str(plan.context["mode"]),
+            open_targets_json=str(plan.context["open_targets_json"]),
+            layout_json=str(plan.context["layout_json"]),
+            active_target_json=str(plan.context["active_target_json"]),
+        )
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"created": created},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceDeleteArgs:
+    """Shared prepare/apply argument shape for reader-workspace deletion."""
+
+    archive: ArchiveStore
+    workspace_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceDeleteActuator:
+    """Actuator for ``mutate-delete-workspace``: reversible user.db workspace retraction.
+
+    Real production mutation: ``ArchiveStore.delete_workspace`` (undo =
+    ``mutate-save-workspace``).
+    """
+
+    operation: str = "mutate-delete-workspace"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: WorkspaceDeleteArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"workspace:{args.workspace_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"workspace_id": args.workspace_id},
+        )
+
+    def apply(self, plan: MutationPlan, args: WorkspaceDeleteArgs) -> MutationReceipt:
+        workspace_id = str(plan.context["workspace_id"])
+        deleted = args.archive.delete_workspace(workspace_id)
+        status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=1 if deleted else 0,
+            detail=None if deleted else "workspace_not_found",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"deleted": deleted},
+        )
+
+
 __all__ = [
     "AnnotationDeleteActuator",
     "AnnotationDeleteArgs",
@@ -980,6 +1330,14 @@ __all__ = [
     "MetadataDeleteArgs",
     "MetadataSetActuator",
     "MetadataSetArgs",
+    "RecallPackDeleteActuator",
+    "RecallPackDeleteArgs",
+    "RecallPackSaveActuator",
+    "RecallPackSaveArgs",
+    "SavedViewDeleteActuator",
+    "SavedViewDeleteArgs",
+    "SavedViewSaveActuator",
+    "SavedViewSaveArgs",
     "SessionDeleteActuator",
     "SessionDeleteArgs",
     "SessionExcisionActuator",
@@ -988,4 +1346,8 @@ __all__ = [
     "TagAddArgs",
     "TagRemoveActuator",
     "TagRemoveArgs",
+    "WorkspaceDeleteActuator",
+    "WorkspaceDeleteArgs",
+    "WorkspaceSaveActuator",
+    "WorkspaceSaveArgs",
 ]

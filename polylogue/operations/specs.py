@@ -773,6 +773,144 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-save-saved-view",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Create or update a named saved query view. Every apply writes; created-vs-updated is a "
+            "receipt detail, not an idempotency short-circuit. Routed through OperationExecutor/"
+            "SavedViewSaveActuator (reversible class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("saved-view-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.save_view",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.SavedViewSaveActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-delete-saved-view",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Soft-delete a saved query view (marks its assertion row deleted). Idempotent — returns "
+            "not-found when already absent. Routed through OperationExecutor/SavedViewDeleteActuator "
+            "(reversible class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("saved-view-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.delete_view",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.SavedViewDeleteActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-save-recall-pack",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Create or update a recall pack (a named, resolved set of session/message/annotation/mark "
+            "references). Every apply writes. Routed through OperationExecutor/RecallPackSaveActuator "
+            "(reversible class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("recall-pack-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.create_recall_pack",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.RecallPackSaveActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-delete-recall-pack",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Soft-delete a recall pack (marks its assertion row deleted). Idempotent — returns not-found "
+            "when already absent. Routed through OperationExecutor/RecallPackDeleteActuator (reversible "
+            "class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("recall-pack-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.delete_recall_pack",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.RecallPackDeleteActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-save-workspace",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Create or update a durable reader workspace (open targets, layout, active target). Every "
+            "apply writes. Routed through OperationExecutor/WorkspaceSaveActuator (reversible class, "
+            "role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("workspace-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.save_workspace",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.WorkspaceSaveActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-delete-workspace",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Soft-delete a durable reader workspace (marks its assertion row deleted). Idempotent — "
+            "returns not-found when already absent. Routed through OperationExecutor/"
+            "WorkspaceDeleteActuator (reversible class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("workspace-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.delete_workspace",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.WorkspaceDeleteActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
         name="mutate-delete-session",
         kind=OperationKind.MAINTENANCE,
         description=(

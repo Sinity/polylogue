@@ -6157,11 +6157,30 @@ class PolylogueArchiveMixin:
     # ------------------------------------------------------------------
 
     async def save_view(self, view_id: str, name: str, query_json: str) -> bool:
-        """Save a named query view. Returns ``True`` if newly created."""
+        """Save a named query view. Returns ``True`` if newly created.
+
+        Routed through ``OperationExecutor``/``SavedViewSaveActuator`` (t46.9
+        phase 4); see :meth:`add_mark` for the shared-contract rationale.
+        """
+        from polylogue.operations.mutation_actuators import SavedViewSaveActuator, SavedViewSaveArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.save_view(view_id, name, query_json)
+            actuator = SavedViewSaveActuator()
+            executor = OperationExecutor()
+            args = SavedViewSaveArgs(archive=archive, view_id=view_id, name=name, query_json=query_json)
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.save_view",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return bool(receipt.domain_receipt.get("created"))
 
     async def get_view(self, view_id: str) -> dict[str, str] | None:
         """Get a saved view by ID."""
@@ -6195,11 +6214,31 @@ class PolylogueArchiveMixin:
         )
 
     async def delete_view(self, view_id: str) -> bool:
-        """Delete a saved view. Returns ``True`` if deleted."""
+        """Delete a saved view. Returns ``True`` if deleted.
+
+        Routed through ``OperationExecutor``/``SavedViewDeleteActuator``
+        (t46.9 phase 4); see :meth:`add_mark` for the shared-contract
+        rationale.
+        """
+        from polylogue.operations.mutation_actuators import SavedViewDeleteActuator, SavedViewDeleteArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.delete_view(view_id)
+            actuator = SavedViewDeleteActuator()
+            executor = OperationExecutor()
+            args = SavedViewDeleteArgs(archive=archive, view_id=view_id)
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.delete_view",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return receipt.status == "applied"
 
     # ------------------------------------------------------------------
     # Recall packs
@@ -6440,7 +6479,14 @@ class PolylogueArchiveMixin:
         return resolved_session_ids, json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"))
 
     async def create_recall_pack(self, pack_id: str, label: str, payload_json: str) -> bool:
-        """Save a recall pack. Returns ``True`` if newly created."""
+        """Save a recall pack. Returns ``True`` if newly created.
+
+        Routed through ``OperationExecutor``/``RecallPackSaveActuator`` (t46.9
+        phase 4); see :meth:`add_mark` for the shared-contract rationale.
+        Item resolution (async, may consult insight-derived indexes) stays
+        here and runs once before the actuator sees already-normalized
+        ``session_ids_json``/``payload_json``.
+        """
         import json
 
         payload = json.loads(payload_json)
@@ -6451,10 +6497,31 @@ class PolylogueArchiveMixin:
             payload=payload,
         )
         session_ids_json = json.dumps(resolved_session_ids, sort_keys=True)
+        from polylogue.operations.mutation_actuators import RecallPackSaveActuator, RecallPackSaveArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.save_recall_pack(pack_id, label, session_ids_json, normalized_payload_json)
+            actuator = RecallPackSaveActuator()
+            executor = OperationExecutor()
+            args = RecallPackSaveArgs(
+                archive=archive,
+                pack_id=pack_id,
+                label=label,
+                session_ids_json=session_ids_json,
+                payload_json=normalized_payload_json,
+            )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.create_recall_pack",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return bool(receipt.domain_receipt.get("created"))
 
     async def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
         """Get a recall pack by ID."""
@@ -6478,11 +6545,31 @@ class PolylogueArchiveMixin:
         )
 
     async def delete_recall_pack(self, pack_id: str) -> bool:
-        """Delete a recall pack. Returns ``True`` if deleted."""
+        """Delete a recall pack. Returns ``True`` if deleted.
+
+        Routed through ``OperationExecutor``/``RecallPackDeleteActuator``
+        (t46.9 phase 4); see :meth:`add_mark` for the shared-contract
+        rationale.
+        """
+        from polylogue.operations.mutation_actuators import RecallPackDeleteActuator, RecallPackDeleteArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.delete_recall_pack(pack_id)
+            actuator = RecallPackDeleteActuator()
+            executor = OperationExecutor()
+            args = RecallPackDeleteArgs(archive=archive, pack_id=pack_id)
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.delete_recall_pack",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return receipt.status == "applied"
 
     # ------------------------------------------------------------------
     # Reader workspaces
@@ -6512,7 +6599,14 @@ class PolylogueArchiveMixin:
         layout_json: str,
         active_target_json: str = "{}",
     ) -> bool:
-        """Create or update a durable reader workspace."""
+        """Create or update a durable reader workspace.
+
+        Routed through ``OperationExecutor``/``WorkspaceSaveActuator`` (t46.9
+        phase 4); see :meth:`add_mark` for the shared-contract rationale.
+        Validation and item resolution (async, may consult insight-derived
+        indexes) stay here and run once before the actuator sees
+        already-normalized JSON payloads.
+        """
         import json
 
         workspace_id = workspace_id.strip()
@@ -6540,10 +6634,15 @@ class PolylogueArchiveMixin:
             raise ValueError("active_target_json must encode an object")
         normalized_active_json = await self._build_workspace_active_target(active_target)
 
+        from polylogue.operations.mutation_actuators import WorkspaceSaveActuator, WorkspaceSaveArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.save_workspace(
+            actuator = WorkspaceSaveActuator()
+            executor = OperationExecutor()
+            args = WorkspaceSaveArgs(
+                archive=archive,
                 workspace_id=workspace_id,
                 name=name,
                 mode=mode,
@@ -6551,6 +6650,17 @@ class PolylogueArchiveMixin:
                 layout_json=normalized_layout_json,
                 active_target_json=normalized_active_json,
             )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.save_workspace",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return bool(receipt.domain_receipt.get("created"))
 
     async def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
         """Get a durable reader workspace by ID."""
@@ -6574,11 +6684,31 @@ class PolylogueArchiveMixin:
         )
 
     async def delete_workspace(self, workspace_id: str) -> bool:
-        """Delete a durable reader workspace. Returns ``True`` if deleted."""
+        """Delete a durable reader workspace. Returns ``True`` if deleted.
+
+        Routed through ``OperationExecutor``/``WorkspaceDeleteActuator``
+        (t46.9 phase 4); see :meth:`add_mark` for the shared-contract
+        rationale.
+        """
+        from polylogue.operations.mutation_actuators import WorkspaceDeleteActuator, WorkspaceDeleteArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.delete_workspace(workspace_id)
+            actuator = WorkspaceDeleteActuator()
+            executor = OperationExecutor()
+            args = WorkspaceDeleteArgs(archive=archive, workspace_id=workspace_id)
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability="archive.delete_workspace",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return receipt.status == "applied"
 
     # ------------------------------------------------------------------
     # Learning corrections (#1131)
