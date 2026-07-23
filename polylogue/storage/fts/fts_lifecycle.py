@@ -33,9 +33,11 @@ from polylogue.storage.fts.sql import (
     insert_all_message_rows_sql,
     insert_all_trigram_rows_sql,
     insert_missing_message_rows_range_sql,
+    insert_missing_message_rows_sql,
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
     message_identity_mismatch_sql,
+    repair_all_message_identity_rows_sql,
     repair_message_identity_rows_range_sql,
 )
 
@@ -523,6 +525,27 @@ def delete_excess_message_rows_batched_sync(
         if len(rowids) < batch_rows:
             break
     return deleted_total
+
+
+def reconcile_message_fts_rows_once_sync(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Reconcile the global message FTS surface with bounded scan count.
+
+    The old numeric-rowid window loop is safe for compact tables, but a live
+    archive can retain a sparse rowid space after many full replacements.
+    Each window then repeats an expensive join against the FTS docsize shadow
+    table.  A global debt repair is already an explicit maintenance action, so
+    use one set-based missing-row pass and one set-based identity pass instead.
+    Existing excess rows are still removed through the contentless-FTS-safe
+    batched delete primitive.
+    """
+    ensure_fts_index_sync(conn)
+    deleted = delete_excess_message_rows_batched_sync(conn)
+    before = conn.total_changes
+    conn.execute(insert_missing_message_rows_sql())
+    inserted = max(0, conn.total_changes - before)
+    if _blocks_content_hash_available_sync(conn):
+        conn.execute(repair_all_message_identity_rows_sql())
+    return inserted, deleted
 
 
 def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
@@ -1139,6 +1162,7 @@ __all__ = [
     "repair_fts_index_async",
     "repair_fts_index_sync",
     "repair_message_fts_index_sync",
+    "reconcile_message_fts_rows_once_sync",
     "reset_message_fts_index_sync",
     "replace_fts_rows_for_messages_sync",
     "restore_message_fts_triggers_sync",

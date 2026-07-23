@@ -1432,45 +1432,11 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
             from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
             from polylogue.storage.fts.freshness import READY, record_fts_surface_state_sync
             from polylogue.storage.fts.fts_lifecycle import (
-                delete_excess_message_rows_batched_sync,
-                insert_missing_message_rows_batched_sync,
+                reconcile_message_fts_rows_once_sync,
             )
 
             configure_bounded_repair_connection(conn)
-            progress_windows = 0
-            inserted_total = 0
-
-            def progress(lower: int, upper: int, inserted: int) -> None:
-                nonlocal inserted_total, progress_windows
-                progress_windows += 1
-                inserted_total += inserted
-                if inserted or progress_windows % 20 == 0:
-                    logger.info(
-                        "fts: archive messages_fts repair window rowid=(%d,%d] inserted=%d total_inserted=%d",
-                        lower,
-                        upper,
-                        inserted,
-                        inserted_total,
-                    )
-
-            deleted_total = 0
-
-            def excess_progress(deleted: int) -> None:
-                nonlocal deleted_total
-                deleted_total += deleted
-                if deleted:
-                    logger.info(
-                        "fts: archive messages_fts deleted excess rows deleted=%d total_deleted=%d",
-                        deleted,
-                        deleted_total,
-                    )
-
-            delete_excess_message_rows_batched_sync(conn, progress_callback=excess_progress)
-            insert_missing_message_rows_batched_sync(
-                conn,
-                measure_counts=False,
-                progress_callback=progress,
-            )
+            inserted_total, deleted_total = reconcile_message_fts_rows_once_sync(conn)
             record_fts_surface_state_sync(
                 conn,
                 surface="messages_fts",
