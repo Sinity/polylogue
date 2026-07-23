@@ -1326,10 +1326,23 @@ def finalize_raw_authority_census(
             )
             for raw_id in json.loads(str(input_raw_ids_json))
         }
+        selected_logical_keys = {
+            str(logical_key)
+            for (logical_keys_json,) in conn.execute(
+                """
+                SELECT p.logical_keys_json
+                FROM raw_authority_census_plans AS cp
+                JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
+                WHERE cp.census_id = ? AND cp.selected = 1
+                """,
+                (census_id,),
+            )
+            for logical_key in json.loads(str(logical_keys_json))
+        }
         persistent: set[str] = set()
-        for plan_id, outcome_status, input_raw_ids_json in conn.execute(
+        for plan_id, outcome_status, input_raw_ids_json, logical_keys_json in conn.execute(
             """
-            SELECT cp.plan_id, cp.outcome_status, p.input_raw_ids_json
+            SELECT cp.plan_id, cp.outcome_status, p.input_raw_ids_json, p.logical_keys_json
             FROM raw_authority_census_plans AS cp
             JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
             WHERE cp.census_id = ?
@@ -1338,7 +1351,10 @@ def finalize_raw_authority_census(
             (census_id,),
         ):
             plan_inputs = {str(raw_id) for raw_id in json.loads(str(input_raw_ids_json))}
-            if str(outcome_status) == RawReplayPlanStatus.RETRYABLE.value or plan_inputs.isdisjoint(selected_inputs):
+            plan_logical_keys = {str(logical_key) for logical_key in json.loads(str(logical_keys_json))}
+            if str(outcome_status) == RawReplayPlanStatus.RETRYABLE.value or (
+                plan_inputs.isdisjoint(selected_inputs) and plan_logical_keys.isdisjoint(selected_logical_keys)
+            ):
                 persistent.add(str(plan_id))
         if not persistent.issubset(post_ids):
             raise RuntimeError(
