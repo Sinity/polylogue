@@ -6370,6 +6370,19 @@ def repair_raw_materialization(
 
     from polylogue.sources.revision_backfill import RevisionBackfillResult, backfill_historical_revision_evidence
 
+    # ``action_pairs_refresh_sql`` is session-scoped, but on an index tier
+    # whose planner statistics were lost during an interrupted generation
+    # transition SQLite can choose the broad ``idx_blocks_type_tool`` scan
+    # instead.  Replaying several authority components then becomes an
+    # archive-wide read for every session replacement.  Refresh only the
+    # writer-hot table before this bounded live pass; this is the same
+    # planner invariant seeded for a fresh index bootstrap, without turning
+    # raw materialization into a full rebuild.
+    with closing(sqlite3.connect(archive_root / "index.db", timeout=60)) as planner_conn:
+        planner_conn.execute("PRAGMA busy_timeout = 60000")
+        planner_conn.execute("ANALYZE blocks")
+        planner_conn.commit()
+
     executable_raw_ids = raw_ids
     metrics["raw_materialization_executed_count"] = float(len(executable_raw_ids))
     replay_parts: list[RevisionBackfillResult] = []
