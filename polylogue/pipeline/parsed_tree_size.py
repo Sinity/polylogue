@@ -146,14 +146,59 @@ def estimate_parsed_tree_bytes(sessions: Sequence[ParsedSession]) -> int:
     )
 
 
+def _cgroup_memory_limit_paths(
+    *,
+    cgroup_v2_root: Path = Path("/sys/fs/cgroup"),
+    cgroup_v1_root: Path = Path("/sys/fs/cgroup/memory"),
+    proc_cgroup_path: Path = Path("/proc/self/cgroup"),
+) -> tuple[Path, ...]:
+    """Return memory-limit files from this process's cgroup ancestry.
+
+    Reading only ``/sys/fs/cgroup/memory.max`` sees the host/root cgroup on
+    systemd hosts. A transient service's real limit is normally on a nested
+    path recorded in ``/proc/self/cgroup``; include it and every ancestor so
+    the caller can select the tightest finite limit.
+    """
+
+    paths: list[Path] = [cgroup_v2_root / "memory.max", cgroup_v1_root / "memory.limit_in_bytes"]
+    try:
+        memberships = proc_cgroup_path.read_text().splitlines()
+    except OSError:
+        return tuple(paths)
+
+    for membership in memberships:
+        try:
+            hierarchy, controllers, relative_path = membership.split(":", 2)
+        except ValueError:
+            continue
+        if hierarchy == "0" and not controllers:
+            root, limit_name = cgroup_v2_root, "memory.max"
+        elif "memory" in controllers.split(","):
+            root, limit_name = cgroup_v1_root, "memory.limit_in_bytes"
+        else:
+            continue
+        parts = tuple(part for part in relative_path.split("/") if part)
+        if any(part in {".", ".."} for part in parts):
+            continue
+        current = root.joinpath(*parts)
+        while True:
+            paths.append(current / limit_name)
+            if current == root:
+                break
+            current = current.parent
+
+    return tuple(dict.fromkeys(paths))
+
+
 def effective_physical_memory_bytes() -> int | None:
     """Physical RAM available to THIS process: host RAM capped by cgroup limit.
 
     Under a container/systemd cgroup memory limit, ``SC_PHYS_PAGES`` reports
     host RAM; sizing an adaptive cache from it starves a memory-limited
     process. Reads cgroup v2 ``memory.max`` (and legacy v1
-    ``memory.limit_in_bytes``) and returns the minimum of host RAM and any
-    finite limit; ``None`` when neither is knowable.
+    ``memory.limit_in_bytes``) across the process's cgroup ancestry and
+    returns the minimum of host RAM and any finite limit; ``None`` when
+    neither is knowable.
     """
 
     physical: int | None
@@ -164,7 +209,7 @@ def effective_physical_memory_bytes() -> int | None:
     except (ValueError, OSError, AttributeError):
         physical = None
     limits = []
-    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+    for path in _cgroup_memory_limit_paths():
         try:
             raw = Path(path).read_text().strip()
         except OSError:
