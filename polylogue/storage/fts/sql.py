@@ -392,6 +392,34 @@ def repair_message_identity_rows_range_sql() -> str:
     """
 
 
+def repair_all_message_identity_rows_sql() -> str:
+    """Return the set-based identity-ledger reconciliation statement.
+
+    Global recovery must not turn sparse SQLite rowids into millions of
+    numeric windows.  This is the same conflict policy as
+    :func:`repair_message_identity_rows_range_sql`, but evaluates the archive
+    once while the caller owns a global FTS repair transaction.
+    """
+    return f"""
+        INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
+        SELECT b.rowid, b.block_id, b.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
+        FROM blocks AS b
+        JOIN messages_fts_docsize AS d ON d.id = b.rowid
+        WHERE b.search_text != ''
+        ON CONFLICT(rowid) DO UPDATE SET
+            block_id = excluded.block_id,
+            source_hash = excluded.source_hash,
+            recipe_id = excluded.recipe_id
+        WHERE messages_fts_identity.block_id != excluded.block_id
+           OR messages_fts_identity.source_hash IS NOT excluded.source_hash
+           OR messages_fts_identity.recipe_id != excluded.recipe_id
+        ON CONFLICT(block_id) DO UPDATE SET
+            rowid = excluded.rowid,
+            source_hash = excluded.source_hash,
+            recipe_id = excluded.recipe_id
+    """
+
+
 def message_identity_mismatch_sql() -> str:
     """Exact rowid+block_id+source+recipe identity CONFLICT check for ``messages_fts``.
 
@@ -536,6 +564,7 @@ __all__ = [
     "insert_session_rows_sql",
     "message_identity_mismatch_sql",
     "repair_message_identity_rows_range_sql",
+    "repair_all_message_identity_rows_sql",
     "trigram_delete_session_rows_sql",
     "trigram_insert_session_rows_sql",
 ]
