@@ -6380,8 +6380,12 @@ def repair_raw_materialization(
     # raw materialization into a full rebuild.
     with closing(sqlite3.connect(archive_root / "index.db", timeout=60)) as planner_conn:
         planner_conn.execute("PRAGMA busy_timeout = 60000")
-        planner_conn.execute("ANALYZE blocks")
-        planner_conn.commit()
+        # A freshly reset index uses representative bootstrap statistics.
+        # ``ANALYZE blocks`` on an empty table deletes that seed and brings
+        # back the broad action-pair plan this refresh is meant to prevent.
+        if planner_conn.execute("SELECT 1 FROM blocks LIMIT 1").fetchone() is not None:
+            planner_conn.execute("ANALYZE blocks")
+            planner_conn.commit()
 
     executable_raw_ids = raw_ids
     metrics["raw_materialization_executed_count"] = float(len(executable_raw_ids))
