@@ -41,6 +41,7 @@ from polylogue.pipeline.ids import session_content_hash, session_revision_projec
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
 )
@@ -72,6 +73,8 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
+from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 
 if TYPE_CHECKING:
     # ``revision_backfill`` imports ``ArchiveStore``, which (via
@@ -6389,6 +6392,10 @@ def repair_raw_materialization(
                 # components through here — per-row trigger mode would
                 # detonate exactly like the 2026-07-22 live-writer stall.
                 bulk_fts=True,
+                # A single authority component can expand into many logical
+                # sessions.  Defer writer-hot derived surfaces for that
+                # component and rebuild them once below.
+                bulk_build=True,
             )
         except RawRevisionReplayResourceBlockedError as exc:
             metrics["raw_materialization_resource_blocked_count"] = max(
@@ -6444,6 +6451,13 @@ def repair_raw_materialization(
             execution_outcomes.append(outcome)
             continue
         replay_parts.append(part)
+        with closing(sqlite3.connect(archive_root / "index.db", timeout=600)) as derived_conn:
+            derived_conn.execute("PRAGMA busy_timeout = 600000")
+            rebuild_fts_index_sync(derived_conn)
+            rebuild_command_trigram_index_sync(derived_conn)
+            rebuild_all_action_pairs_sync(derived_conn)
+            rebuild_all_delegation_facts_sync(derived_conn)
+            derived_conn.commit()
         current = _raw_materialization_candidate_ids(
             config,
             raw_artifact_id=raw_artifact_id,
