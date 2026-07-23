@@ -453,6 +453,57 @@ def test_postflight_rejects_missing_independent_carried_plan(tmp_path: Path) -> 
         )
 
 
+def test_postflight_rejects_carried_plan_shared_with_retryable_selection(tmp_path: Path) -> None:
+    """Retryable work cannot retire a different raw for the same logical source."""
+    initialize_active_archive_root(tmp_path)
+    retryable = RawReplayPlan(
+        plan_id="retryable",
+        input_digest="a" * 64,
+        input_raw_ids=("retryable-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    carried = RawReplayPlan(
+        plan_id="carried",
+        input_digest="b" * 64,
+        input_raw_ids=("carried-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (retryable, carried),
+        selected_plan_ids={retryable.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "retryable-does-not-supersede"},
+        residual={},
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        receipt.census_id,
+        RawReplayPlanOutcome(
+            retryable.plan_id,
+            retryable.input_raw_ids,
+            RawReplayPlanStatus.RETRYABLE,
+            "selected authority remains executable",
+            "retry after the current writer pass",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="postflight changed a retryable/carried-forward plan"):
+        finalize_raw_authority_census(
+            tmp_path,
+            receipt.census_id,
+            post_plans=(),
+            post_residual={},
+        )
+
+
 def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     first = _write_codex_raw(

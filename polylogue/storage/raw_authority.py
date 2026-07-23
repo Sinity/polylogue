@@ -1320,7 +1320,9 @@ def finalize_raw_authority_census(
                 SELECT p.input_raw_ids_json
                 FROM raw_authority_census_plans AS cp
                 JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
-                WHERE cp.census_id = ? AND cp.selected = 1
+                WHERE cp.census_id = ?
+                  AND cp.selected = 1
+                  AND cp.outcome_status IN ('executed', 'terminal')
                 """,
                 (census_id,),
             )
@@ -1333,7 +1335,9 @@ def finalize_raw_authority_census(
                 SELECT p.logical_keys_json
                 FROM raw_authority_census_plans AS cp
                 JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
-                WHERE cp.census_id = ? AND cp.selected = 1
+                WHERE cp.census_id = ?
+                  AND cp.selected = 1
+                  AND cp.outcome_status IN ('executed', 'terminal')
                 """,
                 (census_id,),
             )
