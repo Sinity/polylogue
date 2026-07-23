@@ -336,6 +336,174 @@ def test_interrupted_census_has_no_partial_plan_visibility_and_retries_once(tmp_
     assert finalized.lifecycle_status == "interrupted"
 
 
+def test_postflight_allows_carried_plan_superseded_by_selected_logical_source(tmp_path: Path) -> None:
+    """A selected authority change may retire another raw for its logical source.
+
+    Anti-vacuity: treating raw-id disjointness as the only relationship makes
+    finalization reject this valid postflight because ``retired`` is omitted.
+    """
+    initialize_active_archive_root(tmp_path)
+    selected = RawReplayPlan(
+        plan_id="selected",
+        input_digest="a" * 64,
+        input_raw_ids=("selected-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    retired = RawReplayPlan(
+        plan_id="retired",
+        input_digest="b" * 64,
+        input_raw_ids=("retired-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    independent = RawReplayPlan(
+        plan_id="independent",
+        input_digest="c" * 64,
+        input_raw_ids=("independent-raw",),
+        logical_keys=("chatgpt:independent",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (selected, retired, independent),
+        selected_plan_ids={selected.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "logical-supersession"},
+        residual={},
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        receipt.census_id,
+        RawReplayPlanOutcome(
+            selected.plan_id,
+            selected.input_raw_ids,
+            RawReplayPlanStatus.EXECUTED,
+            "selected authority reached terminal state",
+            "none",
+        ),
+    )
+
+    finalized = finalize_raw_authority_census(
+        tmp_path,
+        receipt.census_id,
+        post_plans=(independent,),
+        post_residual={},
+    )
+
+    assert finalized.lifecycle_status == "completed"
+    assert finalized.post_plan_count == 1
+
+
+def test_postflight_rejects_missing_independent_carried_plan(tmp_path: Path) -> None:
+    """Logical-source supersession must not weaken independent-plan protection."""
+    initialize_active_archive_root(tmp_path)
+    selected = RawReplayPlan(
+        plan_id="selected",
+        input_digest="a" * 64,
+        input_raw_ids=("selected-raw",),
+        logical_keys=("chatgpt:selected",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    independent = RawReplayPlan(
+        plan_id="independent",
+        input_digest="c" * 64,
+        input_raw_ids=("independent-raw",),
+        logical_keys=("chatgpt:independent",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (selected, independent),
+        selected_plan_ids={selected.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "independent-preservation"},
+        residual={},
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        receipt.census_id,
+        RawReplayPlanOutcome(
+            selected.plan_id,
+            selected.input_raw_ids,
+            RawReplayPlanStatus.EXECUTED,
+            "selected authority reached terminal state",
+            "none",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="postflight changed a retryable/carried-forward plan"):
+        finalize_raw_authority_census(
+            tmp_path,
+            receipt.census_id,
+            post_plans=(),
+            post_residual={},
+        )
+
+
+def test_postflight_rejects_carried_plan_shared_with_retryable_selection(tmp_path: Path) -> None:
+    """Retryable work cannot retire a different raw for the same logical source."""
+    initialize_active_archive_root(tmp_path)
+    retryable = RawReplayPlan(
+        plan_id="retryable",
+        input_digest="a" * 64,
+        input_raw_ids=("retryable-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    carried = RawReplayPlan(
+        plan_id="carried",
+        input_digest="b" * 64,
+        input_raw_ids=("carried-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (retryable, carried),
+        selected_plan_ids={retryable.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "retryable-does-not-supersede"},
+        residual={},
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        receipt.census_id,
+        RawReplayPlanOutcome(
+            retryable.plan_id,
+            retryable.input_raw_ids,
+            RawReplayPlanStatus.RETRYABLE,
+            "selected authority remains executable",
+            "retry after the current writer pass",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="postflight changed a retryable/carried-forward plan"):
+        finalize_raw_authority_census(
+            tmp_path,
+            receipt.census_id,
+            post_plans=(),
+            post_residual={},
+        )
+
+
 def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     first = _write_codex_raw(
