@@ -1303,9 +1303,13 @@ def test_embedding_orphan_reconcile_cli_has_no_mutate_flag(
         ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--yes"],
     )
 
-    assert result.exit_code != 0
+    # Click's CliRunner surfaces a rejected/unknown option as SystemExit(2)
+    # (its own UsageError is caught and converted before invoke() returns),
+    # so exit code 2 plus the option name in the rejection message is the
+    # stable, public contract to assert on -- not Click's internal
+    # exception wording, which isn't guaranteed across versions.
+    assert result.exit_code == 2
     assert "--yes" in result.output
-    assert "no such option" in result.output.lower()
 
 
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
