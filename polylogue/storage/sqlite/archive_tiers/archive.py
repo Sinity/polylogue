@@ -3091,6 +3091,7 @@ class ArchiveStore:
         manage_transaction: bool = True,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state.
 
@@ -3214,9 +3215,23 @@ class ArchiveStore:
                 "UPDATE sessions SET content_hash = ? WHERE session_id = ?",
                 (aggregate_content_hash, session_id),
             )
-            if not bulk_build:
+            if not bulk_build and not defer_fts:
                 repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
-            assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
+            if defer_fts:
+                from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
+
+                record_fts_surface_state_sync(
+                    self._conn,
+                    surface="messages_fts",
+                    state=STALE,
+                    detail="live authoritative replay deferred targeted session FTS repair",
+                )
+            assert_session_fts_exact_sync(
+                self._conn,
+                session_id,
+                bulk_build=bulk_build,
+                allow_pending=defer_fts,
+            )
             stored = self._conn.execute(
                 "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
             ).fetchone()

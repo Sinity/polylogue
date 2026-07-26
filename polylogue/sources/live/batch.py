@@ -1831,6 +1831,13 @@ class LiveBatchProcessor:
                                     acquired_at_ms=acquired_at_ms,
                                     stage_timings_s=record_timings,
                                     stage_timing_prefix="full",
+                                    defer_fts=True,
+                                )
+                                self._cursor.record_convergence_debt(
+                                    stage="fts",
+                                    subject_type="session_id",
+                                    subject_id=session_id,
+                                    error="live full ingest deferred FTS to preserve writer availability",
                                 )
                                 record_session_ids.append(session_id)
                                 record_session_count = 1

@@ -366,8 +366,8 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index.full_replace.clear_projection_rows",
         "full.index.full_replace.messages",
         "full.index.full_replace.blocks",
-        "full.index.full_replace.fts_insert",
     }.issubset(result.stage_timings_s)
+    assert cursor.list_convergence_debt(limit=10)[0].stage == "fts"
     with sqlite3.connect(source_db) as conn:
         raw_state = conn.execute("SELECT parsed_at_ms, parse_error FROM raw_sessions").fetchone()
         assert raw_state is not None
@@ -2681,6 +2681,9 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_p
             ("message-0",),
             ("message-1",),
         ]
+        from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
+
+        repair_message_fts_index_sync(conn, ["codex-session:split-record"], record_exact_snapshot=False)
         assert conn.execute(
             "SELECT b.search_text FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid ORDER BY b.message_id"
         ).fetchall() == [("zero",), ("one",)]

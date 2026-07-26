@@ -98,7 +98,13 @@ class FullSnapshotFoldAuthorization:
         )
 
 
-def assert_session_fts_exact_sync(conn: sqlite3.Connection, session_id: str, *, bulk_build: bool = False) -> None:
+def assert_session_fts_exact_sync(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    bulk_build: bool = False,
+    allow_pending: bool = False,
+) -> None:
     """Fail unless the current session's indexable blocks have exact FTS rows.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``): a bulk-generation-
@@ -119,7 +125,7 @@ def assert_session_fts_exact_sync(conn: sqlite3.Connection, session_id: str, *, 
     }
     if not _MESSAGE_FTS_TRIGGERS.issubset(triggers):
         raise RuntimeError("raw revision application requires canonical message FTS triggers")
-    if bulk_build:
+    if bulk_build or allow_pending:
         return
     expected, indexed = conn.execute(
         """
