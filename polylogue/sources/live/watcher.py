@@ -53,8 +53,14 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 # One bounded writer hold per hook-spool drain batch; the drain loops until
 # the backlog is gone, releasing the writer between batches.
 _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
-_CATCH_UP_MAX_BATCH_FILES = 50
-_CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
+# A catch-up writer owns the only archive writer for the whole chunk.  The
+# former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
+# starving fresh watcher events.  Keep historical convergence fair by
+# yielding after a handful of files; one individually large source still owns
+# one bounded logical-session write, but cannot be bundled with dozens more.
+_CATCH_UP_MAX_BATCH_FILES = 4
+_CATCH_UP_MAX_BATCH_BYTES = 16 * 1024 * 1024
+_CATCH_UP_HOT_FILE_AGE_S = 60.0 * 60.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 # Filesystem notifications are the real-time delivery path.  This sweep is a
 # recovery mechanism for notifications missed while the daemon was unavailable
@@ -334,65 +340,82 @@ class LiveWatcher:
 
     async def _catch_up(self, roots: list[Path]) -> None:
         candidates = self._scan_catch_up_candidates(roots)
+        if not candidates:
+            await self._drain_hook_spool()
+            return
+
+        now = time.time()
+        hot_candidates = tuple(
+            candidate for candidate in candidates if now - candidate.stat.st_mtime <= _CATCH_UP_HOT_FILE_AGE_S
+        )
+        hot_paths = {candidate.path for candidate in hot_candidates}
+        cold_candidates = tuple(candidate for candidate in candidates if candidate.path not in hot_paths)
+        if hot_candidates:
+            logger.info(
+                "live.watcher: prioritizing %d recently modified source file(s) before backlog catch-up",
+                len(hot_candidates),
+            )
+        for group in (hot_candidates, cold_candidates):
+            if self._stop.is_set() or not group:
+                break
+            await self._catch_up_candidates(group)
+        await self._drain_hook_spool()
+
+    async def _catch_up_candidates(self, candidates: tuple[CandidateSourceFile, ...]) -> None:
+        """Plan and ingest one priority class of catch-up candidates."""
         plan_holder: list[CatchUpPlan] = []
 
         async def prepare_catch_up() -> None:
             await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
-            if not candidates:
-                return
             logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
             plan_holder.append(self._plan_catch_up(candidates))
 
         await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
-        if plan_holder:
-            plan = plan_holder[0]
-        else:
-            plan = CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0)
-
-        if plan.needed:
-            candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
-            chunks = tuple(self._chunk_catch_up_paths(plan.needed, candidate_by_path))
+        plan = plan_holder[0]
+        if not plan.needed:
+            return
+        candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
+        chunks = tuple(self._chunk_catch_up_paths(plan.needed, candidate_by_path))
+        logger.info(
+            "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, chunks=%d",
+            len(plan.needed),
+            plan.needed_bytes / 1e6,
+            plan.skipped_file_count,
+            len(chunks),
+        )
+        for index, chunk in enumerate(chunks, start=1):
+            if self._stop.is_set():
+                break
+            chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk)
             logger.info(
-                "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, chunks=%d",
-                len(plan.needed),
-                plan.needed_bytes / 1e6,
-                plan.skipped_file_count,
+                "live.watcher: catch-up chunk %d/%d ingesting %d file(s) (%.1f MB)",
+                index,
                 len(chunks),
+                len(chunk),
+                chunk_bytes / 1e6,
             )
-            for index, chunk in enumerate(chunks, start=1):
-                if self._stop.is_set():
-                    break
-                chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk)
-                logger.info(
-                    "live.watcher: catch-up chunk %d/%d ingesting %d file(s) (%.1f MB)",
-                    index,
-                    len(chunks),
-                    len(chunk),
-                    chunk_bytes / 1e6,
+            chunk_index = index
+            chunk_paths = list(chunk)
+
+            async def ingest_chunk(
+                chunk_index: int = chunk_index,
+                chunk_paths: list[Path] = chunk_paths,
+            ) -> None:
+                metrics = await self._ingest_files(
+                    chunk_paths,
+                    queued_file_count=len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
+                    skipped_file_count=plan.skipped_file_count if chunk_index == 1 else 0,
                 )
-                chunk_index = index
-                chunk_paths = list(chunk)
+                if metrics is not None:
+                    _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
+                    if (
+                        getattr(metrics, "succeeded_file_count", 0) == 0
+                        and getattr(metrics, "failed_file_count", 0) == 0
+                    ):
+                        self._defer_unaccounted_failed_retries(chunk_paths)
 
-                async def ingest_chunk(
-                    chunk_index: int = chunk_index,
-                    chunk_paths: list[Path] = chunk_paths,
-                ) -> None:
-                    metrics = await self._ingest_files(
-                        chunk_paths,
-                        queued_file_count=len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
-                        skipped_file_count=plan.skipped_file_count if chunk_index == 1 else 0,
-                    )
-                    if metrics is not None:
-                        _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
-                        if (
-                            getattr(metrics, "succeeded_file_count", 0) == 0
-                            and getattr(metrics, "failed_file_count", 0) == 0
-                        ):
-                            self._defer_unaccounted_failed_retries(chunk_paths)
-
-                await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
-            self._schedule_failed_retry_scan()
-        await self._drain_hook_spool()
+            await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
+        self._schedule_failed_retry_scan()
 
     async def _drain_hook_spool(self) -> None:
         """Acknowledge hook envelopes only after their source-tier write commits.
