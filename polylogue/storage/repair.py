@@ -4860,7 +4860,6 @@ def _targeted_session_insight_rebuild_ids(
         )
         """
         for _insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
-        if _insight_type != "thread"
     )
     materializer_version = _session_insight_materializer_version()
     profile_stale_predicate = session_profile_stale_predicate("s", "p")
@@ -4916,7 +4915,6 @@ def _targeted_session_insight_rebuild_ids(
             *(
                 value
                 for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
-                if insight_type != "thread"
                 for value in (insight_type, materializer_version)
             ),
         ),
@@ -5708,7 +5706,7 @@ def repair_session_insights(
             aggregate_debt = _session_insight_aggregate_debt_count(status)
             targeted_session_ids = (
                 None
-                if session_ids is not None or assessment.row_debt == 0
+                if session_ids is not None or (assessment.row_debt == 0 and aggregate_debt == 0)
                 else _targeted_session_insight_rebuild_ids(getattr(archive, "_conn", None), status)
             )
 
@@ -5721,14 +5719,14 @@ def repair_session_insights(
                         else f"Would: rebuild session insights for {pending:,} scoped session(s)"
                     )
                 elif targeted_session_ids is not None:
-                    pending = len(targeted_session_ids) + aggregate_debt
+                    pending = len(targeted_session_ids)
                     detail = (
                         "Would: session insights already ready"
                         if pending == 0
                         else (
                             "Would: rebuild session insights for "
-                            f"{len(targeted_session_ids):,} candidate session(s)"
-                            f" and refresh {aggregate_debt:,} aggregate/thread-materialization debt row(s)"
+                            f"{len(targeted_session_ids):,} candidate session(s), including any affected "
+                            "thread-materialization marker(s)"
                             f" to repair {assessment.row_debt:,} total debt row(s)"
                         )
                     )
@@ -5748,7 +5746,7 @@ def repair_session_insights(
                     detail=detail,
                 )
 
-            if session_ids is None and assessment.row_debt == 0:
+            if session_ids is None and assessment.row_debt == 0 and aggregate_debt == 0:
                 return _repair_result(
                     "session_insights",
                     repaired_count=0,

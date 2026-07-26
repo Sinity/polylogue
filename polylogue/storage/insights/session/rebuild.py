@@ -1233,11 +1233,11 @@ def _materialize_thread_spine_sync(
         )
         conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root,))
         hwm_ms = updated_at_ms or created_at_ms or None
-        sort_key_by_session: dict[str, int] = {}
+        sort_key_by_session: dict[str, int | None] = {}
         if session_ids:
             placeholders = ", ".join("?" for _ in session_ids)
             sort_key_by_session = {
-                str(row["session_id"]): int(row["sort_key_ms"] or 0)
+                str(row["session_id"]): (int(row["sort_key_ms"]) if row["sort_key_ms"] is not None else None)
                 for row in conn.execute(
                     f"SELECT session_id, sort_key_ms FROM sessions WHERE session_id IN ({placeholders})",
                     tuple(session_ids),
@@ -1255,7 +1255,11 @@ def _materialize_thread_spine_sync(
                 materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
                 materialized_at_ms=materialized_at_ms,
                 source_updated_at_ms=updated_at_ms or None,
-                source_sort_key_ms=sort_key_by_session.get(session_id) or hwm_ms,
+                # ``NULL`` is an authoritative source sort-key value.  Do not
+                # substitute the thread high-water mark for it: readiness
+                # compares this stamp to ``sessions.sort_key_ms`` and would
+                # otherwise keep such sessions permanently stale.
+                source_sort_key_ms=sort_key_by_session.get(session_id, hwm_ms),
                 input_high_water_mark_ms=hwm_ms,
                 input_high_water_mark_source="provider_ts" if hwm_ms else "fallback_date",
                 input_row_count=len(session_ids),

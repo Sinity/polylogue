@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from polylogue.config import Config
+from polylogue.logging import get_logger
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import ArchiveLocation
@@ -48,6 +49,8 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
     "ANALYZE session_links",
     "ANALYZE action_pairs",
 )
+
+logger = get_logger(__name__)
 
 
 def _should_refresh_generation_planner_statistics(
@@ -98,7 +101,7 @@ def _clear_bulk_build_derived_stores(index_path: Path) -> None:
         conn.commit()
 
 
-def _repopulate_bulk_build_derived_state(index_path: Path) -> None:
+def _repopulate_bulk_build_derived_state(index_path: Path) -> dict[str, float]:
     """One archive-wide repopulate of every surface bulk-build replay skipped.
 
     polylogue-v6i3: ``write_parsed_session_to_archive``'s ``bulk_build`` mode
@@ -111,13 +114,25 @@ def _repopulate_bulk_build_derived_state(index_path: Path) -> None:
     ``delegation_facts`` (the latter's ``delegation_facts_source`` view joins
     through the ``actions`` view, which reads ``action_pairs``).
     """
+    timings_s: dict[str, float] = {}
     with contextlib.closing(sqlite3.connect(index_path, timeout=600)) as conn:
         conn.execute("PRAGMA busy_timeout = 600000")
+        started_at = time.perf_counter()
         rebuild_fts_index_sync(conn)
+        timings_s["fts"] = time.perf_counter() - started_at
+        started_at = time.perf_counter()
         rebuild_command_trigram_index_sync(conn)
+        timings_s["command_trigram"] = time.perf_counter() - started_at
+        started_at = time.perf_counter()
         rebuild_all_action_pairs_sync(conn)
+        timings_s["action_pairs"] = time.perf_counter() - started_at
+        started_at = time.perf_counter()
         rebuild_all_delegation_facts_sync(conn)
+        timings_s["delegation_facts"] = time.perf_counter() - started_at
+        started_at = time.perf_counter()
         conn.commit()
+        timings_s["commit"] = time.perf_counter() - started_at
+    return timings_s
 
 
 def _refresh_generation_planner_statistics(index_path: Path) -> None:
@@ -456,11 +471,18 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
                     return pass_receipt
+            terminal_started_at = time.perf_counter()
             insight_result = repair_session_insights(
                 config,
                 dry_run=False,
                 archive_root_override=generation_root,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
+            )
+            logger.info(
+                "rebuild_terminal_stage_complete",
+                generation_id=generation.generation_id,
+                stage="session_insights",
+                elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
             )
             if not insight_result.success:
                 raise RuntimeError(f"session insight materialization failed: {insight_result.detail}")
@@ -478,14 +500,35 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             # empty or stale for every session -- repopulate all four
             # archive-wide exactly once here, then prove exact parity before
             # readiness can observe (and silently accept) a mismatch.
-            _repopulate_bulk_build_derived_state(Path(generation.index_path))
+            bulk_timings_s = _repopulate_bulk_build_derived_state(Path(generation.index_path))
+            for stage, elapsed_s in bulk_timings_s.items():
+                logger.info(
+                    "rebuild_terminal_stage_complete",
+                    generation_id=generation.generation_id,
+                    stage=f"bulk_build.{stage}",
+                    elapsed_s=round(elapsed_s, 3),
+                )
+            terminal_started_at = time.perf_counter()
             parity_report = verify_archive(generation_root, checks=["fts-parity"])
+            logger.info(
+                "rebuild_terminal_stage_complete",
+                generation_id=generation.generation_id,
+                stage="fts_parity",
+                elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
+            )
             if parity_report.blocking:
                 failing = "; ".join(check.summary for check in parity_report.checks if check.status.value == "error")
                 raise RuntimeError(
                     f"bulk-build FTS/trigram parity failed for generation {generation.generation_id}: {failing}"
                 )
+            terminal_started_at = time.perf_counter()
             readiness = _archive_readiness_status(generation_root)
+            logger.info(
+                "rebuild_terminal_stage_complete",
+                generation_id=generation.generation_id,
+                stage="readiness",
+                elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
+            )
             if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
                 blocked = [
                     name
@@ -501,7 +544,14 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             if transaction is not None:
                 transaction = generation_store.checkpoint_transaction(transaction, status="ready")
             if request.promote:
+                terminal_started_at = time.perf_counter()
                 generation = generation_store.promote(generation)
+                logger.info(
+                    "rebuild_terminal_stage_complete",
+                    generation_id=generation.generation_id,
+                    stage="promote",
+                    elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
+                )
                 if transaction is not None:
                     transaction = generation_store.checkpoint_transaction(transaction, status="promoted")
         except Exception:

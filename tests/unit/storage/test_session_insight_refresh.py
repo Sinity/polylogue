@@ -50,6 +50,38 @@ def _chunk_metric(chunk_observation: object, key: str) -> float:
     return float(value)
 
 
+def test_rebuild_session_insights_preserves_null_thread_sort_key(tmp_path: Path) -> None:
+    """Thread aggregate stamps must match sessions that lack a sort key."""
+
+    db_path = _current_index_db(tmp_path, "null-thread-sort-key")
+    session = make_session("null-thread-sort-key", title="No sort key").model_copy(
+        update={"created_at": None, "updated_at": None}
+    )
+    with open_connection(db_path) as conn:
+        store_records(
+            session=session,
+            messages=[make_message("null-thread-sort-key:msg-1", "null-thread-sort-key", text="hello")],
+            attachments=[],
+            conn=conn,
+        )
+        session_id = _sid("null-thread-sort-key")
+        conn.commit()
+
+        rebuild_session_insights_sync(conn)
+
+        row = conn.execute(
+            """
+            SELECT source_sort_key_ms
+            FROM insight_materialization
+            WHERE insight_type = 'thread' AND session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row["source_sort_key_ms"] is None
+
+
 @pytest.mark.asyncio
 async def test_apply_session_insight_session_updates_async_batches_hydrated_sessions(
     tmp_path: Path,
