@@ -316,3 +316,66 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(tmp_path: Pat
     assert counts == {"session_write": 0, "fts_bulk": 0}, (
         f"unguarded per-row trigger canary fired during bulk delete: {counts}"
     )
+
+
+def _downgrade_trigram_trigger_to_ungated(conn: sqlite3.Connection) -> None:
+    """Replace ``blocks_command_trigram_ad`` with its pre-#3259 body: the same
+    delete logic, but with the ``derived_refresh_guard`` WHEN-clause removed.
+
+    Simulates an archive last rebuilt before the guard clause was added to
+    this trigger -- ``CREATE TRIGGER IF NOT EXISTS`` never upgrades an
+    existing same-name trigger, so such an archive keeps exactly this body
+    forever without a real rebuild.
+    """
+    conn.execute("DROP TRIGGER blocks_command_trigram_ad")
+    conn.execute(
+        """
+        CREATE TRIGGER blocks_command_trigram_ad
+        AFTER DELETE ON blocks
+        WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' '
+        BEGIN
+            INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
+            VALUES ('delete', old.rowid, old.tool_detail_text);
+        END;
+        """
+    )
+    conn.commit()
+
+
+def test_delete_sessions_bulk_falls_back_safely_on_pre_guard_archive(tmp_path: Path) -> None:
+    """Regression (CodeRabbit #3263 P1): on an archive whose trigram trigger
+    predates the bulk-write guard, ``delete_sessions`` must not rely on that
+    guard -- doing so double-deletes each trigram posting (the explicit
+    pre-delete, then the ungated trigger firing again during the cascade),
+    which FTS5 reports as "database disk image is malformed" and rolls back
+    the whole batch."""
+    root = tmp_path / "archive"
+    session_ids: list[str] = []
+    with ArchiveStore(root) as facade:
+        for i in range(2):
+            session_ids.append(facade.write_parsed(_tool_session(f"legacy-delete-{i}", n_pairs=3)))
+
+    index_db_path = root / "index.db"
+    setup_conn = sqlite3.connect(index_db_path)
+    try:
+        _downgrade_trigram_trigger_to_ungated(setup_conn)
+    finally:
+        setup_conn.close()
+
+    with ArchiveStore(root) as facade:
+        deleted = facade.delete_sessions(tuple(session_ids))
+    assert deleted == 2
+
+    conn = sqlite3.connect(index_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        remaining_sessions = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_id IN ({})".format(", ".join("?" for _ in session_ids)),
+            session_ids,
+        ).fetchone()[0]
+        assert remaining_sessions == 0
+        assert conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0] == 0
+        assert _trigram_ghost_posting_count(conn) == 0
+        assert conn.execute("SELECT COUNT(*) FROM derived_refresh_guard").fetchone()[0] == 0
+    finally:
+        conn.close()

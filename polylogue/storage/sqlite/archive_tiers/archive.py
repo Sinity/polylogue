@@ -6902,6 +6902,29 @@ class ArchiveStore:
         finally:
             user_conn.close()
 
+    def _trigram_trigger_is_guarded(self, conn: sqlite3.Connection) -> bool:
+        """Whether the live ``blocks_command_trigram_ad`` trigger honors the
+        bulk-write guard (CodeRabbit #3263 P1).
+
+        ``CREATE TRIGGER IF NOT EXISTS`` (index.py's additive-DDL convention)
+        never replaces an already-created same-name trigger, so an archive
+        last rebuilt before the guard clause was added to this trigger (#3259)
+        keeps its old, ungated body forever -- reopening it does not upgrade
+        it. Setting ``FTS_BULK_SESSION_WRITE_GUARD`` and relying on the guard
+        to suppress that trigger during the block cascade below would be a
+        silent no-op on such an archive: the old trigger fires anyway and
+        reissues an FTS5 ``'delete'`` command for a trigram row this method's
+        own explicit pre-delete already removed, which raises "database disk
+        image is malformed" and rolls back the whole batch. Checked once per
+        call (cheap: one indexed sqlite_master lookup) rather than assumed
+        from ``INDEX_SCHEMA_VERSION`` alone, since the guard clause landed
+        without its own version bump (additive/inert until this method).
+        """
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'blocks_command_trigram_ad'"
+        ).fetchone()
+        return row is not None and row["sql"] is not None and "derived_refresh_guard" in row["sql"]
+
     def delete_sessions(self, session_ids: tuple[str, ...]) -> int:
         """Delete rebuildable archive sessions by id.
 
@@ -6956,21 +6979,29 @@ class ArchiveStore:
         conn = sqlite3.connect(self.index_db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        trigram_guarded = self._trigram_trigger_is_guarded(conn)
         deleted = 0
         try:
             with conn:
                 for session_id in resolved_session_ids:
                     # Must run before the blocks rows are removed below --
                     # external-content FTS5 deletion needs the OLD text/rowid
-                    # mapping to locate the postings to remove.
+                    # mapping to locate the postings to remove. Only safe to
+                    # do explicitly when the live trigger will honor the
+                    # guard below; on an archive whose trigger predates it,
+                    # skip this and let that same (ungated) trigger clean up
+                    # trigram rows per-block during the cascade delete, same
+                    # as before this method existed.
                     conn.execute(delete_session_rows_sql(1), (session_id,))
                     conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-                    conn.execute(trigram_delete_session_rows_sql(), (session_id,))
+                    if trigram_guarded:
+                        conn.execute(trigram_delete_session_rows_sql(), (session_id,))
                 conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-                conn.execute(
-                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                    (FTS_BULK_SESSION_WRITE_GUARD,),
-                )
+                if trigram_guarded:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+                        (FTS_BULK_SESSION_WRITE_GUARD,),
+                    )
                 try:
                     for session_id in resolved_session_ids:
                         conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
@@ -6979,10 +7010,11 @@ class ArchiveStore:
                         deleted += max(int(cursor.rowcount), 0)
                 finally:
                     conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-                    conn.execute(
-                        "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-                        (FTS_BULK_SESSION_WRITE_GUARD,),
-                    )
+                    if trigram_guarded:
+                        conn.execute(
+                            "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                            (FTS_BULK_SESSION_WRITE_GUARD,),
+                        )
         finally:
             conn.close()
         return deleted
