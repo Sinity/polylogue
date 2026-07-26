@@ -51,7 +51,13 @@ def _chunk_metric(chunk_observation: object, key: str) -> float:
 
 
 def test_rebuild_session_insights_preserves_null_thread_sort_key(tmp_path: Path) -> None:
-    """Thread aggregate stamps must match sessions that lack a sort key."""
+    """Thread aggregate stamps must match sessions that lack a sort key.
+
+    ``sort_key=None`` on the message is load-bearing (polylogue-m3p9): the
+    session itself must be genuinely undatable, with no message-level
+    evidence either, since the archive write path now falls back to derived
+    message timestamps when the session omits its own created_at/updated_at.
+    """
 
     db_path = _current_index_db(tmp_path, "null-thread-sort-key")
     session = make_session("null-thread-sort-key", title="No sort key").model_copy(
@@ -60,7 +66,7 @@ def test_rebuild_session_insights_preserves_null_thread_sort_key(tmp_path: Path)
     with open_connection(db_path) as conn:
         store_records(
             session=session,
-            messages=[make_message("null-thread-sort-key:msg-1", "null-thread-sort-key", text="hello")],
+            messages=[make_message("null-thread-sort-key:msg-1", "null-thread-sort-key", text="hello", sort_key=None)],
             attachments=[],
             conn=conn,
         )
