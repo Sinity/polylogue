@@ -81,8 +81,12 @@ def test_refresh_generation_planner_statistics_measures_real_tables(tmp_path: Pa
 
     conn = sqlite3.connect(db_path)
     try:
-        measured = conn.execute("SELECT count(*) FROM sqlite_stat1").fetchone()[0]
-        assert measured > 0
+        measured_tables = {str(row[0]) for row in conn.execute("SELECT DISTINCT tbl FROM sqlite_stat1").fetchall()}
+        assert {"sessions", "messages", "blocks", "session_links", "action_pairs"} <= measured_tables
+        # During bulk replay these stores are intentionally empty until final
+        # readiness; sampling their backing tables would only add I/O.
+        assert "messages_fts_data" not in measured_tables
+        assert "blocks_command_trigram_data" not in measured_tables
     finally:
         conn.close()
 

@@ -37,6 +37,17 @@ _PLANNER_STATS_ANALYSIS_LIMIT = 1000
 # fraction of a percent.  Keep the measured statistics within one bounded
 # source page of the materialized corpus instead.
 _PLANNER_STATS_REFRESH_RAW_INTERVAL = 1000
+# Bulk-build replay keeps the FTS/trigram stores empty until final readiness,
+# so analyzing their virtual-table backing stores does not improve any replay
+# plan and can dominate a large archive's checkpoint.  These row stores are
+# the tables used by the writer-hot replacement/link/action-pair queries.
+_PLANNER_STATS_ANALYZE_STATEMENTS = (
+    "ANALYZE sessions",
+    "ANALYZE messages",
+    "ANALYZE blocks",
+    "ANALYZE session_links",
+    "ANALYZE action_pairs",
+)
 
 
 def _should_refresh_generation_planner_statistics(
@@ -113,16 +124,18 @@ def _refresh_generation_planner_statistics(index_path: Path) -> None:
 
     A generation is bulk-written from empty, so the relative selectivities the
     planner needs (session-scoped indexes are narrow, type-scoped ones are not)
-    drift fast as tables grow.  Bounded periodic ANALYZE keeps writer-hot plans
-    (e.g. per-session ``action_pairs`` refresh) on session-scoped indexes;
-    skipping measured statistics altogether reproduced an O(N^2) replay at
-    >20x slower.  Failures are non-fatal: stale stats degrade speed, never
-    correctness.
+    drift fast as tables grow.  Bounded periodic ANALYZE of only writer-hot row
+    stores keeps per-session plans (e.g. ``action_pairs`` refresh) on
+    session-scoped indexes; analyzing bulk-build's empty FTS virtual tables
+    adds archive-scale I/O without improving replay.  Skipping measured row-
+    store statistics altogether reproduced an O(N^2) replay at >20x slower.
+    Failures are non-fatal: stale stats degrade speed, never correctness.
     """
     try:
         with contextlib.closing(sqlite3.connect(index_path, timeout=60)) as conn:
             conn.execute(f"PRAGMA analysis_limit = {_PLANNER_STATS_ANALYSIS_LIMIT}")
-            conn.execute("ANALYZE")
+            for statement in _PLANNER_STATS_ANALYZE_STATEMENTS:
+                conn.execute(statement)
             conn.commit()
     except sqlite3.Error:
         return
