@@ -1044,6 +1044,19 @@ def _drain_raw_materialization_once(
     )
     if recover:
         raw_authority.recover_interrupted_frontier(config)
+    # polylogue-d7im: a stale-plan blocker requires no operator judgment (it
+    # is a pure TOCTOU race between a census and its apply, already
+    # recomputed unattended in the crash-recovery path above) but, left
+    # unresolved, unresolved_raw_replay_blockers makes repair_materialization
+    # below fail closed for the WHOLE archive, not just the affected raw.
+    # Clear these automatically before every pass instead of waiting for a
+    # manual raw-authority-blocker-resolve invocation.
+    auto_resolved = raw_authority.auto_resolve_stale_plan_blockers(config)
+    if auto_resolved:
+        logger.info(
+            "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
+            auto_resolved,
+        )
     try:
         result = raw_authority.repair_materialization(
             config,

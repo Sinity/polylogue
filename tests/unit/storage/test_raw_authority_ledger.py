@@ -19,9 +19,11 @@ from polylogue.storage import raw_authority as raw_authority_mod
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_authority import (
+    AUTO_STALE_PLAN_RESOLUTION,
     RawReplayPlan,
     RawReplayPlanOutcome,
     RawReplayPlanStatus,
+    auto_resolve_stale_plan_blockers,
     build_raw_replay_plans,
     finalize_raw_authority_census,
     read_raw_authority_census,
@@ -253,6 +255,108 @@ def test_stale_plan_persists_blocker_before_automatic_replay_refuses_work(tmp_pa
     assert refused.success is False
     assert refused.metrics["raw_materialization_unresolved_blocker_count"] == 1.0
     assert raw_materialization_ready(raw_materialization_readiness_snapshot(tmp_path)) is False
+
+
+def test_auto_resolve_stale_plan_blockers_unblocks_materialization_unattended(tmp_path: Path) -> None:
+    """polylogue-d7im: one stale-plan blocker halts repair_materialization
+    archive-wide (unresolved_raw_replay_blockers counts it), even though
+    resolving it requires no operator judgment -- it only recomputes the
+    plan from current evidence, exactly as an unattended crash-recovery pass
+    already does elsewhere. auto_resolve_stale_plan_blockers must clear it
+    without any human-supplied resolution text, and repair must proceed
+    on the very next call."""
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="stale2", source_path="stale2.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    census = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids={plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "stale-auto-resolve"},
+        residual={},
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = 'moved-after-plan-2.jsonl' WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+    valid, observed = validate_raw_replay_plan(tmp_path, plan)
+    assert valid is False
+    reject_stale_raw_replay_plan(tmp_path, census.census_id, plan, observed)
+
+    refused = repair_raw_materialization(_config(tmp_path))
+    assert refused.success is False
+
+    resolved_count = auto_resolve_stale_plan_blockers(tmp_path)
+
+    assert resolved_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 0
+        )
+        resolution = conn.execute(
+            "SELECT json_extract(resolution, '$.operator_resolution') FROM raw_authority_blockers"
+        ).fetchone()[0]
+        assert resolution == AUTO_STALE_PLAN_RESOLUTION
+
+    proceeds = repair_raw_materialization(_config(tmp_path))
+    assert proceeds.metrics.get("raw_materialization_unresolved_blocker_count", 0.0) == 0.0
+
+    # Idempotent: nothing left to clear on a second call.
+    assert auto_resolve_stale_plan_blockers(tmp_path) == 0
+
+
+def test_auto_resolve_stale_plan_blockers_never_touches_frontier_judgment_blockers(tmp_path: Path) -> None:
+    """Frontier-judgment blockers require an accepted assertion id +
+    disposition (enforced inside resolve_raw_authority_blocker itself);
+    auto_resolve_stale_plan_blockers must only ever query non-frontier
+    (stale_plan) blockers, never attempt -- and therefore never accidentally
+    satisfy -- a judgment-gated one."""
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="judgment", source_path="judgment.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    base_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    frontier_plan = RawReplayPlan(
+        plan_id=base_plan.plan_id,
+        input_digest=base_plan.input_digest,
+        input_raw_ids=base_plan.input_raw_ids,
+        logical_keys=base_plan.logical_keys,
+        authority_witness=json_document({"schema": "polylogue.raw-authority-frontier-plan.v1"}),
+        source_preconditions=base_plan.source_preconditions,
+        index_preconditions=base_plan.index_preconditions,
+    )
+    census = record_raw_authority_census(
+        tmp_path,
+        (frontier_plan,),
+        selected_plan_ids={frontier_plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "frontier-judgment"},
+        residual={},
+    )
+    reject_stale_raw_replay_plan(
+        tmp_path,
+        census.census_id,
+        frontier_plan,
+        json_document({"judgment_assertion_id": "assertion:unaccepted"}),
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        blocker_id = conn.execute(
+            "SELECT blocker_id FROM raw_authority_blockers WHERE resolved_at_ms IS NULL"
+        ).fetchone()[0]
+
+    resolved_count = auto_resolve_stale_plan_blockers(tmp_path)
+
+    assert resolved_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_blockers WHERE blocker_id = ? AND resolved_at_ms IS NULL",
+                (blocker_id,),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_interrupted_census_has_no_partial_plan_visibility_and_retries_once(tmp_path: Path) -> None:
