@@ -30,6 +30,45 @@ if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
 
 _PLANNER_STATS_ANALYSIS_LIMIT = 1000
+# A fresh generation begins with representative bootstrap statistics, but a
+# replay eventually needs measured selectivities as it grows.  Refreshing
+# after every resume page is needlessly expensive for small pages: ANALYZE
+# must revisit a large set of indexes even when the generation changed by a
+# fraction of a percent.  Keep the measured statistics within one bounded
+# source page of the materialized corpus instead.
+_PLANNER_STATS_REFRESH_RAW_INTERVAL = 1000
+# Bulk-build replay keeps the FTS/trigram stores empty until final readiness,
+# so analyzing their virtual-table backing stores does not improve any replay
+# plan and can dominate a large archive's checkpoint.  These row stores are
+# the tables used by the writer-hot replacement/link/action-pair queries.
+_PLANNER_STATS_ANALYZE_STATEMENTS = (
+    "ANALYZE sessions",
+    "ANALYZE messages",
+    "ANALYZE blocks",
+    "ANALYZE session_links",
+    "ANALYZE action_pairs",
+)
+
+
+def _should_refresh_generation_planner_statistics(
+    *,
+    processed_before: int | None,
+    processed_after: int,
+) -> bool:
+    """Return whether this replay pass crossed a measured-statistics boundary.
+
+    Unbounded/one-shot rebuilds have no transaction cursor and always refresh
+    after replay.  Resumable rebuilds retain their representative bootstrap
+    statistics until the first measured tranche is large enough, then refresh
+    whenever another bounded tranche has landed.  This preserves writer-hot
+    query plans without making a 25 GiB generation pay an archive-wide
+    ANALYZE for every small recovery page.
+    """
+    if processed_before is None:
+        return True
+    return processed_before // _PLANNER_STATS_REFRESH_RAW_INTERVAL < (
+        processed_after // _PLANNER_STATS_REFRESH_RAW_INTERVAL
+    )
 
 
 def _clear_bulk_build_derived_stores(index_path: Path) -> None:
@@ -82,19 +121,22 @@ def _repopulate_bulk_build_derived_state(index_path: Path) -> None:
 
 
 def _refresh_generation_planner_statistics(index_path: Path) -> None:
-    """Replace bootstrap-seeded planner stats with measured ones after a page.
+    """Replace bootstrap-seeded planner stats after a bounded replay tranche.
 
     A generation is bulk-written from empty, so the relative selectivities the
     planner needs (session-scoped indexes are narrow, type-scoped ones are not)
-    drift fast as tables grow.  A bounded ANALYZE per page keeps writer-hot
-    plans (e.g. per-session ``action_pairs`` refresh) on the session-scoped
-    indexes; skipping it reproduced an O(N^2) replay measured at >20x slower.
+    drift fast as tables grow.  Bounded periodic ANALYZE of only writer-hot row
+    stores keeps per-session plans (e.g. ``action_pairs`` refresh) on
+    session-scoped indexes; analyzing bulk-build's empty FTS virtual tables
+    adds archive-scale I/O without improving replay.  Skipping measured row-
+    store statistics altogether reproduced an O(N^2) replay at >20x slower.
     Failures are non-fatal: stale stats degrade speed, never correctness.
     """
     try:
         with contextlib.closing(sqlite3.connect(index_path, timeout=60)) as conn:
             conn.execute(f"PRAGMA analysis_limit = {_PLANNER_STATS_ANALYSIS_LIMIT}")
-            conn.execute("ANALYZE")
+            for statement in _PLANNER_STATS_ANALYZE_STATEMENTS:
+                conn.execute(statement)
             conn.commit()
     except sqlite3.Error:
         return
@@ -366,7 +408,11 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 bulk_build=True,
                 prefetch_cache=request.prefetch_cache,
             )
-            if selected_raw_ids:
+            processed_before = transaction.processed_raw_count if transaction is not None else None
+            if selected_raw_ids and _should_refresh_generation_planner_statistics(
+                processed_before=processed_before,
+                processed_after=(processed_before or 0) + len(selected_raw_ids),
+            ):
                 _refresh_generation_planner_statistics(Path(generation.index_path))
             if transaction is not None and selected_raw_ids:
                 if source_revision_snapshot(root) != transaction.source_snapshot:

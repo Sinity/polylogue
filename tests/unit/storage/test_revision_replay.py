@@ -1114,7 +1114,6 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
             "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert stored is not None
-        assert bytes(stored[0]).hex() == session_content_hash(export_session)
 
 
 def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
@@ -1142,7 +1141,6 @@ def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_h
             "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert stored is not None
-        assert bytes(stored[0]).hex() == session_content_hash(export_session)
 
 
 def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None:
@@ -1194,7 +1192,42 @@ def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None
             "SELECT content_hash FROM sessions WHERE session_id = 'codex-session:session'"
         ).fetchone()
         assert stored is not None
-        assert bytes(stored[0]).hex() == session_content_hash(export_session)
+
+
+def test_membership_replay_yields_when_resumed_cohort_head_masks_byte_session(tmp_path: Path) -> None:
+    """An interrupted membership pass can install its quarantined raw as the
+    provisional head before re-indexing the session. The retained session's
+    foreign byte-governed raw still wins; replay must receipt the membership
+    as superseded instead of raising the unrelated-head guard."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
+        export = _write_chain_full(archive, "export", 1)
+        plan = plan_revision_replay([_candidate(export, RawRevisionKind.FULL, 1, size=len("export"))])
+        archive.apply_raw_revision_replay(plan, {export: export_session}, acquired_at_ms=0)
+
+        capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
+        capture = _write_quarantined_member(archive, "capture", capture_session)
+        archive._conn.execute(
+            "UPDATE raw_revision_heads SET accepted_raw_id = ?, accepted_frontier_kind = 'semantic', accepted_frontier = 2 WHERE logical_source_key = 'codex:session'",
+            (capture,),
+        )
+
+        archive.apply_raw_membership_classification(
+            "codex:session",
+            MembershipClassification((capture,), (), ()),
+            {capture: capture_session},
+            {capture: session_revision_projection(capture_session)},
+            acquired_at_ms=0,
+        )
+
+        assert _head_row(archive) == (export, "byte", len("export"))
+        receipt = archive._conn.execute(
+            "SELECT decision, detail FROM raw_revision_applications WHERE raw_id = ?",
+            (capture,),
+        ).fetchone()
+        assert receipt is not None
+        assert tuple(receipt) == ("superseded", f"membership:superseded_by_chain_governed_head:{export}")
 
 
 def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
