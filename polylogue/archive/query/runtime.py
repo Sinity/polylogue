@@ -9,6 +9,7 @@ from polylogue.archive.query.runtime_matching import (
     matches_action_text_terms,
     matches_referenced_path,
     matches_tool_terms,
+    paths_match_referenced_terms,
 )
 from polylogue.archive.query.runtime_plan import (
     plan_can_count_in_sql,
@@ -25,6 +26,7 @@ __all__ = [
     "matches_action_text_terms",
     "matches_referenced_path",
     "matches_tool_terms",
+    "paths_match_referenced_terms",
     "plan_can_count_in_sql",
     "plan_can_use_action_stats",
     "plan_has_post_filters",
