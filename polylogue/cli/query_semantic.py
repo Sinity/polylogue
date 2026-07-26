@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from polylogue.archive.query.runtime_matching import paths_match_referenced_terms
+from polylogue.archive.query.runtime import paths_match_referenced_terms
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_stats import emit_structured_stats
 
