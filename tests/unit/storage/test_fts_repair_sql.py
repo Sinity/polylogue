@@ -99,6 +99,31 @@ def test_missing_fts_repair_commits_and_checkpoints_batches(test_conn: sqlite3.C
     assert len(checkpoints) == 3
 
 
+def test_bulk_fts_rebuild_resumes_from_committed_missing_rows(test_conn: sqlite3.Connection) -> None:
+    """The bulk-generation mode keeps already committed FTS rows on retry."""
+    restore_fts_triggers_sync(test_conn)
+    for index in range(3):
+        _seed_text_block(
+            test_conn,
+            native_session_id=f"conv-bulk-resume-{index}",
+            native_message_id=f"msg-bulk-resume-{index}",
+            text=f"bulk resume needle {index}",
+        )
+    test_conn.execute("DELETE FROM messages_fts")
+    test_conn.execute("DELETE FROM messages_fts_identity")
+
+    inserted = insert_missing_message_fts_rows_sync(test_conn, batch_rows=1)
+    assert inserted == 3
+    identity_before = test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0]
+
+    rebuild_fts_index_sync(test_conn, resume_from_empty_message_index=True)
+
+    source_rows = test_conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == source_rows
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == source_rows
+    assert identity_before == source_rows
+
+
 def test_excess_fts_repair_deletes_orphan_docsize_rows(test_conn: sqlite3.Connection) -> None:
     restore_fts_triggers_sync(test_conn)
     message_id = _seed_text_block(

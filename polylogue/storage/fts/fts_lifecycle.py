@@ -355,16 +355,26 @@ def rebuild_messages_fts_identity_sync(conn: sqlite3.Connection) -> None:
     conn.execute(insert_all_message_identity_rows_sql())
 
 
-def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
+def rebuild_fts_index_sync(
+    conn: sqlite3.Connection,
+    *,
+    resume_from_empty_message_index: bool = False,
+) -> None:
     """Rebuild the full FTS index from persisted archive rows.
 
-    ``messages_fts`` is contentless, so it must be cleared with
-    ``delete-all`` and repopulated from the canonical message/content-block
-    projection.
+    ``messages_fts`` is contentless, so the ordinary path clears it and
+    repopulates it from the canonical message/content-block projection. An
+    owned bulk-build generation may opt into ``resume_from_empty_message_index``:
+    its FTS store is known to have been cleared before replay, so the existing
+    paged missing-row writer can commit each chunk and resume an interrupted
+    terminal pass without redoing already materialized FTS rows.
     """
     ensure_fts_index_sync(conn)
-    rebuild_messages_fts_content_sync(conn)
-    rebuild_messages_fts_identity_sync(conn)
+    if resume_from_empty_message_index:
+        insert_missing_message_rows_batched_sync(conn)
+    else:
+        rebuild_messages_fts_content_sync(conn)
+        rebuild_messages_fts_identity_sync(conn)
     _rebuild_session_work_events_fts_sync(conn)
     _rebuild_threads_fts_sync(conn)
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
