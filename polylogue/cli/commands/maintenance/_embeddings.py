@@ -1,4 +1,12 @@
-"""``maintenance embedding-orphan-reconcile``: reconcile embeddings.db orphans."""
+"""``maintenance embedding-orphan-reconcile``: inspect embeddings.db orphans.
+
+Read-only by design (automagic-invariants, polylogue-gd6v/4jsk): daemon
+convergence (``periodic_embedding_orphan_reconcile_check``,
+``polylogue/daemon/embedding_backlog.py``) already reconciles this backlog
+automatically in bounded batches, so a manual mutate/apply path here would
+be exactly the redundant "demoted to break-glass" surface that ruling
+forbids rather than deletes. This command stays as pure diagnostic preview.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +15,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.config import Config
-from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
+from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path
 
 if TYPE_CHECKING:
     from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
@@ -26,7 +33,7 @@ _DEFAULT_QUIET_WINDOW_SECONDS = 300
     "--max-count",
     type=int,
     default=None,
-    help="Maximum number of orphan embedding rows to reconcile or preview (default: unbounded for inspect).",
+    help="Maximum number of orphan embedding rows to preview (default: unbounded).",
 )
 @click.option(
     "--quiet-window-seconds",
@@ -43,11 +50,6 @@ _DEFAULT_QUIET_WINDOW_SECONDS = 300
     help="Maximum number of representative samples to include.",
 )
 @click.option(
-    "--yes",
-    is_flag=True,
-    help="Delete orphan embedding rows. Without this flag, the command only inspects and reports (break-glass).",
-)
-@click.option(
     "--output-format",
     "output_format",
     type=click.Choice(["plain", "json"]),
@@ -59,58 +61,33 @@ def embedding_orphan_reconcile_command(
     max_count: int | None,
     quiet_window_seconds: int,
     sample_limit: int,
-    yes: bool,
     output_format: str,
 ) -> None:
-    """Inspect (default) or reconcile embeddings.db rows orphaned by an index rebuild.
+    """Inspect embeddings.db rows orphaned by an index rebuild. Read-only.
 
     An index rebuild (full re-ingest, ``ops reset --index``, a provider
     full-replace parse) can leave ``message_embeddings_meta`` /
     ``message_embeddings`` / ``embedding_status`` rows in ``embeddings.db``
     pointing at message/session identities that no longer exist in the
     rebuilt ``index.db``. Daemon convergence reconciles these automatically
-    in bounded batches; this command is the manual inspect/break-glass path.
+    in bounded batches; this command is diagnostic preview only.
     """
-    from polylogue.storage.embeddings.reconcile import DEFAULT_MAX_COUNT, reconcile_embedding_orphans
+    from polylogue.storage.embeddings.reconcile import reconcile_embedding_orphans
 
     root = archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path())
     index_db = root / "index.db"
     embeddings_db = root / "embeddings.db"
-    if yes:
-        from polylogue.maintenance.offline_guard import running_daemon_pid
-        from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
-
-        active_config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=index_db)
-        try:
-            with RebuildLease(root):
-                daemon_pid = running_daemon_pid(active_config)
-                if daemon_pid is not None:
-                    raise click.ClickException(
-                        f"embedding orphan reconcile refused while polylogued PID {daemon_pid} is running"
-                    )
-                report = reconcile_embedding_orphans(
-                    index_db,
-                    embeddings_db,
-                    dry_run=False,
-                    max_count=DEFAULT_MAX_COUNT if max_count is None else max_count,
-                    sample_size=sample_limit,
-                    quiet_window_ms=quiet_window_seconds * 1000,
-                    mutation_authority="offline-exclusive",
-                )
-        except RebuildLeaseUnavailableError as exc:
-            raise click.ClickException(str(exc)) from exc
-    else:
-        report = reconcile_embedding_orphans(
-            index_db,
-            embeddings_db,
-            dry_run=True,
-            max_count=max_count,
-            sample_size=sample_limit,
-            quiet_window_ms=quiet_window_seconds * 1000,
-        )
+    report = reconcile_embedding_orphans(
+        index_db,
+        embeddings_db,
+        dry_run=True,
+        max_count=max_count,
+        sample_size=sample_limit,
+        quiet_window_ms=quiet_window_seconds * 1000,
+    )
     payload = {
         "mode": "embedding_orphan_reconcile",
-        "mutates": bool(yes),
+        "mutates": False,
         **report.to_dict(),
     }
 
@@ -133,10 +110,9 @@ def _render_embedding_orphan_reconcile_plain(report: EmbeddingOrphanReconcileRep
     happens. ``scanned_message_meta_rows``/``scanned_vector_rows`` remain
     informational counts of the (deduped) content-addressed tables.
     """
-    click.echo("Embedding orphan reconcile")
+    click.echo("Embedding orphan reconcile (inspect, read-only)")
     click.echo(f"Index DB:      {report.index_db}")
     click.echo(f"Embeddings DB: {report.embeddings_db}")
-    click.echo(f"Mode:          {'dry-run' if report.dry_run else 'apply'}")
     click.echo(
         f"Scanned:       {report.scanned_message_meta_rows:,} distinct vector meta row(s) "
         f"(content-addressed, shared), {report.scanned_vector_rows:,} distinct vector row(s), "
@@ -153,16 +129,10 @@ def _render_embedding_orphan_reconcile_plain(report: EmbeddingOrphanReconcileRep
             f"{report.skipped_recent_status_rows:,} status row(s) "
             f"(within {report.quiet_window_ms // 1000}s)"
         )
-    if report.dry_run:
-        click.echo(
-            f"Would remove:  {report.candidate_message_rows:,} message ref(s), "
-            f"{report.candidate_status_rows:,} status row(s)"
-        )
-    else:
-        click.echo(
-            f"Removed:       {report.removed_message_rows:,} message ref(s), "
-            f"{report.removed_status_rows:,} status row(s)"
-        )
+    click.echo(
+        f"Would remove:  {report.candidate_message_rows:,} message ref(s), "
+        f"{report.candidate_status_rows:,} status row(s)"
+    )
     if report.sessions_recounted:
         click.echo(f"Recounted:     {report.sessions_recounted:,} session(s) message_count_embedded")
     click.echo(f"More pending:  {report.more_pending}")
