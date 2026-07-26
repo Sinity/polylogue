@@ -3331,8 +3331,10 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
     accepted_raw_id = first_result.raw_fingerprints[first]
 
     second_result = processor._ingest_full_paths_sync([second], source_name="inbox")
-    assert second_result.failed == [second]
-    assert second_result.succeeded == []
+    # The divergent authority remains unresolved, but this source file was
+    # acquired and parsed. Its unchanged bytes must not become a retry loop.
+    assert second_result.failed == []
+    assert second_result.succeeded == [second]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE decision = 'ambiguous'").fetchone() == (
             2,
@@ -3940,8 +3942,12 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
 
     result = processor._ingest_full_paths_sync([older_bundle], source_name="codex")
 
-    assert result.failed == ([] if succeeds else [older_bundle])
-    assert result.succeeded == ([older_bundle] if succeeds else [])
+    # A same-size divergent membership result is a decided authority conflict
+    # with a complete source observation; attempted replacement through live
+    # append evidence raises instead and must remain retryable.
+    cursor_complete = succeeds or bundle_texts == ("base", "different")
+    assert result.failed == ([] if cursor_complete else [older_bundle])
+    assert result.succeeded == ([older_bundle] if cursor_complete else [])
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(
