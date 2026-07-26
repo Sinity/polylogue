@@ -3311,6 +3311,7 @@ class ArchiveStore:
         manage_transaction: bool = True,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts: bool = False,
     ) -> str | None:
         """Apply one semantic member head and persist every membership decision.
 
@@ -3575,14 +3576,29 @@ class ArchiveStore:
                         revision_authoritative=True,
                         bulk_fts=bulk_fts,
                         bulk_build=bulk_build,
+                        defer_fts_rebuild=not bulk_build,
                     )
                     if stage_timings_s is not None:
                         key = f"{stage_timing_prefix}.index_parsed_write"
                         stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                     session_id = result.session_id
-                    if not bulk_build:
+                    if not bulk_build and not defer_fts:
                         repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
-                    assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
+                    if defer_fts:
+                        from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
+
+                        record_fts_surface_state_sync(
+                            self._conn,
+                            surface="messages_fts",
+                            state=STALE,
+                            detail="live membership replay deferred targeted session FTS repair",
+                        )
+                    assert_session_fts_exact_sync(
+                        self._conn,
+                        session_id,
+                        bulk_build=bulk_build,
+                        allow_pending=defer_fts,
+                    )
                     stored = self._conn.execute(
                         "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
                     ).fetchone()

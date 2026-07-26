@@ -2130,9 +2130,16 @@ class LiveBatchProcessor:
                 acquired_at_ms=acquired_at_ms,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix="full",
+                defer_fts=True,
             )
             if membership_session_id is not None:
                 session_ids.append(membership_session_id)
+                self._cursor.record_convergence_debt(
+                    stage="fts",
+                    subject_type="session_id",
+                    subject_id=membership_session_id,
+                    error="live membership ingest deferred FTS to preserve writer availability",
+                )
                 session_count += 1
                 message_count += len(member_sessions[classification.accepted_raw_ids[-1]].messages)
         return (
