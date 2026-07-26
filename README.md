@@ -10,15 +10,15 @@
 </p>
 
 <!-- public-claim:category.local-evidence-system -->
-**Polylogue archives your AI conversations — all of them, in one place, on your machine.**
+**Polylogue archives your AI conversations and coding-agent runs — in one place, on your machine.**
 
-Every AI tool keeps its own history in its own format in its own corner:
-Claude Code writes JSONL under `~/.claude`, Codex under `~/.codex`, ChatGPT
-and Claude web only give you export zips, and none of them can search across
-the others. Polylogue ingests all of it into a set of SQLite files you own,
-normalized into one model — sessions, messages, content blocks, tool calls
-and their results — and serves it back through a query-first CLI, an MCP
-server for agents, a local HTTP reader, and a Python API.
+Every AI tool keeps its history in its own format and its own corner: Claude
+Code writes JSONL under `~/.claude`, Codex under `~/.codex`, while ChatGPT and
+Claude web expose export archives. Polylogue ingests supported histories into a
+set of SQLite files you own, normalizes them into one model — sessions,
+messages, content blocks, tool calls and results — and serves them through a
+query-first CLI, an MCP server for agents, a local HTTP reader, and a Python
+API.
 
 ```mermaid
 flowchart LR
@@ -39,13 +39,16 @@ flowchart LR
 ## See it work
 
 Every block below is a real command against the author's own archive —
-currently **83,000+ sessions and 4.7 million messages** of live history,
-five providers, reaching back to 2022. Output is trimmed with `...` where
-noted; nothing is invented.
+currently **18,000+ sessions and 4.7 million messages** of live history,
+covering multiple providers and reaching back to 2022. The session figure is a
+verified July 2026 snapshot after a repair stopped counting hook events as
+standalone sessions; the hook evidence and retained payloads were preserved and
+linked to their parent sessions. Output is trimmed with `...` where noted;
+nothing is invented.
 
-Start wide: dated top-level sessions per year (subagent runs and capture
-sidecars ride along with their parents rather than carrying a date of their
-own — they are most of the other ~66K sessions):
+Start wide: dated sessions per year. This grouping omits sessions without a
+usable start timestamp; hook events are attached evidence and are not counted
+as sessions:
 
 ```console
 $ polylogue find 'since:2015-01-01' then analyze --by year
@@ -109,8 +112,8 @@ is_error=1 count=1039
 is_error=unknown count=115
 ```
 
-That is the product: everything your AI tools ever produced, in one queryable
-place, with tool activity modeled as work rather than chat.
+That is the product: the AI-work evidence your configured tools exposed, in one
+queryable place, with tool activity modeled as work rather than chat.
 
 ## Use it on your own history
 
@@ -192,7 +195,8 @@ polylogue find "urgent" then mark --tag-add review
 ```
 
 **Agents** get the same archive over MCP — `polylogue-mcp` is a standalone
-stdio server, read-only by default (write access is a config opt-in):
+stdio server, read-only by default. Write access requires an explicit configured
+role and remains authorization- and confirmation-gated:
 
 ```json
 {
@@ -203,8 +207,8 @@ stdio server, read-only by default (write access is a config opt-in):
 ```
 
 An agent with this block can search its own past sessions, resume prior
-work with compiled context, and audit what previous runs actually did. Setup:
-[docs/mcp-integration.md](docs/mcp-integration.md).
+work with compiled context, and audit what previous runs actually did. Setup
+and role details: [docs/mcp-integration.md](docs/mcp-integration.md).
 
 **The daemon** (`polylogued run`) also serves a local HTTP reader and
 metrics; **Python** callers get an async API over the same storage
