@@ -58,12 +58,13 @@ def _should_refresh_generation_planner_statistics(
     """Return whether this replay pass crossed a measured-statistics boundary.
 
     Unbounded/one-shot rebuilds have no transaction cursor and always refresh
-    after replay.  Resumable rebuilds refresh the initial materialized page
-    and then whenever another bounded tranche has landed.  This preserves the
-    writer-hot query plans without making a 25 GiB generation pay an archive-
-    wide ANALYZE for every small recovery page.
+    after replay.  Resumable rebuilds retain their representative bootstrap
+    statistics until the first measured tranche is large enough, then refresh
+    whenever another bounded tranche has landed.  This preserves writer-hot
+    query plans without making a 25 GiB generation pay an archive-wide
+    ANALYZE for every small recovery page.
     """
-    if processed_before is None or processed_before == 0:
+    if processed_before is None:
         return True
     return processed_before // _PLANNER_STATS_REFRESH_RAW_INTERVAL < (
         processed_after // _PLANNER_STATS_REFRESH_RAW_INTERVAL

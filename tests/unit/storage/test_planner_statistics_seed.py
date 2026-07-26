@@ -98,6 +98,7 @@ def test_refresh_generation_planner_statistics_tolerates_missing_file(tmp_path: 
 def test_rebuild_statistics_refreshes_initial_and_periodic_tranches() -> None:
     """The actual rebuild policy avoids archive-wide ANALYZE per resume page."""
     assert _should_refresh_generation_planner_statistics(processed_before=None, processed_after=100)
-    assert _should_refresh_generation_planner_statistics(processed_before=0, processed_after=100)
+    assert not _should_refresh_generation_planner_statistics(processed_before=0, processed_after=100)
+    assert _should_refresh_generation_planner_statistics(processed_before=900, processed_after=1_000)
     assert not _should_refresh_generation_planner_statistics(processed_before=32_100, processed_after=32_200)
     assert _should_refresh_generation_planner_statistics(processed_before=32_900, processed_after=33_000)
