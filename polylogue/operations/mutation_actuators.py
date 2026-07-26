@@ -1000,30 +1000,43 @@ class SavedViewSaveActuator:
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: SavedViewSaveArgs) -> MutationPlan:
+        collision = args.archive.get_view_by_name(args.name)
+        collision_view_id = (
+            collision["view_id"] if collision is not None and collision["view_id"] != args.view_id else None
+        )
+        target_refs: tuple[str, ...] = (f"saved_view:{args.view_id}",)
+        if collision_view_id is not None:
+            target_refs = (*target_refs, f"saved_view:{collision_view_id}")
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
-            target_refs=(f"saved_view:{args.view_id}",),
+            target_refs=target_refs,
             affected_tiers=("user",),
             reversible=True,
-            context={"view_id": args.view_id, "name": args.name, "query_json": args.query_json},
+            context={
+                "view_id": args.view_id,
+                "name": args.name,
+                "query_json": args.query_json,
+                "collision_view_id": collision_view_id,
+            },
         )
 
     def apply(self, plan: MutationPlan, args: SavedViewSaveArgs) -> MutationReceipt:
         view_id = str(plan.context["view_id"])
         name = str(plan.context["name"])
         query_json = str(plan.context["query_json"])
+        collision_view_id = plan.context["collision_view_id"]
         created = args.archive.save_view(view_id, name, query_json)
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
             status="applied",
             target_refs=plan.target_refs,
-            affected_count=1,
+            affected_count=len(plan.target_refs),
             detail=None,
             receipt_ref=None,
             applied_at=plan.prepared_at,
-            domain_receipt={"created": created},
+            domain_receipt={"created": created, "collision_view_id": collision_view_id},
         )
 
 
@@ -1227,10 +1240,19 @@ class WorkspaceSaveActuator:
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: WorkspaceSaveArgs) -> MutationPlan:
+        collision = args.archive.get_workspace_by_name(args.name)
+        collision_workspace_id = (
+            collision["workspace_id"]
+            if collision is not None and collision["workspace_id"] != args.workspace_id
+            else None
+        )
+        target_refs: tuple[str, ...] = (f"workspace:{args.workspace_id}",)
+        if collision_workspace_id is not None:
+            target_refs = (*target_refs, f"workspace:{collision_workspace_id}")
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
-            target_refs=(f"workspace:{args.workspace_id}",),
+            target_refs=target_refs,
             affected_tiers=("user",),
             reversible=True,
             context={
@@ -1240,6 +1262,7 @@ class WorkspaceSaveActuator:
                 "open_targets_json": args.open_targets_json,
                 "layout_json": args.layout_json,
                 "active_target_json": args.active_target_json,
+                "collision_workspace_id": collision_workspace_id,
             },
         )
 
@@ -1252,16 +1275,17 @@ class WorkspaceSaveActuator:
             layout_json=str(plan.context["layout_json"]),
             active_target_json=str(plan.context["active_target_json"]),
         )
+        collision_workspace_id = plan.context["collision_workspace_id"]
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
             status="applied",
             target_refs=plan.target_refs,
-            affected_count=1,
+            affected_count=len(plan.target_refs),
             detail=None,
             receipt_ref=None,
             applied_at=plan.prepared_at,
-            domain_receipt={"created": created},
+            domain_receipt={"created": created, "collision_workspace_id": collision_workspace_id},
         )
 
 

@@ -166,55 +166,61 @@ rows:
     spec_name: mutate-save-saved-view
     status: executor-routed
     actuator: polylogue.operations.mutation_actuators.SavedViewSaveActuator
-    surfaces: [mcp, api]
+    surfaces: [mcp, api, daemon]
     adapters:
       - polylogue.api.archive.PolylogueArchiveMixin.save_view
       - polylogue.mcp.server_cutover._dispatch_write (operation=save_saved_view, via save_view)
+      - polylogue.daemon.user_state_http.handle_save_view (via save_view)
 
   - operation: mutate-delete-saved-view
     spec_name: mutate-delete-saved-view
     status: executor-routed
     actuator: polylogue.operations.mutation_actuators.SavedViewDeleteActuator
-    surfaces: [mcp, api]
+    surfaces: [mcp, api, daemon]
     adapters:
       - polylogue.api.archive.PolylogueArchiveMixin.delete_view
       - polylogue.mcp.server_cutover._dispatch_write (operation=delete_saved_view, via delete_view)
+      - polylogue.daemon.user_state_http.handle_delete_saved_view (via delete_view)
 
   - operation: mutate-save-recall-pack
     spec_name: mutate-save-recall-pack
     status: executor-routed
     actuator: polylogue.operations.mutation_actuators.RecallPackSaveActuator
-    surfaces: [mcp, api]
+    surfaces: [mcp, api, daemon]
     adapters:
       - polylogue.api.archive.PolylogueArchiveMixin.create_recall_pack
       - polylogue.mcp.server_cutover._dispatch_write (operation=save_recall_pack, via create_recall_pack)
+      - polylogue.daemon.user_state_http.handle_save_recall_pack (via create_recall_pack)
 
   - operation: mutate-delete-recall-pack
     spec_name: mutate-delete-recall-pack
     status: executor-routed
     actuator: polylogue.operations.mutation_actuators.RecallPackDeleteActuator
-    surfaces: [mcp, api]
+    surfaces: [mcp, api, daemon]
     adapters:
       - polylogue.api.archive.PolylogueArchiveMixin.delete_recall_pack
       - polylogue.mcp.server_cutover._dispatch_write (operation=delete_recall_pack, via delete_recall_pack)
+      - polylogue.daemon.user_state_http.handle_delete_recall_pack (via delete_recall_pack)
 
   - operation: mutate-save-workspace
     spec_name: mutate-save-workspace
     status: executor-routed
     actuator: polylogue.operations.mutation_actuators.WorkspaceSaveActuator
-    surfaces: [mcp, api]
+    surfaces: [mcp, api, daemon]
     adapters:
       - polylogue.api.archive.PolylogueArchiveMixin.save_workspace
       - polylogue.mcp.server_cutover._dispatch_write (operation=save_workspace, via save_workspace)
+      - polylogue.daemon.user_state_http.handle_save_workspace (via save_workspace)
 
   - operation: mutate-delete-workspace
     spec_name: mutate-delete-workspace
     status: executor-routed
     actuator: polylogue.operations.mutation_actuators.WorkspaceDeleteActuator
-    surfaces: [mcp, api]
+    surfaces: [mcp, api, daemon]
     adapters:
       - polylogue.api.archive.PolylogueArchiveMixin.delete_workspace
       - polylogue.mcp.server_cutover._dispatch_write (operation=delete_workspace, via delete_workspace)
+      - polylogue.daemon.user_state_http.handle_delete_workspace (via delete_workspace)
 
   # --- Phase 3+ debt: declared-not-routed -------------------------------------
   # MCP-only mutation family with no OperationSpec entry yet (pre-existing

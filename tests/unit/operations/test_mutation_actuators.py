@@ -70,6 +70,10 @@ from polylogue.operations.mutation_transaction import ConfirmationRequiredError,
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    assertion_id_for_saved_view,
+    assertion_id_for_workspace,
+)
 
 
 def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
@@ -1069,6 +1073,54 @@ class TestSavedViewActuators:
                 actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
             )
 
+    def test_name_collision_resolves_victim_during_prepare(self, tmp_path: Path) -> None:
+        """CodeRabbit #3262 P2: ArchiveStore.save_view soft-deletes whichever
+        row currently owns the target name when a save uses a new id -- the
+        plan/receipt must name and count that victim too, not just the new id."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            first_actuator = SavedViewSaveActuator()
+            first_args = SavedViewSaveArgs(archive=archive, view_id="view-old", name="shared name", query_json="{}")
+            first_plan = executor.prepare(first_actuator, first_args)
+            first_authorization = executor.authorize(
+                first_actuator,
+                first_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            executor.execute(first_actuator, first_plan, first_authorization, first_args)
+
+            second_actuator = SavedViewSaveActuator()
+            second_args = SavedViewSaveArgs(archive=archive, view_id="view-new", name="shared name", query_json="{}")
+            second_plan = executor.prepare(second_actuator, second_args)
+
+            assert second_plan.target_refs == ("saved_view:view-new", "saved_view:view-old")
+            assert second_plan.context["collision_view_id"] == "view-old"
+
+            second_authorization = executor.authorize(
+                second_actuator,
+                second_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(second_actuator, second_plan, second_authorization, second_args)
+
+            assert receipt.affected_count == 2
+            assert receipt.domain_receipt["collision_view_id"] == "view-old"
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                statuses = dict(
+                    conn.execute("SELECT assertion_id, status FROM assertions WHERE kind = 'saved_query'").fetchall()
+                )
+            assert statuses[assertion_id_for_saved_view("view-old")] == "deleted"
+            assert statuses[assertion_id_for_saved_view("view-new")] != "deleted"
+
 
 class TestRecallPackActuators:
     def test_save_then_delete_round_trips_through_user_db(self, tmp_path: Path) -> None:
@@ -1225,3 +1277,67 @@ class TestWorkspaceActuators:
             executor.authorize(
                 actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
             )
+
+    def test_name_collision_resolves_victim_during_prepare(self, tmp_path: Path) -> None:
+        """CodeRabbit #3262 P2: ArchiveStore.save_workspace soft-deletes whichever
+        row currently owns the target name when a save uses a new id -- the
+        plan/receipt must name and count that victim too, not just the new id."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            first_actuator = WorkspaceSaveActuator()
+            first_args = WorkspaceSaveArgs(
+                archive=archive,
+                workspace_id="ws-old",
+                name="shared name",
+                mode="tabs",
+                open_targets_json="[]",
+                layout_json="{}",
+                active_target_json="{}",
+            )
+            first_plan = executor.prepare(first_actuator, first_args)
+            first_authorization = executor.authorize(
+                first_actuator,
+                first_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            executor.execute(first_actuator, first_plan, first_authorization, first_args)
+
+            second_actuator = WorkspaceSaveActuator()
+            second_args = WorkspaceSaveArgs(
+                archive=archive,
+                workspace_id="ws-new",
+                name="shared name",
+                mode="tabs",
+                open_targets_json="[]",
+                layout_json="{}",
+                active_target_json="{}",
+            )
+            second_plan = executor.prepare(second_actuator, second_args)
+
+            assert second_plan.target_refs == ("workspace:ws-new", "workspace:ws-old")
+            assert second_plan.context["collision_workspace_id"] == "ws-old"
+
+            second_authorization = executor.authorize(
+                second_actuator,
+                second_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(second_actuator, second_plan, second_authorization, second_args)
+
+            assert receipt.affected_count == 2
+            assert receipt.domain_receipt["collision_workspace_id"] == "ws-old"
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                statuses = dict(
+                    conn.execute("SELECT assertion_id, status FROM assertions WHERE kind = 'workspace_note'").fetchall()
+                )
+            assert statuses[assertion_id_for_workspace("ws-old")] == "deleted"
+            assert statuses[assertion_id_for_workspace("ws-new")] != "deleted"

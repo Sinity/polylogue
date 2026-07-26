@@ -6707,6 +6707,10 @@ class ArchiveStore:
         """Get one workspace by id from archive user.db."""
         return next((row for row in self.list_workspaces() if row["workspace_id"] == workspace_id), None)
 
+    def get_workspace_by_name(self, name: str) -> dict[str, str] | None:
+        """Get one workspace by name from archive user.db."""
+        return next((row for row in self.list_workspaces() if row["name"] == name), None)
+
     def list_workspaces(self) -> list[dict[str, str]]:
         """List workspaces from archive user.db."""
         return self._list_workspaces()
