@@ -65,6 +65,8 @@ def _export_live_rows() -> dict[str, dict[str, Any]]:
 
 def _load_manifest(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"tracker authority manifest is not a JSON object: {type(payload).__name__}")
     if payload.get("version") != 1:
         raise ValueError(f"unsupported manifest version: {payload.get('version')!r}")
     bindings = payload.get("bindings")
@@ -156,13 +158,10 @@ def _apply_binding(row: dict[str, Any], binding: dict[str, Any], *, timestamp: s
 
 
 def _write_candidate(rows: dict[str, dict[str, Any]]) -> Path:
-    handle = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
-    path = Path(handle.name)
-    try:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as handle:
+        path = Path(handle.name)
         for issue_id in sorted(rows):
             handle.write(json.dumps(rows[issue_id], sort_keys=True) + "\n")
-    finally:
-        handle.close()
     return path
 
 
