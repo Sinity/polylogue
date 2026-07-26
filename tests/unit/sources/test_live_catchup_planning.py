@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import os
 import sqlite3
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -339,6 +338,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
 def test_catch_up_ingests_recent_source_before_historical_backlog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    frozen_clock: FrozenClock,
 ) -> None:
     """A live session does not wait behind a full historical catch-up plan."""
     root = tmp_path / "src"
@@ -356,7 +356,7 @@ def test_catch_up_ingests_recent_source_before_historical_backlog(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="test", root=root),),
     )
-    monkeypatch.setattr(time, "time", lambda: now)
+    frozen_clock.set_time(now)
     monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 1)
 
     calls: list[list[Path]] = []

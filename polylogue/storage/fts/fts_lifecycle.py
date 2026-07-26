@@ -39,6 +39,8 @@ from polylogue.storage.fts.sql import (
     message_identity_mismatch_sql,
     repair_all_message_identity_rows_sql,
     repair_message_identity_rows_range_sql,
+    trigram_delete_session_rows_sql,
+    trigram_insert_session_rows_sql,
 )
 
 _chunked = chunked
@@ -670,6 +672,15 @@ def repair_message_fts_index_sync(
         conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
         conn.execute(insert_session_rows_sql(len(chunk)), params)
         conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
+        # A deferred full-replace deletes a session's blocks_command_trigram
+        # postings at write time (using the old block text) but skips the
+        # matching reinsert, so this repair is the only catch-up: reissue the
+        # delete (a no-op unless something re-populated it) then repopulate
+        # from the current blocks table. Trigram SQL is session-scoped, not
+        # chunked like the calls above.
+        for session_id in chunk:
+            conn.execute(trigram_delete_session_rows_sql(), (session_id,))
+            conn.execute(trigram_insert_session_rows_sql(), (session_id,))
     if not record_exact_snapshot:
         return
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync

@@ -4055,6 +4055,10 @@ def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_thres
 
     class FakeResolved:
         daemon_bulk_rebuild_routing = True
+        daemon_parse_stage_workers = None
+        daemon_parse_stage_max_inflight_bytes = None
+        daemon_parse_stage_max_cached_tree_bytes = None
+        daemon_parse_stage_warm_timeout_seconds = None
 
     calls: list[dict[str, object]] = []
 
