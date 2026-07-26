@@ -17,7 +17,10 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from polylogue.maintenance.rebuild_index import _refresh_generation_planner_statistics
+from polylogue.maintenance.rebuild_index import (
+    _refresh_generation_planner_statistics,
+    _should_refresh_generation_planner_statistics,
+)
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
 
@@ -86,3 +89,11 @@ def test_refresh_generation_planner_statistics_measures_real_tables(tmp_path: Pa
 
 def test_refresh_generation_planner_statistics_tolerates_missing_file(tmp_path: Path) -> None:
     _refresh_generation_planner_statistics(tmp_path / "missing" / "index.db")
+
+
+def test_rebuild_statistics_refreshes_initial_and_periodic_tranches() -> None:
+    """The actual rebuild policy avoids archive-wide ANALYZE per resume page."""
+    assert _should_refresh_generation_planner_statistics(processed_before=None, processed_after=100)
+    assert _should_refresh_generation_planner_statistics(processed_before=0, processed_after=100)
+    assert not _should_refresh_generation_planner_statistics(processed_before=32_100, processed_after=32_200)
+    assert _should_refresh_generation_planner_statistics(processed_before=32_900, processed_after=33_000)
