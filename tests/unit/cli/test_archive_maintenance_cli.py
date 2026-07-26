@@ -1290,147 +1290,22 @@ def test_embedding_orphan_reconcile_cli_plain_dry_run_reports_would_remove_count
         assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
 
 
-def test_embedding_orphan_reconcile_cli_apply_removes_rows(
+def test_embedding_orphan_reconcile_cli_has_no_mutate_flag(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
-    session_id, message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "embedding-orphan-reconcile",
-            "--yes",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["mutates"] is True
-    assert payload["dry_run"] is False
-    assert payload["removed_message_rows"] == 1
-    # v4: message_embeddings/message_embeddings_meta are content-addressed and
-    # never deleted by this reconciler -- only the message_id -> hash ref is.
-    assert payload["removed_vector_rows"] == 0
-    assert payload["sessions_recounted"] == 1
-    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
-        assert (
-            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (message_id,)).fetchone()[
-                0
-            ]
-            == 0
-        )
-        status = conn.execute(
-            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
-        ).fetchone()
-        assert status is not None
-        assert status[0] == 0
-        assert status[1] == 1
-
-
-def test_embedding_orphan_reconcile_cli_apply_is_bounded_by_default(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    session_id, _message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
-    embeddings_db = cli_workspace["archive_root"] / "embeddings.db"
-    with sqlite3.connect(embeddings_db) as conn:
-        # v4: per-message identity for the reconciler's scan is
-        # message_embedding_refs (message_id-keyed) -- message_embeddings_meta
-        # is content-addressed and never independently orphaned, so 500
-        # distinct orphan candidates means 500 distinct refs, not meta rows.
-        conn.executemany(
-            """
-            INSERT INTO message_embedding_refs (
-                message_id, session_id, origin, embedding_input_hash, embedded_at_ms
-            ) VALUES (?, ?, 'codex-session', ?, 1700000000000)
-            """,
-            [
-                (
-                    f"{session_id}:zz-orphan-{position:03d}",
-                    f"{session_id}:zz-orphan-{position:03d}",
-                    hashlib.sha256(f"{session_id}:zz-orphan-{position:03d}".encode()).digest(),
-                )
-                for position in range(500)
-            ],
-        )
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "embedding-orphan-reconcile",
-            "--yes",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["candidate_message_rows"] == 500
-    assert payload["removed_message_rows"] == 500
-    assert payload["more_pending"] is True
-    with sqlite3.connect(embeddings_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
-
-
-def test_embedding_orphan_reconcile_cli_apply_requires_exclusive_offline_lease(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    """Production CLI proof: a live/shared writer lease blocks break-glass apply."""
-    from polylogue.storage.index_generation import ActiveWriterLease
-
-    _seed_orphan_embedding_row(cli_workspace["archive_root"])
-    writer = ActiveWriterLease(cli_workspace["archive_root"])
-    writer.acquire()
-    try:
-        result = cli_runner.invoke(
-            cli,
-            ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--yes"],
-        )
-    finally:
-        writer.close()
-
-    assert result.exit_code != 0
-    assert "index rebuild lease is already held" in result.output
-
-
-def test_embedding_orphan_reconcile_cli_apply_refuses_stale_index_schema(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    """The break-glass writer cannot treat a pre-rebuild index as deletion truth."""
-    _session_id, message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
-    index_db = cli_workspace["archive_root"] / "index.db"
-    with sqlite3.connect(index_db) as conn:
-        conn.execute("PRAGMA user_version = 32")
-
+    """Read-only by design (automagic-invariants, polylogue-gd6v/4jsk): daemon
+    convergence already reconciles this backlog automatically, so a manual
+    apply path would be a redundant, doctrine-forbidden break-glass surface.
+    """
     result = cli_runner.invoke(
         cli,
         ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--yes"],
     )
 
     assert result.exit_code != 0
-    assert isinstance(result.exception, RuntimeError)
-    assert "active index is v32, packaged index is v" in str(result.exception)
-    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
-        assert (
-            conn.execute("SELECT COUNT(*) FROM message_embedding_refs WHERE message_id = ?", (message_id,)).fetchone()[
-                0
-            ]
-            == 1
-        )
+    assert "--yes" in result.output
+    assert "no such option" in result.output.lower()
 
 
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
