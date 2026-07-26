@@ -10,13 +10,13 @@
 </p>
 
 <!-- public-claim:category.local-evidence-system -->
-**Polylogue archives your AI conversations and coding-agent runs - in one place, on your machine.**
+**Polylogue archives your AI conversations and coding-agent runs — in one place, on your machine.**
 
 Every AI tool keeps its history in its own format and its own corner: Claude
 Code writes JSONL under `~/.claude`, Codex under `~/.codex`, while ChatGPT and
 Claude web expose export archives. Polylogue ingests supported histories into a
-set of SQLite files you own, normalizes them into one model - sessions,
-messages, content blocks, tool calls and results - and serves them through a
+set of SQLite files you own, normalizes them into one model — sessions,
+messages, content blocks, tool calls and results — and serves them through a
 query-first CLI, an MCP server for agents, a local HTTP reader, and a Python
 API.
 
@@ -38,7 +38,7 @@ flowchart LR
 
 ## See it work
 
-Every block below is a real command against the author's own archive -
+Every block below is a real command against the author's own archive —
 currently **18,000+ sessions and 4.7 million messages** of live history,
 covering multiple providers and reaching back to 2022. The session figure is a
 verified July 2026 snapshot after a repair stopped counting hook events as
@@ -59,7 +59,7 @@ $ polylogue find 'since:2015-01-01' then analyze --by year
 2022: 25
 ```
 
-Search it. One query hits Codex and Claude Code sessions at once - here, a
+Search it. One query hits Codex and Claude Code sessions at once — here, a
 recurring clock-hygiene lint check landing in both:
 
 ```console
@@ -70,7 +70,7 @@ $ polylogue --limit 4 find 'repo:polylogue "with host-clock calls"'
 4. codex-session  019e1a5c-0abe-71e1-8adf-8ae8d4cc71a6  Chunk ID: 7b81ce Wall time: 0.0000 seconds Process exited with code 0 Original token count: 22 Output: test files scanned: 598 files [with host-clock calls]: 23 allowlisted: 23 violations: 0
 ```
 
-Read one back as a transcript - real coding-agent sessions carry a lot of
+Read one back as a transcript — real coding-agent sessions carry a lot of
 injected system/skill context before the actual exchange, so this excerpt
 trims that noise down to the assistant's opening move on a real task:
 
@@ -88,7 +88,7 @@ they exercise the claimed failure modes.
 
 Query tool activity as data, not text. Tool calls are paired with their
 results, and failure comes from the provider's `exit_code`/`is_error`
-structure - not from grepping prose for the word "error" - so this is every
+structure — not from grepping prose for the word "error" — so this is every
 tool that ever failed across this repo's own coding sessions, ranked:
 
 ```console
@@ -102,7 +102,7 @@ tool=exec_command count=149
 ```
 
 The same structure answers sharper questions. Every `pytest` invocation any
-agent ever ran here, split by its **actual exit status** - including the
+agent ever ran here, split by its **actual exit status** — including the
 honest `unknown` lane for results the provider never reported:
 
 ```console
@@ -123,7 +123,7 @@ polylogued run      # the daemon: ingests what init found, then keeps watching a
 ```
 
 `polylogue init` records the sources present on your machine;
-`polylogued run` ingests them and stays running - new sessions appear in the
+`polylogued run` ingests them and stays running — new sessions appear in the
 archive as your tools write them. One-off files (a ChatGPT export zip, a
 downloaded conversation) go through the same pipeline:
 
@@ -143,18 +143,18 @@ polylogue import some-file.json --explain   # show detection/parse decisions wit
 | Hermes (Nous) | `hermes-session` | runtime-root import (ATIF/ATOF artifacts) |
 | Antigravity | `antigravity-session` | export import |
 
-Each origin is captured at full fidelity - roles, prose, thinking, tool calls
-and results, attachments, session metadata - as far as the source provides
+Each origin is captured at full fidelity — roles, prose, thinking, tool calls
+and results, attachments, session metadata — as far as the source provides
 them. Per-origin detail: [docs/provider-origin-identity.md](docs/provider-origin-identity.md).
 
 ## What the archive is
 
-Five SQLite files plus a SHA-256 content-addressed blob store, under one local
-directory. Ingestion flows raw bytes -> parsed model -> derived indexes; one
-rule decides what must survive:
+Five SQLite files plus a SHA-256 content-addressed blob store, under one
+local directory. Ingestion flows raw bytes → parsed model → derived indexes;
+one rule decides what must survive:
 
-> **Source evidence and your own judgments are durable. Everything derived -
-> search indexes, analytics, embeddings - is rebuildable from source.**
+> **Source evidence and your own judgments are durable. Everything derived —
+> search indexes, analytics, embeddings — is rebuildable from source.**
 
 | File | Holds | Durability |
 |---|---|---|
@@ -169,22 +169,22 @@ Modelling decisions that make queries trustworthy:
 - **Tool outcomes are structural.** `tool_result_is_error` and
   `tool_result_exit_code` come from provider structure; unknown stays `NULL`
   instead of being guessed from prose.
-- **Role != authorship.** Providers encode injected runtime context as
+- **Role ≠ authorship.** Providers encode injected runtime context as
   `role=user` messages; a separate `material_origin` column keeps
   human-authored text distinct from protocol noise, so "what did I actually
   write" and cost accounting stay honest.
 - **Forks don't double-count.** Forks, resumes, subagents, and compaction
-  physically replay a parent's prefix in the raw logs. The archive stores only
-  the divergent tail plus a branch point and recomposes on read - so token
-  totals and transcripts count copied history once.
+  physically replay a parent's prefix in the raw logs. The archive stores
+  only the divergent tail plus a branch point and recomposes on read — so
+  token totals and transcripts count copied history once.
 - **Cost is modeled per lane.** Provider-reported usage, cached-token lanes,
   reasoning tokens, catalog prices, and subscription-credit views stay
-  separate (Codex "input" is mostly cache reads; adding lanes together silently
-  inflates spend).
+  separate (Codex "input" is ~mostly cache reads; adding lanes together
+  silently inflates spend).
 
 ## Interfaces
 
-The CLI is query-first - `find QUERY then ACTION`, with a real query grammar
+The CLI is query-first — `find QUERY then ACTION`, with a real query grammar
 (fielded predicates, booleans, date ranges, pipeline stages):
 
 ```bash
@@ -194,7 +194,7 @@ polylogue find 'actions where tool:shell AND command:pytest' then read
 polylogue find "urgent" then mark --tag-add review
 ```
 
-**Agents** get the same archive over MCP - `polylogue-mcp` is a standalone
+**Agents** get the same archive over MCP — `polylogue-mcp` is a standalone
 stdio server, read-only by default. Write access requires an explicit configured
 role and remains authorization- and confirmation-gated:
 
@@ -206,15 +206,15 @@ role and remains authorization- and confirmation-gated:
 }
 ```
 
-An agent with this block can search its own past sessions, resume prior work
-with compiled context, and audit what previous runs actually did. Setup and
-role details: [docs/mcp-integration.md](docs/mcp-integration.md).
+An agent with this block can search its own past sessions, resume prior
+work with compiled context, and audit what previous runs actually did. Setup
+and role details: [docs/mcp-integration.md](docs/mcp-integration.md).
 
-**The daemon** (`polylogued run`) also serves a local HTTP reader and metrics;
-**Python** callers get an async API over the same storage
+**The daemon** (`polylogued run`) also serves a local HTTP reader and
+metrics; **Python** callers get an async API over the same storage
 ([docs/data-model.md](docs/data-model.md)). Semantic search is an explicit
-opt-in (`--semantic`) that requires configuring an embedding provider - that is
-the only path where any text leaves your machine, and
+opt-in (`--semantic`) that requires configuring an embedding provider —
+that is the only path where any text leaves your machine, and
 `polylogue ops embed preflight` shows the cost before anything is sent.
 
 ## Install
@@ -226,12 +226,12 @@ nix run github:Sinity/polylogue -- --help
 ```
 
 All three routes ship the same three commands: `polylogue`, `polylogued`,
-`polylogue-mcp`. Source checkout, NixOS/Home Manager modules, and verification:
-[docs/installation.md](docs/installation.md).
+`polylogue-mcp`. Source checkout, NixOS/Home Manager modules, and
+verification: [docs/installation.md](docs/installation.md).
 
-No accounts, no personal data, no API keys - `demo seed` builds a small
-synthetic archive through the real ingestion path, so the commands above work
-against something before you point Polylogue at your own history:
+No accounts, no personal data, no API keys — `demo seed` builds a small
+synthetic archive through the real ingestion path, so the commands above
+work against something before you point Polylogue at your own history:
 
 ```bash
 polylogue demo seed      # writes a synthetic archive to POLYLOGUE_ARCHIVE_ROOT
@@ -265,12 +265,12 @@ Start with the task-oriented guides below; [docs/README.md](docs/README.md) sepa
 ## Status
 
 Pre-1.0, under heavy daily dogfooding against the author's own multi-year,
-multi-tool archive. The deterministic demo world, the normalized model, and the
-CLI/MCP/HTTP/Python surfaces are real and tested; interfaces may still change
-between releases. Roadmap lives in the committed
+multi-tool archive. The deterministic demo world, the normalized model, and
+the CLI/MCP/HTTP/Python surfaces are real and tested; interfaces may still
+change between releases. Roadmap lives in the committed
 [Beads](https://github.com/steveyegge/beads) graph
 ([web board](https://sinity.github.io/polylogue/main/beads/), or `bd ready`
-locally) - not in GitHub Issues.
+locally) — not in GitHub Issues.
 
 ## Development
 
@@ -284,10 +284,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md), and
 
 ## Security
 
-Polylogue assumes a trusted single-user machine. The daemon binds to loopback;
-protected routes use bearer tokens; browser capture is opt-in with its own
-token. The archive contains whatever your sessions contain - source code,
-secrets, personal conversations - so treat it like the private data it is: use
-disk encryption, and read [docs/security.md](docs/security.md) and
+Polylogue assumes a trusted single-user machine. The daemon binds to
+loopback; protected routes use bearer tokens; browser capture is opt-in with
+its own token. The archive contains whatever your sessions contain — source
+code, secrets, personal conversations — so treat it like the private data it
+is: use disk encryption, and read [docs/security.md](docs/security.md) and
 [docs/daemon-threat-model.md](docs/daemon-threat-model.md) before exposing
 anything beyond localhost.
