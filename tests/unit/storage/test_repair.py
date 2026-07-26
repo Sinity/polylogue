@@ -2640,7 +2640,7 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
     assert calls == [("missing",)]
 
 
-def test_repair_session_insights_refreshes_stale_thread_materialization_as_aggregate_debt(
+def test_repair_session_insights_targets_stale_thread_materialization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     conn = sqlite3.connect(":memory:")
@@ -2734,14 +2734,10 @@ def test_repair_session_insights_refreshes_stale_thread_materialization_as_aggre
         tag_rollups_ready=True,
         missing_thread_materialization_count=1,
     )
-    statuses = iter((stale_status, stale_status, _ready_session_insight_status()))
+    statuses = iter((stale_status, _ready_session_insight_status()))
 
     def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
         calls.append(("rebuild", session_ids))
-        return SessionInsightCounts()
-
-    def fake_aggregate_refresh(_conn: sqlite3.Connection, **_kwargs: object) -> SessionInsightCounts:
-        calls.append(("aggregate", None))
         return SessionInsightCounts(threads=1)
 
     monkeypatch.setattr(
@@ -2752,16 +2748,11 @@ def test_repair_session_insights_refreshes_stale_thread_materialization_as_aggre
         "polylogue.api.archive._rebuild_archive_session_insights",
         fake_rebuild,
     )
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.refresh_session_insight_aggregates_sync",
-        fake_aggregate_refresh,
-    )
-
     result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
 
     assert result.success is True
     assert result.repaired_count == 1
-    assert calls == [("rebuild", ()), ("aggregate", None)]
+    assert calls == [("rebuild", ("stale-thread-marker",))]
 
 
 def test_repair_assessment_ignores_optional_run_projection_cache_gaps() -> None:
