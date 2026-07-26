@@ -565,14 +565,21 @@ class LiveBatchProcessor:
                     current_source=source_name,
                     current_path=source_paths[0] if source_paths else None,
                 )
-                _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
-                    "watcher.live_ingest.full_convergence",
-                    self._converge_paths,
-                    full_result.succeeded,
-                )
-                convergence_time_s += elapsed
-                release_process_memory()
-                _accumulate_stage_timings(stage_timings, timings)
+                convergence_debt: list[ConvergenceDebt] = []
+                if full_result.changed_session_count:
+                    _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
+                        "watcher.live_ingest.full_convergence",
+                        self._converge_paths,
+                        full_result.succeeded,
+                    )
+                    convergence_time_s += elapsed
+                    release_process_memory()
+                    _accumulate_stage_timings(stage_timings, timings)
+                elif full_result.succeeded:
+                    logger.info(
+                        "live.watcher: skipping full convergence for %d source observation(s) without session changes",
+                        len(full_result.succeeded),
+                    )
                 debt_by_source_path = debt_by_path(convergence_debt)
                 for path in full_result.succeeded:
                     succeeded_paths.add(path)

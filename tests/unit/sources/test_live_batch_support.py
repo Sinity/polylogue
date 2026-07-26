@@ -32,6 +32,7 @@ from polylogue.sources.live.batch_support import (
     _AppendPlan,
     _AppendResult,
     _detect_provider_from_path_sample,
+    _FullIngestResult,
     _parse_path_as_session_artifact,
     encode_cursor_hash_authority,
     sha256_range_from_path,
@@ -4306,6 +4307,54 @@ def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path)
     with cursor._connect() as conn:
         rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
     assert rows == [("raw-old",)]
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_skips_convergence_without_session_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cursor-only raw observation must not rerun global workflow materializers."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "unchanged.json"
+    path.write_text("{}", encoding="utf-8")
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
+        (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    convergence_calls: list[list[Path]] = []
+
+    async def fake_full_ingest(
+        paths: list[Path], *, source_name: str, heartbeat: object | None = None, attempt_id: str | None = None
+    ) -> _FullIngestResult:
+        del source_name, heartbeat, attempt_id
+        return _FullIngestResult(
+            succeeded=paths,
+            failed=[],
+            source_payload_read_bytes=0,
+            raw_fingerprints={path: "raw-unchanged"},
+            changed_session_count=0,
+        )
+
+    def record_convergence(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        convergence_calls.append(paths)
+        return set(paths), 0.0, {}, []
+
+    monkeypatch.setattr(processor, "_append_plan", lambda _path, *, cursor: None)
+    monkeypatch.setattr(processor, "_ingest_full_paths", fake_full_ingest)
+    monkeypatch.setattr(processor, "_converge_paths", record_convergence)
+    monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(processor, "_compact_superseded_raw_snapshots", lambda _paths: None)
+
+    metrics = await processor.ingest_files([path], emit_event=False)
+
+    assert convergence_calls == []
+    assert metrics.succeeded_file_count == 1
+    assert metrics.changed_session_count == 0
 
 
 @pytest.mark.asyncio
