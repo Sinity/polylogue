@@ -3543,10 +3543,13 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
 
     # The genuine three-way content divergence still correctly refuses to
     # pick a winner -- reunification recovers a real resolution when one
-    # exists, it does not fabricate one.
+    # exists, it does not fabricate one. The source observation itself was
+    # acquired and parsed successfully, so its cursor is complete rather than
+    # retried as a transient file failure; the durable membership decision
+    # remains ambiguous/fail-closed.
     assert by_path[str(third)] == "ambiguous"
-    assert third_result.failed == [third]
-    assert third_result.succeeded == []
+    assert third_result.failed == []
+    assert third_result.succeeded == [third]
 
 
 def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_path: Path) -> None:
@@ -3558,13 +3561,13 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
     raw-materialization conveyor, ``sources/revision_backfill.py``) and
     ``decision IN ('ambiguous', 'deferred')`` (arbitration already ran and
     concluded a real conflict that needs new evidence, not time, to
-    resolve). Only the first is a legitimate "not a failure, hand off to the
-    conveyor" hand-off; the second is a decided outcome that must surface as
-    a failure -- ``LiveBatchProcessor._ingest_full_records_archive`` uses
-    ``raw_membership_decision_pending`` (not the coarse boolean alone) at
-    both of its full-ingest injection points to make exactly this
-    distinction (batch.py, the membership-governed branch and the
-    classify_raw_revision_cohort branch).
+    resolve). The first is a conveyor hand-off; the second is a durable
+    fail-closed materialization outcome. Neither is a transient source-file
+    failure, so the live cursor must not re-read unchanged bytes for either
+    state. ``LiveBatchProcessor._ingest_full_records_archive`` uses
+    ``raw_membership_decision_pending`` (not the coarse boolean alone) to
+    preserve this distinction in its durable raw-authority state while both
+    paths remain cursor-idempotent.
 
     This is an archive-tier predicate test rather than a full watcher
     end-to-end scenario because, by construction,
@@ -4006,8 +4009,12 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
     assert processor._ingest_full_paths_sync([bundle], source_name="codex").failed == []
     divergent_result = processor._ingest_full_paths_sync([divergent], source_name="codex")
 
-    assert divergent_result.succeeded == []
-    assert divergent_result.failed == [divergent]
+    # Divergence remains fail-closed for the materialized head, but the source
+    # bytes were acquired and parsed successfully. Treating this as a cursor
+    # success prevents each daemon restart from reprocessing the same decided
+    # conflict until the file actually changes.
+    assert divergent_result.succeeded == [divergent]
+    assert divergent_result.failed == []
     with sqlite3.connect(index_db) as conn:
         assert conn.execute(
             """
