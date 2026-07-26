@@ -134,7 +134,10 @@ def test_repopulate_bulk_build_derived_state_produces_exact_parity(tmp_path: Pat
     assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
     conn.close()
 
-    _repopulate_bulk_build_derived_state(db_path)
+    timings_s = _repopulate_bulk_build_derived_state(db_path)
+
+    assert set(timings_s) == {"fts", "command_trigram", "action_pairs", "delegation_facts", "commit"}
+    assert all(elapsed_s >= 0 for elapsed_s in timings_s.values())
 
     report = verify_archive(tmp_path, checks=["fts-parity"])
     assert not report.blocking, [check.summary for check in report.checks]
