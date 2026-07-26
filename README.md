@@ -9,6 +9,7 @@
   <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/badge/docs-live-2563eb" alt="Live documentation"></a>
 </p>
 
+<!-- public-claim:category.local-evidence-system -->
 Polylogue keeps AI conversations and coding-agent runs from several tools in one
 local archive. It ingests supported histories from ChatGPT, Claude and Claude
 Code, Codex, Gemini, Hermes, and other sources, then normalizes them into one
