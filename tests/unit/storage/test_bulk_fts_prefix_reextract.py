@@ -305,6 +305,58 @@ def test_bulk_fts_trigram_survives_guarded_prefix_delete(tmp_path: Path) -> None
     conn.close()
 
 
+def test_full_replace_bulk_guard_rebuilds_both_fts_surfaces(tmp_path: Path) -> None:
+    """A normal full replacement must batch both FTS surfaces, not just lineage deletes.
+
+    The production live-ingest path uses a full replacement for a changed
+    Codex JSONL.  This exercises its own tool-use delete/insert cycle and
+    proves the guard's explicit rebuild leaves messages FTS, trigram search,
+    and the guard state coherent.
+    """
+    conn = _connect(tmp_path / "index.db")
+    original = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="full-replace",
+        title="before",
+        messages=[_tool_msg("m0", Role.ASSISTANT, "before", 0, "rg before-command")],
+    )
+    session_id = write_parsed_session_to_archive(conn, original)
+    replacement = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="full-replace",
+        title="after",
+        messages=[_tool_msg("m1", Role.ASSISTANT, "after", 0, "pytest after-command")],
+    )
+    assert write_parsed_session_to_archive(conn, replacement) == session_id
+
+    assert_session_fts_exact_sync(conn, session_id)
+    assert _trigram_ghost_posting_count(conn) == 0
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
+            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%after-command%')",
+            (session_id,),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
+            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%before-command%')",
+            (session_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM derived_refresh_guard WHERE guard_name = ?",
+            (FTS_BULK_SESSION_WRITE_GUARD,),
+        ).fetchone()[0]
+        == 0
+    )
+    conn.close()
+
+
 def test_bulk_fts_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
     """A failure mid-guard must not leave the dedicated guard row set."""
     conn = _connect(tmp_path / "index.db")

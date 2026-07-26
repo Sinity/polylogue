@@ -39,11 +39,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.storage.fts.fts_lifecycle import (
-    message_fts_triggers_present_sync,
-    restore_message_fts_triggers_sync,
-    suspend_message_fts_triggers_sync,
-)
+from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
@@ -1934,8 +1930,7 @@ def _replace_full_session_messages_and_blocks(
     """Replace one session's messages/blocks wholesale.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) skips this function's
-    own scoped ``messages_fts`` delete/suspend-trigger/insert/restore dance
-    and its ``action_pairs`` refresh entirely -- see
+    own scoped derived-index refresh and its ``action_pairs`` refresh entirely -- see
     ``write_parsed_session_to_archive``'s docstring for why: a bulk-build
     caller always repopulates both surfaces archive-wide exactly once at
     readiness, so per-session maintenance here is pure waste. Ordinary
@@ -1974,10 +1969,25 @@ def _replace_full_session_messages_and_blocks(
         # docstring for why this non-bulk full-session-replace fast path must
         # keep messages_fts_identity paired with messages_fts.
         conn.execute(delete_session_identity_rows_sql(1), (session_id,))
+        # Full replacement also deletes and recreates tool-use blocks.  The
+        # trigram external-content index must be cleared while their old text
+        # is still available, before the guard below suppresses its per-row
+        # triggers.  Leaving it trigger-maintained made a live 18 MB Codex
+        # transcript spend minutes performing thousands of individual FTS5
+        # updates under the sole writer lock.
+        conn.execute(trigram_delete_session_rows_sql(), (session_id,))
         add_timing("fts_delete", t0)
         t0 = time.perf_counter()
-        suspend_message_fts_triggers_sync(conn)
-        add_timing("fts_suspend", t0)
+        # Keep the canonical triggers structurally present and gate both the
+        # message and trigram bodies for the whole replacement.  This is the
+        # same protocol used for guarded lineage rewrites, but here it covers
+        # the session's own delete and insert as well.
+        conn.execute(
+            "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+            (FTS_BULK_SESSION_WRITE_GUARD,),
+        )
+        add_timing("fts_guard", t0)
+    replacement_complete = False
     try:
         t0 = time.perf_counter()
         _clear_session_projection_rows(conn, session_id)
@@ -2015,18 +2025,22 @@ def _replace_full_session_messages_and_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
         add_timing("web_constructs", t0)
-        if use_scoped_fts_rebuild:
-            t0 = time.perf_counter()
-            conn.execute(insert_session_rows_sql(1), (session_id,))
-            # polylogue-miwv: identity-ledger companion, same chunk params as
-            # the messages_fts insert above.
-            conn.execute(insert_session_identity_rows_sql(1), (session_id,))
-            add_timing("fts_insert", t0)
+        replacement_complete = True
     finally:
         if use_scoped_fts_rebuild:
             t0 = time.perf_counter()
-            restore_message_fts_triggers_sync(conn)
-            add_timing("fts_restore", t0)
+            if replacement_complete:
+                conn.execute(insert_session_rows_sql(1), (session_id,))
+                # polylogue-miwv: identity-ledger companion, same chunk params
+                # as the messages_fts insert above.
+                conn.execute(insert_session_identity_rows_sql(1), (session_id,))
+                conn.execute(trigram_insert_session_rows_sql(), (session_id,))
+                add_timing("fts_insert", t0)
+            conn.execute(
+                "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                (FTS_BULK_SESSION_WRITE_GUARD,),
+            )
+            add_timing("fts_guard_clear", t0)
 
 
 def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
