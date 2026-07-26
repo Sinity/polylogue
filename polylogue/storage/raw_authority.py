@@ -1765,6 +1765,82 @@ def resolve_raw_authority_blocker(
     )
 
 
+#: Fixed, non-arbitrary resolution text for automatic stale-plan clearing.
+#: Distinguishes an automated clearing pass's receipts from an operator's own
+#: free-text resolution in ``raw_authority_blockers.resolution`` (searchable).
+AUTO_STALE_PLAN_RESOLUTION = (
+    "automatic: stale plan superseded by current evidence, no operator judgment required (polylogue-d7im)"
+)
+
+
+def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
+    """Clear every unresolved ``stale_plan`` blocker automatically.
+
+    polylogue-d7im: ``resolve_raw_authority_blocker``'s non-frontier
+    (``stale_plan``) branch does not consult its ``resolution`` argument for
+    anything beyond a non-empty-string check (see that function) -- it only
+    recomputes the plan from current evidence via :func:`build_raw_replay_plan`
+    (a pure read/snapshot, no writes) and tombstones the blocked state so the
+    ordinary convergence pipeline can retry the same raws. There is no
+    judgment content a human/agent could supply that changes this outcome:
+    unlike a ``frontier_judgment`` blocker (which requires an accepted
+    assertion + disposition -- unaffected, this function only ever touches
+    the non-frontier kind), a stale plan is a pure TOCTOU race between a
+    census and its apply, already recomputed unattended in the equivalent
+    crash-recovery path (:func:`recover_interrupted_raw_authority_censuses`).
+
+    This closes the actual harm a stale-plan blocker causes today:
+    ``unresolved_raw_replay_blockers`` (the gate ``repair_materialization``
+    checks every pass) counts ANY unresolved stale-plan blocker archive-wide
+    and, if nonzero, skips repair for every other raw too -- so one stale
+    plan on one component halted ordinary materialization for the whole
+    archive until someone ran the manual CLI with a throwaway
+    acknowledgment string. Called from the daemon's own periodic
+    materialization loop before ``repair_materialization``, so this replaces
+    "wait indefinitely for an operator" with "clear automatically on the
+    very next pass" -- the write is a plain tombstone-and-resolve, not a
+    re-materialization, so a component whose recomputed plan is still not
+    fully settled simply falls through to the ordinary retryable/blocked
+    paths on the next pass rather than being force-applied.
+
+    Returns the number of blockers cleared. Individual failures (a blocker
+    resolved by a concurrent caller between listing and resolving) are
+    logged and skipped rather than aborting the whole batch.
+    """
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        return 0
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
+        ).fetchone()
+        if exists is None:
+            return 0
+        blocker_ids = tuple(
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT b.blocker_id
+                FROM raw_authority_blockers AS b
+                JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
+                WHERE b.resolved_at_ms IS NULL
+                  AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
+                      'polylogue.raw-authority-frontier-plan.v1'
+                """
+            ).fetchall()
+        )
+    resolved_count = 0
+    for blocker_id in blocker_ids:
+        try:
+            resolve_raw_authority_blocker(archive_root, blocker_id, resolution=AUTO_STALE_PLAN_RESOLUTION)
+            resolved_count += 1
+        except (KeyError, RuntimeError):
+            # Already resolved by a concurrent caller, or changed underfoot
+            # between listing and resolving -- not this pass's problem.
+            continue
+    return resolved_count
+
+
 def reject_stale_raw_replay_plan(
     archive_root: Path,
     census_id: str,
@@ -1973,6 +2049,7 @@ def prune_orphaned_index_revision_seeds(
 
 
 __all__ = [
+    "AUTO_STALE_PLAN_RESOLUTION",
     "RAW_AUTHORITY_CENSUS_QUERY_PREFIX",
     "RAW_AUTHORITY_DETAIL_CHUNK_CHARS",
     "RAW_AUTHORITY_DETAIL_QUERY_PREFIX",
@@ -1983,6 +2060,7 @@ __all__ = [
     "RawReplayPlan",
     "RawReplayPlanOutcome",
     "RawReplayPlanStatus",
+    "auto_resolve_stale_plan_blockers",
     "build_raw_replay_plan",
     "build_raw_replay_plans",
     "describe_raw_authority_blocker",

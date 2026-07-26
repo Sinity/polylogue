@@ -69,6 +69,20 @@ def recover_interrupted_frontier(config: Config) -> tuple[str, ...]:
     return recover_interrupted_raw_authority_frontier(config)
 
 
+def auto_resolve_stale_plan_blockers(config: Config) -> int:
+    """Clear every unresolved stale-plan blocker automatically (polylogue-d7im).
+
+    See ``storage.raw_authority.auto_resolve_stale_plan_blockers`` for why
+    this is safe to run unattended: a stale-plan blocker requires no
+    judgment content, and this is the one non-frontier blocker kind
+    ``repair_materialization`` checks archive-wide before doing any repair
+    work at all (``unresolved_raw_replay_blockers``).
+    """
+    from polylogue.storage.raw_authority import auto_resolve_stale_plan_blockers as _auto_resolve
+
+    return _auto_resolve(config.archive_root)
+
+
 def repair_materialization(
     config: Config,
     *,
