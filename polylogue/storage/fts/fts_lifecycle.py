@@ -650,7 +650,23 @@ def repair_message_fts_index_sync(
         return
     for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
-        conn.execute(delete_session_rows_sql(len(chunk)), params)
+        # FTS5 cannot efficiently plan ``rowid IN (SELECT ...)``: even when
+        # the subquery is session-indexed, SQLite scans the entire virtual
+        # table to evaluate the delete.  First use the ordinary docsize shadow
+        # table to identify rows that are actually indexed (preserving the
+        # malformed-index guard in ``delete_session_rows_sql``), then issue
+        # direct rowid deletes that FTS5 can seek.
+        rowids = conn.execute(
+            f"""
+            SELECT b.rowid
+            FROM blocks AS b INDEXED BY idx_blocks_session_position
+            JOIN messages_fts_docsize AS d ON d.id = b.rowid
+            WHERE b.session_id IN ({", ".join("?" for _ in chunk)})
+            """,
+            params,
+        ).fetchall()
+        if rowids:
+            conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", rowids)
         conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
         conn.execute(insert_session_rows_sql(len(chunk)), params)
         conn.execute(insert_session_identity_rows_sql(len(chunk)), params)

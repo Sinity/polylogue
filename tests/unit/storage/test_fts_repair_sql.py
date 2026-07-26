@@ -67,6 +67,36 @@ def test_incremental_fts_repair_deletes_via_block_rowid(test_conn: sqlite3.Conne
     assert "SEARCH blocks USING" in plan
 
 
+def test_incremental_fts_repair_uses_direct_fts_rowid_deletes(test_conn: sqlite3.Connection) -> None:
+    """A changed session must not make FTS5 scan the whole archive to delete."""
+    restore_fts_triggers_sync(test_conn)
+    message_id = _seed_text_block(
+        test_conn,
+        native_session_id="conv-message-repair-direct-delete",
+        native_message_id="msg-message-repair-direct-delete",
+        text="direct FTS rowid delete needle",
+    )
+    session_id = "unknown-export:conv-message-repair-direct-delete"
+
+    traced: list[str] = []
+    test_conn.set_trace_callback(traced.append)
+    try:
+        repair_message_fts_index_sync(test_conn, [session_id], record_exact_snapshot=False)
+    finally:
+        test_conn.set_trace_callback(None)
+
+    delete_statements = [sql for sql in traced if sql.startswith("DELETE FROM messages_fts")]
+    assert delete_statements == [
+        "DELETE FROM messages_fts WHERE rowid = "
+        + str(
+            test_conn.execute(
+                "SELECT rowid FROM blocks WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()[0]
+        )
+    ]
+
+
 def test_global_missing_fts_sql_is_rowid_bounded() -> None:
     sql = " ".join(insert_missing_message_rows_range_sql().split())
 
