@@ -3398,7 +3398,50 @@ class ArchiveStore:
                         # genuine unrelated-head hazard this guard exists
                         # for.
                         persisted_raw = None if persisted_session is None else str(persisted_session[0])
-                        if (
+                        persisted_head_authority = (
+                            self._raw_revision_authority(persisted_raw)
+                            if persisted_raw is not None and persisted_raw not in classified_raw_ids
+                            else None
+                        )
+                        if persisted_head_authority not in (None, "quarantined"):
+                            # A resumed membership pass may have already
+                            # installed a quarantined cohort representative
+                            # into raw_revision_heads while the persisted
+                            # session still belongs to an older byte-governed
+                            # head. The persisted row is the authoritative
+                            # claim in that mixed state; yield rather than
+                            # treating its byte head as an unrelated hazard.
+                            persisted_revision = conn.execute(
+                                """
+                                SELECT source_revision, acquisition_generation,
+                                       append_end_offset, blob_size
+                                FROM raw_sessions WHERE raw_id = ?
+                                """,
+                                (persisted_raw,),
+                            ).fetchone()
+                            if persisted_revision is None or persisted_revision[0] is None:
+                                raise RuntimeError("persisted byte-governed session lacks revision evidence")
+                            self._conn.execute(
+                                """
+                                UPDATE raw_revision_heads
+                                SET accepted_raw_id = ?, accepted_source_revision = ?,
+                                    accepted_content_hash = ?, accepted_frontier_kind = 'byte',
+                                    accepted_frontier = ?, acquisition_generation = ?,
+                                    append_end_offset = ?
+                                WHERE logical_source_key = ?
+                                """,
+                                (
+                                    persisted_raw,
+                                    str(persisted_revision[0]),
+                                    persisted_session[1],
+                                    int(persisted_revision[2] or persisted_revision[3]),
+                                    int(persisted_revision[1] or 0),
+                                    persisted_revision[2],
+                                    logical_source_key,
+                                ),
+                            )
+                            yield_to_head_raw_id = persisted_raw
+                        if yield_to_head_raw_id is None and (
                             existing_raw_id not in classified_raw_ids
                             or persisted_session is None
                             or (persisted_raw != existing_raw_id and persisted_raw not in classified_raw_ids)
@@ -3445,7 +3488,7 @@ class ArchiveStore:
                         # own interrupted-pass-drift resumption (no dangling
                         # append descendant, just a stale un-nulled key) is
                         # unaffected.
-                        if accepted_raw_id != existing_raw_id:
+                        if yield_to_head_raw_id is None and accepted_raw_id != existing_raw_id:
                             classified_placeholders = ", ".join("?" for _ in classified_raw_ids) or "NULL"
                             dangling_append = conn.execute(
                                 f"""
@@ -3468,10 +3511,11 @@ class ArchiveStore:
                                     f"evidence: logical_source_key={logical_source_key!r} "
                                     f"existing_head(raw_id={existing_raw_id!r})"
                                 )
-                        self._conn.execute(
-                            "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
-                            (logical_source_key,),
-                        )
+                        if yield_to_head_raw_id is None:
+                            self._conn.execute(
+                                "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                                (logical_source_key,),
+                            )
                 if yield_to_head_raw_id is not None:
                     assert existing_head is not None
                     session_id = str(existing_head[3])
