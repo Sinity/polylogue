@@ -1558,6 +1558,7 @@ class ArchiveStore:
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts_rebuild: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         content_hash = str(session_content_hash(session))
@@ -1590,6 +1591,7 @@ class ArchiveStore:
                 manage_transaction=manage_transaction,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
+                defer_fts_rebuild=defer_fts_rebuild,
             )
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
@@ -3089,6 +3091,7 @@ class ArchiveStore:
         manage_transaction: bool = True,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state.
 
@@ -3199,6 +3202,7 @@ class ArchiveStore:
                     revision_authoritative=True,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
+                    defer_fts_rebuild=not bulk_build,
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
@@ -3211,9 +3215,23 @@ class ArchiveStore:
                 "UPDATE sessions SET content_hash = ? WHERE session_id = ?",
                 (aggregate_content_hash, session_id),
             )
-            if not bulk_build:
+            if not bulk_build and not defer_fts:
                 repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
-            assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
+            if defer_fts:
+                from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
+
+                record_fts_surface_state_sync(
+                    self._conn,
+                    surface="messages_fts",
+                    state=STALE,
+                    detail="live authoritative replay deferred targeted session FTS repair",
+                )
+            assert_session_fts_exact_sync(
+                self._conn,
+                session_id,
+                bulk_build=bulk_build,
+                allow_pending=defer_fts,
+            )
             stored = self._conn.execute(
                 "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
@@ -3293,6 +3311,7 @@ class ArchiveStore:
         manage_transaction: bool = True,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts: bool = False,
     ) -> str | None:
         """Apply one semantic member head and persist every membership decision.
 
@@ -3557,14 +3576,29 @@ class ArchiveStore:
                         revision_authoritative=True,
                         bulk_fts=bulk_fts,
                         bulk_build=bulk_build,
+                        defer_fts_rebuild=not bulk_build,
                     )
                     if stage_timings_s is not None:
                         key = f"{stage_timing_prefix}.index_parsed_write"
                         stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                     session_id = result.session_id
-                    if not bulk_build:
+                    if not bulk_build and not defer_fts:
                         repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
-                    assert_session_fts_exact_sync(self._conn, session_id, bulk_build=bulk_build)
+                    if defer_fts:
+                        from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
+
+                        record_fts_surface_state_sync(
+                            self._conn,
+                            surface="messages_fts",
+                            state=STALE,
+                            detail="live membership replay deferred targeted session FTS repair",
+                        )
+                    assert_session_fts_exact_sync(
+                        self._conn,
+                        session_id,
+                        bulk_build=bulk_build,
+                        allow_pending=defer_fts,
+                    )
                     stored = self._conn.execute(
                         "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
                     ).fetchone()
@@ -3710,6 +3744,7 @@ class ArchiveStore:
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts_rebuild: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         provider = Provider.from_string(session.source_name)
         try:
@@ -3724,6 +3759,7 @@ class ArchiveStore:
                 revision_authoritative=revision_authoritative,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
+                defer_fts_rebuild=defer_fts_rebuild,
             )
         except Exception as exc:
             self.finalize_raw_parse_state(raw_id, state=self._raw_parse_failure_state(provider, exc))

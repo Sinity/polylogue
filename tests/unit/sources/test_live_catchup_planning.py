@@ -335,6 +335,42 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     assert retry_scan_calls == [3]
 
 
+def test_catch_up_ingests_recent_source_before_historical_backlog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frozen_clock: FrozenClock,
+) -> None:
+    """A live session does not wait behind a full historical catch-up plan."""
+    root = tmp_path / "src"
+    root.mkdir()
+    historical = root / "historical.jsonl"
+    current = root / "current.jsonl"
+    historical.write_text('{"role":"user","content":"old"}\n')
+    current.write_text('{"role":"user","content":"live"}\n')
+    now = 1_800_000_000.0
+    os.utime(
+        historical, (now - live_watcher._CATCH_UP_HOT_FILE_AGE_S - 1, now - live_watcher._CATCH_UP_HOT_FILE_AGE_S - 1)
+    )
+    os.utime(current, (now, now))
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
+        (WatchSource(name="test", root=root),),
+    )
+    frozen_clock.set_time(now)
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 1)
+
+    calls: list[list[Path]] = []
+
+    async def fake_ingest_files(paths: list[Path], **_kwargs: object) -> None:
+        calls.append(paths)
+
+    watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert calls == [[current], [historical]]
+
+
 def test_catch_up_does_not_immediately_requeue_failed_paths(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()

@@ -498,10 +498,10 @@ def trigram_delete_session_rows_sql() -> str:
         INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
         SELECT 'delete', b.rowid, b.tool_detail_text
         FROM blocks AS b
+        JOIN blocks_command_trigram_docsize AS d ON d.id = b.rowid
         WHERE b.session_id = ?
           AND b.block_type = 'tool_use'
           AND b.tool_detail_text != ' '
-          AND b.rowid IN (SELECT id FROM blocks_command_trigram_docsize)
     """
 
 

@@ -37,6 +37,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -302,6 +303,116 @@ def test_bulk_fts_trigram_survives_guarded_prefix_delete(tmp_path: Path) -> None
     # content-table comparison always reports the unindexed rows as corruption
     # even on a perfectly healthy archive. The ghost-posting count above is
     # the applicable coherence proof.
+    conn.close()
+
+
+def test_full_replace_bulk_guard_rebuilds_both_fts_surfaces(tmp_path: Path) -> None:
+    """A normal full replacement must batch both FTS surfaces, not just lineage deletes.
+
+    The production live-ingest path uses a full replacement for a changed
+    Codex JSONL.  This exercises its own tool-use delete/insert cycle and
+    proves the guard's explicit rebuild leaves messages FTS, trigram search,
+    and the guard state coherent.
+    """
+    conn = _connect(tmp_path / "index.db")
+    original = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="full-replace",
+        title="before",
+        messages=[_tool_msg("m0", Role.ASSISTANT, "before", 0, "rg before-command")],
+    )
+    session_id = write_parsed_session_to_archive(conn, original)
+    replacement = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="full-replace",
+        title="after",
+        messages=[_tool_msg("m1", Role.ASSISTANT, "after", 0, "pytest after-command")],
+    )
+    assert write_parsed_session_to_archive(conn, replacement) == session_id
+
+    assert_session_fts_exact_sync(conn, session_id)
+    assert _trigram_ghost_posting_count(conn) == 0
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
+            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%after-command%')",
+            (session_id,),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
+            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%before-command%')",
+            (session_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM derived_refresh_guard WHERE guard_name = ?",
+            (FTS_BULK_SESSION_WRITE_GUARD,),
+        ).fetchone()[0]
+        == 0
+    )
+    conn.close()
+
+
+def test_deferred_full_replace_trigram_survives_catchup_repair(tmp_path: Path) -> None:
+    """Regression: a deferred full-replace must not permanently drop trigram postings.
+
+    ``defer_fts_rebuild=True`` skips the immediate re-insert (the live-ingest
+    perf path -- polylogue-6mvg) and instead marks FTS stale for the existing
+    session-scoped convergence-debt retry. ``repair_message_fts_index_sync``
+    is that catch-up's only repair call, so it must repopulate
+    ``blocks_command_trigram`` too, not just ``messages_fts``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    original = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="deferred-full-replace",
+        title="before",
+        messages=[_tool_msg("m0", Role.ASSISTANT, "before", 0, "rg before-command")],
+    )
+    session_id = write_parsed_session_to_archive(conn, original)
+    replacement = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="deferred-full-replace",
+        title="after",
+        messages=[_tool_msg("m1", Role.ASSISTANT, "after", 0, "pytest after-command")],
+    )
+    assert write_parsed_session_to_archive(conn, replacement, defer_fts_rebuild=True) == session_id
+
+    # Deferred: the replacement's trigram posting is not yet present.
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
+            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%after-command%')",
+            (session_id,),
+        ).fetchone()[0]
+        == 0
+    )
+
+    repair_message_fts_index_sync(conn, [session_id], record_exact_snapshot=False)
+
+    assert_session_fts_exact_sync(conn, session_id)
+    assert _trigram_ghost_posting_count(conn) == 0
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
+            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%after-command%')",
+            (session_id,),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
+            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%before-command%')",
+            (session_id,),
+        ).fetchone()[0]
+        == 0
+    )
     conn.close()
 
 

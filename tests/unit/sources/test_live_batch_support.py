@@ -32,6 +32,7 @@ from polylogue.sources.live.batch_support import (
     _AppendPlan,
     _AppendResult,
     _detect_provider_from_path_sample,
+    _FullIngestResult,
     _parse_path_as_session_artifact,
     encode_cursor_hash_authority,
     sha256_range_from_path,
@@ -366,8 +367,8 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index.full_replace.clear_projection_rows",
         "full.index.full_replace.messages",
         "full.index.full_replace.blocks",
-        "full.index.full_replace.fts_insert",
     }.issubset(result.stage_timings_s)
+    assert cursor.list_convergence_debt(limit=10)[0].stage == "fts"
     with sqlite3.connect(source_db) as conn:
         raw_state = conn.execute("SELECT parsed_at_ms, parse_error FROM raw_sessions").fetchone()
         assert raw_state is not None
@@ -2681,6 +2682,9 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_p
             ("message-0",),
             ("message-1",),
         ]
+        from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
+
+        repair_message_fts_index_sync(conn, ["codex-session:split-record"], record_exact_snapshot=False)
         assert conn.execute(
             "SELECT b.search_text FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid ORDER BY b.message_id"
         ).fetchall() == [("zero",), ("one",)]
@@ -3328,8 +3332,10 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
     accepted_raw_id = first_result.raw_fingerprints[first]
 
     second_result = processor._ingest_full_paths_sync([second], source_name="inbox")
-    assert second_result.failed == [second]
-    assert second_result.succeeded == []
+    # The divergent authority remains unresolved, but this source file was
+    # acquired and parsed. Its unchanged bytes must not become a retry loop.
+    assert second_result.failed == []
+    assert second_result.succeeded == [second]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE decision = 'ambiguous'").fetchone() == (
             2,
@@ -3540,10 +3546,13 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
 
     # The genuine three-way content divergence still correctly refuses to
     # pick a winner -- reunification recovers a real resolution when one
-    # exists, it does not fabricate one.
+    # exists, it does not fabricate one. The source observation itself was
+    # acquired and parsed successfully, so its cursor is complete rather than
+    # retried as a transient file failure; the durable membership decision
+    # remains ambiguous/fail-closed.
     assert by_path[str(third)] == "ambiguous"
-    assert third_result.failed == [third]
-    assert third_result.succeeded == []
+    assert third_result.failed == []
+    assert third_result.succeeded == [third]
 
 
 def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_path: Path) -> None:
@@ -3555,13 +3564,13 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
     raw-materialization conveyor, ``sources/revision_backfill.py``) and
     ``decision IN ('ambiguous', 'deferred')`` (arbitration already ran and
     concluded a real conflict that needs new evidence, not time, to
-    resolve). Only the first is a legitimate "not a failure, hand off to the
-    conveyor" hand-off; the second is a decided outcome that must surface as
-    a failure -- ``LiveBatchProcessor._ingest_full_records_archive`` uses
-    ``raw_membership_decision_pending`` (not the coarse boolean alone) at
-    both of its full-ingest injection points to make exactly this
-    distinction (batch.py, the membership-governed branch and the
-    classify_raw_revision_cohort branch).
+    resolve). The first is a conveyor hand-off; the second is a durable
+    fail-closed materialization outcome. Neither is a transient source-file
+    failure, so the live cursor must not re-read unchanged bytes for either
+    state. ``LiveBatchProcessor._ingest_full_records_archive`` uses
+    ``raw_membership_decision_pending`` (not the coarse boolean alone) to
+    preserve this distinction in its durable raw-authority state while both
+    paths remain cursor-idempotent.
 
     This is an archive-tier predicate test rather than a full watcher
     end-to-end scenario because, by construction,
@@ -3934,8 +3943,12 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
 
     result = processor._ingest_full_paths_sync([older_bundle], source_name="codex")
 
-    assert result.failed == ([] if succeeds else [older_bundle])
-    assert result.succeeded == ([older_bundle] if succeeds else [])
+    # A same-size divergent membership result is a decided authority conflict
+    # with a complete source observation; attempted replacement through live
+    # append evidence raises instead and must remain retryable.
+    cursor_complete = succeeds or bundle_texts == ("base", "different")
+    assert result.failed == ([] if cursor_complete else [older_bundle])
+    assert result.succeeded == ([older_bundle] if cursor_complete else [])
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(
@@ -4003,8 +4016,12 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
     assert processor._ingest_full_paths_sync([bundle], source_name="codex").failed == []
     divergent_result = processor._ingest_full_paths_sync([divergent], source_name="codex")
 
-    assert divergent_result.succeeded == []
-    assert divergent_result.failed == [divergent]
+    # Divergence remains fail-closed for the materialized head, but the source
+    # bytes were acquired and parsed successfully. Treating this as a cursor
+    # success prevents each daemon restart from reprocessing the same decided
+    # conflict until the file actually changes.
+    assert divergent_result.succeeded == [divergent]
+    assert divergent_result.failed == []
     with sqlite3.connect(index_db) as conn:
         assert conn.execute(
             """
@@ -4290,6 +4307,54 @@ def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path)
     with cursor._connect() as conn:
         rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
     assert rows == [("raw-old",)]
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_skips_convergence_without_session_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cursor-only raw observation must not rerun global workflow materializers."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "unchanged.json"
+    path.write_text("{}", encoding="utf-8")
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
+        (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    convergence_calls: list[list[Path]] = []
+
+    async def fake_full_ingest(
+        paths: list[Path], *, source_name: str, heartbeat: object | None = None, attempt_id: str | None = None
+    ) -> _FullIngestResult:
+        del source_name, heartbeat, attempt_id
+        return _FullIngestResult(
+            succeeded=paths,
+            failed=[],
+            source_payload_read_bytes=0,
+            raw_fingerprints={path: "raw-unchanged"},
+            changed_session_count=0,
+        )
+
+    def record_convergence(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        convergence_calls.append(paths)
+        return set(paths), 0.0, {}, []
+
+    monkeypatch.setattr(processor, "_append_plan", lambda _path, *, cursor: None)
+    monkeypatch.setattr(processor, "_ingest_full_paths", fake_full_ingest)
+    monkeypatch.setattr(processor, "_converge_paths", record_convergence)
+    monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(processor, "_compact_superseded_raw_snapshots", lambda _paths: None)
+
+    metrics = await processor.ingest_files([path], emit_event=False)
+
+    assert convergence_calls == []
+    assert metrics.succeeded_file_count == 1
+    assert metrics.changed_session_count == 0
 
 
 @pytest.mark.asyncio

@@ -39,6 +39,8 @@ from polylogue.storage.fts.sql import (
     message_identity_mismatch_sql,
     repair_all_message_identity_rows_sql,
     repair_message_identity_rows_range_sql,
+    trigram_delete_session_rows_sql,
+    trigram_insert_session_rows_sql,
 )
 
 _chunked = chunked
@@ -650,10 +652,35 @@ def repair_message_fts_index_sync(
         return
     for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
-        conn.execute(delete_session_rows_sql(len(chunk)), params)
+        # FTS5 cannot efficiently plan ``rowid IN (SELECT ...)``: even when
+        # the subquery is session-indexed, SQLite scans the entire virtual
+        # table to evaluate the delete.  First use the ordinary docsize shadow
+        # table to identify rows that are actually indexed (preserving the
+        # malformed-index guard in ``delete_session_rows_sql``), then issue
+        # direct rowid deletes that FTS5 can seek.
+        rowids = conn.execute(
+            f"""
+            SELECT b.rowid
+            FROM blocks AS b INDEXED BY idx_blocks_session_position
+            JOIN messages_fts_docsize AS d ON d.id = b.rowid
+            WHERE b.session_id IN ({", ".join("?" for _ in chunk)})
+            """,
+            params,
+        ).fetchall()
+        if rowids:
+            conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", rowids)
         conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
         conn.execute(insert_session_rows_sql(len(chunk)), params)
         conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
+        # A deferred full-replace deletes a session's blocks_command_trigram
+        # postings at write time (using the old block text) but skips the
+        # matching reinsert, so this repair is the only catch-up: reissue the
+        # delete (a no-op unless something re-populated it) then repopulate
+        # from the current blocks table. Trigram SQL is session-scoped, not
+        # chunked like the calls above.
+        for session_id in chunk:
+            conn.execute(trigram_delete_session_rows_sql(), (session_id,))
+            conn.execute(trigram_insert_session_rows_sql(), (session_id,))
     if not record_exact_snapshot:
         return
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync

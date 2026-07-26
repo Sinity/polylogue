@@ -518,13 +518,20 @@ async def _run_drive_source_catchup_safely() -> int:
         return 0
 
 
-async def _periodic_drive_source_catchup() -> None:
+async def _periodic_drive_source_catchup(
+    *,
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
     """Periodically converge remote Drive sources such as AiStudio exports.
 
-    The first pass runs immediately in the background: Drive catch-up is
-    serial network I/O and must never sit between daemon startup and the
-    local convergence loops or the live watcher.
+    The first pass normally runs immediately in the background.  A live
+    watcher supplies ``catch_up_complete`` so fresh local session evidence
+    gets the single archive writer before remote download/index work.  The
+    gate is deliberately absent for maintenance-only callers.
     """
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
+
     while True:
         coordinator = daemon_write_coordinator()
         changed = await coordinator.run("maintenance.drive_catchup", _run_drive_source_catchup_safely)
@@ -778,16 +785,27 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     return True
 
 
-async def _periodic_raw_materialization_convergence() -> None:
+async def _periodic_raw_materialization_convergence(
+    *,
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
     """Continuously converge durable raw source rows into the index tier.
 
-    Deliberately ungated on watcher catch-up: the candidates live in the
-    local durable ``source.db``, so materializing them has no acquisition
-    precondition. When a backlog exists (e.g. after an index rebuild) the
-    loop bursts through bounded passes back-to-back — yielding the writer
-    between passes — instead of waiting a full interval per pass, which
-    would stretch a large drain into weeks.
+    A daemon-owned live watcher supplies ``catch_up_complete``.  Its initial
+    acquisition must get the single writer first: a raw-frontier census can
+    inspect the entire durable archive before its bounded replay begins, and
+    otherwise delays fresh Codex/Claude/browser evidence behind unrelated
+    recovery work.  Callers without a watcher deliberately pass no gate, so
+    maintenance-only use still begins immediately.
+
+    Once the gate is open, a backlog (e.g. after an index rebuild) bursts
+    through bounded passes back-to-back — yielding the writer between passes
+    — instead of waiting a full interval per pass, which would stretch a large
+    drain into weeks.
     """
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
+
     census_mode = False
     while True:
         if _browser_capture_spool_has_pending_files():
@@ -2029,7 +2047,7 @@ async def run_daemon_services(
                 logger.info("daemon: configured source catch-up disabled for this run")
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
             periodic_loops = [
-                _periodic_raw_materialization_convergence(),
+                _periodic_raw_materialization_convergence(catch_up_complete=catch_up_complete_gate),
                 _periodic_session_insight_convergence_after(catch_up_complete_gate),
                 _periodic_convergence_check(sources, catch_up_complete=catch_up_complete_gate),
                 _periodic_wal_checkpoint(),
@@ -2044,7 +2062,7 @@ async def run_daemon_services(
                 periodic_fts_identity_drift_recompute(catch_up_complete=catch_up_complete_gate),
             ]
             if enable_source_catchup:
-                periodic_loops.append(_periodic_drive_source_catchup())
+                periodic_loops.append(_periodic_drive_source_catchup(catch_up_complete=catch_up_complete_gate))
             maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
             _db = _active_index_db_path()
             # While the watcher's initial source catch-up is still running,

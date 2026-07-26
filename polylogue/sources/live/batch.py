@@ -220,14 +220,14 @@ def _captured_jsonl_ends_at_record_boundary(
 @dataclass(slots=True)
 class _ArchiveFullWriteResult:
     raw_ids: dict[str, str] = field(default_factory=dict)
-    # polylogue-emx2: a raw whose membership census completed but whose
-    # authority decision is still pending (arbitration deferred to the async
-    # raw-materialization conveyor) is a hand-off, not a failure. Bytes are
-    # durably acquired; only the classification decision is outstanding.
-    # Tracked separately from raw_ids so the aggregation layer in
-    # _ingest_full_paths_sync can treat re-observation of these files as
-    # idempotent (cursor succeeded, no retry churn) instead of silently
-    # counting them as full-ingest failures with no exception ever raised.
+    # A raw whose membership census does not produce an accepted session is
+    # still a durably acquired, successfully parsed source observation. The
+    # decision can be pending for the materialization conveyor or already
+    # resolved as ambiguous/deferred. Neither state is a transient source-file
+    # failure: retrying identical bytes burns the live catch-up budget without
+    # supplying new authority evidence. Track it separately from ``raw_ids``
+    # so the cursor records the observation as complete while the durable raw
+    # membership state remains queryable and a later file change reopens it.
     deferred_raw_ids: dict[str, str] = field(default_factory=dict)
     session_ids: list[str] = field(default_factory=list)
     session_count: int = 0
@@ -565,14 +565,21 @@ class LiveBatchProcessor:
                     current_source=source_name,
                     current_path=source_paths[0] if source_paths else None,
                 )
-                _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
-                    "watcher.live_ingest.full_convergence",
-                    self._converge_paths,
-                    full_result.succeeded,
-                )
-                convergence_time_s += elapsed
-                release_process_memory()
-                _accumulate_stage_timings(stage_timings, timings)
+                convergence_debt: list[ConvergenceDebt] = []
+                if full_result.changed_session_count:
+                    _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
+                        "watcher.live_ingest.full_convergence",
+                        self._converge_paths,
+                        full_result.succeeded,
+                    )
+                    convergence_time_s += elapsed
+                    release_process_memory()
+                    _accumulate_stage_timings(stage_timings, timings)
+                elif full_result.succeeded:
+                    logger.info(
+                        "live.watcher: skipping full convergence for %d source observation(s) without session changes",
+                        len(full_result.succeeded),
+                    )
                 debt_by_source_path = debt_by_path(convergence_debt)
                 for path in full_result.succeeded:
                     succeeded_paths.add(path)
@@ -1831,6 +1838,13 @@ class LiveBatchProcessor:
                                     acquired_at_ms=acquired_at_ms,
                                     stage_timings_s=record_timings,
                                     stage_timing_prefix="full",
+                                    defer_fts=True,
+                                )
+                                self._cursor.record_convergence_debt(
+                                    stage="fts",
+                                    subject_type="session_id",
+                                    subject_id=session_id,
+                                    error="live full ingest deferred FTS to preserve writer availability",
                                 )
                                 record_session_ids.append(session_id)
                                 record_session_count = 1
@@ -1940,17 +1954,19 @@ class LiveBatchProcessor:
                         # raw yet. Not a failure; see deferred_raw_ids.
                         result.deferred_raw_ids[record.raw_id] = record_raw_id
                     else:
-                        # Decision is 'ambiguous'/'deferred' -- arbitration
-                        # already ran and concluded a genuine, unresolved
-                        # conflict. That is a decided outcome, not pending
-                        # state, so it must surface as a failure (fail-closed).
-                        # Leave this raw out of both raw_ids and
-                        # deferred_raw_ids so the caller's aggregation counts
-                        # it as a real failure, with a log line so the cause is
-                        # diagnosable (unlike the pre-fix silent mismark).
-                        logger.warning(
-                            "live.watcher: membership decision unresolved (ambiguous/deferred) for %s "
-                            "raw=%s -- surfacing as failed, not deferred",
+                        # A decided ambiguous/deferred classification is
+                        # fail-closed for materialization, but it is not a
+                        # failed acquisition or parse. Re-running the exact
+                        # same source path cannot resolve a content conflict;
+                        # it only makes every daemon restart re-read the same
+                        # historical bytes. Preserve the durable unresolved
+                        # decision and make the live cursor idempotent. Any
+                        # changed observation returns through full ingest and
+                        # may supply the evidence needed to arbitrate it.
+                        result.deferred_raw_ids[record.raw_id] = record_raw_id
+                        logger.info(
+                            "live.watcher: membership decision remains unresolved for %s "
+                            "raw=%s; preserving durable authority debt without retrying unchanged bytes",
                             record.source_path,
                             source_raw_id,
                         )
@@ -2123,9 +2139,16 @@ class LiveBatchProcessor:
                 acquired_at_ms=acquired_at_ms,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix="full",
+                defer_fts=True,
             )
             if membership_session_id is not None:
                 session_ids.append(membership_session_id)
+                self._cursor.record_convergence_debt(
+                    stage="fts",
+                    subject_type="session_id",
+                    subject_id=membership_session_id,
+                    error="live membership ingest deferred FTS to preserve writer availability",
+                )
                 session_count += 1
                 message_count += len(member_sessions[classification.accepted_raw_ids[-1]].messages)
         return (
