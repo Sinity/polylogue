@@ -284,6 +284,7 @@ def write_parsed_session_to_archive(
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    defer_fts_rebuild: bool = False,
     prepared: PreparedSessionRows | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
@@ -328,6 +329,11 @@ def write_parsed_session_to_archive(
     daemon writes (and ``bulk_fts=True`` used alone, e.g. in
     ``tests/unit/storage/test_bulk_fts_prefix_reextract.py``) keep those
     surfaces exactly in sync after every write, unchanged.
+
+    ``defer_fts_rebuild`` is for an authoritative raw-revision replay that
+    owns one targeted repair and exactness proof after its writes. It avoids
+    rebuilding the same session's FTS surfaces twice in the same transaction.
+    Direct callers retain the immediate-ready default.
     """
     t0 = time.perf_counter()
 
@@ -560,6 +566,7 @@ def write_parsed_session_to_archive(
                     stage_timings_s=stage_timings_s,
                     stage_timing_prefix=stage_timing_prefix,
                     bulk_build=bulk_build,
+                    defer_fts_rebuild=defer_fts_rebuild,
                     prepared=prepared_rows_to_use,
                 )
                 add_timing("index.full_replace", t0)
@@ -1925,6 +1932,7 @@ def _replace_full_session_messages_and_blocks(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     bulk_build: bool = False,
+    defer_fts_rebuild: bool = False,
     prepared: PreparedSessionRows | None = None,
 ) -> None:
     """Replace one session's messages/blocks wholesale.
@@ -2029,7 +2037,7 @@ def _replace_full_session_messages_and_blocks(
     finally:
         if use_scoped_fts_rebuild:
             t0 = time.perf_counter()
-            if replacement_complete:
+            if replacement_complete and not defer_fts_rebuild:
                 conn.execute(insert_session_rows_sql(1), (session_id,))
                 # polylogue-miwv: identity-ledger companion, same chunk params
                 # as the messages_fts insert above.

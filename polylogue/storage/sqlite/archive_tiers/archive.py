@@ -1558,6 +1558,7 @@ class ArchiveStore:
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts_rebuild: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         content_hash = str(session_content_hash(session))
@@ -1590,6 +1591,7 @@ class ArchiveStore:
                 manage_transaction=manage_transaction,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
+                defer_fts_rebuild=defer_fts_rebuild,
             )
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
@@ -3199,6 +3201,7 @@ class ArchiveStore:
                     revision_authoritative=True,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
+                    defer_fts_rebuild=not bulk_build,
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
@@ -3710,6 +3713,7 @@ class ArchiveStore:
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        defer_fts_rebuild: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         provider = Provider.from_string(session.source_name)
         try:
@@ -3724,6 +3728,7 @@ class ArchiveStore:
                 revision_authoritative=revision_authoritative,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
+                defer_fts_rebuild=defer_fts_rebuild,
             )
         except Exception as exc:
             self.finalize_raw_parse_state(raw_id, state=self._raw_parse_failure_state(provider, exc))
