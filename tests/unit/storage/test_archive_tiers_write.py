@@ -3838,3 +3838,282 @@ def test_read_archive_session_page_offset_beyond_total_returns_empty_window(tmp_
 
     assert page.messages == ()
     assert page.total_message_count == 10
+
+
+def _session_timestamps(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT created_at_ms, updated_at_ms, sort_key_ms FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if not isinstance(row, sqlite3.Row):
+        raise TypeError(f"expected sqlite3.Row, got {type(row).__name__}")
+    return row
+
+
+def test_writer_derives_session_timestamps_from_message_evidence_when_provider_omits_them(
+    tmp_path: Path,
+) -> None:
+    """polylogue-m3p9: no session-level created_at/updated_at from the provider.
+
+    79% of the live archive (65,946/83,198 sessions) had NULL
+    created_at_ms/updated_at_ms because the writer only ever looked at
+    ``session.created_at``/``session.updated_at``. The fix falls back to
+    min/max message ``occurred_at_ms`` -- prove it end to end through the
+    real ``write_parsed_session_to_archive`` INSERT/ON CONFLICT SQL, not a
+    reimplementation of the derivation logic.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="no-session-timestamps",
+        title="derive from messages",
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                text="first",
+                timestamp="2026-02-01T10:00:00+00:00",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            ),
+            ParsedMessage(
+                provider_message_id="a1",
+                role=Role.ASSISTANT,
+                text="middle",
+                timestamp="2026-02-01T10:05:00+00:00",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="middle")],
+            ),
+            ParsedMessage(
+                provider_message_id="a2",
+                role=Role.ASSISTANT,
+                text="last",
+                timestamp="2026-02-01T10:09:30+00:00",
+                position=2,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="last")],
+            ),
+        ],
+    )
+    assert session.created_at is None
+    assert session.updated_at is None
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    row = _session_timestamps(conn, session_id)
+
+    expected_min = 1_769_940_000_000  # 2026-02-01T10:00:00Z
+    expected_max = 1_769_940_570_000  # 2026-02-01T10:09:30Z
+    assert row["created_at_ms"] == expected_min
+    assert row["updated_at_ms"] == expected_max
+    assert row["sort_key_ms"] == expected_max
+
+
+def test_writer_does_not_override_provider_supplied_session_timestamps_with_derived_values(
+    tmp_path: Path,
+) -> None:
+    """Provider-supplied session timestamps always win over message-derived ones."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="has-session-timestamps",
+        title="provider timestamps win",
+        created_at="2020-01-01T00:00:00+00:00",
+        updated_at="2020-01-01T00:00:05+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                text="first",
+                # Deliberately far outside the provider's session window --
+                # if derivation ever won this would surface immediately.
+                timestamp="2026-02-01T10:00:00+00:00",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            ),
+            ParsedMessage(
+                provider_message_id="a1",
+                role=Role.ASSISTANT,
+                text="last",
+                timestamp="2026-02-01T10:09:30+00:00",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="last")],
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    row = _session_timestamps(conn, session_id)
+
+    assert row["created_at_ms"] == 1_577_836_800_000  # 2020-01-01T00:00:00Z
+    assert row["updated_at_ms"] == 1_577_836_805_000  # 2020-01-01T00:00:05Z
+    assert row["sort_key_ms"] == 1_577_836_805_000
+
+
+def test_writer_leaves_session_timestamps_null_when_no_timestamp_evidence_exists(
+    tmp_path: Path,
+) -> None:
+    """A genuinely undatable session (no session or message timestamps) stays NULL.
+
+    Derivation must not backdate to the ingest wall clock -- an absent
+    timestamp is honestly NULL, not a fabricated "now".
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="no-timestamps-anywhere",
+        title="undatable",
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                text="hello",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+            ),
+            ParsedMessage(
+                provider_message_id="a1",
+                role=Role.ASSISTANT,
+                text="hi",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    row = _session_timestamps(conn, session_id)
+
+    assert row["created_at_ms"] is None
+    assert row["updated_at_ms"] is None
+    assert row["sort_key_ms"] is None
+
+
+def test_writer_derives_prefix_sharing_child_created_at_from_full_transcript(
+    tmp_path: Path,
+) -> None:
+    """A prefix-sharing child's derived created_at_ms reflects the whole
+    conversation, not just its divergent tail (#2467 lineage normalization
+    interaction, polylogue-m3p9).
+
+    The child's own parsed payload carries the full transcript (shared
+    prefix + divergent tail) even though only the tail is written to
+    ``messages`` -- derivation must use the pre-slice message set so the
+    earliest timestamp (in the shared prefix) is not lost.
+    """
+    conn = _connect(tmp_path / "index.db")
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="ts-parent",
+        title="parent",
+        messages=[
+            ParsedMessage(
+                provider_message_id="p0",
+                role=Role.USER,
+                text="hello",
+                timestamp="2026-03-01T00:00:00+00:00",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+            ),
+            ParsedMessage(
+                provider_message_id="p1",
+                role=Role.ASSISTANT,
+                text="hi there",
+                timestamp="2026-03-01T00:01:00+00:00",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi there")],
+            ),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="ts-child",
+        title="child",
+        parent_session_provider_id="ts-parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            ParsedMessage(
+                provider_message_id="p0",
+                role=Role.USER,
+                text="hello",
+                timestamp="2026-03-01T00:00:00+00:00",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+            ),
+            ParsedMessage(
+                provider_message_id="p1",
+                role=Role.ASSISTANT,
+                text="hi there",
+                timestamp="2026-03-01T00:01:00+00:00",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi there")],
+            ),
+            ParsedMessage(
+                provider_message_id="cx",
+                role=Role.USER,
+                text="child diverges here",
+                timestamp="2026-03-01T00:05:00+00:00",
+                position=2,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child diverges here")],
+            ),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    page = read_archive_session_page(conn, child_id, limit=10, offset=0)
+    assert page.lineage_inheritance == "prefix-sharing"
+
+    row = _session_timestamps(conn, child_id)
+
+    assert row["created_at_ms"] == 1_772_323_200_000  # 2026-03-01T00:00:00Z -- from the shared prefix
+    assert row["updated_at_ms"] == 1_772_323_500_000  # 2026-03-01T00:05:00Z -- from the divergent tail
+
+
+def test_merge_append_advances_derived_updated_at_ms_from_new_message_evidence(
+    tmp_path: Path,
+) -> None:
+    """An incremental extend (merge_append) can advance updated_at_ms from
+    the newly appended messages' own timestamps, without a provider-level
+    session timestamp on either write.
+    """
+    conn = _connect(tmp_path / "index.db")
+    initial = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="append-derives-updated-at",
+        title="initial",
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                text="first",
+                timestamp="2026-04-01T00:00:00+00:00",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            ),
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, initial)
+    first_row = _session_timestamps(conn, session_id)
+    assert first_row["created_at_ms"] == 1_775_001_600_000  # 2026-04-01T00:00:00Z
+    assert first_row["updated_at_ms"] == 1_775_001_600_000
+
+    appended = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="append-derives-updated-at",
+        title="initial",
+        messages=[
+            ParsedMessage(
+                provider_message_id="a1",
+                role=Role.ASSISTANT,
+                text="later reply",
+                timestamp="2026-04-01T01:30:00+00:00",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="later reply")],
+            ),
+        ],
+    )
+    write_parsed_session_to_archive(conn, appended, merge_append=True)
+    second_row = _session_timestamps(conn, session_id)
+
+    # created_at_ms is untouched (COALESCE keeps the already-set value);
+    # updated_at_ms advances to the newly appended message's timestamp.
+    assert second_row["created_at_ms"] == 1_775_001_600_000
+    assert second_row["updated_at_ms"] == 1_775_007_000_000  # 2026-04-01T01:30:00Z

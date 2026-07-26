@@ -73,6 +73,7 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+from polylogue.storage.session_timestamp_backfill import BackfillResult as SessionTimestampBackfillResult
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 
@@ -6665,9 +6666,53 @@ def repair_message_type_backfill(config: Config, dry_run: bool = False) -> Repai
     return _to_repair_result(run_backfill(config, dry_run=dry_run))
 
 
+def _session_timestamp_backfill_to_repair_result(result: SessionTimestampBackfillResult) -> RepairResult:
+    """Adapt a ``session_timestamp_backfill.BackfillResult`` to the shared
+    ``RepairResult`` shape.
+
+    Structurally identical to ``_to_repair_result``, but that helper is
+    nominally typed to ``message_type_backfill.BackfillResult`` -- kept
+    separate rather than widening its signature to a shared protocol for
+    two one-off dataclasses.
+    """
+    return RepairResult(
+        name=result.name,
+        category=result.category,
+        destructive=result.destructive,
+        repaired_count=result.repaired_count,
+        success=result.success,
+        detail=result.detail,
+    )
+
+
+def preview_session_timestamp_backfill(*, count: int) -> RepairResult:
+    """Preview handler for the #m3p9 session-timestamp backfill.
+
+    Thin shim over ``session_timestamp_backfill.preview_backfill`` so the
+    repair orchestrator's preview dispatch keeps working.
+    """
+    from polylogue.storage.session_timestamp_backfill import preview_backfill
+
+    return _session_timestamp_backfill_to_repair_result(preview_backfill(count=count))
+
+
+def repair_session_timestamp_backfill(config: Config, dry_run: bool = False) -> RepairResult:
+    """Derive ``sessions.created_at_ms``/``updated_at_ms`` from message
+    evidence for rows ingested before the write path fell back to it.
+
+    Delegates to ``storage.session_timestamp_backfill.run_backfill``; the
+    implementation lives there to keep this module under its file-size
+    budget (see ``docs/plans/file-size-budgets.yaml``).
+    """
+    from polylogue.storage.session_timestamp_backfill import run_backfill
+
+    return _session_timestamp_backfill_to_repair_result(run_backfill(config, dry_run=dry_run))
+
+
 PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
     "message_type_backfill": preview_message_type_backfill,
+    "session_timestamp_backfill": preview_session_timestamp_backfill,
     "orphaned_messages": preview_orphaned_messages,
     "empty_sessions": preview_empty_sessions,
     "orphaned_attachments": preview_orphaned_attachments,
@@ -6679,6 +6724,7 @@ PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
+    "session_timestamp_backfill": repair_session_timestamp_backfill,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,

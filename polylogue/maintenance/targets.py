@@ -227,6 +227,18 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         doctor_repair_operation="backfill-message-type",
     ),
     MaintenanceTargetSpec(
+        name="session_timestamp_backfill",
+        mode=MaintenanceTargetMode.REPAIR,
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        description=(
+            "Derive sessions.created_at_ms/updated_at_ms from message evidence for rows ingested "
+            "before the write path fell back to it (polylogue-m3p9)."
+        ),
+        include_preview_when_ready=True,
+        doctor_repair_operation="backfill-session-timestamps",
+    ),
+    MaintenanceTargetSpec(
         name="orphaned_messages",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,

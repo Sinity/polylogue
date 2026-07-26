@@ -349,7 +349,41 @@ def write_parsed_session_to_archive(
     origin = origin_from_provider(session.source_name)
     native_id = session.provider_session_id
     session_id = archive_session_id(origin.value, native_id)
-    incoming_freshness_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    # This session's own rows are about to be rewritten; drop any stale memoized
+    # own-signatures so the batch cache never serves pre-write rows for it.
+    if signature_cache is not None:
+        signature_cache.pop(session_id, None)
+    messages = _normalized_messages(session.messages)
+    # polylogue-m3p9: providers that carry no session-level created_at/updated_at
+    # (Codex, many Claude Code sessions, ...) previously left
+    # sessions.created_at_ms/updated_at_ms permanently NULL for 79% of the live
+    # archive, silently excluding those sessions from `since:` filters, recency
+    # ordering, and --by year/month histograms. Fall back to message evidence
+    # (min/max message ``occurred_at_ms``) computed over THIS write's full
+    # parsed message set, i.e. before any prefix-tail slicing below: a
+    # prefix-sharing child's derived created_at_ms should reflect the whole
+    # conversation's start, not just its divergent tail. The derived max is
+    # correct either way -- the newest message always survives slicing into
+    # the tail. Provider-supplied session timestamps always win; this is
+    # fallback only, applied identically on merge-append (where ``messages``
+    # is just the newly appended tail, so the derived max naturally advances
+    # updated_at_ms with each append and the ON CONFLICT COALESCE below keeps
+    # the already-set created_at_ms untouched).
+    derived_created_at_ms, derived_updated_at_ms = _derive_session_timestamps_from_messages(messages)
+    session_created_at_ms = _timestamp_ms(session.created_at)
+    if session_created_at_ms is None:
+        session_created_at_ms = derived_created_at_ms
+    session_updated_at_ms = _timestamp_ms(session.updated_at)
+    if session_updated_at_ms is None:
+        session_updated_at_ms = derived_updated_at_ms
+    # incoming_freshness_ms now reflects the same fallback: previously a
+    # provider that omitted both session timestamps produced
+    # incoming_freshness_ms=None, which unconditionally bypassed the
+    # skip-stale-replace check below (freshness "unknown"). With derivation,
+    # these sessions get a real freshness signal from their own message
+    # evidence, so a genuinely older/stale replay of such a session is now
+    # correctly skipped instead of always winning.
+    incoming_freshness_ms = session_updated_at_ms or session_created_at_ms
     if not force_replace and not merge_append and incoming_freshness_ms is not None:
         row = conn.execute(
             "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
@@ -359,11 +393,6 @@ def write_parsed_session_to_archive(
         if existing_updated_at_ms is not None and incoming_freshness_ms < existing_updated_at_ms:
             add_timing("index.skip_stale_replace", t0)
             return session_id
-    # This session's own rows are about to be rewritten; drop any stale memoized
-    # own-signatures so the batch cache never serves pre-write rows for it.
-    if signature_cache is not None:
-        signature_cache.pop(session_id, None)
-    messages = _normalized_messages(session.messages)
     event_duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     # Lineage normalization (#2467): when this is a prefix-sharing child whose
     # parent is already in the archive, drop the inherited prefix and keep only
@@ -518,8 +547,8 @@ def write_parsed_session_to_archive(
                     session_counts["authored_user_word_count"],
                     session_counts["assistant_word_count"],
                     session_content_hash,
-                    _timestamp_ms(session.created_at),
-                    _timestamp_ms(session.updated_at),
+                    session_created_at_ms,
+                    session_updated_at_ms,
                     force_replace,
                 ),
             )
@@ -5020,6 +5049,25 @@ def _word_count(text: str | None) -> int:
 def _timestamp_ms(value: str | None) -> int | None:
     parsed = parse_timestamp(value) if value else None
     return int(parsed.timestamp() * 1000) if parsed is not None else None
+
+
+def _derive_session_timestamps_from_messages(
+    messages: Sequence[ParsedMessage],
+) -> tuple[int | None, int | None]:
+    """Fallback (created_at_ms, updated_at_ms) from message evidence (#m3p9).
+
+    Called only as a fallback when the provider payload carries no
+    session-level ``created_at``/``updated_at`` (or they fail to parse) --
+    see the call site in ``write_parsed_session_to_archive``. Returns the
+    min/max of ``ParsedMessage.occurred_at_ms`` across ``messages``, or
+    ``(None, None)`` when no message carries a timestamp either (a
+    genuinely undatable session stays NULL, it is not backdated to the
+    ingest wall clock).
+    """
+    occurred_at_ms_values = [m.occurred_at_ms for m in messages if m.occurred_at_ms is not None]
+    if not occurred_at_ms_values:
+        return None, None
+    return min(occurred_at_ms_values), max(occurred_at_ms_values)
 
 
 def _event_summary(event: ParsedSessionEvent) -> str | None:

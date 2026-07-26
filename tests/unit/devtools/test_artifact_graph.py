@@ -48,8 +48,8 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "validation-lane:live-insights-debt" in rendered
     assert "maintenance session_insights:" in rendered
     assert (
-        "uncovered maintenance targets: empty_sessions, message_type_backfill, orphaned_attachments, orphaned_messages, superseded_raw_snapshots"
-        in rendered
+        "uncovered maintenance targets: empty_sessions, message_type_backfill, orphaned_attachments, "
+        "orphaned_messages, session_timestamp_backfill, superseded_raw_snapshots" in rendered
     )
     assert "uncovered artifacts: thread_results, tool_usage_results" in rendered
 
@@ -194,6 +194,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_messages",
+        "session_timestamp_backfill",
         "superseded_raw_snapshots",
     ]
     assert payload["scenario_coverage"]["paths"]["session-insight-status-query-loop"]["complete"] is True
@@ -205,11 +206,24 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["session-insight-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_artifacts"] == ["thread_results", "tool_usage_results"]
     assert payload["scenario_coverage"]["uncovered_operations"] == [
+        "mutate-add-mark",
         "mutate-add-tag",
         "mutate-bulk-tag-sessions",
+        "mutate-delete-annotation",
         "mutate-delete-metadata",
+        "mutate-delete-recall-pack",
+        "mutate-delete-saved-view",
         "mutate-delete-session",
+        "mutate-delete-workspace",
+        "mutate-identity-reset",
+        "mutate-remove-mark",
         "mutate-remove-tag",
+        "mutate-resolve-raw-authority-blocker",
+        "mutate-save-annotation",
+        "mutate-save-recall-pack",
+        "mutate-save-saved-view",
+        "mutate-save-workspace",
+        "mutate-session-excision",
         "mutate-set-metadata",
         "query-threads",
         "query-tool-usage",
