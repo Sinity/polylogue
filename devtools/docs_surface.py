@@ -216,6 +216,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Release Checklist", "release.md", "Cut-time packaging, installed-artifact, and publish checks.", "operations"
     ),
+    _entry(
+        "Tracker Authority",
+        "tracker-authority.md",
+        "GitHub and Beads authority split, and the reconciliation script that checks it.",
+        "operations",
+    ),
     # Evidence and product
     _entry(
         "Demos and Proofs",
