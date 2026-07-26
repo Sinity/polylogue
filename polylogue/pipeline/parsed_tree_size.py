@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from polylogue.sources.parsers.base import ParsedSession
 
@@ -146,11 +146,41 @@ def estimate_parsed_tree_bytes(sessions: Sequence[ParsedSession]) -> int:
     )
 
 
+def _mountinfo_unescape(value: str) -> str:
+    """Decode the octal escapes used for paths in proc mountinfo."""
+
+    return value.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")
+
+
+def _cgroup_v1_memory_mounts(proc_mountinfo_path: Path) -> tuple[tuple[Path, PurePosixPath], ...]:
+    """Return cgroup-v1 mountpoint/root pairs that expose the memory controller."""
+
+    try:
+        mountinfo = proc_mountinfo_path.read_text().splitlines()
+    except OSError:
+        return ()
+
+    mounts: list[tuple[Path, PurePosixPath]] = []
+    for line in mountinfo:
+        before_separator, separator, after_separator = line.partition(" - ")
+        if not separator:
+            continue
+        left, right = before_separator.split(), after_separator.split()
+        if len(left) < 5 or len(right) < 3 or right[0] != "cgroup":
+            continue
+        controllers = {option for field in right[2:] for option in field.split(",")}
+        if "memory" not in controllers:
+            continue
+        mounts.append((Path(_mountinfo_unescape(left[4])), PurePosixPath(_mountinfo_unescape(left[3]))))
+    return tuple(mounts)
+
+
 def _cgroup_memory_limit_paths(
     *,
     cgroup_v2_root: Path = Path("/sys/fs/cgroup"),
     cgroup_v1_root: Path = Path("/sys/fs/cgroup/memory"),
     proc_cgroup_path: Path = Path("/proc/self/cgroup"),
+    proc_mountinfo_path: Path = Path("/proc/self/mountinfo"),
 ) -> tuple[Path, ...]:
     """Return memory-limit files from this process's cgroup ancestry.
 
@@ -171,21 +201,34 @@ def _cgroup_memory_limit_paths(
             hierarchy, controllers, relative_path = membership.split(":", 2)
         except ValueError:
             continue
+        mounts: tuple[tuple[Path, PurePosixPath, str], ...]
         if hierarchy == "0" and not controllers:
-            root, limit_name = cgroup_v2_root, "memory.max"
+            mounts = ((cgroup_v2_root, PurePosixPath("/"), "memory.max"),)
         elif "memory" in controllers.split(","):
-            root, limit_name = cgroup_v1_root, "memory.limit_in_bytes"
+            mounts = (
+                (cgroup_v1_root, PurePosixPath("/"), "memory.limit_in_bytes"),
+                *(
+                    (mount, mount_root, "memory.limit_in_bytes")
+                    for mount, mount_root in _cgroup_v1_memory_mounts(proc_mountinfo_path)
+                ),
+            )
         else:
             continue
-        parts = tuple(part for part in relative_path.split("/") if part)
-        if any(part in {".", ".."} for part in parts):
-            continue
-        current = root.joinpath(*parts)
-        while True:
-            paths.append(current / limit_name)
-            if current == root:
-                break
-            current = current.parent
+        cgroup_path = PurePosixPath(relative_path)
+        for root, mount_root, limit_name in mounts:
+            try:
+                relative = cgroup_path.relative_to(mount_root)
+            except ValueError:
+                continue
+            parts = tuple(part for part in relative.parts if part != "/")
+            if any(part in {".", ".."} for part in parts):
+                continue
+            current = root.joinpath(*parts)
+            while True:
+                paths.append(current / limit_name)
+                if current == root:
+                    break
+                current = current.parent
 
     return tuple(dict.fromkeys(paths))
 
