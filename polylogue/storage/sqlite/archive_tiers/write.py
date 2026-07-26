@@ -1972,19 +1972,23 @@ def _replace_full_session_messages_and_blocks(
     if use_scoped_fts_rebuild:
         t0 = time.perf_counter()
         conn.execute(delete_session_rows_sql(1), (session_id,))
+        add_timing("fts_messages_delete", t0)
         # polylogue-miwv: identity-ledger companion, same chunk params as the
         # messages_fts delete above -- see message_identity_mismatch_sql's
         # docstring for why this non-bulk full-session-replace fast path must
         # keep messages_fts_identity paired with messages_fts.
+        t0 = time.perf_counter()
         conn.execute(delete_session_identity_rows_sql(1), (session_id,))
+        add_timing("fts_identity_delete", t0)
         # Full replacement also deletes and recreates tool-use blocks.  The
         # trigram external-content index must be cleared while their old text
         # is still available, before the guard below suppresses its per-row
         # triggers.  Leaving it trigger-maintained made a live 18 MB Codex
         # transcript spend minutes performing thousands of individual FTS5
         # updates under the sole writer lock.
+        t0 = time.perf_counter()
         conn.execute(trigram_delete_session_rows_sql(), (session_id,))
-        add_timing("fts_delete", t0)
+        add_timing("fts_trigram_delete", t0)
         t0 = time.perf_counter()
         # Keep the canonical triggers structurally present and gate both the
         # message and trigram bodies for the whole replacement.  This is the
