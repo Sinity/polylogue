@@ -118,7 +118,7 @@ def _repopulate_bulk_build_derived_state(index_path: Path) -> dict[str, float]:
     with contextlib.closing(sqlite3.connect(index_path, timeout=600)) as conn:
         conn.execute("PRAGMA busy_timeout = 600000")
         started_at = time.perf_counter()
-        rebuild_fts_index_sync(conn, resume_from_empty_message_index=True)
+        rebuild_fts_index_sync(conn)
         timings_s["fts"] = time.perf_counter() - started_at
         started_at = time.perf_counter()
         rebuild_command_trigram_index_sync(conn)
