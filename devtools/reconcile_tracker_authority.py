@@ -63,8 +63,8 @@ def _export_live_rows() -> dict[str, dict[str, Any]]:
         export_path.unlink(missing_ok=True)
 
 
-def _load_manifest() -> dict[str, Any]:
-    payload = json.loads(MANIFEST_PATH.read_text())
+def _load_manifest(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text())
     if payload.get("version") != 1:
         raise ValueError(f"unsupported manifest version: {payload.get('version')!r}")
     bindings = payload.get("bindings")
@@ -168,14 +168,20 @@ def _write_candidate(rows: dict[str, dict[str, Any]]) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--apply", action="store_true", help="apply the candidate through the monotonic Beads guard")
-    parser.add_argument("--manifest", type=Path, default=MANIFEST_PATH, help="authority manifest path")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply the candidate through the monotonic Beads guard",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=MANIFEST_PATH,
+        help="authority manifest path",
+    )
     args = parser.parse_args(argv)
 
-    global MANIFEST_PATH
-    MANIFEST_PATH = args.manifest.resolve()
-
-    manifest = _load_manifest()
+    manifest = _load_manifest(args.manifest.resolve())
     live_rows = _export_live_rows()
     timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -197,7 +203,8 @@ def main(argv: list[str] | None = None) -> int:
         if changes:
             changed[bead_id] = candidate
 
-    print(f"tracker authority: {len(changed)} changed, {len(report) - len(changed)} already coherent")
+    coherent_count = len(report) - len(changed)
+    print(f"tracker authority: {len(changed)} changed, {coherent_count} already coherent")
     for bead_id, changes in report:
         if changes:
             print(f"  {bead_id}: " + "; ".join(changes))
