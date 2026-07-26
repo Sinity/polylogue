@@ -518,13 +518,20 @@ async def _run_drive_source_catchup_safely() -> int:
         return 0
 
 
-async def _periodic_drive_source_catchup() -> None:
+async def _periodic_drive_source_catchup(
+    *,
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
     """Periodically converge remote Drive sources such as AiStudio exports.
 
-    The first pass runs immediately in the background: Drive catch-up is
-    serial network I/O and must never sit between daemon startup and the
-    local convergence loops or the live watcher.
+    The first pass normally runs immediately in the background.  A live
+    watcher supplies ``catch_up_complete`` so fresh local session evidence
+    gets the single archive writer before remote download/index work.  The
+    gate is deliberately absent for maintenance-only callers.
     """
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
+
     while True:
         coordinator = daemon_write_coordinator()
         changed = await coordinator.run("maintenance.drive_catchup", _run_drive_source_catchup_safely)
@@ -2055,7 +2062,7 @@ async def run_daemon_services(
                 periodic_fts_identity_drift_recompute(catch_up_complete=catch_up_complete_gate),
             ]
             if enable_source_catchup:
-                periodic_loops.append(_periodic_drive_source_catchup())
+                periodic_loops.append(_periodic_drive_source_catchup(catch_up_complete=catch_up_complete_gate))
             maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
             _db = _active_index_db_path()
             # While the watcher's initial source catch-up is still running,

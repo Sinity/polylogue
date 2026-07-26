@@ -1142,6 +1142,37 @@ def test_periodic_raw_materialization_convergence_waits_for_watcher_catch_up(
     assert calls == ["drain"]
 
 
+def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remote Drive work cannot monopolize startup ahead of local sessions."""
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: list[str] = []
+
+    async def fake_run(_actor: str, _func: object, *_args: object, **_kwargs: object) -> int:
+        calls.append("drive")
+        raise asyncio.CancelledError
+
+    async def exercise() -> None:
+        catch_up_complete = asyncio.Event()
+        monkeypatch.setattr(
+            daemon_cli,
+            "daemon_write_coordinator",
+            lambda: SimpleNamespace(run=fake_run),
+        )
+        task = asyncio.create_task(daemon_cli._periodic_drive_source_catchup(catch_up_complete=catch_up_complete))
+        await asyncio.sleep(0)
+        assert calls == []
+        catch_up_complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == ["drive"]
+
+
 def test_periodic_raw_materialization_bursts_through_backlog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3552,7 +3583,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
-        stack.enter_context(patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda: fake_loop("drive")))
+        stack.enter_context(
+            patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda **_kwargs: fake_loop("drive"))
+        )
         stack.enter_context(
             patch(
                 "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
