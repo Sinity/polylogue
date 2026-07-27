@@ -17,7 +17,9 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import resolve_raw_authority_blocker
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
+    RawAuthorityFrontierItem,
     RawAuthorityFrontierState,
+    _record_judgment_candidate,
     apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
@@ -772,6 +774,49 @@ def test_unified_frontier_conflict_requires_typed_judgment_then_resumes_same_evi
             "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
             (conflict.plan_id,),
         ).fetchone() == (0,)
+
+
+def test_repeat_census_of_same_pending_conflict_reuses_one_judgment_candidate(tmp_path: Path) -> None:
+    """polylogue-rjtv: two census cycles hitting the same still-unjudged
+    conflict (same raw_id/logical_source_key, different plan_id/evidence -
+    exactly what a fresh census run produces each time it re-derives
+    evidence) must not mint a second pending judgment candidate. Found live
+    2026-07-27: 24 candidates in ``judge --list`` for what was actually 6
+    real conflicts, because assertion_id was derived from the ephemeral
+    plan_id instead of the stable conflict identity."""
+    initialize_active_archive_root(tmp_path)
+
+    def _item(plan_suffix: str) -> RawAuthorityFrontierItem:
+        return RawAuthorityFrontierItem(
+            state=RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
+            actuator=RawAuthorityActuator.REQUEST_JUDGMENT,
+            raw_id="raw-rjtv-shared",
+            logical_source_key="unknown:rjtv-conflict",
+            session_id="chatgpt-export:rjtv-conflict",
+            reason="byte-proven browser rekey requires no retained membership census",
+            evidence_digest=f"digest-{plan_suffix}",
+            input_raw_ids=("raw-rjtv-shared",),
+            source_preconditions={},
+            index_preconditions={},
+            strategy_witness={"kind": "browser_conflict"},
+            plan_id=f"raw-authority-frontier:{plan_suffix}",
+        )
+
+    config = _config(tmp_path)
+    first_id, _ = _record_judgment_candidate(config, _item("cycle-one"), now_ms=1000)
+    second_id, _ = _record_judgment_candidate(config, _item("cycle-two"), now_ms=2000)
+
+    assert second_id == first_id
+    with sqlite3.connect(tmp_path / "user.db") as user:
+        user.row_factory = sqlite3.Row
+        rows = user.execute(
+            "SELECT assertion_id, value_json FROM assertions WHERE kind = 'judgment' AND status = 'candidate'"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["assertion_id"] == first_id
+    # The single surviving row reflects the LATEST cycle's plan, not stale
+    # evidence from the first.
+    assert json.loads(rows[0]["value_json"])["plan_id"] == "raw-authority-frontier:cycle-two"
 
 
 def test_inspect_conflicts_membership_precondition_evidence(tmp_path: Path) -> None:

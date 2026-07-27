@@ -649,13 +649,41 @@ _OBLIGATION_STATES = {
 
 
 def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *, now_ms: int) -> tuple[str, bool]:
-    """Persist the conflict as a non-authoritative candidate for operator judgment."""
+    """Persist the conflict as a non-authoritative candidate for operator judgment.
+
+    polylogue-rjtv: the assertion id is derived from ``item.plan_id``, which is
+    itself derived from a fresh evidence digest every census cycle -- a
+    census cycle that re-encounters the *same* unresolved conflict (same
+    ``raw_id``/``logical_source_key``) before an operator has judged it would
+    otherwise mint a brand-new candidate each time, leaving prior cycles'
+    still-pending duplicates to accumulate forever (found live 2026-07-27: 24
+    candidates in ``judge --list`` for what was actually 6 real conflicts).
+    Look up an existing still-``candidate`` request for the same conflict
+    identity first and refresh it in place instead of minting a new one. This
+    only dedupes pending-vs-pending; an already accepted/rejected/deferred
+    assertion is untouched, so a fresh judgment can still be requested if the
+    same conflict resurfaces after a prior disposition.
+    """
     from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
 
-    assertion_id = f"judgment:{_digest(['raw-authority-frontier', item.plan_id])}"
     root = _archive_root(config)
     with closing(sqlite3.connect(root / "user.db")) as conn, conn:
+        pending_row = conn.execute(
+            """
+            SELECT assertion_id FROM assertions
+            WHERE kind = 'judgment' AND status = 'candidate'
+              AND json_extract(value_json, '$.raw_id') = ?
+              AND json_extract(value_json, '$.logical_source_key') = ?
+            LIMIT 1
+            """,
+            (item.raw_id, item.logical_source_key),
+        ).fetchone()
+        assertion_id = (
+            str(pending_row[0])
+            if pending_row is not None
+            else f"judgment:{_digest(['raw-authority-frontier', item.plan_id])}"
+        )
         existing = read_assertion_envelope(conn, assertion_id)
         if existing is not None and existing.status is not AssertionStatus.CANDIDATE:
             return existing.assertion_id, False
