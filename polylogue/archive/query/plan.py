@@ -19,26 +19,19 @@ from polylogue.archive.query.retrieval import (
     actions_ready,
     can_use_action_stats_with,
     candidate_record_query,
-    candidate_record_query_for,
     fetch_record_query_for,
-    search_limit,
     should_batch_post_filter_fetch,
     uses_actions,
 )
 from polylogue.archive.query.runtime import (
     apply_common_filters,
     apply_full_filters,
-    matches_action_sequence,
-    matches_action_terms,
-    matches_action_text_terms,
-    matches_referenced_path,
-    matches_tool_terms,
     plan_can_count_in_sql,
     plan_can_use_action_stats,
     plan_has_post_filters,
     plan_needs_content_loading,
 )
-from polylogue.archive.query.sorting import SortKey, finalize_results, sort_generic, sort_sessions, sort_summaries
+from polylogue.archive.query.sorting import finalize_results, sort_sessions, sort_summaries
 from polylogue.archive.query.support import session_has_branches
 from polylogue.storage.query_models import SessionRecordQuery
 
@@ -184,21 +177,6 @@ class SessionQueryPlan:
     def can_use_action_stats(self) -> bool:
         return plan_can_use_action_stats(self)
 
-    def _matches_referenced_path(self, session: Session) -> bool:
-        return matches_referenced_path(self, session)
-
-    def _matches_action_terms(self, session: Session) -> bool:
-        return matches_action_terms(self, session)
-
-    def _matches_tool_terms(self, session: Session) -> bool:
-        return matches_tool_terms(self, session)
-
-    def _matches_action_sequence(self, session: Session) -> bool:
-        return matches_action_sequence(self, session)
-
-    def _matches_action_text_terms(self, session: Session) -> bool:
-        return matches_action_text_terms(self, session)
-
     def _apply_common_filters(
         self,
         items: builtins.list[_FilterableT],
@@ -209,9 +187,6 @@ class SessionQueryPlan:
 
     def _apply_full_filters(self, sessions: list[Session], *, sql_pushed: bool) -> list[Session]:
         return apply_full_filters(self, sessions, sql_pushed=sql_pushed)
-
-    def _sort_generic(self, items: list[_T], key_fn: Callable[[_T], SortKey]) -> list[_T]:
-        return sort_generic(self, items, key_fn)
 
     def _sort_sessions(self, sessions: list[Session]) -> list[Session]:
         return sort_sessions(self, sessions)
@@ -240,20 +215,11 @@ class SessionQueryPlan:
     async def can_use_action_stats_with(self, repository: SessionQueryRuntimeStore) -> bool:
         return await can_use_action_stats_with(self, repository)
 
-    async def _candidate_record_query_for(
-        self,
-        repository: SessionQueryRuntimeStore,
-    ) -> tuple[SessionRecordQuery, bool]:
-        return await candidate_record_query_for(self, repository)
-
     async def fetch_record_query_for(self, repository: SessionQueryRuntimeStore) -> SessionRecordQuery:
         return await fetch_record_query_for(self, repository)
 
     def _should_batch_post_filter_fetch(self) -> bool:
         return should_batch_post_filter_fetch(self)
-
-    def _search_limit(self) -> int:
-        return search_limit(self)
 
     async def list(self, config: Config) -> list[Session]:
         from polylogue.archive.query.archive_execution import list_archive

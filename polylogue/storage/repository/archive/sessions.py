@@ -107,9 +107,6 @@ class RepositoryArchiveSessionMixin:
         full_id = await self.resolve_id(session_id) or session_id
         return await self.get(str(full_id))
 
-    async def get_eager(self, session_id: str) -> Session | None:
-        return await self.get(session_id)
-
     async def get_messages(self, session_id: str) -> list[MessageRecord]:
         return await self.queries.get_messages(session_id)
 

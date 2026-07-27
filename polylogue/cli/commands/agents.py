@@ -107,46 +107,11 @@ def status_command(cwd: Path | None, limit: int, json_output: bool, output_forma
     _emit("status", cwd, limit, json_output, output_format, detail)
 
 
-@agents_command.command("self")
-@_format_options
-def self_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
-    """Show this agent's repo, process, and current work-item projection."""
-    _emit("self", cwd, limit, json_output, output_format, detail)
-
-
 @agents_command.command("work-item")
 @_format_options
 def work_item_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
     """Show the current work item projection."""
     _emit("work-item", cwd, limit, json_output, output_format, detail)
-
-
-@agents_command.command("current")
-@_format_options
-def current_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
-    """Alias for ``work-item``."""
-    _emit("work-item", cwd, limit, json_output, output_format, detail)
-
-
-@agents_command.command("conflicts")
-@_format_options
-def conflicts_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
-    """Show overlap/resource awareness; same-file activity is not a blocker."""
-    _emit("conflicts", cwd, limit, json_output, output_format, detail)
-
-
-@agents_command.command("overlap")
-@_format_options
-def overlap_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
-    """Alias for ``conflicts``."""
-    _emit("conflicts", cwd, limit, json_output, output_format, detail)
-
-
-@agents_command.command("handoff")
-@_format_options
-def handoff_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
-    """Show supported live handoff references for the current repo."""
-    _emit("handoff", cwd, limit, json_output, output_format, detail)
 
 
 __all__ = ["agents_command"]
