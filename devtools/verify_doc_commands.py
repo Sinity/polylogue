@@ -126,7 +126,7 @@ _EXCLUDED_DOC_DIRS: tuple[str, ...] = ("docs/audits",)
 
 
 def _doc_files(root: Path) -> list[Path]:
-    paths = [root / "README.md"]
+    paths = [root / "README.md", root / "browser-extension" / "README.md"]
     docs_dir = root / "docs"
     if docs_dir.exists():
         paths.extend(sorted(docs_dir.rglob("*.md")))
