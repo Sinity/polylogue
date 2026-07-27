@@ -10,79 +10,120 @@
 </p>
 
 <!-- public-claim:category.local-evidence-system -->
-Polylogue keeps AI conversations and coding-agent runs from several tools in one
-local archive. It ingests supported histories from ChatGPT, Claude and Claude
-Code, Codex, Gemini, Hermes, and other sources, then normalizes them into one
-model of sessions, messages, content blocks, tool calls and results, branches,
-subagents, usage, and costs.
+Polylogue archives AI conversations and coding-agent runs from multiple tools in
+one searchable local database. It imports supported histories from ChatGPT,
+Claude and Claude Code, Codex, Gemini, Hermes, and other sources, then exposes
+sessions, messages, tool calls and results, branches, subagents, usage, and costs
+through a CLI, Python API, local HTTP reader, and MCP server.
 
-The archive stays on your machine. You can search it from the CLI, read it over
-a local HTTP interface, query it from Python, or expose it to agents through
-MCP.
+Source artifacts stay on your machine. Polylogue is developed against a live
+archive of more than **18,000 sessions and 4.7 million messages**.
 
-The author's live archive currently contains more than **18,000 sessions and
-4.7 million messages**, covering several providers and work dating back to
-2022. The session count is a verified July 2026 figure after a repair stopped
-counting hook events as standalone sessions. The hook records and their payloads
-were retained and linked to their parent sessions.
+[Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Demo](docs/demos.md) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
 
-[Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
+## Try it without importing personal data
 
-## What Polylogue is for
-
-AI work is usually split across vendor exports, JSONL logs, browser captures,
-and tool-specific directories. Even when the data is available, each source has
-a different model of messages, tool use, branches, and usage.
-
-Polylogue provides one place to:
-
-- search conversations and coding sessions across providers;
-- inspect tool calls and their recorded outcomes;
-- follow forks, resumes, subagents, and compaction lineage;
-- distinguish human-authored material from injected runtime context;
-- compile context from earlier work for a new agent session;
-- calculate usage and cost without collapsing incompatible token lanes;
-- attach notes, tags, corrections, and judgments without modifying source data.
-
-## Quick start
-
-Install one of the packaged releases:
+Run the deterministic tour in a throwaway archive:
 
 ```bash
+nix run github:Sinity/polylogue -- demo tour
+```
+
+The tour imports synthetic provider-shaped artifacts through the normal parsers,
+queries structured tool results, follows copied session lineage, and writes a
+report with the corresponding source references. It does not require a provider
+account or access to the author's archive.
+
+From a source checkout:
+
+```bash
+git clone https://github.com/Sinity/polylogue.git
+cd polylogue
+nix develop -c polylogue demo tour
+```
+
+## What you can do
+
+- Search conversations and coding sessions across supported sources.
+- Inspect tool calls and provider-reported outcomes without inferring success or
+  failure from prose.
+- Follow branches, continuations, subagents, and compaction lineage.
+- Distinguish human-authored text from injected runtime context.
+- Query usage and cost while keeping incompatible token lanes separate.
+- Add notes, tags, corrections, and judgments without changing imported source
+  data.
+- Let agents read the archive through MCP.
+
+## Install
+
+Choose a packaged release:
+
+```bash
+# Python package: CLI, daemon, and MCP server
 pipx install polylogue
 # or
 uv tool install polylogue
-# or
-brew tap sinity/polylogue && brew install polylogue
-# or
+
+# Homebrew CLI
+brew tap sinity/polylogue
+brew install polylogue
+
+# Nix, without installing
 nix run github:Sinity/polylogue -- --help
 ```
 
-Detect local sources and start the daemon:
+Verify the installation:
+
+```bash
+polylogue --version
+polylogue --help
+```
+
+## Build a local archive
+
+Detect the supported sources already present on the machine:
 
 ```bash
 polylogue init
+```
+
+Start continuous ingestion of configured live sources:
+
+```bash
 polylogued run
 ```
 
-Import a one-off export:
+Import a one-off export or file:
 
 ```bash
 polylogue import ~/Downloads/chatgpt-export.zip
 polylogue import some-file.json --explain
 ```
 
-Run a query:
+Run queries:
 
 ```bash
-polylogue find 'repo:polylogue since:7d' then analyze --facets
+polylogue "css refactor"
 polylogue --origin claude-code-session find "migration" then read --view messages
-polylogue find 'actions where tool:shell AND command:pytest' then read
+polylogue "actions where tool:shell AND command:pytest | group by is_error | count"
 ```
 
-`polylogue init` writes a starter `polylogue.toml` from the sources found on the
-machine. `polylogued run` imports those sources and continues watching the live
-ones.
+`polylogue init` writes a starter `polylogue.toml` from detected sources.
+`polylogued run` imports those sources and continues watching the live ones.
+
+## Example: structured tool outcomes
+
+Tool execution is stored as structured data when the source provides it. Missing
+outcome fields remain unknown rather than being guessed from assistant text.
+
+```console
+$ polylogue "actions where tool:Bash AND command:pytest | group by is_error | count"
+is_error=0 count=12861
+is_error=1 count=1039
+is_error=unknown count=115
+```
+
+This abbreviated output comes from the author's archive.
 
 ## Supported sources
 
@@ -97,45 +138,15 @@ ones.
 | Hermes | `hermes-session` | runtime-root ATIF or ATOF artifacts |
 | Antigravity | `antigravity-session` | exported session data |
 
-Each parser preserves the detail present in its source, including roles, prose,
+Parsers preserve the structure available in each source, including roles, prose,
 thinking blocks, tool calls and results, attachments, and session metadata.
-Provider-specific caveats are documented in
+Provider-specific limits are documented in
 [docs/provider-origin-identity.md](docs/provider-origin-identity.md).
 
-## A real archive query
+## Storage
 
-Tool execution is stored as structured data. A failed tool result comes from the
-provider's `exit_code` or `is_error` field when one exists. Polylogue does not
-guess failure by searching assistant prose for words such as "error".
-
-```console
-$ polylogue "actions where session.repo:polylogue AND is_error:true | group by tool | count"
-tool=Bash count=5663
-tool=Read count=1399
-tool=Edit count=1167
-tool=shell count=533
-tool=exec_command count=149
-...
-```
-
-The same data can separate successful, failed, and unreported `pytest` results:
-
-```console
-$ polylogue "actions where tool:Bash AND command:pytest | group by is_error | count"
-is_error=0 count=12861
-is_error=1 count=1039
-is_error=unknown count=115
-```
-
-These examples use the author's live archive. Output is shortened where shown.
-
-## Storage model
-
-Polylogue uses five SQLite databases and a SHA-256 content-addressed blob store
-under one local archive root.
-
-> Source evidence and user-authored judgments are durable. Search indexes,
-> embeddings, analytics, and other derived data can be rebuilt.
+Polylogue keeps imported source artifacts and user-authored changes separate
+from data that can be rebuilt.
 
 | File | Contents | Durability |
 |---|---|---|
@@ -145,28 +156,27 @@ under one local archive root.
 | `user.db` | notes, tags, corrections, candidates, and judgments | durable |
 | `ops.db` | daemon cursors, convergence state, and telemetry | disposable |
 
-Several modeling choices are important for trustworthy queries:
+Large payloads are stored in a SHA-256 content-addressed blob store under the
+same archive root.
 
-- **Tool outcomes remain structural.** Unknown status stays unknown instead of
-  being inferred from text.
-- **Message role and authorship are separate.** Injected context may arrive as a
-  `user` message even though a human did not write it.
-- **Copied prefixes are counted once.** Forks, resumes, subagents, and compaction
-  may replay parent history in raw logs. Polylogue stores lineage and the
-  divergent tail rather than treating every copy as new work.
-- **Usage lanes remain separate.** Provider-reported input, cache reads,
-  reasoning tokens, catalog prices, and subscription-credit views are not added
-  together unless the calculation is valid.
+The data model keeps several distinctions explicit:
+
+- Unknown tool outcomes remain unknown.
+- Message role and material authorship are separate.
+- Copied parent history is represented through lineage rather than counted as
+  new work in every child session.
+- Provider usage fields and pricing lanes are kept separate unless combining
+  them is valid.
 
 See [docs/data-model.md](docs/data-model.md) and
-[docs/architecture.md](docs/architecture.md) for the full model.
+[docs/architecture.md](docs/architecture.md).
 
 ## Interfaces
 
 ### CLI
 
-The CLI is query-first and supports field filters, booleans, date ranges, action
-queries, and pipelines:
+The query-first CLI supports full-text search, field filters, booleans, date
+ranges, action queries, pipelines, and JSON output.
 
 ```bash
 polylogue find 'repo:polylogue since:7d' then analyze --facets
@@ -192,25 +202,12 @@ See [docs/mcp-integration.md](docs/mcp-integration.md).
 
 ### HTTP and Python
 
-`polylogued run` serves a local HTTP reader and metrics endpoint. Python callers
-can use the asynchronous API over the same archive.
+`polylogued run` can serve a local HTTP reader and metrics endpoint. Python
+callers can use the asynchronous API over the same archive.
 
-Semantic search is optional. It requires an embedding provider, and it is the
-only normal path that sends archive text outside the machine. Run
-`polylogue ops embed preflight` to inspect the work and estimated cost before
-sending anything.
-
-## Demo data
-
-You can exercise the real ingestion and query paths without importing personal
-data:
-
-```bash
-polylogue demo seed
-polylogue demo verify
-```
-
-The demo writes a small synthetic archive to `POLYLOGUE_ARCHIVE_ROOT`.
+Semantic search is optional. It requires an embedding provider and is the only
+normal path that sends archive text outside the machine. Run
+`polylogue ops embed preflight` to inspect the work and estimated cost first.
 
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
@@ -238,14 +235,23 @@ Start with the task-oriented guides below; [docs/README.md](docs/README.md) sepa
 
 ## Status
 
-Polylogue is pre-1.0 and used daily against the author's multi-year archive.
-The deterministic demo, normalized model, CLI, MCP, HTTP, and Python interfaces
-are implemented and tested. Interfaces may still change between releases.
+Polylogue is pre-1.0. Import, continuous ingestion, local query, the deterministic
+demo, and the CLI, MCP, HTTP, and Python interfaces are implemented. Provider
+formats and public interfaces may still change between releases.
 
 The roadmap lives in the committed
 [Beads](https://github.com/steveyegge/beads) graph. Browse the
 [web board](https://sinity.github.io/polylogue/main/beads/) or run `bd ready`
 locally.
+
+## Security
+
+Polylogue assumes a trusted single-user machine. The daemon binds to loopback,
+protected routes use bearer tokens, and browser capture is opt-in with its own
+token. The archive may contain source code, credentials, and personal
+conversations. Use disk encryption and read [docs/security.md](docs/security.md)
+and [docs/daemon-threat-model.md](docs/daemon-threat-model.md) before exposing
+anything beyond localhost.
 
 ## Development
 
@@ -256,15 +262,6 @@ devtools verify --quick
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md), and
 [docs/devtools.md](docs/devtools.md).
-
-## Security
-
-Polylogue assumes a trusted single-user machine. The daemon binds to loopback,
-protected routes use bearer tokens, and browser capture is opt-in with its own
-token. The archive may contain source code, credentials, and personal
-conversations. Use disk encryption and read [docs/security.md](docs/security.md)
-and [docs/daemon-threat-model.md](docs/daemon-threat-model.md) before exposing
-anything beyond localhost.
 
 ## License
 
