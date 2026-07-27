@@ -593,6 +593,29 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools workspace bead-batch-show polylogue-kapb polylogue-2yax",),
     ),
     CommandSpec(
+        "workspace bead-cluster",
+        "workspace",
+        "Footprint/overlap/contention clustering of ready Beads (execution frontier).",
+        "devtools.bead_cluster",
+        use_when=(
+            "Before dispatching a batch of ready beads, see which ones share a file/package "
+            "footprint (cluster into one branch/PR sweep) vs. which are genuinely disjoint "
+            "(safe to run as parallel worktree lanes), and flag contention -- beads that touch "
+            "the same durable migration slot or the same generated surface even without an "
+            "exact file-path overlap. Answers a different question than "
+            "`workspace delivery-gate-status` (gate-progress board): this is footprint/overlap "
+            "clustering over the same live bead data, not gate percentage. Footprints are "
+            "advisory -- verify on claim."
+        ),
+        examples=(
+            "devtools workspace bead-cluster",
+            "devtools workspace bead-cluster --json",
+            "devtools workspace bead-cluster --all-open",
+            "devtools workspace bead-cluster --max-priority 1",
+            "devtools workspace bead-cluster --input ready.json --validate-roster",
+        ),
+    ),
+    CommandSpec(
         "workspace bead-reimport-guard",
         "workspace",
         "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",
