@@ -30,6 +30,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     append_source_revision,
 )
+from polylogue.archive.revision_replay import RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
@@ -2403,6 +2404,135 @@ class LiveBatchProcessor:
             excluded=True,
         )
 
+    def _resynthesize_cursor_from_source(self, path: Path) -> CursorRecord | None:
+        """Reconstruct an append-eligible cursor from durable ``source.db`` evidence.
+
+        ``ingest_cursor`` (``CursorStore``) lives in the **disposable** ``ops.db``
+        tier: every reset (index rebuild, schema mismatch, ``polylogue ops
+        reset``) wipes it, forcing the next observation of every still-growing
+        file back onto the full-capture path even though the file itself
+        hasn't changed shape at all (polylogue-aex0, see
+        ``docs/design/prefix-blob-reclamation.md``'s "forward-fix sibling"
+        section). This is a *secondary* lookup, tried only when
+        :meth:`_append_plan`'s primary ``ops.db`` cursor is absent or
+        unusable; it never weakens ``RawRevisionAuthority`` -- the exact same
+        ``plan_revision_replay`` the durable classifier already uses is the
+        sole source of truth for which raw is the accepted head.
+
+        Only a ``revision_kind='full'`` accepted head is resynthesized. An
+        append-kind head's stored raw payload is not guaranteed
+        byte-identical to the live file at that offset (Codex append plans
+        inject a synthetic ``session_meta`` line ahead of the real delta via
+        ``_append_payload_for_provider``), so it cannot stand in for a
+        verified file-byte prefix -- and reusing a *stale* full baseline
+        behind an already-accepted append chain would create a second
+        sibling append candidate at the same offset, making
+        ``plan_revision_replay`` mark the whole chain ambiguous. Declining
+        whenever the head isn't 'full' avoids both hazards. This still
+        covers the dominant real-world case: the very next observation of a
+        file after an ops.db reset takes the full-capture path and writes a
+        fresh byte-proven 'full' revision, which this fallback can
+        immediately use so the *following* observation resumes appending
+        instead of full-recapturing forever.
+
+        Returns ``None`` whenever the durable evidence is ambiguous, absent,
+        or not a 'full' head -- callers fall through to the existing
+        full-capture path exactly as before this fallback existed.
+        """
+        source_db = self._cursor._db_path.with_name("source.db")
+        if not source_db.exists():
+            return None
+        try:
+            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        except sqlite3.Error:
+            return None
+        try:
+            key_rows = conn.execute(
+                """
+                SELECT DISTINCT logical_source_key
+                FROM raw_sessions
+                WHERE source_path = ?
+                  AND revision_kind = 'full'
+                  AND revision_authority = 'byte_proven'
+                  AND logical_source_key IS NOT NULL
+                """,
+                (str(path),),
+            ).fetchall()
+            if len(key_rows) != 1:
+                # No durable full head, or more than one distinct logical
+                # identity has ever been captured at this path -- ambiguous.
+                return None
+            logical_source_key = str(key_rows[0][0])
+            rows = conn.execute(
+                """
+                SELECT raw_id, revision_kind, source_revision, acquisition_generation,
+                       revision_authority, blob_size, predecessor_raw_id, baseline_raw_id,
+                       append_start_offset, append_end_offset, predecessor_source_revision,
+                       lower(hex(blob_hash)) AS blob_hash_hex
+                FROM raw_sessions
+                WHERE logical_source_key = ? AND source_revision IS NOT NULL
+                """,
+                (logical_source_key,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+        if not rows:
+            return None
+        blob_hash_by_raw_id = {str(row[0]): row[11] for row in rows}
+        candidates = [
+            RevisionCandidate(
+                raw_id=str(row[0]),
+                logical_source_key=logical_source_key,
+                kind=RawRevisionKind(str(row[1])),
+                source_revision=str(row[2]),
+                acquisition_generation=int(row[3]),
+                authority=RawRevisionAuthority(str(row[4])),
+                blob_size=int(row[5]),
+                predecessor_source_revision=str(row[10]) if row[10] is not None else None,
+                predecessor_raw_id=str(row[6]) if row[6] is not None else None,
+                baseline_raw_id=str(row[7]) if row[7] is not None else None,
+                append_start_offset=int(row[8]) if row[8] is not None else None,
+                append_end_offset=int(row[9]) if row[9] is not None else None,
+            )
+            for row in rows
+        ]
+        try:
+            replay_plan = plan_revision_replay(candidates)
+        except ValueError:
+            return None
+        if not replay_plan.accepted_chain:
+            return None
+        head_raw_id = replay_plan.accepted_chain[-1]
+        head = next(candidate for candidate in candidates if candidate.raw_id == head_raw_id)
+        if head.kind is not RawRevisionKind.FULL:
+            return None
+        blob_hash_hex = blob_hash_by_raw_id.get(head_raw_id)
+        if blob_hash_hex is None or len(blob_hash_hex) != 64:
+            return None
+        byte_offset = head.blob_size
+        return CursorRecord(
+            source_path=str(path),
+            byte_size=byte_offset,
+            byte_offset=byte_offset,
+            last_complete_newline=byte_offset,
+            record_count=0,
+            updated_at=datetime.now(UTC).isoformat(),
+            parser_fingerprint=self._current_parser_fingerprint(),
+            content_fingerprint=head.source_revision,
+            # The prefix hash IS the 'full' raw's own blob hash (its content is
+            # exactly bytes[0:byte_offset] of the source at capture time); the
+            # tail-hash component is never read by ``_append_plan`` (only the
+            # prefix half of the encoded authority is consulted there), so it
+            # is filled with the same digest rather than re-reading the blob.
+            tail_hash=encode_cursor_hash_authority(blob_hash_hex, blob_hash_hex, ctime_ns=0),
+            source_name=None,
+            st_dev=None,
+            st_ino=None,
+            mtime_ns=None,
+        )
+
     def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | _DeferredAppend | None:
         # Append planning is safe only for newline-delimited record streams.
         # Watch-source names describe acquisition routes, not file semantics:
@@ -2424,6 +2554,16 @@ class LiveBatchProcessor:
             # which already handles multi-session grouping correctly.
             return None
         cursor = cursor or self._cursor.get_record(path)
+        if cursor is None:
+            # polylogue-aex0: the disposable ops.db cursor is gone (reset,
+            # schema mismatch, or never written yet) -- try to resynthesize
+            # an equivalent one from source.db's durable revision-chain
+            # evidence before giving up to a full capture. A cursor that
+            # *does* exist but is stale for another reason (parser upgrade,
+            # exclusion, failure bookkeeping) is a deliberate invalidation,
+            # not disposable-tier loss, and must keep forcing a full
+            # re-ingest exactly as before -- never resynthesized over.
+            cursor = self._resynthesize_cursor_from_source(path)
         if (
             cursor is None
             or cursor.parser_fingerprint != self._current_parser_fingerprint()
