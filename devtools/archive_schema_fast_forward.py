@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL, EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
@@ -122,7 +123,7 @@ def _open_immutable_readonly(path: Path) -> sqlite3.Connection:
     """
     resolved = path.resolve(strict=True)
     _require_no_sidecars(resolved)
-    return sqlite3.connect(f"{resolved.as_uri()}?mode=ro&immutable=1", uri=True)
+    return open_readonly_connection(resolved, immutable=True)
 
 
 def _table_names(conn: sqlite3.Connection) -> tuple[str, ...]:

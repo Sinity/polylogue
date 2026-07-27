@@ -18,6 +18,7 @@ from typing import Any, Literal, TextIO
 import yaml
 
 from polylogue.paths import archive_root
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +162,7 @@ def _read_package_freshness(session_ref: str, *, generated_at: str) -> dict[str,
         return payload
 
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0) as conn:
+        with open_readonly_connection(index_db) as conn:
             conn.row_factory = sqlite3.Row
             schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             payload["archive_cursor"] = {

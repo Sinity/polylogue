@@ -22,6 +22,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTMON_DB = REPO_ROOT / ".cache" / "testmon" / "testmondata"
 WITNESS_DIR = REPO_ROOT / "tests" / "witnesses"
@@ -38,7 +40,7 @@ def _testmon_dependencies(failure_id: str) -> list[str]:
     if not TESTMON_DB.exists():
         return []
     try:
-        conn = sqlite3.connect(f"file:{TESTMON_DB}?mode=ro", uri=True)
+        conn = open_readonly_connection(TESTMON_DB)
     except sqlite3.Error:
         return []
     try:

@@ -235,14 +235,31 @@ def open_daemon_connection(
     return conn
 
 
-def open_readonly_connection(path: str | Path, *, timeout: float = READ_DB_TIMEOUT) -> sqlite3.Connection:
+def open_readonly_connection(
+    path: str | Path,
+    *,
+    timeout: float = READ_DB_TIMEOUT,
+    immutable: bool = False,
+) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
     Uses ``file:...?mode=ro`` URI mode to guarantee no write locks are taken.
     Returns ``None`` / raises ``sqlite3.OperationalError`` if the database file
     does not exist.
+
+    ``immutable`` additionally sets SQLite's ``immutable=1`` URI parameter,
+    which tells SQLite the file is guaranteed not to change for the lifetime
+    of the connection: it skips locking and WAL/journal presence checks, and
+    will not create a ``-shm``/``-wal`` sidecar itself. This is only correct
+    against a verified-stable snapshot (e.g. a stopped-daemon clone the caller
+    has already confirmed has no WAL/SHM/journal sidecars) -- never against a
+    database a live process (such as ``polylogued``) might still be writing.
+    Callers passing ``immutable=True`` own that precondition check; this
+    helper does not perform it, since the check is specific to how the caller
+    obtained the snapshot.
     """
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=timeout)
+    suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
+    conn = sqlite3.connect(f"file:{path}{suffix}", uri=True, timeout=timeout)
     try:
         for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)

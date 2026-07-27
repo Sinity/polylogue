@@ -15,6 +15,7 @@ from polylogue.config import get_config
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.operator.models import SchemaInferRequest
 from polylogue.schemas.operator.workflow import infer_schema
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 def _process_resources() -> JSONDocument:
@@ -44,7 +45,7 @@ def _source_input_summary(index_path: Path) -> JSONDocument:
     if not source_path.exists():
         return {"source_db_bytes": None, "raw_row_count": None, "raw_blob_bytes": None}
     try:
-        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+        with open_readonly_connection(source_path) as connection:
             row = connection.execute("SELECT COUNT(*), COALESCE(SUM(blob_size), 0) FROM raw_sessions").fetchone()
         return {
             "source_db_bytes": source_path.stat().st_size,

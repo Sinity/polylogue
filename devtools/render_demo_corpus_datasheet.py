@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import shutil
-import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +13,7 @@ from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.demo import DemoSeedResult, DemoVerifyResult, seed_demo_archive, verify_demo_archive
 from polylogue.scenarios import DEMO_CORPUS_FAMILIES
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
     observed_event_relation_sql,
@@ -50,7 +50,7 @@ def _code_list(items: tuple[str, ...]) -> str:
 
 
 def _measure_archive(archive_root: Path) -> DemoCorpusMeasurement:
-    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+    with open_readonly_connection(archive_root / "index.db") as conn:
         origins = tuple(
             str(row[0]) for row in conn.execute("SELECT DISTINCT origin FROM sessions ORDER BY origin").fetchall()
         )

@@ -32,6 +32,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
     initialize_archive_tier_files,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 DEFAULT_API_PORT = 8766
 DEFAULT_BROWSER_CAPTURE_PORT = 8765
@@ -2644,7 +2645,7 @@ def _archive_status(archive: Path) -> dict[str, object]:
         status["error"] = "index.db missing"
         return status
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with open_readonly_connection(index_db) as conn:
             user_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
             status["user_version"] = user_version
             sessions_exists = (
@@ -2670,7 +2671,7 @@ def _read_sqlite_user_version(path: Path) -> int | None:
     if not path.exists():
         return None
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        with open_readonly_connection(path) as conn:
             return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     except sqlite3.Error:
         return None
