@@ -213,8 +213,7 @@ normal path that sends archive text outside the machine. Run
 
 Live site: <https://sinity.github.io/polylogue/>.
 
-Start with the task-oriented guides below. The complete documentation map is in
-[docs/README.md](docs/README.md).
+Start with the task-oriented guides below. The complete documentation map is in [docs/README.md](docs/README.md).
 
 | Document | Description |
 |----------|-------------|
