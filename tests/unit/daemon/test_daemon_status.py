@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -454,6 +455,50 @@ def test_daemon_status_honors_explicit_disabled_browser_capture(
 
     assert status.browser_capture_active is False
     assert status.component_state.browser_capture == "stopped"
+
+
+def test_daemon_status_reports_gil_disabled_on_free_threaded_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-dcz5: free-threaded (3.14t) builds must report gil_enabled=False."""
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: False, raising=False)
+
+    status = build_daemon_status(sources=())
+
+    assert status.gil_enabled is False
+
+
+def test_daemon_status_reports_gil_enabled_on_standard_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A standard (non-free-threaded) 3.13+ build reports gil_enabled=True."""
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: True, raising=False)
+
+    status = build_daemon_status(sources=())
+
+    assert status.gil_enabled is True
+
+
+def test_daemon_status_gil_enabled_falls_back_true_without_gil_checker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interpreters predating ``sys._is_gil_enabled`` (pre-3.13) never had a
+    disableable GIL, so the fallback must be the safe default: enabled."""
+    monkeypatch.delattr(sys, "_is_gil_enabled", raising=False)
+
+    status = build_daemon_status(sources=())
+
+    assert status.gil_enabled is True
+
+
+def test_minimal_status_payload_reports_gil_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pre-refresh minimal snapshot also carries gil_enabled (cheap fact,
+    no archive I/O required — matches sys._is_gil_enabled()'s cost profile)."""
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: False, raising=False)
+
+    payload = get_status_snapshot_payload()
+
+    assert payload["gil_enabled"] is False
 
 
 def test_daemon_status_check_health_failure_reports_error_not_ok(

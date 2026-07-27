@@ -1482,6 +1482,13 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
                 desc = comp.get("description", "")
                 env.ui.console.print(f"  [{state_color}]●[/{state_color}] {name}: {desc}")
 
+    # Runtime (polylogue-dcz5): free-threaded (3.14t+) vs GIL-enabled.
+    gil_enabled = status.get("gil_enabled")
+    if gil_enabled is not None:
+        mode_text = "free-threaded (GIL disabled)" if gil_enabled is False else "GIL enabled"
+        mode_color = "green" if gil_enabled is False else "dim"
+        env.ui.console.print(f"  Runtime: [{mode_color}]{mode_text}[/{mode_color}]")
+
     # Live ingest. The status payload carries LiveIngestAttemptSummary, which
     # exposes running_count + per-attempt worker progress in `recent` — it has
     # no top-level completed_count/total_count, so the previous keys always read
@@ -1578,6 +1585,7 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
         "messages",
         "raw_records",
         "next_action",
+        "gil_enabled",
     ):
         if key in status:
             payload[key] = status[key]
