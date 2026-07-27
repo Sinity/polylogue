@@ -911,6 +911,76 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-record-correction",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Insert or replace a typed learning correction for one session/kind pair. Every apply "
+            "writes. Routed through OperationExecutor/CorrectionRecordActuator (reversible class, "
+            "role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("correction-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.record_correction",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.CorrectionRecordActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-delete-correction",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Soft-delete one learning correction (marks its assertion row deleted). Idempotent — "
+            "returns not-found when already absent. Routed through OperationExecutor/"
+            "CorrectionDeleteActuator (reversible class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("correction-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.delete_correction",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.CorrectionDeleteActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-clear-corrections",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Soft-delete every learning correction for a session. The plan resolves the exact live "
+            "set of correction kinds so a concurrent record-correction between preview and apply "
+            "forces a replan. Routed through OperationExecutor/CorrectionsClearActuator (reversible "
+            "class, role_only confirmation)."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("correction-mutation-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.clear_corrections",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.CorrectionsClearActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
         name="mutate-delete-session",
         kind=OperationKind.MAINTENANCE,
         description=(

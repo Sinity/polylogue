@@ -6739,24 +6739,44 @@ class PolylogueArchiveMixin:
         :class:`~polylogue.insights.feedback.UnknownCorrectionKindError`
         when ``kind`` is not a recognized
         :class:`~polylogue.insights.feedback.CorrectionKind`.
+
+        Routed through ``OperationExecutor``/``CorrectionRecordActuator``
+        (t46.9 phase 5); see :meth:`save_annotation` for the shared-contract
+        rationale.
         """
 
         normalized_payload = {str(key): str(value) for key, value in payload.items()}
         parse_correction_kind(kind)
+        from polylogue.operations.mutation_actuators import CorrectionRecordActuator, CorrectionRecordArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            actuator = CorrectionRecordActuator()
+            executor = OperationExecutor()
+            args = CorrectionRecordArgs(
+                archive=archive,
+                session_id=session_id,
+                kind=kind,
+                payload=normalized_payload,
+                note=note,
+                author_ref=author_ref,
+                author_kind=author_kind,
+            )
             try:
-                return archive.record_correction(
-                    session_id,
-                    kind,
-                    normalized_payload,
-                    note=note,
-                    author_ref=author_ref,
-                    author_kind=author_kind,
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator,
+                    plan,
+                    actor="facade",
+                    role="write",
+                    capability="archive.record_correction",
+                    confirmation_strength="role_only",
                 )
-            except KeyError as exc:
-                raise SessionNotFoundError(session_id) from exc
+                receipt = executor.execute(actuator, plan, authorization, args)
+            except KeyError:
+                raise SessionNotFoundError(session_id) from None
+        return cast("LearningCorrection", receipt.domain_receipt["correction"])
 
     async def list_corrections(
         self,
@@ -6781,27 +6801,69 @@ class PolylogueArchiveMixin:
             raise SessionNotFoundError(str(session_id)) from exc
 
     async def delete_correction(self, session_id: str, kind: str) -> bool:
-        """Delete one correction. Returns ``True`` when a row was removed."""
+        """Delete one correction. Returns ``True`` when a row was removed.
+
+        Routed through ``OperationExecutor``/``CorrectionDeleteActuator``
+        (t46.9 phase 5); see :meth:`delete_annotation` for the
+        shared-contract rationale.
+        """
 
         parse_correction_kind(kind)
+        from polylogue.operations.mutation_actuators import CorrectionDeleteActuator, CorrectionDeleteArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            actuator = CorrectionDeleteActuator()
+            executor = OperationExecutor()
+            args = CorrectionDeleteArgs(archive=archive, session_id=session_id, kind=kind)
             try:
-                return archive.delete_correction(session_id, kind)
-            except KeyError as exc:
-                raise SessionNotFoundError(session_id) from exc
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator,
+                    plan,
+                    actor="facade",
+                    role="write",
+                    capability="archive.delete_correction",
+                    confirmation_strength="role_only",
+                )
+                receipt = executor.execute(actuator, plan, authorization, args)
+            except KeyError:
+                raise SessionNotFoundError(session_id) from None
+        return receipt.status == "applied"
 
     async def clear_corrections(self, session_id: str) -> int:
-        """Delete every correction for a session. Returns the count."""
+        """Delete every correction for a session. Returns the count.
 
+        Routed through ``OperationExecutor``/``CorrectionsClearActuator``
+        (t46.9 phase 5): the plan resolves the exact live set of
+        correction kinds for the session, so a concurrent
+        ``record_correction`` between preview and apply forces a replan
+        instead of silently clearing a kind the caller never previewed.
+        """
+
+        from polylogue.operations.mutation_actuators import CorrectionsClearActuator, CorrectionsClearArgs
+        from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            actuator = CorrectionsClearActuator()
+            executor = OperationExecutor()
+            args = CorrectionsClearArgs(archive=archive, session_id=session_id)
             try:
-                return archive.clear_corrections(session_id)
-            except KeyError as exc:
-                raise SessionNotFoundError(session_id) from exc
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator,
+                    plan,
+                    actor="facade",
+                    role="write",
+                    capability="archive.clear_corrections",
+                    confirmation_strength="role_only",
+                )
+                receipt = executor.execute(actuator, plan, authorization, args)
+            except KeyError:
+                raise SessionNotFoundError(session_id) from None
+        return int(receipt.affected_count)
 
     async def post_blackboard_note(
         self,
