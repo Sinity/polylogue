@@ -1243,6 +1243,16 @@ class _AuthResult:
         return self.allowed
 
 
+# polylogue-ogn1: the write bridge's default run_sync/hold timeout (30s,
+# DaemonWriteThreadBridge.__init__) is sized for ordinary request-scoped
+# writes. A bounded rebuild-index pass is allowed to run far longer -- the
+# CLI's own --daemon HTTP client already tolerates up to 600s
+# (_rebuild_index.py's _run_daemon_rebuild, urlopen(..., timeout=600)) -- so
+# the HTTP route asks the bridge to wait that same 600s instead of the 30s
+# default, which would otherwise kill a still-running rebuild pass early.
+_REBUILD_INDEX_WRITE_TIMEOUT_S = 600.0
+
+
 class DaemonAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler for the daemon API server.
 
@@ -5228,7 +5238,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_rebuild_index(self) -> None:
-        """POST /api/maintenance/rebuild-index — one coordinator-owned replay pass."""
+        """POST /api/maintenance/rebuild-index — one coordinator-owned replay pass.
+
+        polylogue-ogn1: waits up to ``_REBUILD_INDEX_WRITE_TIMEOUT_S`` through
+        the write bridge, matching the CLI's own ``--daemon`` HTTP client
+        timeout (``_run_daemon_rebuild``'s ``urlopen(..., timeout=600)``)
+        rather than the bridge's much shorter default request timeout (30s),
+        which would otherwise kill a still-running rebuild pass early.
+        """
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
         try:
@@ -5303,15 +5320,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         bridge = getattr(self.server, "write_bridge", None)
         if bridge is None:
-            # Direct handler unit tests predate the server-owned bridge; real
-            # daemon servers always install it and therefore use run_sync.
-            receipt = rebuild_index_from_source_sync(request)
-        else:
-            receipt = cast(DaemonWriteThreadBridge, bridge).run_sync(
-                "http.maintenance.rebuild-index",
-                rebuild_index_from_source_sync,
-                request,
-            )
+            # polylogue-ogn1: a real DaemonAPIHTTPServer always installs
+            # write_bridge in __init__ (either the caller's coordinator or an
+            # owned standalone one) -- this branch is never reachable there.
+            # Fail closed instead of running the rebuild directly outside the
+            # sole-writer coordinator: a route that can execute an authority-
+            # promoting archive write without ever holding the writer gate is
+            # a bypass of this daemon's single-writer invariant, not a safe
+            # fallback, even if nothing exercises it in production today.
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
+            return
+        receipt = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
+            "http.maintenance.rebuild-index",
+            _REBUILD_INDEX_WRITE_TIMEOUT_S,
+            rebuild_index_from_source_sync,
+            request,
+        )
         self._send_json(HTTPStatus.OK, receipt.to_dict())
 
     @daemon_safe_handler

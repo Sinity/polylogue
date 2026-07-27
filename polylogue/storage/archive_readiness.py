@@ -16,6 +16,7 @@ from polylogue.archive.raw_materialization import (
 )
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.logging import get_logger
+from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.raw_authority import raw_authority_detail_query_handle
 
 logger = get_logger(__name__)
@@ -837,9 +838,406 @@ def _raw_gap_parsed_non_session_artifact(
     )
 
 
+# ---------------------------------------------------------------------------
+# Archive readiness surfaces (polylogue-ogn1)
+#
+# Extracted from ``polylogue/cli/commands/status.py``: the substrate module
+# ``polylogue/maintenance/rebuild_index.py`` was importing a private
+# CLI-surface helper (``_archive_readiness_status``) to check whether a freshly
+# rebuilt generation is exact-ready before promotion. That is the inverse of
+# this repo's documented layering rule ("surfaces may not import substrate
+# internals directly", ``docs/plans/layering.yaml``) — here the substrate was
+# reaching *up* into a CLI leaf adapter. This block gives both the CLI
+# (`status.py`, human-facing readiness reporting) and the substrate
+# (`rebuild_index.py`, promotion gating) a single shared home for the
+# computation; the CLI now delegates to ``archive_readiness_status`` below
+# instead of owning the only copy. The handful of tiny SQLite-introspection
+# one-liners below (``_fast_count``/``_safe_int``/``_table_exists``/etc.) are
+# intentionally duplicated from ``status.py``'s own private copies rather than
+# migrated wholesale: those are used throughout the rest of ``status.py`` for
+# unrelated status surfaces outside this cluster's scope, and a bulk
+# utility-relocation refactor was not part of the layering fix being made.
+# ---------------------------------------------------------------------------
+
+
+def _fast_count(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:
+    row = conn.execute(sql, params).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _schema_object_exists(conn: sqlite3.Connection, name: str, *, types: tuple[str, ...]) -> bool:
+    placeholders = ", ".join("?" for _ in types)
+    row = conn.execute(
+        f"SELECT 1 FROM sqlite_master WHERE type IN ({placeholders}) AND name = ? LIMIT 1",
+        (*types, name),
+    ).fetchone()
+    return row is not None
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return _schema_object_exists(conn, table_name, types=("table",))
+
+
+def _view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
+    return _schema_object_exists(conn, view_name, types=("view",))
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    return any(str(row[1]) == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
+
+
+def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return exact, non-vacuous evidence for the derived ``actions`` view."""
+    tool_use_block_count = (
+        _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE block_type = 'tool_use'")
+        if _table_exists(conn, "blocks")
+        else 0
+    )
+    actions_view_present = _view_exists(conn, "actions")
+    action_count = 0
+    actions_view_error: str | None = None
+    if actions_view_present:
+        try:
+            action_count = _fast_count(conn, "SELECT COUNT(*) FROM actions")
+        except sqlite3.Error as exc:
+            actions_view_error = str(exc)
+    return {
+        "action_count": action_count,
+        "tool_use_block_count": tool_use_block_count,
+        "actions_view_present": actions_view_present,
+        "actions_view_error": actions_view_error,
+    }
+
+
+def _archive_readiness_counts(
+    conn: sqlite3.Connection,
+    *,
+    source_conn: sqlite3.Connection | None,
+    source_check_available: bool,
+) -> dict[str, Any]:
+    session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions")
+    raw_link_count = (
+        _fast_count(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
+        if _column_exists(conn, "sessions", "raw_id")
+        else 0
+    )
+    missing_raw_session_count = 0
+    missing_raw_session_samples: list[dict[str, Any]] = []
+    if source_check_available and source_conn is not None and _column_exists(conn, "sessions", "raw_id"):
+        raw_ids = {
+            str(row[0])
+            for row in source_conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
+            if row[0] is not None
+        }
+        missing_rows = [
+            row
+            for row in conn.execute(
+                """
+                SELECT session_id, origin, native_id, raw_id, message_count, updated_at_ms
+                FROM sessions
+                WHERE raw_id IS NOT NULL
+                ORDER BY updated_at_ms DESC, session_id
+                """
+            ).fetchall()
+            if str(row[3]) not in raw_ids
+        ]
+        missing_raw_session_count = len(missing_rows)
+        missing_raw_session_samples = [
+            {
+                "session_id": str(row[0]),
+                "origin": str(row[1]),
+                "native_id": str(row[2]),
+                "missing_raw_id": str(row[3]),
+                "message_count": int(row[4] or 0),
+                "updated_at_ms": None if row[5] is None else int(row[5]),
+                "evidence_status": "lost_source_evidence",
+                "loss_reason": "index_raw_id_missing_from_source_tier",
+                "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+            }
+            for row in missing_rows[:10]
+        ]
+    insight_status = session_insight_status_sync(conn, verify_freshness=True)
+    return {
+        "session_count": session_count,
+        "raw_link_count": raw_link_count,
+        "missing_raw_session_count": missing_raw_session_count,
+        "missing_raw_session_samples": missing_raw_session_samples,
+        "lost_source_evidence_count": missing_raw_session_count,
+        "lost_source_evidence_samples": missing_raw_session_samples,
+        "message_count": _fast_count(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0,
+        "text_block_count": _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
+        if _table_exists(conn, "blocks")
+        else 0,
+        "messages_fts_count": _fast_count(conn, "SELECT COUNT(*) FROM messages_fts")
+        if _table_exists(conn, "messages_fts")
+        else 0,
+        "profile_row_count": insight_status.profile_row_count,
+        "missing_profile_row_count": insight_status.missing_profile_row_count,
+        "stale_profile_row_count": insight_status.stale_profile_row_count,
+        "orphan_profile_row_count": insight_status.orphan_profile_row_count,
+        "work_event_row_count": insight_status.work_event_inference_count,
+        "expected_work_event_row_count": insight_status.expected_work_event_inference_count,
+        "stale_work_event_row_count": insight_status.stale_work_event_inference_count,
+        "orphan_work_event_row_count": insight_status.orphan_work_event_inference_count,
+        "phase_row_count": insight_status.phase_inference_count,
+        "expected_phase_row_count": insight_status.expected_phase_inference_count,
+        "stale_phase_row_count": insight_status.stale_phase_inference_count,
+        "orphan_phase_row_count": insight_status.orphan_phase_inference_count,
+        "thread_count": insight_status.thread_count,
+        "root_thread_count": insight_status.root_threads,
+        "stale_thread_count": insight_status.stale_thread_count,
+        "orphan_thread_count": insight_status.orphan_thread_count,
+        **_action_readiness_counts(conn),
+        "missing_session_profile_materialization": insight_status.missing_session_profile_materialization_count,
+        "missing_work_events_materialization": insight_status.missing_work_event_materialization_count,
+        "missing_phases_materialization": insight_status.missing_phase_materialization_count,
+        "missing_thread_materialization": insight_status.missing_thread_materialization_count,
+        "missing_latency_materialization": insight_status.missing_latency_materialization_count,
+    }
+
+
+def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: bool) -> dict[str, dict[str, Any]]:
+    def surface(*, ready: bool | None, blockers: list[str], evidence: dict[str, Any]) -> dict[str, Any]:
+        return {"ready": ready, "blockers": blockers, "evidence": evidence}
+
+    def count(key: str, default: int = 0) -> int:
+        return int(counts.get(key, default))
+
+    def present_blockers(*keys: str) -> list[str]:
+        return [key for key in keys if count(key) != 0]
+
+    def mismatch_blocker(actual_key: str, expected_key: str, blocker: str) -> list[str]:
+        expected = count(expected_key, count(actual_key))
+        return [blocker] if count(actual_key) != expected else []
+
+    raw_blockers: list[str] = []
+    raw_ready: bool | None
+    if not source_check_available:
+        raw_ready = None
+        raw_blockers.append("source_tier_unavailable")
+    elif count("missing_raw_session_count"):
+        raw_ready = False
+        raw_blockers.append("missing_source_raw_sessions")
+    else:
+        raw_ready = True
+
+    search_blockers = ["messages_fts_row_mismatch"] if count("text_block_count") != count("messages_fts_count") else []
+    profile_blockers: list[str] = []
+    if count("missing_profile_row_count"):
+        profile_blockers.append("missing_profile_rows")
+    profile_blockers.extend(
+        present_blockers(
+            "missing_session_profile_materialization",
+            "stale_profile_row_count",
+            "orphan_profile_row_count",
+        )
+    )
+
+    def materialized(name: str) -> tuple[bool, list[str]]:
+        key = f"missing_{name}_materialization"
+        missing = count(key)
+        return (missing == 0, [] if missing == 0 else [key])
+
+    work_blockers = present_blockers(
+        "missing_work_events_materialization",
+        "stale_work_event_row_count",
+        "orphan_work_event_row_count",
+    )
+    work_blockers.extend(
+        mismatch_blocker("work_event_row_count", "expected_work_event_row_count", "work_event_row_mismatch")
+    )
+    phase_blockers = present_blockers(
+        "missing_phases_materialization",
+        "stale_phase_row_count",
+        "orphan_phase_row_count",
+    )
+    phase_blockers.extend(mismatch_blocker("phase_row_count", "expected_phase_row_count", "phase_row_mismatch"))
+    thread_blockers = present_blockers(
+        "missing_thread_materialization",
+        "stale_thread_count",
+        "orphan_thread_count",
+    )
+    thread_blockers.extend(mismatch_blocker("thread_count", "root_thread_count", "thread_root_mismatch"))
+    latency_ready, latency_blockers = materialized("latency")
+    tool_usage_blockers: list[str] = []
+    if not bool(counts.get("actions_view_present", False)):
+        tool_usage_blockers.append("actions_view_missing")
+    elif counts.get("actions_view_error"):
+        tool_usage_blockers.append("actions_view_unreadable")
+    elif count("tool_use_block_count") != count("action_count"):
+        tool_usage_blockers.append("actions_tool_use_count_mismatch")
+
+    return {
+        "archive_sessions": surface(
+            ready=True,
+            blockers=[],
+            evidence={"session_count": count("session_count"), "message_count": count("message_count")},
+        ),
+        "raw_artifacts": surface(
+            ready=raw_ready,
+            blockers=raw_blockers,
+            evidence={
+                "source_check_available": source_check_available,
+                "raw_link_count": count("raw_link_count"),
+                "missing_raw_session_count": count("missing_raw_session_count"),
+                "missing_raw_session_samples": list(counts.get("missing_raw_session_samples") or []),
+                "lost_source_evidence_count": count("lost_source_evidence_count"),
+                "lost_source_evidence_samples": list(counts.get("lost_source_evidence_samples") or []),
+            },
+        ),
+        "search": surface(
+            ready=not search_blockers,
+            blockers=search_blockers,
+            evidence={
+                "text_block_count": count("text_block_count"),
+                "messages_fts_count": count("messages_fts_count"),
+            },
+        ),
+        "session_profiles": surface(
+            ready=not profile_blockers,
+            blockers=profile_blockers,
+            evidence={
+                "profile_row_count": count("profile_row_count"),
+                "missing_profile_row_count": count("missing_profile_row_count"),
+                "missing_materialization_count": count("missing_session_profile_materialization"),
+                "stale_profile_row_count": count("stale_profile_row_count"),
+                "orphan_profile_row_count": count("orphan_profile_row_count"),
+            },
+        ),
+        "timeline_work_events": surface(
+            ready=not work_blockers,
+            blockers=work_blockers,
+            evidence={
+                "work_event_row_count": count("work_event_row_count"),
+                "expected_work_event_row_count": count("expected_work_event_row_count", count("work_event_row_count")),
+                "missing_materialization_count": count("missing_work_events_materialization"),
+                "stale_work_event_row_count": count("stale_work_event_row_count"),
+                "orphan_work_event_row_count": count("orphan_work_event_row_count"),
+            },
+        ),
+        "timeline_phases": surface(
+            ready=not phase_blockers,
+            blockers=phase_blockers,
+            evidence={
+                "phase_row_count": count("phase_row_count"),
+                "expected_phase_row_count": count("expected_phase_row_count", count("phase_row_count")),
+                "missing_materialization_count": count("missing_phases_materialization"),
+                "stale_phase_row_count": count("stale_phase_row_count"),
+                "orphan_phase_row_count": count("orphan_phase_row_count"),
+            },
+        ),
+        "threads": surface(
+            ready=not thread_blockers,
+            blockers=thread_blockers,
+            evidence={
+                "thread_count": count("thread_count"),
+                "root_thread_count": count("root_thread_count", count("thread_count")),
+                "missing_materialization_count": count("missing_thread_materialization"),
+                "stale_thread_count": count("stale_thread_count"),
+                "orphan_thread_count": count("orphan_thread_count"),
+            },
+        ),
+        "tool_usage": surface(
+            ready=not tool_usage_blockers,
+            blockers=tool_usage_blockers,
+            evidence={
+                "action_count": count("action_count"),
+                "tool_use_block_count": count("tool_use_block_count"),
+                "actions_view_present": bool(counts.get("actions_view_present", False)),
+                "actions_view_error": counts.get("actions_view_error"),
+            },
+        ),
+        "latency_profiles": surface(
+            ready=latency_ready,
+            blockers=latency_blockers,
+            evidence={"missing_materialization_count": counts["missing_latency_materialization"]},
+        ),
+    }
+
+
+def archive_readiness_status(root: Path) -> dict[str, Any]:
+    """Return the exact-readiness surface report for one archive root.
+
+    Shared by the CLI's ``status``/``rebuild-index --plan`` reporting and the
+    substrate's ``rebuild_index_from_source`` promotion gate: a freshly
+    rebuilt generation is only promoted once every surface here reports
+    ``ready``.
+    """
+    index_db = root / "index.db"
+    source_db = root / "source.db"
+    if not index_db.exists():
+        return {"checked": False, "reason": "missing_index_tier", "surfaces": {}}
+
+    missing_source_evidence = missing_source_raw_session_evidence(root)
+    try:
+        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+        try:
+            if not _table_exists(conn, "sessions"):
+                return {"checked": False, "reason": "missing_sessions_table", "surfaces": {}}
+            source_check_available = source_db.exists()
+            source_conn: sqlite3.Connection | None = None
+            try:
+                if source_check_available:
+                    source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+                    source_check_available = _table_exists(source_conn, "raw_sessions")
+                counts = _archive_readiness_counts(
+                    conn,
+                    source_conn=source_conn,
+                    source_check_available=source_check_available,
+                )
+                if missing_source_evidence.get("available"):
+                    missing_raw_count = _safe_int(missing_source_evidence.get("missing_raw_session_count"))
+                    missing_raw_samples = _safe_list(missing_source_evidence.get("missing_raw_session_samples"))
+                    lost_source_count = _safe_int(missing_source_evidence.get("lost_source_evidence_count"))
+                    lost_source_samples = _safe_list(missing_source_evidence.get("lost_source_evidence_samples"))
+                    counts.update(
+                        {
+                            "missing_raw_session_count": missing_raw_count,
+                            "missing_raw_session_samples": missing_raw_samples
+                            or _safe_list(counts.get("missing_raw_session_samples")),
+                            "lost_source_evidence_count": lost_source_count,
+                            "lost_source_evidence_samples": lost_source_samples
+                            or _safe_list(counts.get("lost_source_evidence_samples")),
+                        }
+                    )
+            finally:
+                if source_conn is not None:
+                    source_conn.close()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return {"checked": False, "reason": str(exc), "surfaces": {}}
+
+    surfaces = _archive_status_surfaces(counts, source_check_available=source_check_available)
+    ready_count = sum(1 for info in surfaces.values() if info["ready"] is True)
+    blocked_count = sum(1 for info in surfaces.values() if info["ready"] is not True)
+    return {
+        "checked": True,
+        "reason": None,
+        "source_check_available": source_check_available,
+        "ready_surface_count": ready_count,
+        "blocked_surface_count": blocked_count,
+        "total_surface_count": len(surfaces),
+        "counts": counts,
+        "surfaces": surfaces,
+    }
+
+
 __all__ = [
     "ACTIVE_REBUILD_STALE_AFTER_S",
     "active_rebuild_index_attempts",
+    "archive_readiness_status",
     "missing_source_raw_session_evidence",
     "raw_materialization_readiness_snapshot",
     "raw_materialization_ready",

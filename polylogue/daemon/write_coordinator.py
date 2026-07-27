@@ -492,11 +492,36 @@ class DaemonWriteThreadBridge:
         Unlike :meth:`hold`, this is for a complete bounded request operation:
         the coordinator owns the worker thread until the function has really
         returned, so a timed-out HTTP caller never admits a second writer.
+
+        Waits at most this bridge's constructor ``timeout`` (default 30s) for
+        completion. Use :meth:`run_sync_with_timeout` for an operation whose
+        own contract needs a longer bound (see polylogue-ogn1).
+        """
+        return self.run_sync_with_timeout(actor, self._timeout, function, *args, **kwargs)
+
+    def run_sync_with_timeout(
+        self,
+        actor: str,
+        timeout: float,
+        function: Callable[P, T],
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Like :meth:`run_sync`, waiting up to ``timeout`` seconds instead of the bridge default.
+
+        polylogue-ogn1: the bridge's constructor ``timeout`` (30s) is sized for
+        ordinary request-scoped writes (reset, ingest, maintenance run). A
+        bounded index rebuild pass can legitimately run far longer -- the
+        CLI/HTTP contract already allows up to 600s (``_run_daemon_rebuild``'s
+        ``urlopen(..., timeout=600)``) -- so that call site needs its own,
+        longer wait here rather than being silently killed by the bridge's
+        default gate at 30s while the rebuild is still replaying.
         """
         future = asyncio.run_coroutine_threadsafe(
             self._coordinator.run_sync(actor, function, *args, **kwargs), self._loop
         )
-        return future.result(timeout=self._timeout)
+        return future.result(timeout=timeout)
 
 
 def daemon_write_telemetry_payload() -> dict[str, object]:

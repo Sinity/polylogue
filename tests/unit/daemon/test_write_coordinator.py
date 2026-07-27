@@ -648,3 +648,87 @@ async def _unexpected_operation() -> None:
 
 async def _return_ready() -> str:
     return "ready"
+
+
+def test_thread_bridge_run_sync_uses_the_bridge_default_timeout() -> None:
+    """polylogue-ogn1 (#2/#5): the bare ``run_sync`` waits at most the bridge's own timeout.
+
+    A blocking function that outlives the bridge's constructor timeout must
+    raise ``TimeoutError`` through ``run_sync`` -- proving the default path
+    is genuinely bounded, not merely documented as such.
+    """
+    loop = asyncio.new_event_loop()
+    loop_ready = threading.Event()
+    coordinator_holder: list[DaemonWriteCoordinator] = []
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        coordinator_holder.append(DaemonWriteCoordinator())
+        loop_ready.set()
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    try:
+        assert loop_ready.wait(timeout=1.0)
+        coordinator = coordinator_holder[0]
+        bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
+
+        def slow_write() -> str:
+            import time
+
+            time.sleep(0.2)
+            return "too-late"
+
+        with pytest.raises(TimeoutError):
+            bridge.run_sync("http.slow", slow_write)
+
+        # Let the still-running background write actually finish before
+        # tearing down the loop, so the coordinator's task unwinds cleanly
+        # instead of being destroyed mid-flight (cosmetic only -- the
+        # TimeoutError above is the real assertion).
+        shutdown = asyncio.run_coroutine_threadsafe(coordinator.shutdown(timeout=1.0), loop)
+        assert shutdown.result(timeout=1.0)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=1.0)
+
+
+def test_thread_bridge_run_sync_with_timeout_overrides_the_bridge_default() -> None:
+    """polylogue-ogn1 (#2/#5): a per-call override lets a long operation finish.
+
+    ``run_sync_with_timeout`` must wait up to its own ``timeout`` argument
+    instead of the bridge's (shorter) constructor default -- this is the fix
+    for rebuild-index's HTTP route, which needs up to 600s while the bridge's
+    ordinary request timeout stays a much shorter 30s.
+    """
+    loop = asyncio.new_event_loop()
+    loop_ready = threading.Event()
+    coordinator_holder: list[DaemonWriteCoordinator] = []
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        coordinator_holder.append(DaemonWriteCoordinator())
+        loop_ready.set()
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    try:
+        assert loop_ready.wait(timeout=1.0)
+        coordinator = coordinator_holder[0]
+        # The bridge's own default timeout is far shorter than the override
+        # below -- if the override were ignored, this would raise TimeoutError.
+        bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
+
+        def slow_write() -> str:
+            import time
+
+            time.sleep(0.2)
+            return "done"
+
+        result = bridge.run_sync_with_timeout("http.maintenance.rebuild-index", 2.0, slow_write)
+        assert result == "done"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=1.0)

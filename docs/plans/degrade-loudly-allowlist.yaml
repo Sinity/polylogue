@@ -300,6 +300,22 @@ entries:
   - Exception
   occurrence: 0
   reason: 'Returns {"available": False, "error": str(exc)} -- an already-typed signal.'
+- path: polylogue/storage/archive_readiness.py
+  function: <module>._action_readiness_counts
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Sets actions_view_error = str(exc) in the returned counts dict -- an already-typed signal.
+    Extracted from polylogue/cli/commands/status.py (polylogue-ogn1 layering fix); pre-existing
+    behavior, unchanged by the move.'
+- path: polylogue/storage/archive_readiness.py
+  function: <module>.archive_readiness_status
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Returns {"checked": False, "reason": str(exc), "surfaces": {}} -- an already-typed signal.
+    Extracted from polylogue/cli/commands/status.py (polylogue-ogn1 layering fix); pre-existing
+    behavior, unchanged by the move.'
 - path: polylogue/storage/artifacts/inspection.py
   function: <module>._hermes_state_db_schema_version
   exceptions:

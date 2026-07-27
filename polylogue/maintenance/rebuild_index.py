@@ -247,10 +247,20 @@ def count_source_raw_sessions(root: Path) -> int:
 
 
 def missing_index_raw_ids(root: Path) -> list[str]:
+    """Return source raw_ids that have not yet reached ``index.sessions``.
+
+    polylogue-ogn1: a missing/lost ``index.db`` (fresh archive, or one just
+    reset via ``ops reset --index``) means every source row is missing from
+    the index by definition -- return the full source set instead of an
+    empty list, so ``--only-missing`` actually rebuilds something on a
+    fresh/lost index rather than silently doing nothing.
+    """
     source_db = root / "source.db"
-    index_db = ArchiveLocation.resolve(root).active_index_path
-    if not source_db.exists() or not index_db.exists():
+    if not source_db.exists():
         return []
+    index_db = ArchiveLocation.resolve(root).active_index_path
+    if not index_db.exists():
+        return all_index_rebuild_raw_ids(root)
     with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db),))
         rows = conn.execute(
@@ -304,9 +314,9 @@ def select_rebuild_raw_ids(request: RebuildIndexRequest) -> tuple[int, list[str]
 
 async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildIndexReceipt:
     """Replay one source snapshot into an owned generation and optionally promote it."""
-    from polylogue.cli.commands.status import _archive_readiness_status
     from polylogue.maintenance.archive_verification import verify_archive
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
+    from polylogue.storage.archive_readiness import archive_readiness_status
     from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
     from polylogue.storage.repair import repair_session_insights
 
@@ -522,7 +532,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                     f"bulk-build FTS/trigram parity failed for generation {generation.generation_id}: {failing}"
                 )
             terminal_started_at = time.perf_counter()
-            readiness = _archive_readiness_status(generation_root)
+            readiness = archive_readiness_status(generation_root)
             logger.info(
                 "rebuild_terminal_stage_complete",
                 generation_id=generation.generation_id,
