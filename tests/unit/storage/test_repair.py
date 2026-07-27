@@ -1085,6 +1085,120 @@ def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_pa
     assert receipts_after_first
 
 
+def test_raw_materialization_no_progress_component_terminalizes_instead_of_looping(tmp_path: Path) -> None:
+    """polylogue-hjpx AC1: an accepted plan that executes with zero typed
+    progress must not be silently re-selected forever.
+
+    Reproduces the exact production-shaped defect this bead names: a raw is
+    classified as a replayable/selected authority component by
+    ``repair_raw_materialization``, but its logical cohort has no unique
+    byte-proven full baseline (a genuinely orphaned ``append``-kind row with
+    no sibling ``full`` row for the same ``logical_source_key``) and no
+    membership evidence either -- so ``backfill_historical_revision_evidence``
+    runs its full census/replay pipeline without raising, yet returns
+    ``replayed_logical_sources=0`` with zero quarantine or adoption-deferral
+    too. Before this fix that raw was typed ``RETRYABLE`` forever: identical
+    selection, identical zero-progress execution, every pass, with no durable
+    signal distinguishing it from a plausible transient retry. It must
+    instead terminalize on the first no-progress execution and stop being
+    automatically reselected on the next pass.
+    """
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    payload = b"""{
+      "id": "orphan-append",
+      "title": "orphan append",
+      "create_time": 1,
+      "update_time": 2,
+      "mapping": {
+        "message-1": {
+          "id": "message-1",
+          "parent": null,
+          "children": [],
+          "message": {
+            "id": "message-1",
+            "author": {"role": "user"},
+            "create_time": 2,
+            "content": {"content_type": "text", "parts": ["orphan"]}
+          }
+        }
+      },
+      "current_node": "message-1"
+    }"""
+    raw_id, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    logical_source_key = "chatgpt-export:orphan-append"
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, revision_authority, acquisition_generation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "chatgpt-export",
+                "orphan-append",
+                "orphan-append.json",
+                0,
+                bytes.fromhex(raw_id),
+                blob_size,
+                1,
+                logical_source_key,
+                # An 'append'-kind row with no sibling 'full' row for the same
+                # logical_source_key: classify_raw_revision_cohort's full_rows
+                # query is empty (no 'full' rows at all), so plan_revision_
+                # replay's proven_full list is also empty regardless of this
+                # row's own authority -- accepted_raw_ids is (). The fallback
+                # to membership governance (convertible_full_revision_raw_ids)
+                # then refuses too, since not every row for this key is
+                # 'full'. No branch ever touches this raw.
+                "append",
+                "orphan-append-rev-1",
+                "quarantined",
+                0,
+            ),
+        )
+        source_conn.commit()
+
+    first = repair_mod.repair_raw_materialization(config)
+    assert first.success is False
+    assert first.repaired_count == 0
+    assert first.metrics.get("raw_materialization_no_progress_count") == 1.0
+    assert "zero typed progress" in first.detail
+    assert first.metrics["raw_materialization_remaining_candidate_count"] == 1.0
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        terminal_rows_after_first = source_conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_census_plans WHERE outcome_status = 'terminal'"
+        ).fetchone()[0]
+    assert terminal_rows_after_first == 1
+
+    second = repair_mod.repair_raw_materialization(config)
+    # The stalled plan must not be reselected: no second execution attempt,
+    # so the metric that only appears when a component is actually selected
+    # for this pass is absent, and the terminal receipt count is unchanged
+    # (not doubled by a second no-progress execution of the same plan).
+    assert second.metrics.get("raw_materialization_selected_executable_component_count", 0.0) == 0.0
+    assert second.metrics.get("raw_materialization_no_progress_plan_count") == 1.0
+    # The raw remains honestly visible as unresolved debt, not silently
+    # reported as converged (this pass takes the "nothing newly admissible"
+    # early-return branch, which reports the base candidate count rather
+    # than a post-execution "remaining" count).
+    assert second.metrics["raw_materialization_candidate_count"] == 1.0
+    assert second.success is False
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        terminal_rows_after_second = source_conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_census_plans WHERE outcome_status = 'terminal'"
+        ).fetchone()[0]
+    # Exactly one terminal receipt total: the plan was not re-executed and
+    # re-terminalized a second time.
+    assert terminal_rows_after_second == terminal_rows_after_first
+
+
 def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
