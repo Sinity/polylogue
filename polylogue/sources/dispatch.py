@@ -149,6 +149,24 @@ def is_stream_record_provider(source_path: str | None, provider: str | Provider 
 
 
 def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
+    """Detect the Drive/Gemini chunked-prompt shape (polylogue-zkmi).
+
+    Despite the name, this is not a separate Gemini-specific check layered
+    on top of an unused Drive detector: ``drive.py`` owns the single
+    structural detector (``looks_like``) for the ``chunkedPrompt``/``chunks``
+    shape shared by both wire families, and this function is that detector's
+    sole call site in auto-detection. The result is intentionally always
+    surfaced as ``Provider.GEMINI`` here, never ``Provider.DRIVE``:
+    ``Provider.GEMINI`` and ``Provider.DRIVE`` are a non-injective fiber over
+    the same ``Origin.AISTUDIO_DRIVE`` (see ``core/sources.py``'s
+    ``_PROVIDER_TO_ORIGIN``/``provider_from_origin`` notes), and ``GEMINI``
+    is the documented canonical member of that fiber, so auto-detection has
+    no shape-based reason to distinguish them. ``Provider.DRIVE`` remains a
+    reachable value elsewhere -- pre-existing raw rows and explicit source
+    configs, see ``revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS`` and
+    ``live/batch_support._large_non_jsonl_path_can_stream`` -- it is simply
+    never *produced* by this detector.
+    """
     return drive.looks_like(record)
 
 
