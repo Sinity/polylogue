@@ -157,6 +157,7 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert payload["suggested_env"]["POLYLOGUE_ARCHIVE_ROOT"] == str(repo / ".local" / "dev-archive")
     assert payload["suggested_env"]["POLYLOGUE_DAEMON_URL"] == "http://127.0.0.1:9999"
     assert payload["suggested_env"]["POLYLOGUE_DEV_LOOP_RUN_ID"] == payload["run_id"]
+    assert payload["suggested_env"]["POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT"] == payload["commit"]
     assert payload["suggested_env"]["XDG_DATA_HOME"].endswith("/xdg-data")
     assert payload["archive_status"]["index_db_exists"] is False
     assert payload["archive_status"]["schema_ready"] is False

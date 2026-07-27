@@ -1387,13 +1387,20 @@ function renderDevLoopChip(payload) {
   var runId = payload.run_id || 'local';
   var label = String(runId);
   if (label.length > 14) label = label.slice(0, 11) + '...';
-  el.textContent = 'dev: ' + label;
-  setChipQuality(el, 'partial');
+  var stale = !!payload.stale;
+  el.textContent = 'dev: ' + label + (stale ? ' (stale)' : '');
+  setChipQuality(el, stale ? 'stale' : 'partial');
   var details = [];
   if (payload.archive_root) details.push('archive ' + payload.archive_root);
   if (payload.log_dir) details.push('logs ' + payload.log_dir);
   if (payload.api_port) details.push('api :' + payload.api_port);
   if (payload.browser_capture_port) details.push('capture :' + payload.browser_capture_port);
+  if (stale) {
+    details.push(
+      'STALE: running commit ' + (payload.launch_commit || '?') + ' but checkout is now at '
+      + (payload.current_commit || '?') + ' -- restart the branch-local daemon'
+    );
+  }
   el.title = 'Branch-local dev loop'
     + (payload.run_id ? ' ' + payload.run_id : '')
     + (details.length ? '; ' + details.join('; ') : '');

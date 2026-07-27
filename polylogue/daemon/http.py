@@ -377,6 +377,30 @@ def _parse_optional_int_env(name: str) -> int | None:
         return None
 
 
+def _dev_loop_current_commit(cwd: str) -> str | None:
+    """Return the checkout's current short HEAD commit, or ``None`` if unknown.
+
+    Used only to detect the stale-run-dir trap (see ``_dev_loop_payload``);
+    never raises on a non-git checkout, missing ``git``, or a slow/hung call.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
 def _dev_loop_payload() -> JSONDocument:
     # Deliberately raw os.environ reads, not load_polylogue_config(): this
     # endpoint reports whether the dev-loop LAUNCHER set these vars in the
@@ -393,6 +417,16 @@ def _dev_loop_payload() -> JSONDocument:
     log_dir = os.environ.get("POLYLOGUE_DEV_LOOP_LOG_DIR")
     archive_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     enabled = any((run_id, log_dir))
+    # Stale-run-dir trap (devloop-runtime memory, polylogue-5en): a branch
+    # switch/pull/rebase on disk after this process was launched does NOT
+    # change what code is actually running -- Python already imported the
+    # old modules. `launch_commit` is the HEAD the launcher recorded at
+    # start; `current_commit` is read fresh from the checkout on every call.
+    # A mismatch means this daemon is serving stale code and must be
+    # restarted, not just re-preflighted.
+    launch_commit = os.environ.get("POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT")
+    current_commit = _dev_loop_current_commit(os.getcwd()) if launch_commit else None
+    stale = bool(launch_commit and current_commit and launch_commit != current_commit)
     return {
         "ok": True,
         "enabled": enabled,
@@ -403,6 +437,9 @@ def _dev_loop_payload() -> JSONDocument:
         "browser_capture_port": _parse_optional_int_env("POLYLOGUE_BROWSER_CAPTURE_PORT"),
         "pid": os.getpid(),
         "cwd": os.getcwd(),
+        "launch_commit": launch_commit,
+        "current_commit": current_commit,
+        "stale": stale,
     }
 
 

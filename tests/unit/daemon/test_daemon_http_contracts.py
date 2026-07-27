@@ -619,11 +619,57 @@ class TestPrivacyContract:
             "browser_capture_port": 8875,
             "pid": os.getpid(),
             "cwd": os.getcwd(),
+            "launch_commit": None,
+            "current_commit": None,
+            "stale": False,
         }
         serialized = json.dumps(payload)
         assert "SECRET-DEV-LOOP-TOKEN" not in serialized
         assert "SECRET-ENV-DUMP-CANARY" not in serialized
         assert "POLYLOGUE_TEST_SENTINEL_ENV_DO_NOT_DUMP" not in serialized
+
+    def test_dev_loop_payload_reports_stale_when_launch_commit_differs_from_current_commit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """polylogue-5en: the stale-run-dir trap.
+
+        Switching branches on disk after the daemon started does not change
+        what code the process is actually running -- Python already imported
+        the old modules. The daemon must detect and surface the mismatch
+        between the commit recorded at launch and the checkout's live HEAD.
+        """
+        import polylogue.daemon.http as http_mod
+
+        monkeypatch.setenv("POLYLOGUE_DEV_LOOP_RUN_ID", "dev-run-stale")
+        monkeypatch.setenv("POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT", "aaa1111")
+        monkeypatch.setattr(http_mod, "_dev_loop_current_commit", lambda cwd: "bbb2222")
+
+        handler = _make_handler("GET", "/api/dev-loop")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        assert payload["launch_commit"] == "aaa1111"
+        assert payload["current_commit"] == "bbb2222"
+        assert payload["stale"] is True
+
+    def test_dev_loop_payload_is_not_stale_when_launch_and_current_commit_match(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import polylogue.daemon.http as http_mod
+
+        monkeypatch.setenv("POLYLOGUE_DEV_LOOP_RUN_ID", "dev-run-fresh")
+        monkeypatch.setenv("POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT", "ccc3333")
+        monkeypatch.setattr(http_mod, "_dev_loop_current_commit", lambda cwd: "ccc3333")
+
+        handler = _make_handler("GET", "/api/dev-loop")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        assert payload["stale"] is False
 
     def test_dev_loop_payload_is_disabled_without_launcher_metadata(
         self,
@@ -635,6 +681,7 @@ class TestPrivacyContract:
             "POLYLOGUE_ARCHIVE_ROOT",
             "POLYLOGUE_API_PORT",
             "POLYLOGUE_BROWSER_CAPTURE_PORT",
+            "POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT",
         ):
             monkeypatch.delenv(name, raising=False)
 
@@ -647,6 +694,7 @@ class TestPrivacyContract:
         assert payload["enabled"] is False
         assert payload["run_id"] is None
         assert payload["log_dir"] is None
+        assert payload["stale"] is False
 
     def test_status_payload_does_not_leak_secrets(
         self,
