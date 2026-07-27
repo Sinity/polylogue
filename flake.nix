@@ -129,7 +129,7 @@
         # one env var via `env -i` bisection).
         postFixup = ''
           test -f "$out/${python'.sitePackages}/polylogue/daemon/static/dist/manifest.json"
-          for program in polylogue polylogued polylogue-mcp; do
+          for program in polylogue polylogued polylogue-mcp polylogue-hook; do
             wrapProgram "$out/bin/$program" \
               --unset PYTHONPATH \
               --unset PYTHONHOME \
