@@ -9,6 +9,7 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
+from polylogue.cli.shared.types import AppEnv
 
 
 def _parse_time_bound(field: str, value: str | None) -> datetime | None:
@@ -66,7 +67,9 @@ def _render_plain(payload: dict[str, object]) -> None:
     show_default=True,
     help="Output format.",
 )
+@click.pass_obj
 def materialize_incident_evidence_command(
+    env: AppEnv,
     session_ids: tuple[str, ...],
     repo_names: tuple[str, ...],
     since: str | None,
@@ -96,8 +99,7 @@ def materialize_incident_evidence_command(
         NoIncidentSessionsFoundError,
         materialize_incident_work_evidence,
     )
-    from polylogue.paths import active_index_db_path, archive_root
-    from polylogue.storage.repository import SessionRepository
+    from polylogue.paths import archive_root
 
     since_bound = _parse_time_bound("since", since)
     until_bound = _parse_time_bound("until", until)
@@ -122,13 +124,12 @@ def materialize_incident_evidence_command(
         resolved_session_ids.extend(run_coroutine_sync(_select()))
 
     async def _run() -> IncidentEvidenceMaterializationResult:
-        async with SessionRepository(db_path=active_index_db_path()) as repository:
-            return await materialize_incident_work_evidence(
-                repository,
-                session_ids=resolved_session_ids,
-                graph_id=graph_id,
-                apply=apply,
-            )
+        return await materialize_incident_work_evidence(
+            env.repository,
+            session_ids=resolved_session_ids,
+            graph_id=graph_id,
+            apply=apply,
+        )
 
     try:
         result = run_coroutine_sync(_run())

@@ -9,6 +9,7 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
+from polylogue.cli.shared.types import AppEnv
 
 
 def _parse_time_bound(field: str, value: str | None) -> int | None:
@@ -88,7 +89,9 @@ def _render_plain(summary_dict: dict[str, object]) -> None:
     show_default=True,
     help="Output format.",
 )
+@click.pass_obj
 def reconcile_work_effects_command(
+    env: AppEnv,
     graph_id: str,
     repo_path: Path,
     beads_jsonl: Path | None,
@@ -119,8 +122,6 @@ def reconcile_work_effects_command(
         WorkEvidenceGraphNotFoundError,
         reconcile_graph_repository_effects,
     )
-    from polylogue.paths import active_index_db_path
-    from polylogue.storage.repository import SessionRepository
 
     since_ms = _parse_time_bound("since", since)
     until_ms = _parse_time_bound("until", until)
@@ -132,15 +133,14 @@ def reconcile_work_effects_command(
         adapters.append(GitHubPullRequestEffectAdapter(repo=github_repo))
 
     async def _run() -> WorkEffectReconciliationSummary:
-        async with SessionRepository(db_path=active_index_db_path()) as repository:
-            return await reconcile_graph_repository_effects(
-                repository,
-                graph_id=graph_id,
-                adapters=adapters,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                apply=apply,
-            )
+        return await reconcile_graph_repository_effects(
+            env.repository,
+            graph_id=graph_id,
+            adapters=adapters,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            apply=apply,
+        )
 
     try:
         summary = run_coroutine_sync(_run())
