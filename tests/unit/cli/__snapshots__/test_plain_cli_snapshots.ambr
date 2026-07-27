@@ -1033,8 +1033,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 42,
-        "user_version": 42,
+        "expected_user_version": 43,
+        "user_version": 43,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -1151,7 +1151,7 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 37,
+          "sqlite_stat1_rows": 38,
           "planner_stats_present": true
         },
         "embeddings": {

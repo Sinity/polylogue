@@ -236,6 +236,10 @@ class _FakeToolCountStore:
     def __exit__(self, *exc: object) -> None:
         return None
 
+    def begin_read_snapshot(self) -> None:
+        """No-op: the interruptible-read runner (#2964) requires this to exist."""
+        return None
+
     def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:
         self.queries.append(query or ToolUsageInsightQuery())
         return self.call_rows
@@ -267,7 +271,11 @@ def _patch_tool_count_store(
     action_rows: list[dict[str, object]] | None = None,
 ) -> _FakeToolCountStore:
     store = _FakeToolCountStore(call_rows, event_rows, action_rows)
-    monkeypatch.setattr(ArchiveStore, "open_existing", classmethod(lambda cls, archive_root: store))
+    monkeypatch.setattr(
+        ArchiveStore,
+        "open_existing",
+        classmethod(lambda cls, archive_root, *, read_only=True, read_timeout=5.0: store),
+    )
     return store
 
 

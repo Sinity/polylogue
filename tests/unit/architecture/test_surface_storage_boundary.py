@@ -18,6 +18,11 @@ Allow-list:
 * ``polylogue/cli/shared/types.py`` — typed property exposed to CLI
   commands that legitimately need the repository handle while the
   remaining bypasses are moved.
+* ``polylogue/cli/commands/reconcile_work_effects.py`` and
+  ``polylogue/cli/commands/materialize_incident_evidence.py`` — construct
+  ``SessionRepository`` directly rather than through ``AppEnv.repository``;
+  neither command is yet wired into the ``pass_obj``/``AppEnv`` context-object
+  pattern other CLI commands use. Tracked by polylogue-a7uk.
 
 This list should shrink over time; do not add new entries without
 filing a follow-up issue.
@@ -44,6 +49,8 @@ ALLOWED: frozenset[Path] = frozenset(
         REPO_ROOT / "polylogue" / "api" / "archive.py",
         REPO_ROOT / "polylogue" / "api" / "ingest.py",
         REPO_ROOT / "polylogue" / "cli" / "shared" / "types.py",
+        REPO_ROOT / "polylogue" / "cli" / "commands" / "reconcile_work_effects.py",
+        REPO_ROOT / "polylogue" / "cli" / "commands" / "materialize_incident_evidence.py",
     }
 )
 

@@ -24,7 +24,7 @@ from polylogue.core.enums import LinkType as TopologyEdgeType
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.session_links import (
     resolve_session_links_for_session,
@@ -672,6 +672,7 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
     conn.commit()
     conn.close()
 
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with ArchiveStore.open_existing(tmp_path) as archive:
         envelope = query_unit_envelope(
             archive,
@@ -746,6 +747,7 @@ def test_delegation_query_unit_keeps_edge_only_attempts_honest(tmp_path: Path) -
     conn.commit()
     conn.close()
 
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with ArchiveStore.open_existing(tmp_path) as archive:
         envelope = query_unit_envelope(
             archive,
@@ -789,6 +791,7 @@ def test_delegation_instruction_filter_matches_preview_extraction(tmp_path: Path
     conn.commit()
     conn.close()
 
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with ArchiveStore.open_existing(tmp_path) as archive:
         envelope = query_unit_envelope(
             archive,

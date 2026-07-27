@@ -2179,8 +2179,18 @@ def _coerce_env_value(cfg_key: str, env_var: str, value: str) -> object:
     capability boundary (e.g. ``POLYLOGUE_MCP_WRITE_ENABLED``) open on a typo.
     This applies uniformly to every ``_BOOL_CONFIG_KEYS`` entry, not just the
     MCP capability flags, so no boolean config key can silently fail open.
+
+    An empty (whitespace-only) value is the sole exception: it is treated as
+    ``False``, not a typo. This matches the standing ``NO_COLOR``-style
+    convention elsewhere in this module ("set but blank" means "not
+    requested") and the long-standing test/tooling idiom of explicitly
+    clearing an override with ``env={"POLYLOGUE_FORCE_PLAIN": ""}`` rather
+    than deleting the key -- unlike an unrecognized token such as ``"flase"``,
+    a blank value can't silently flip a capability boundary open.
     """
     if cfg_key in _BOOL_CONFIG_KEYS:
+        if not value.strip():
+            return False
         parsed = _parse_bool_token(value)
         if parsed is not None:
             return parsed

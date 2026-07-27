@@ -419,6 +419,12 @@ def test_parse_archive_datetime_raises_on_malformed_non_empty_string() -> None:
 
 @given(
     st.one_of(
+        # Naive and UTC-aware branches are generated separately: hypothesis
+        # 6.161's typed `datetimes()` overloads no longer accept a single
+        # `timezones=` strategy that mixes `None` with a concrete tzinfo
+        # against non-None min/max bounds (mypy: no overload matches). Each
+        # branch below hits a distinct, cleanly-typed overload while
+        # preserving the original mixed naive-or-aware generation intent.
         st.datetimes(min_value=datetime(1970, 1, 2), max_value=datetime(2100, 1, 1)),
         st.datetimes(
             min_value=datetime(1970, 1, 2),

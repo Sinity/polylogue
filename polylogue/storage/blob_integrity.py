@@ -23,6 +23,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
+from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
@@ -1154,7 +1155,7 @@ def _current_raw_payload_bytes(
                         payload = decoded_payload
                     else:
                         raise IndexError("non-array JSON payload only supports source_index 0")
-        except (IndexError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except (IndexError, CoreJSONDecodeError, UnicodeDecodeError) as exc:
             return None, f"source_index:{exc}"
         return json_dumps_bytes(payload), None
 
