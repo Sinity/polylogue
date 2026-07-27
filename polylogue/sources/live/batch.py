@@ -110,9 +110,11 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
+from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -175,6 +177,52 @@ def _single_route_stage_payload(*, append_file_count: int, full_file_count: int)
 
 def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
+def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
+    """Select and read eligible files for off-writer-hold pre-parse (polylogue-wf8a).
+
+    Deliberately narrow scope: only plain ``.jsonl`` provider-session files
+    below ``_STREAMING_FULL_INGEST_BYTES`` are eligible -- exactly the branch
+    at lines ~1377-1425 of ``_ingest_full_paths_sync`` that reads the whole
+    payload into memory and later parses it via ``parse_payload``/
+    ``parse_stream_payload``. Zip bundles, Hermes state/verification
+    databases, browser-capture snapshots, and streaming-threshold files are
+    left untouched (never selected here) -- they keep parsing inline exactly
+    as before; this is a strict subset, not a rewrite, of the existing
+    file-type dispatch. Uses the SAME detection helpers
+    (``_jsonl_provider_and_session_artifact``) the writer-held pass uses, so
+    provider identity can never diverge between prewarm and the real parse.
+    """
+    candidates: list[LiveParseCandidate] = []
+    for path in paths:
+        if path.suffix.lower() != ".jsonl":
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
+            continue
+        provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+        if not parse_as_session:
+            continue
+        try:
+            payload = path.read_bytes()
+        except OSError:
+            continue
+        source_path = str(path)
+        candidates.append(
+            LiveParseCandidate(
+                cache_key=source_path,
+                provider=provider,
+                payload=payload,
+                source_path=source_path,
+                fallback_id=path.stem,
+                is_stream=is_stream_record_provider(source_path, str(provider)),
+            )
+        )
+    return candidates
 
 
 def _captured_jsonl_ends_at_record_boundary(
@@ -255,6 +303,7 @@ class LiveBatchProcessor:
         stop_requested: Callable[[], bool] | None = None,
         event_emitter: LiveBatchEventEmitter | None = None,
         sync_runner: LiveBatchSyncRunner | None = None,
+        parse_stage: LiveParseStage | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -266,6 +315,13 @@ class LiveBatchProcessor:
         self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
+        # polylogue-wf8a: off by default (``live_watcher_parse_stage_split``).
+        # When set, ``_ingest_full_paths`` pre-parses eligible small JSONL
+        # candidates in this stage's bounded thread pool BEFORE
+        # ``_ingest_full_paths_sync`` ever requests the writer hold -- see
+        # ``polylogue.sources.live.parse_prefetch`` for the full safety
+        # argument (identical shape to ``DaemonParseStage``).
+        self._parse_stage = parse_stage
 
     async def ingest_files(
         self,
@@ -1197,6 +1253,34 @@ class LiveBatchProcessor:
         heartbeat: _FullIngestHeartbeat | None = None,
         attempt_id: str | None = None,
     ) -> _FullIngestResult:
+        if self._parse_stage is not None:
+            # polylogue-wf8a: pre-parse eligible candidates BEFORE ever
+            # asking the write coordinator for the writer hold below --
+            # identical sequencing guarantee to ``DaemonParseStage.warm``
+            # (see ``polylogue.sources.live.parse_prefetch``). A warm()
+            # failure here must never abort ingestion; it only means every
+            # candidate falls back to being parsed inline, exactly as if the
+            # flag were off.
+            fallback_provider = Provider.from_string(
+                canonical_acquisition_provider(source_name, source_name=source_name)
+            )
+            try:
+                candidates = await asyncio.to_thread(
+                    _live_parse_stage_candidates, paths, fallback_provider=fallback_provider
+                )
+                if candidates:
+                    warmed = await asyncio.to_thread(self._parse_stage.warm, candidates)
+                    if warmed:
+                        logger.info(
+                            "live.watcher: parse-stage prefetch warmed %d of %d file(s) off the writer hold",
+                            warmed,
+                            len(candidates),
+                        )
+            except Exception:
+                logger.warning(
+                    "live.watcher: parse-stage prefetch failed; falling back to in-hold parse",
+                    exc_info=True,
+                )
         return await self._run_sync(
             "watcher.live_ingest.full",
             self._ingest_full_paths_sync,
@@ -1238,6 +1322,7 @@ class LiveBatchProcessor:
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
+        parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         captured_content_hashes: dict[Path, str] = {}
@@ -1424,6 +1509,17 @@ class LiveBatchProcessor:
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                     raw_payloads[raw_id] = payload
                     source_payload_read_bytes += len(payload)
+                    if self._parse_stage is not None:
+                        # polylogue-wf8a: bridge the path-keyed prewarm cache
+                        # to the raw_id keyspace the instant it becomes known
+                        # -- see polylogue.sources.live.parse_prefetch for
+                        # why the cache cannot be keyed on raw_id directly,
+                        # and why ``pop`` re-verifies the payload bytes match
+                        # exactly (a live-appending file can grow between the
+                        # prewarm read and this one).
+                        cached_sessions = self._parse_stage.cache.pop(str(path), payload=payload)
+                        if cached_sessions is not None:
+                            parsed_sessions_by_raw_id[raw_id] = cached_sessions
                     if heartbeat is not None:
                         heartbeat(
                             "full_blob_copy",
@@ -1558,7 +1654,9 @@ class LiveBatchProcessor:
                     },
                     force=True,
                 )
-            archive_write = self._ingest_full_records_archive(raw_records, raw_payloads, blob_store)
+            archive_write = self._ingest_full_records_archive(
+                raw_records, raw_payloads, blob_store, parsed_sessions_by_raw_id
+            )
             # deferred_raw_ids is a conveyor hand-off, not a failure -- only
             # raws in neither map (a real exception was raised) count below.
             failed.extend(
@@ -1656,6 +1754,7 @@ class LiveBatchProcessor:
         records: list[RawSessionRecord],
         raw_payloads: dict[str, bytes],
         blob_store: BlobStore,
+        parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
     ) -> _ArchiveFullWriteResult:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -1720,7 +1819,19 @@ class LiveBatchProcessor:
                     ):
                         raise ValueError("captured JSONL payload ends before a complete record boundary")
                     t0 = time.perf_counter()
-                    if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
+                    cached_sessions = (
+                        parsed_sessions_by_raw_id.pop(record.raw_id, None) if parsed_sessions_by_raw_id else None
+                    )
+                    if cached_sessions is not None:
+                        # polylogue-wf8a: this record's decode already ran
+                        # off the writer hold (``LiveParseStage.warm``,
+                        # re-verified byte-identical to what
+                        # ``blob_store.write_from_bytes`` just wrote --
+                        # see ``LiveParsePrefetchCache.pop``). Every branch
+                        # below is skipped; this is a pure shortcut of the
+                        # SAME parse, never a different one.
+                        sessions = cached_sessions
+                    elif provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
                         blob_store.blob_path(blob_hash)
                     ):
                         sessions = hermes_state.parse_state_db(
