@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_examples, terminal_query_source_list
+from polylogue.archive.query.query_ast_schema import QUERY_AST_SCHEMA_VERSION, QueryExpressionExplanationAst
 from polylogue.archive.viewport import (
     read_view_http_choices,
     read_view_http_format_choices,
@@ -75,6 +76,7 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     WebCredentialRevocationPayload,
     WebCredentialFailurePayload,
     QueryErrorPayload,
+    QueryExpressionExplanationAst,
 )
 
 _WEB_CREDENTIAL_FAILURE_STATES = [
@@ -900,6 +902,23 @@ def _build_openapi_document() -> dict[str, Any]:
             },
         },
         "x-polylogue-route-contracts": [_route_contract_payload(contract) for contract in ROUTE_CONTRACTS],
+        "x-polylogue-query-ast": {
+            "schema_version": QUERY_AST_SCHEMA_VERSION,
+            "schema": "#/components/schemas/QueryExpressionExplanationAst",
+            "description": (
+                "Canonical, versioned projection of the query DSL's compiled "
+                "predicate tree, unit-source pipeline, and lowering plan. "
+                "Every query DSL expression -- fielded compact queries, "
+                "``sessions where ...`` Boolean expressions, terminal unit "
+                "sources (``actions where ...``), and durable-reference "
+                "pipelines (``from result-set:... | ...``) -- lowers to this "
+                "one documented shape. Obtain it via the MCP ``explain`` "
+                'operation (``kind="query"``) or '
+                "``Polylogue.explain_query_expression(expression)``; there is "
+                "no separate HTTP route yet (tracked as a future extension of "
+                "this schema's live surface)."
+            ),
+        },
     }
 
 

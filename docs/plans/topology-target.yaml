@@ -356,7 +356,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 3480
+    loc: 3489
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -418,6 +418,11 @@ files:
   - path: polylogue/archive/query/production_evaluator.py
     loc: 244
     target: polylogue/archive/query/production_evaluator.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/query_ast_schema.py
+    loc: 443
+    target: polylogue/archive/query/query_ast_schema.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/retrieval.py
@@ -770,7 +775,7 @@ files:
     target: polylogue/browser_capture/__init__.py
     owner: stable
   - path: polylogue/browser_capture/actions.py
-    loc: 578
+    loc: 645
     target: polylogue/browser_capture/actions.py
     owner: stable
   - path: polylogue/browser_capture/capture_jobs.py
@@ -782,7 +787,7 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 654
+    loc: 694
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/pairing.py
@@ -794,11 +799,11 @@ files:
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
-    loc: 329
+    loc: 340
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 845
+    loc: 876
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -1006,7 +1011,7 @@ files:
     target: polylogue/cli/commands/paths.py
     owner: stable
   - path: polylogue/cli/commands/reconcile_work_effects.py
-    loc: 140
+    loc: 157
     target: polylogue/cli/commands/reconcile_work_effects.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
@@ -2084,7 +2089,7 @@ files:
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/insights/work_effects.py
-    loc: 439
+    loc: 581
     target: polylogue/insights/work_effects.py
     owner: stable
   - path: polylogue/insights/work_evidence.py
@@ -3798,7 +3803,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
-    loc: 1451
+    loc: 1457
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_retention.py
@@ -3807,7 +3812,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 6872
+    loc: 6897
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper

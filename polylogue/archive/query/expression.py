@@ -733,7 +733,16 @@ class QueryExpressionExplanation:
     lowering_plan: dict[str, object] | None = None
 
     def to_payload(self) -> dict[str, object]:
+        # Local import: query_ast_schema.py depends on expression.py's own
+        # QueryUnitName (via metadata.py, not expression.py directly), so a
+        # module-level import here would still be safe, but this stays local
+        # to keep the one-way dependency (schema module never imports this
+        # module) obvious at a glance -- see query_ast_schema's module
+        # docstring for the versioning rationale.
+        from polylogue.archive.query.query_ast_schema import QUERY_AST_SCHEMA_VERSION
+
         return {
+            "schema_version": QUERY_AST_SCHEMA_VERSION,
             "source_text": self.source_text,
             "clauses": [clause.to_payload() for clause in self.clauses],
             "predicate": self.predicate.to_payload() if self.predicate is not None else None,
