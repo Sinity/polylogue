@@ -173,6 +173,37 @@ event stream together with `polylogued.launch.json` and `polylogued.log` to
 diagnose whether a branch-local failure happened during API/receiver readiness
 or inside the daemon itself.
 
+### Stale-run-dir detection
+
+Switching branches, pulling, or rebasing on disk after the branch-local daemon
+started does **not** change what code it is actually running: Python already
+imported the old modules into the live process. `git branch --show-current`
+on a fresh preflight will happily report the new branch while the running
+daemon keeps serving the old one — restart is required, not just a re-run of
+`devtools workspace dev-loop`.
+
+The launcher records the commit it started at as `POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT`
+in the daemon's own environment (part of `suggested_env`/`polylogued.env.json`).
+`GET /api/dev-loop` re-derives the checkout's live HEAD on every call and
+compares it against that launch-time commit:
+
+```json
+{
+  "run_id": "...",
+  "launch_commit": "abc1234",
+  "current_commit": "def5678",
+  "stale": true
+}
+```
+
+The web shell's `dev:` chip (`renderDevLoopChip` in `web_shell.py`) reads the
+same payload and switches to the `q-stale` quality class with a `(stale)`
+label and a tooltip naming both commits when they diverge — this is the
+"daemon + web" stale warning named in polylogue-5en's acceptance criteria.
+`stale` is always `false` when no launch commit was recorded (e.g. a
+production/non-dev-loop daemon, or a non-git checkout), so the field never
+false-positives outside a dev-loop run.
+
 Once the daemon passes its schema preflight, it also writes durable
 `daemon.lifecycle` rows to the existing `ops.db` daemon event ledger. These
 rows carry the same dev-loop run id when `POLYLOGUE_DEV_LOOP_RUN_ID` is set and
@@ -376,6 +407,33 @@ auth, verifies that an unauthenticated capture is rejected, verifies that an
 authenticated synthetic capture is accepted, and reports the written spool
 artifact. It uses the branch-local run directory and does not talk to the
 deployed `polylogued.service`.
+
+**Concurrent spool/dedup proof.** The receiver's write path is designed for
+two extension instances (or two receiver processes sharing one spool root)
+racing to post the same conversation snapshot: they must converge on exactly
+one spool artifact, never corrupt it, and never overshoot the spool quota.
+This is exercised by real concurrency, not a toy replica:
+
+- `tests/unit/browser_capture/test_receiver.py::test_concurrent_new_session_writes_never_exceed_the_quota` —
+  20 threads racing distinct new sessions against a quota of 5 must produce at
+  most 5 files, proving `_check_spool_quota` + `_SPOOL_WRITE_LOCK` close the
+  TOCTOU window.
+- `tests/unit/daemon/test_browser_capture_instance_attribution.py::test_multiple_receiver_processes_deduplicate_without_corrupting_spool` —
+  two separate OS processes (`multiprocessing`, `spawn` context) posting the
+  same content-hash-equivalent envelope under two different
+  `extension_instance_id`s must leave exactly one artifact on disk, proving the
+  advisory `flock` (`_spool_file_lock`) serializes writers beyond one receiver
+  process.
+- `tests/unit/daemon/test_browser_capture_instance_attribution.py::test_concurrent_extension_instances_deduplicate_without_corrupting_spool` —
+  the same race within one process (`ThreadPoolExecutor`) followed by an actual
+  archive ingest, proving the deduplicated capture also converges to one
+  archived session.
+
+Run them together for the branch-local proof:
+
+```bash
+devtools test tests/unit/browser_capture/test_receiver.py tests/unit/daemon/test_browser_capture_instance_attribution.py
+```
 
 For service-worker-to-receiver coverage, run the extension smoke:
 
@@ -628,6 +686,65 @@ back to Sinnix. Never point a branch daemon at the live archive directory.
 
    The branch run never touches the live archive or the deployed unit beyond
    the explicit stop/start above — both remain operator actions.
+
+## MCP Server
+
+The MCP server (`polylogue.mcp.cli:main`, console script `polylogue-mcp`) is a
+standalone stdio process — it is not part of `polylogued` and has no port to
+isolate. It resolves its archive root through the same 5-layer config as the
+CLI (see `docs/configuration.md`), so a branch-local instance is just that
+process launched with the branch-local archive root in its environment:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=.local/dev-archive \
+  python -c "from polylogue.mcp.cli import main; main()"
+```
+
+or, from an installed console script:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=.local/dev-archive polylogue-mcp
+```
+
+**Do not edit the operator's registered `.mcp.json`/`~/.claude.json` MCP server
+entry to point at a branch checkout** — that is the "prod-registered" instance
+other agent sessions rely on, and clobbering it mid-session breaks their
+archive access. Instead:
+
+- run the branch-local process directly and drive it with a raw stdio client
+  (or `mcp` inspector tooling) for interactive debugging; or
+- register a **second**, distinctly-named MCP server entry in a project-local
+  or throwaway client config (e.g. `.mcp.dev-loop.json`, not committed) that
+  points `command`/`args`/`env` at the branch checkout's interpreter and
+  `POLYLOGUE_ARCHIVE_ROOT`; or
+- exercise tool behavior directly in Python via `polylogue.mcp.server.build_server`,
+  which is exactly what `tests/unit/mcp/` and `tests/infra/mcp.py` already do —
+  the fastest branch-local MCP loop for verifying a tool contract change is
+  usually a focused `devtools test tests/unit/mcp/...` run, not a live client.
+
+There is no shared server-side state to isolate between two branch-local MCP
+instances: `build_server`/`_get_server` hold an in-process singleton scoped to
+one Python process, and the MCP call log
+(`polylogue/mcp/call_log.py::start_mcp_call_log`) resolves its spool path
+through the same per-process resolved config, so it follows whatever archive
+root that process's `POLYLOGUE_ARCHIVE_ROOT` names. Two branch-local `polylogue-mcp`
+processes pointed at two different `.local/dev-archive` roots (one per
+worktree) cannot cross-talk; nothing before this needed to be built, only
+documented.
+
+## Surface Isolation Summary
+
+Deliverable table for polylogue-5en: what isolates two concurrent branch-local
+dev loops from each other and from the deployed system, per surface.
+
+| Surface | Isolation unit | Cross-talk guard | Stale-code detection |
+| --- | --- | --- | --- |
+| Daemon (`polylogued run`) | `POLYLOGUE_ARCHIVE_ROOT` + API/receiver ports (`--isolated-ports` or explicit `--api-port`/`--browser-capture-port`) | Preflight refuses to launch onto an already-occupied port; `system_service` check warns when the deployed unit is active without isolated ports | `GET /api/dev-loop` `stale` field (launch commit vs. live checkout HEAD); see above |
+| Web shell | Served by the branch-local daemon process on its own port; no separate process | Same as daemon (one HTTP server serves both) | Same `dev:` chip, same `stale` field |
+| CLI/TUI capture | `--capture-cli`/`--tui-plan` write under `.cache/dev-loop/<run-id>/{terminal,tui}/`, keyed by the run id (which embeds branch+commit+ports) | Two branches produce two different run ids and therefore two different artifact directories; nothing is shared | N/A — each capture is a point-in-time transcript, not a long-lived process |
+| Browser-capture receiver | Its own port (`--browser-capture-port`) and spool path (`--browser-capture-spool`, defaults under the run's `XDG_DATA_HOME`) | Advisory `flock` on the spool root (`_spool_file_lock`) serializes writers even across processes; the `_SPOOL_WRITE_LOCK` + quota check are also process-serialized (see the concurrent spool/dedup tests below) | Not applicable — the receiver is a pure function of each request; there is no in-memory model to go stale |
+| Browser extension | Configured via receiver URL/token at load time (`--browser-plan`, `--extension-smoke`, `--browser-smoke`) | Each branch's plan/smoke uses that branch's receiver port; loading the extension unpacked from a different worktree simply targets a different receiver URL | Reload the unpacked extension after a code change; MV3 does not hot-reload either |
+| MCP server (`polylogue-mcp`) | `POLYLOGUE_ARCHIVE_ROOT` in the process's own environment; stdio transport, no shared port | Each branch runs its own process; `build_server`'s singleton and the MCP call log are process-local and follow that process's resolved config (see "MCP Server" above) | Restart the process after a code change; there is no daemon-style live payload to compare commits (stdio has no persistent debug endpoint) |
 
 ## Current Boundary
 

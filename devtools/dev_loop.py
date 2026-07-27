@@ -370,8 +370,9 @@ def _dev_loop_suggested_env(
     api_port: int,
     browser_capture_port: int,
     run_id: str,
+    commit: str | None = None,
 ) -> dict[str, str]:
-    return {
+    env = {
         "POLYLOGUE_ARCHIVE_ROOT": str(archive),
         "POLYLOGUE_API_PORT": str(api_port),
         "POLYLOGUE_BROWSER_CAPTURE_PORT": str(browser_capture_port),
@@ -382,6 +383,14 @@ def _dev_loop_suggested_env(
         "XDG_DATA_HOME": str(run_log_dir / "xdg-data"),
         "XDG_STATE_HOME": str(run_log_dir / "xdg-state"),
     }
+    # Recorded so the running daemon can detect the stale-run-dir trap: if the
+    # checkout's HEAD moves (branch switch, pull, rebase) after launch, Python
+    # has already imported the old code into the running process's memory --
+    # `git branch --show-current` on disk no longer reflects what the daemon
+    # is actually serving. See `_dev_loop_payload` in `polylogue/daemon/http.py`.
+    if commit:
+        env["POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT"] = commit
+    return env
 
 
 def _preflight_suggested_env(preflight: dict[str, Any]) -> dict[str, str]:
@@ -401,6 +410,7 @@ def _preflight_suggested_env(preflight: dict[str, Any]) -> dict[str, str]:
         api_port=int(api_status["port"]),
         browser_capture_port=int(receiver_status["port"]),
         run_id=str(preflight["run_id"]),
+        commit=(str(commit_value) if (commit_value := preflight.get("commit")) else None),
     )
 
 
@@ -3098,6 +3108,7 @@ def build_dev_loop_status(
         api_port=api_port,
         browser_capture_port=browser_capture_port,
         run_id=run_id,
+        commit=commit,
     )
     if prepare:
         archive.mkdir(parents=True, exist_ok=True)
