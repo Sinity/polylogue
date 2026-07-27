@@ -24,6 +24,7 @@ import pytest
 from polylogue.config import Source
 from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.pipeline.services.process_pool import _initialize_worker_logging
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
@@ -152,65 +153,48 @@ def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # This test observes the *real* archive_ingest.py process-pool path
-    # (line ~276: a bare `ProcessPoolExecutor(max_workers=workers)` with no
-    # explicit `mp_context`, unlike process_pool.py::process_pool_executor
-    # which pins "spawn"). Each parse worker builds its own
-    # ArchiveBlobPublisher and flushes it -- i.e. `BlobStore.publish_many`
-    # actually runs *inside the worker process*, not the main pytest
-    # process -- so this test's `monkeypatch.setattr(BlobStore,
-    # "publish_many", ...)` (applied only to the main process's in-memory
-    # class object) only reaches the worker if the worker process is
-    # fork()ed from this already-patched main process: a fork()ed child
+    # This test observes the *real* archive_ingest.py process-pool path.
+    # `parse_sources_archive` builds its pool via
+    # `process_pool.process_pool_executor()`, which pins the "spawn" start
+    # method (polylogue-7saq: it used to construct a bare
+    # `ProcessPoolExecutor(max_workers=workers)` with no explicit
+    # `mp_context`, picking up whatever the platform default happened to be
+    # -- "fork" on 3.13, "forkserver" on 3.14 -- and that gap is what this
+    # test's fork-context trickery below works around). Each parse worker
+    # builds its own ArchiveBlobPublisher and flushes it -- i.e.
+    # `BlobStore.publish_many` actually runs *inside the worker process*,
+    # not the main pytest process -- so this test's `monkeypatch.setattr(
+    # BlobStore, "publish_many", ...)` (applied only to the main process's
+    # in-memory class object) only reaches the worker if the worker process
+    # is fork()ed from this already-patched main process: a fork()ed child
     # inherits a copy-on-write snapshot of the parent's class objects,
-    # patched attribute included.
-    #
-    # That inheritance is what silently made this test pass on Python
-    # 3.13: the *global default* multiprocessing start method on Linux was
-    # "fork", so the unpinned `ProcessPoolExecutor` in archive_ingest.py
-    # picked "fork" implicitly and each worker saw the patch. Python 3.14
-    # changed that global default to "forkserver" (a persistent helper
-    # process bootstrapped once, early, from a *separate* preload of
-    # `__main__` -- see process_pool_context()'s docstring). Workers forked
-    # from that forkserver inherit the forkserver's own minimal, unpatched
-    # state, re-import `polylogue.storage.blob_publication` fresh when the
-    # submitted worker function runs, and call the ORIGINAL
-    # `BlobStore.publish_many` -- so `reservation_committed` is never set
-    # and the observer's own `.wait(timeout=10)` fails with an
-    # AssertionError inside ~10s. This was previously misdiagnosed as an
-    # indefinite fork()-after-asyncio-loop hang; it is actually a bounded,
-    # deterministic ~10s failure caused by the monkeypatch never reaching
-    # the process that runs the patched code. `parse_sources_archive`
-    # itself is correct on 3.14 (per the isolated repro in polylogue-90k1);
-    # only this test's implicit reliance on the ambient default start
-    # method was broken.
+    # patched attribute included. Neither "spawn" (fresh re-import of
+    # `polylogue.storage.blob_publication`, never sees the patch) nor
+    # "forkserver" (forks from an earlier, unpatched preload) would let the
+    # worker observe this test's monkeypatch -- only an explicit
+    # `multiprocessing.get_context("fork")` does, deliberately, for
+    # observability purposes only.
     #
     # The fix: this test's own observer primitives (Events/Pipe/Process)
     # already use an explicit `multiprocessing.get_context("fork")`
     # (`fork_ctx` below) so they behave identically across Python versions.
-    # The remaining gap was that archive_ingest.py's *own* pool construction
-    # was never routed through that context. Monkeypatching
-    # `archive_ingest.ProcessPoolExecutor` to force `mp_context=fork_ctx`
-    # (the exact same monkeypatch target `test_parse_workers_override_
-    # bypasses_process_pool` above already spies on) makes the real parse
-    # workers fork from this patched process on every supported Python
-    # version, restoring the cross-process observability this test needs --
-    # without touching archive_ingest.py's production pool-construction
-    # behavior for real callers, who never monkeypatch its class attributes.
+    # Monkeypatching `archive_ingest.process_pool_executor` (the shared
+    # helper the production code now calls, per polylogue-7saq) to force
+    # `mp_context=fork_ctx` makes the real parse workers fork from this
+    # patched process on every supported Python version, restoring the
+    # cross-process observability this test needs -- without touching
+    # archive_ingest.py's production pool-construction behavior for real
+    # callers, who never monkeypatch this helper.
     fork_ctx = multiprocessing.get_context("fork")
 
-    class _ForkedProcessPoolExecutor(ProcessPoolExecutor):
-        """Force the real parse pool to fork from this patched process.
+    def _forked_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
+        return ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_initialize_worker_logging,
+            mp_context=fork_ctx,
+        )
 
-        Only ``mp_context`` is overridden; every other constructor argument
-        (``max_workers``, ``initializer``, ...) passes through unchanged.
-        """
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            kwargs["mp_context"] = fork_ctx
-            super().__init__(*args, **kwargs)  # type: ignore[call-overload]
-
-    monkeypatch.setattr(archive_ingest, "ProcessPoolExecutor", _ForkedProcessPoolExecutor)
+    monkeypatch.setattr(archive_ingest, "process_pool_executor", _forked_process_pool_executor)
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "2")
     monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
     archive_root = workspace_env["archive_root"]
@@ -485,27 +469,29 @@ def test_parse_workers_override_bypasses_process_pool(
     """``parse_workers`` overrides the ambient worker count for one call.
 
     Guards polylogue-b054.1.1.1: the demo seeder now passes ``parse_workers=1``
-    so the small, fixed demo corpus never goes through the real
-    ``ProcessPoolExecutor`` path, whose per-worker failures were previously
-    swallowed by the pool driver's ``except Exception: failed += 1; continue``
-    and silently dropped a fixture file's sessions under host load (the
-    observed nondeterministic declared-construct loss under xdist). This
-    spies on the exact ``ProcessPoolExecutor`` construction that path uses: if
-    the override stopped reaching ``workers`` -- e.g. the ``max(1,
-    parse_workers)`` branch in ``parse_sources_archive`` were reverted to
-    always call ``_parse_worker_count()`` -- the ``parse_workers=1`` call
-    below would still construct the pool (ambient worker count on any
-    multi-core host is > 1), and this test would fail.
+    so the small, fixed demo corpus never goes through the real process-pool
+    path, whose per-worker failures were previously swallowed by the pool
+    driver's ``except Exception: failed += 1; continue`` and silently dropped
+    a fixture file's sessions under host load (the observed nondeterministic
+    declared-construct loss under xdist). This spies on the exact
+    ``process_pool_executor()`` construction that path uses (polylogue-7saq:
+    the shared helper, not a bare ``ProcessPoolExecutor``): if the override
+    stopped reaching ``workers`` -- e.g. the ``max(1, parse_workers)`` branch
+    in ``parse_sources_archive`` were reverted to always call
+    ``_parse_worker_count()`` -- the ``parse_workers=1`` call below would
+    still construct the pool (ambient worker count on any multi-core
+    CI/dev host is > 1), and this test would fail.
     """
+
+    from polylogue.pipeline.services.process_pool import process_pool_executor as real_process_pool_executor
 
     pool_calls: list[int | None] = []
 
-    class _SpyExecutor(ProcessPoolExecutor):
-        def __init__(self, *args: object, max_workers: int | None = None, **kwargs: object) -> None:
-            pool_calls.append(max_workers)
-            super().__init__(*args, max_workers=max_workers, **kwargs)  # type: ignore[call-overload]
+    def fake_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
+        pool_calls.append(max_workers)
+        return real_process_pool_executor(max_workers=max_workers)
 
-    monkeypatch.setattr(archive_ingest, "ProcessPoolExecutor", _SpyExecutor)
+    monkeypatch.setattr(archive_ingest, "process_pool_executor", fake_process_pool_executor)
     # No POLYLOGUE_INGEST_PARSE_WORKERS override: the ambient default is
     # min(8, cpus-1), which is >= 2 on any real multi-core CI/dev host, so
     # an un-overridden call below would exercise the pool branch.
@@ -521,3 +507,48 @@ def test_parse_workers_override_bypasses_process_pool(
     result = asyncio.run(parse_sources_archive(archive_root, pooled_sources, parse_workers=3))
     assert pool_calls == [3]  # explicit override reaches the pool construction exactly
     assert result.counts["sessions"] == _expected_session_count(pooled_sources)
+
+
+def test_parallel_ingest_pool_uses_shared_safe_process_pool_executor(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-7saq: the parallel-parse pool must go through the shared helper.
+
+    Before this fix, ``parse_sources_archive`` built its pool via a bare
+    ``ProcessPoolExecutor(max_workers=workers)`` with no ``mp_context`` --
+    unlike every other production process-pool call site (``ingest_batch/
+    _core.py``, ``revision_backfill.py``), which already route through
+    ``process_pool.process_pool_executor()`` to pin the "spawn" start method
+    and avoid fork()ing a live, possibly multi-threaded async process. This
+    test spies on ``archive_ingest.process_pool_executor`` (the shared
+    helper's module-level name, imported directly rather than constructing
+    ``ProcessPoolExecutor`` inline) with a wrapper that asserts every
+    invocation resolves to the "spawn" context and records that it was
+    called at all -- if the fix regressed back to a direct
+    ``ProcessPoolExecutor(...)`` construction, this spy would simply never
+    fire and the ``calls`` assertion below would fail.
+    """
+    from polylogue.pipeline.services.process_pool import process_pool_executor as real_process_pool_executor
+
+    calls: list[int] = []
+
+    def spying_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
+        calls.append(max_workers)
+        executor = real_process_pool_executor(max_workers=max_workers)
+        mp_context = executor._mp_context
+        assert mp_context is not None
+        assert mp_context.get_start_method() == "spawn"
+        return executor
+
+    monkeypatch.setattr(archive_ingest, "process_pool_executor", spying_process_pool_executor)
+    monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
+    archive_root = workspace_env["archive_root"]
+    sources = _build_sources(tmp_path, count=2, seed=113)
+
+    result = asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=2))
+
+    assert calls == [2]
+    assert result.counts["sessions"] == _expected_session_count(sources)
+    assert not hasattr(archive_ingest, "ProcessPoolExecutor")
