@@ -10,12 +10,13 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, cast
 
+from polylogue.archive.semantic.cost_records import ModelUsageTotals
 from polylogue.archive.semantic.pricing import (
     CATALOG_EFFECTIVE_DATE,
     CATALOG_PROVENANCE,
@@ -32,11 +33,14 @@ from polylogue.archive.semantic.subscription_pricing import (
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.evidence_value import (
     CoverageExclusion,
+    EvidenceObservation,
     EvidenceValue,
     FactFamilySpec,
     FrameCoverage,
     FreshnessProvenance,
+    MeasurementAuthority,
     TemporalProvenance,
+    refine_evidence_value,
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
@@ -117,6 +121,74 @@ USAGE_LANE_CATALOG_COST_FAMILY: Final = FactFamilySpec(
     allowed_states=frozenset({"known", "unknown"}),
     allowed_authorities=frozenset({"catalog-derived"}),
     authority_precedence=("catalog-derived",),
+)
+
+
+_SESSION_USAGE_RECONCILED_TOKENS_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="session-usage-reconciled-total-tokens:v1",
+)
+SESSION_USAGE_RECONCILED_TOKENS_FAMILY: Final = FactFamilySpec(
+    family="usage.session_reconciled_total_tokens",
+    owner="polylogue.storage.usage",
+    source_adapter="build_session_usage_reconciliation",
+    public_field="session_usage_reconciliation.reconciled_tokens_evidence",
+    renderer_label="reconciled session total tokens",
+    value_schema="integer",
+    unit="tokens",
+    grain="session",
+    denominator="canonical per-session token sources (session_model_usage rollup, session_profiles estimate)",
+    definition_ref=_SESSION_USAGE_RECONCILED_TOKENS_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"provider-reported", "structural", "model-derived"}),
+    authority_precedence=("provider-reported", "structural", "model-derived"),
+)
+
+_SESSION_USAGE_RECONCILED_COST_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="session-usage-reconciled-catalog-cost:v1",
+)
+SESSION_USAGE_RECONCILED_COST_FAMILY: Final = FactFamilySpec(
+    family="usage.session_reconciled_catalog_cost",
+    owner="polylogue.storage.usage",
+    source_adapter="build_session_usage_reconciliation",
+    public_field="session_usage_reconciliation.reconciled_cost_evidence",
+    renderer_label="reconciled session catalog-equivalent cost",
+    value_schema="number",
+    unit="USD",
+    grain="session",
+    denominator=(
+        "canonical per-session cost sources (fresh catalog price of the reconciled tokens, "
+        "legacy session_profiles/cost-insight total)"
+    ),
+    definition_ref=_SESSION_USAGE_RECONCILED_COST_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"provider-reported", "catalog-derived", "model-derived"}),
+    authority_precedence=("provider-reported", "catalog-derived", "model-derived"),
 )
 
 
@@ -2075,11 +2147,399 @@ def _int(value: object) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# Per-session usage/cost reconciliation (polylogue-f2qv.6, first slice)
+#
+# A single session can carry three disagreeing answers for "how many tokens
+# / how much did this cost": the exact session_model_usage rollup, the
+# (possibly stale) session_profiles estimate, and the per-session cost
+# insight -- which today reads its number off that same profile row rather
+# than off session_model_usage. This section reconciles those three sources
+# into one canonical snapshot using EvidenceValue authority ordering: the
+# exact rollup wins when it disagrees with the profile estimate, and the
+# superseded lower-authority value is preserved (never dropped, never
+# averaged) as a labeled contribution on the reconciled EvidenceValue.
+#
+# Scope note: this reconciles ONE session at a time from already-loaded
+# values. It does not (yet) wire a corpus-wide census, a materializer/insight
+# registry entry, or contradiction-debt recording -- see polylogue-f2qv.6 for
+# the remaining scope.
+# --------------------------------------------------------------------------
+
+
+def _session_usage_fact_ref(session_id: str, metric: str) -> ObjectRef:
+    return ObjectRef(kind="insight", object_id=f"session-usage-reconciled:{session_id}:{metric}")
+
+
+def _session_usage_source_ref(session_id: str, source: str) -> ObjectRef:
+    return ObjectRef(kind="insight", object_id=f"session-usage-source:{session_id}:{source}")
+
+
+def _cost_provenance_authority(
+    provenance: str,
+) -> Literal["provider-reported", "catalog-derived", "model-derived"]:
+    """Classify a legacy ``cost_provenance``/``cost_is_estimated`` label.
+
+    Mirrors ``_usage_lane_authority`` above: an exact/provider-reported label
+    is treated as authoritative money, a prior catalog-priced computation is
+    ``catalog-derived``, and anything estimated/unknown is the weakest,
+    ``model-derived`` tier -- the same tier a stale profile estimate carries.
+    """
+
+    if provenance in {"exact", "provider_reported"}:
+        return "provider-reported"
+    if provenance in {"priced", "origin_reported", "catalog_priced"}:
+        return "catalog-derived"
+    return "model-derived"
+
+
+def _sum_model_usage_tokens(rows: Sequence[ModelUsageTotals]) -> int:
+    return sum(row.input_tokens + row.output_tokens + row.cache_read_tokens + row.cache_write_tokens for row in rows)
+
+
+def _model_usage_tokens_evidence(
+    session_id: str,
+    rows: Sequence[ModelUsageTotals],
+    *,
+    observed_at: str,
+) -> EvidenceValue[int]:
+    fact_ref = _session_usage_fact_ref(session_id, "exact-total-tokens")
+    source_ref = _session_usage_source_ref(session_id, "session_model_usage")
+    known = bool(rows)
+    return EvidenceValue(
+        family=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if known else "unknown",
+        value=_sum_model_usage_tokens(rows) if known else None,
+        measurement_authority=("provider-reported",),
+        weakest_measurement_authority="provider-reported",
+        evidence_refs=(source_ref,),
+        definition_ref=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(observed_at=observed_at, time_source="materialization_ts"),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"session {session_id} reconciled total tokens",
+            grain=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.grain,
+            denominator=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.denominator,
+            intended_count=1,
+            observed_count=1 if known else 0,
+            supported_count=1 if known else 0,
+            complete=known,
+        ),
+        freshness=FreshnessProvenance(state="fresh", evaluated_at=observed_at),
+    )
+
+
+def _profile_tokens_evidence(
+    session_id: str,
+    *,
+    total_input_tokens: int,
+    total_output_tokens: int,
+    total_cache_read_tokens: int,
+    total_cache_write_tokens: int,
+    cost_provenance: str,
+    observed_at: str,
+) -> EvidenceValue[int]:
+    fact_ref = _session_usage_fact_ref(session_id, "exact-total-tokens")
+    source_ref = _session_usage_source_ref(session_id, "session_profiles")
+    total = total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_write_tokens
+    known = total > 0
+    authority = _cost_provenance_authority(cost_provenance)
+    # session_profiles token totals are never themselves provider-reported
+    # money; the strongest a profile token total can claim is the same
+    # authority its own model-rollup fallback in cost_compute.py would carry.
+    token_authority: MeasurementAuthority = "structural" if authority == "provider-reported" else "model-derived"
+    return EvidenceValue(
+        family=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if known else "unknown",
+        value=total if known else None,
+        measurement_authority=(token_authority,),
+        weakest_measurement_authority=token_authority,
+        evidence_refs=(source_ref,),
+        definition_ref=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(observed_at=observed_at, time_source="materialization_ts"),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"session {session_id} reconciled total tokens",
+            grain=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.grain,
+            denominator=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.denominator,
+            intended_count=1,
+            observed_count=1 if known else 0,
+            supported_count=1 if known else 0,
+            complete=known,
+        ),
+        freshness=FreshnessProvenance(state="fresh", evaluated_at=observed_at),
+    )
+
+
+def _catalog_cost_evidence(
+    session_id: str,
+    *,
+    tokens_evidence: EvidenceValue[int],
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+    normalized_model: str | None,
+    observed_at: str,
+) -> EvidenceValue[float]:
+    fact_ref = _session_usage_fact_ref(session_id, "catalog-api-equivalent-cost")
+    source_ref = _session_usage_source_ref(session_id, "reconciled_tokens_repriced")
+    catalog_ref = ObjectRef(kind="insight", object_id=f"pricing-catalog:{CATALOG_EFFECTIVE_DATE}")
+    priceable = tokens_evidence.value_state == "known" and normalized_model is not None and normalized_model in PRICING
+    value: float | None = None
+    exclusions: tuple[CoverageExclusion, ...] = ()
+    if priceable:
+        assert tokens_evidence.value is not None  # narrowed by value_state == "known" above
+        # Price each token category at its own catalog rate -- input, output,
+        # and cache read/write are priced very differently (output is
+        # typically several times an input token's rate), so collapsing the
+        # reconciled *total* into a single input_tokens argument would
+        # systematically misprice any session with real output/cache volume.
+        value = round(
+            estimate_cost(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                model=normalized_model or "",
+            ),
+            6,
+        )
+    elif tokens_evidence.value_state != "known":
+        exclusions = (CoverageExclusion(subject_ref=source_ref, reason="reconciled-tokens-unknown"),)
+    else:
+        exclusions = (CoverageExclusion(subject_ref=source_ref, reason="unpriced-model"),)
+    return EvidenceValue(
+        family=SESSION_USAGE_RECONCILED_COST_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if priceable else "unknown",
+        value=value,
+        measurement_authority=("catalog-derived",),
+        weakest_measurement_authority="catalog-derived",
+        evidence_refs=(source_ref, catalog_ref),
+        definition_ref=SESSION_USAGE_RECONCILED_COST_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(observed_at=observed_at, time_source="materialization_ts"),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"session {session_id} reconciled catalog-equivalent cost",
+            grain=SESSION_USAGE_RECONCILED_COST_FAMILY.grain,
+            denominator=SESSION_USAGE_RECONCILED_COST_FAMILY.denominator,
+            intended_count=1,
+            observed_count=1 if priceable else 0,
+            supported_count=1 if priceable else 0,
+            complete=priceable,
+            exclusions=exclusions,
+        ),
+        freshness=FreshnessProvenance(state="fresh", evaluated_at=observed_at),
+    )
+
+
+def _legacy_cost_evidence(
+    session_id: str,
+    *,
+    cost_usd: float,
+    cost_provenance: str,
+    observed_at: str,
+) -> EvidenceValue[float]:
+    fact_ref = _session_usage_fact_ref(session_id, "catalog-api-equivalent-cost")
+    source_ref = _session_usage_source_ref(session_id, "cost_insight")
+    known = cost_usd > 0
+    authority = _cost_provenance_authority(cost_provenance)
+    exclusions: tuple[CoverageExclusion, ...] = ()
+    if not known:
+        exclusions = (CoverageExclusion(subject_ref=source_ref, reason="no_tokens"),)
+    return EvidenceValue(
+        family=SESSION_USAGE_RECONCILED_COST_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if known else "unknown",
+        value=round(cost_usd, 6) if known else None,
+        measurement_authority=(authority,),
+        weakest_measurement_authority=authority,
+        evidence_refs=(source_ref,),
+        definition_ref=SESSION_USAGE_RECONCILED_COST_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(observed_at=observed_at, time_source="materialization_ts"),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"session {session_id} reconciled catalog-equivalent cost",
+            grain=SESSION_USAGE_RECONCILED_COST_FAMILY.grain,
+            denominator=SESSION_USAGE_RECONCILED_COST_FAMILY.denominator,
+            intended_count=1,
+            observed_count=1 if known else 0,
+            supported_count=1 if known else 0,
+            complete=known,
+            exclusions=exclusions,
+        ),
+        freshness=FreshnessProvenance(state="fresh", evaluated_at=observed_at),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SessionUsageReconciliation:
+    """One canonical per-session usage/cost snapshot reconciling three sources.
+
+    polylogue-f2qv.6 (first slice): a single live session can show three
+    incompatible answers -- ``session_model_usage`` reports the exact
+    provider-derived rollup, ``session_profiles`` persists a token estimate
+    that can go stale, and the per-session cost insight reads its dollar
+    figure off that same profile row. This snapshot reconciles the token
+    lane (``session_model_usage`` vs ``session_profiles``) and the money
+    lane (a fresh catalog reprice of the winning tokens vs the legacy
+    persisted cost) independently, through EvidenceValue authority ordering
+    (provider-reported > structural/catalog-derived > model-derived).
+
+    Nothing is discarded: every input source survives as a labeled
+    ``contributions`` entry on the reconciled EvidenceValue, so a caller can
+    always see which sources agreed, which were superseded, and why.
+    """
+
+    session_id: str
+    model_usage_tokens_evidence: EvidenceValue[int]
+    profile_tokens_evidence: EvidenceValue[int]
+    reconciled_tokens_evidence: EvidenceValue[int]
+    catalog_cost_evidence: EvidenceValue[float]
+    legacy_cost_evidence: EvidenceValue[float]
+    reconciled_cost_evidence: EvidenceValue[float]
+
+    def superseded_token_observations(self) -> tuple[EvidenceObservation[int], ...]:
+        """Leaf token observations that lost to a stronger-authority source."""
+        winning_value = self.reconciled_tokens_evidence.value
+        return tuple(
+            observation
+            for observation in self.reconciled_tokens_evidence.contributions
+            if observation.value_state != "known" or observation.value != winning_value
+        )
+
+    def superseded_cost_observations(self) -> tuple[EvidenceObservation[float], ...]:
+        """Leaf cost observations that lost to a stronger-authority source."""
+        winning_value = self.reconciled_cost_evidence.value
+        return tuple(
+            observation
+            for observation in self.reconciled_cost_evidence.contributions
+            if observation.value_state != "known" or observation.value != winning_value
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "model_usage_tokens_evidence": self.model_usage_tokens_evidence.to_dict(),
+            "profile_tokens_evidence": self.profile_tokens_evidence.to_dict(),
+            "reconciled_tokens_evidence": self.reconciled_tokens_evidence.to_dict(),
+            "catalog_cost_evidence": self.catalog_cost_evidence.to_dict(),
+            "legacy_cost_evidence": self.legacy_cost_evidence.to_dict(),
+            "reconciled_cost_evidence": self.reconciled_cost_evidence.to_dict(),
+        }
+
+
+def build_session_usage_reconciliation(
+    session_id: str,
+    *,
+    observed_at: str,
+    model_usage_rows: Sequence[ModelUsageTotals] = (),
+    profile_total_input_tokens: int = 0,
+    profile_total_output_tokens: int = 0,
+    profile_total_cache_read_tokens: int = 0,
+    profile_total_cache_write_tokens: int = 0,
+    profile_cost_usd: float = 0.0,
+    profile_cost_provenance: str = "unknown",
+    reconciled_model: str | None = None,
+) -> SessionUsageReconciliation:
+    """Reconcile the three per-session usage/cost sources into one snapshot.
+
+    This is a pure function over already-loaded values: callers read
+    ``session_model_usage`` rows (``ModelUsageTotals``, e.g. via
+    ``polylogue.storage.sqlite.queries.model_usage``), the ``session_profiles``
+    row's token/cost columns, and the cost-insight row it currently derives
+    from (``_session_cost_insight_from_archive_row`` reads the same
+    ``session_profiles`` columns), then hand them here. This function owns
+    only the reconciliation policy -- authority ordering and conflict
+    preservation -- not the storage reads.
+
+    ``reconciled_model`` is the normalized model name used to reprice the
+    winning token evidence against the catalog; pass the model the winning
+    source actually reports (the dominant model on multi-model sessions) so
+    the fresh catalog cost is computed against the tokens that won, not an
+    arbitrary source's tokens.
+    """
+
+    model_usage_evidence = _model_usage_tokens_evidence(session_id, model_usage_rows, observed_at=observed_at)
+    profile_evidence = _profile_tokens_evidence(
+        session_id,
+        total_input_tokens=profile_total_input_tokens,
+        total_output_tokens=profile_total_output_tokens,
+        total_cache_read_tokens=profile_total_cache_read_tokens,
+        total_cache_write_tokens=profile_total_cache_write_tokens,
+        cost_provenance=profile_cost_provenance,
+        observed_at=observed_at,
+    )
+    reconciled_tokens = refine_evidence_value(
+        model_usage_evidence,
+        profile_evidence,
+        spec=SESSION_USAGE_RECONCILED_TOKENS_FAMILY,
+    )
+
+    # The reconciled EvidenceValue carries only the combined total, so
+    # re-derive which source actually won to reprice using ITS per-category
+    # breakdown -- input/output/cache tokens have different catalog rates,
+    # and estimate_cost needs them split, not summed (see _catalog_cost_evidence).
+    if (
+        reconciled_tokens.value_state == "known"
+        and model_usage_evidence.value_state == "known"
+        and reconciled_tokens.value == model_usage_evidence.value
+    ):
+        winning_input_tokens = sum(row.input_tokens for row in model_usage_rows)
+        winning_output_tokens = sum(row.output_tokens for row in model_usage_rows)
+        winning_cache_read_tokens = sum(row.cache_read_tokens for row in model_usage_rows)
+        winning_cache_write_tokens = sum(row.cache_write_tokens for row in model_usage_rows)
+    else:
+        winning_input_tokens = profile_total_input_tokens
+        winning_output_tokens = profile_total_output_tokens
+        winning_cache_read_tokens = profile_total_cache_read_tokens
+        winning_cache_write_tokens = profile_total_cache_write_tokens
+
+    catalog_cost = _catalog_cost_evidence(
+        session_id,
+        tokens_evidence=reconciled_tokens,
+        input_tokens=winning_input_tokens,
+        output_tokens=winning_output_tokens,
+        cache_read_tokens=winning_cache_read_tokens,
+        cache_write_tokens=winning_cache_write_tokens,
+        normalized_model=reconciled_model,
+        observed_at=observed_at,
+    )
+    legacy_cost = _legacy_cost_evidence(
+        session_id,
+        cost_usd=profile_cost_usd,
+        cost_provenance=profile_cost_provenance,
+        observed_at=observed_at,
+    )
+    reconciled_cost = refine_evidence_value(
+        catalog_cost,
+        legacy_cost,
+        spec=SESSION_USAGE_RECONCILED_COST_FAMILY,
+    )
+
+    return SessionUsageReconciliation(
+        session_id=session_id,
+        model_usage_tokens_evidence=model_usage_evidence,
+        profile_tokens_evidence=profile_evidence,
+        reconciled_tokens_evidence=reconciled_tokens,
+        catalog_cost_evidence=catalog_cost,
+        legacy_cost_evidence=legacy_cost,
+        reconciled_cost_evidence=reconciled_cost,
+    )
+
+
 __all__ = [
     "OriginUsageReport",
     "ProviderUsageCoverage",
     "ProviderUsageReport",
+    "SESSION_USAGE_RECONCILED_COST_FAMILY",
+    "SESSION_USAGE_RECONCILED_TOKENS_FAMILY",
+    "SessionUsageReconciliation",
     "UsageCounters",
+    "build_session_usage_reconciliation",
     "provider_usage_coverage_matrix",
     "provider_usage_report_for_archive_root",
     "provider_usage_report_from_connection",
