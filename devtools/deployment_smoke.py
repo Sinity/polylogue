@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _CURRENT_USER = getpass.getuser()
 _HOME = Path.home()
@@ -511,7 +512,7 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
         error = "index_db_missing"
     if error is None and latest_raw_id is not None and index_db_path.exists():
         try:
-            with sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True) as conn:
+            with open_readonly_connection(index_db_path) as conn:
                 row = conn.execute(
                     """
                     SELECT session_id, native_id, title, message_count

@@ -27,6 +27,7 @@ from polylogue.config import Config
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 FROM_VERSION = 36
@@ -319,7 +320,7 @@ def _inspect_clean_database(path: Path, *, expected_version: int) -> tuple[dict[
         sidecar = Path(f"{path.resolve(strict=True)}{suffix}")
         if sidecar.exists() and sidecar.stat().st_size:
             raise IndexV37FastForwardError(f"non-empty SQLite sidecar blocks fast-forward: {sidecar}")
-    with closing(sqlite3.connect(f"file:{path.resolve(strict=True)}?mode=ro&immutable=1", uri=True)) as conn:
+    with closing(open_readonly_connection(path.resolve(strict=True), immutable=True)) as conn:
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version != expected_version:
             raise IndexV37FastForwardError(f"expected index v{expected_version}, found v{version}")
@@ -375,7 +376,7 @@ def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical:
         if conn.total_changes - changes_before != repaired_orphan_native_ids:
             raise IndexV37FastForwardError("v37 clone transformation changed rows outside the declared repair")
     _checkpoint_stopped_database(path, label="prepared clone")
-    with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
+    with closing(open_readonly_connection(path, immutable=True)) as conn:
         checks = _checks(conn)
         after_schema = _schema_objects(conn)
         after_rootpages = _schema_rootpages(conn)

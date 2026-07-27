@@ -34,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.run_projection_relations import run_relation_sql
 
 
@@ -137,7 +138,7 @@ def _check_message_budget_chunking(root: Path) -> ScaleRegressionCheck:
         del amount
         if desc is not None and desc.startswith("rebuild:"):
             return
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as probe:
+        with open_readonly_connection(db_path) as probe:
             probe.row_factory = sqlite3.Row
             rows = probe.execute(
                 "SELECT session_id, title FROM session_profiles WHERE session_id IN (?, ?, ?)",

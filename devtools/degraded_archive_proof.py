@@ -18,6 +18,7 @@ from polylogue.demo import seed_demo_archive, verify_demo_archive
 from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection, repair_stale_fts_rows
 from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import message_fts_search_readiness_sync
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
 from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
@@ -63,7 +64,7 @@ def _index_db(root: Path) -> Path:
 
 
 def _fts_ready(root: Path) -> bool:
-    with sqlite3.connect(f"file:{_index_db(root)}?mode=ro", uri=True) as conn:
+    with open_readonly_connection(_index_db(root)) as conn:
         return bool(message_fts_search_readiness_sync(conn)["ready"])
 
 

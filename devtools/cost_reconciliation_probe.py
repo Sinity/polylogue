@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
 ProbeStatus = Literal["pass", "fail", "skip"]
 _MAX_PLAUSIBLE_CODEX_THREAD_TOKENS = 2_000_000
 
@@ -60,7 +62,7 @@ def _archive_root_default() -> Path:
 
 
 def _open_ro(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = open_readonly_connection(path)
     conn.row_factory = sqlite3.Row
     return conn
 

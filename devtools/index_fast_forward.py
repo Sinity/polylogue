@@ -33,6 +33,7 @@ from polylogue.storage.fts.fts_lifecycle import (
 )
 from polylogue.storage.fts.pl_fold import pl_fold, pl_fold_sql_expr
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.lifecycle import IndexFastForwardPlan, index_fast_forward_plan
 
 FAST_FORWARD_FROM_VERSION = 32
@@ -266,7 +267,7 @@ def _deployed_plan(source_version: int) -> IndexFastForwardPlan | None:
 
 def plan_index(path: Path) -> dict[str, object]:
     identity = file_identity(path)
-    with sqlite3.connect(f"file:{identity.resolved_path}?mode=ro", uri=True, timeout=30.0) as conn:
+    with open_readonly_connection(identity.resolved_path, timeout=30.0) as conn:
         metrics = _database_metrics(conn)
         counts = _table_counts(conn)
         fts = {
@@ -869,14 +870,12 @@ def _require_unchanged_identity(path: Path, expected: object, *, label: str) -> 
 
 
 def _quick_check_only(db_path: Path) -> list[str]:
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=120.0) as conn:
-        conn.execute("PRAGMA query_only = ON")
+    with open_readonly_connection(db_path, timeout=120.0) as conn:
         return [str(row[0]) for row in conn.execute("PRAGMA quick_check").fetchall()]
 
 
 def _runtime_version_sanity(db_path: Path) -> dict[str, object]:
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=120.0) as conn:
-        conn.execute("PRAGMA query_only = ON")
+    with open_readonly_connection(db_path, timeout=120.0) as conn:
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         schema_probe = conn.execute(
             "SELECT COUNT(*) FROM sqlite_master "

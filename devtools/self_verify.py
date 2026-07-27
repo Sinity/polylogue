@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import sqlite3
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -21,6 +20,7 @@ from polylogue.archive.query.spec import SessionQuerySpec, clamp_query_limit
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.paths import active_index_db_path as default_db_path
 from polylogue.paths import archive_root
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
     SessionListRowPayload,
     SessionMessagePayload,
@@ -64,7 +64,7 @@ def _git_head() -> str:
 def _schema_version(db_path: Path) -> int | None:
     if not db_path.exists():
         return None
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = open_readonly_connection(db_path)
     try:
         row = conn.execute("PRAGMA user_version").fetchone()
         return int(row[0]) if row else None

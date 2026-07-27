@@ -84,6 +84,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _POLYLOGUE_ROOT = _REPO_ROOT / "polylogue"
 _DEFAULT_TESTMON_DB = _REPO_ROOT / ".cache" / "testmon" / "testmondata"
@@ -225,9 +227,7 @@ def compute_test_economics(
     if not testmon_db_path.exists():
         return {}, {}, f"no testmon database found at {testmon_db_path}; wall-time/fan-out left null"
 
-    import sqlite3
-
-    con = sqlite3.connect(f"file:{testmon_db_path}?mode=ro", uri=True)
+    con = open_readonly_connection(testmon_db_path)
     try:
         cur = con.cursor()
         cur.execute(
