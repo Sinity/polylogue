@@ -188,7 +188,7 @@ jobs:
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install built wheel into fresh venv
@@ -240,7 +240,7 @@ jobs:
         with:
           name: distribution-artifacts-hooks
           path: dist-hooks/
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install polylogue-hooks wheel into fresh venv (no other deps)
@@ -293,7 +293,7 @@ jobs:
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: Install built wheel through pipx and smoke every console script
@@ -337,7 +337,7 @@ jobs:
         with:
           name: distribution-artifacts-mcp
           path: dist-mcp/
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install polylogue + polylogue-mcp wrapper into fresh venv
