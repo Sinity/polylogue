@@ -1302,6 +1302,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify degrade-loudly", "devtools verify degrade-loudly --json"),
     ),
     CommandSpec(
+        "verify hash-boundary-census",
+        "verification",
+        "Verify every hashlib/core.hashing call site in polylogue/ is registered in the hash-boundary registry.",
+        "devtools.verify_hash_boundary_census",
+        use_when=(
+            "Enforce the hash-boundary census follow-up (polylogue-okpn, docs/audits/"
+            "2026-07-09-hash-boundary-census.md): a new hashlib.sha256/sha1/md5/blake2*/sha3_* call "
+            "or a new hash_text/hash_text_short/hash_payload/hash_bytes/hash_file call site must be "
+            "registered (path/function/call/classification/note) in "
+            "docs/plans/hash-boundary-registry.yaml, or the lint fails."
+        ),
+        examples=("devtools verify hash-boundary-census", "devtools verify hash-boundary-census --json"),
+    ),
+    CommandSpec(
         "release verify-distribution",
         "release",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",

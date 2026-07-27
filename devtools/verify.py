@@ -1771,6 +1771,7 @@ def build_verify_steps(
                 ("verify test-clock-hygiene", _devtools_cmd("verify test-clock-hygiene")),
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
                 ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
+                ("verify hash-boundary-census", _devtools_cmd("verify hash-boundary-census")),
             ]
         )
 
