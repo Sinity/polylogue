@@ -15,7 +15,7 @@ contribution rather than silently discarding it.
 from __future__ import annotations
 
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
-from polylogue.archive.semantic.pricing import PRICING, _normalize_model
+from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
 from polylogue.storage.usage import (
     SESSION_USAGE_RECONCILED_COST_FAMILY,
     SESSION_USAGE_RECONCILED_TOKENS_FAMILY,
@@ -112,11 +112,31 @@ def test_reconciled_cost_prefers_fresh_catalog_price_over_stale_zero() -> None:
     assert reconciliation.legacy_cost_evidence.value_state == "unknown"
     assert reconciliation.legacy_cost_evidence.value is None
 
-    # A fresh catalog reprice of the winning (exact) token evidence is known.
+    # A fresh catalog reprice of the winning (exact) token evidence is known,
+    # and prices EACH category at its own rate rather than collapsing
+    # input/output/cache into one combined total priced as pure input --
+    # output and cache-read tokens are priced very differently from input,
+    # so that shortcut would systematically misprice any real session.
     assert reconciliation.catalog_cost_evidence.value_state == "known"
     assert reconciliation.catalog_cost_evidence.value is not None
     assert reconciliation.catalog_cost_evidence.value > 0.0
     assert _NORMALIZED_MODEL in PRICING
+    expected_cost = round(
+        estimate_cost(
+            input_tokens=_EXACT_UNCACHED_INPUT,
+            output_tokens=_EXACT_OUTPUT,
+            cache_read_tokens=_EXACT_CACHE_READ,
+            cache_write_tokens=0,
+            model=_NORMALIZED_MODEL,
+        ),
+        6,
+    )
+    mispriced_as_pure_input = round(
+        estimate_cost(input_tokens=_EXACT_TOTAL, output_tokens=0, model=_NORMALIZED_MODEL),
+        6,
+    )
+    assert expected_cost != mispriced_as_pure_input, "fixture must exercise a model with non-uniform per-category rates"
+    assert reconciliation.catalog_cost_evidence.value == expected_cost
 
     reconciled_cost = reconciliation.reconciled_cost_evidence
     assert reconciled_cost.value_state == "known"

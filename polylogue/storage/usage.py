@@ -2277,6 +2277,10 @@ def _catalog_cost_evidence(
     session_id: str,
     *,
     tokens_evidence: EvidenceValue[int],
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
     normalized_model: str | None,
     observed_at: str,
 ) -> EvidenceValue[float]:
@@ -2288,8 +2292,19 @@ def _catalog_cost_evidence(
     exclusions: tuple[CoverageExclusion, ...] = ()
     if priceable:
         assert tokens_evidence.value is not None  # narrowed by value_state == "known" above
+        # Price each token category at its own catalog rate -- input, output,
+        # and cache read/write are priced very differently (output is
+        # typically several times an input token's rate), so collapsing the
+        # reconciled *total* into a single input_tokens argument would
+        # systematically misprice any session with real output/cache volume.
         value = round(
-            estimate_cost(input_tokens=int(tokens_evidence.value), output_tokens=0, model=normalized_model or ""),
+            estimate_cost(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                model=normalized_model or "",
+            ),
             6,
         )
     elif tokens_evidence.value_state != "known":
@@ -2464,9 +2479,32 @@ def build_session_usage_reconciliation(
         spec=SESSION_USAGE_RECONCILED_TOKENS_FAMILY,
     )
 
+    # The reconciled EvidenceValue carries only the combined total, so
+    # re-derive which source actually won to reprice using ITS per-category
+    # breakdown -- input/output/cache tokens have different catalog rates,
+    # and estimate_cost needs them split, not summed (see _catalog_cost_evidence).
+    if (
+        reconciled_tokens.value_state == "known"
+        and model_usage_evidence.value_state == "known"
+        and reconciled_tokens.value == model_usage_evidence.value
+    ):
+        winning_input_tokens = sum(row.input_tokens for row in model_usage_rows)
+        winning_output_tokens = sum(row.output_tokens for row in model_usage_rows)
+        winning_cache_read_tokens = sum(row.cache_read_tokens for row in model_usage_rows)
+        winning_cache_write_tokens = sum(row.cache_write_tokens for row in model_usage_rows)
+    else:
+        winning_input_tokens = profile_total_input_tokens
+        winning_output_tokens = profile_total_output_tokens
+        winning_cache_read_tokens = profile_total_cache_read_tokens
+        winning_cache_write_tokens = profile_total_cache_write_tokens
+
     catalog_cost = _catalog_cost_evidence(
         session_id,
         tokens_evidence=reconciled_tokens,
+        input_tokens=winning_input_tokens,
+        output_tokens=winning_output_tokens,
+        cache_read_tokens=winning_cache_read_tokens,
+        cache_write_tokens=winning_cache_write_tokens,
         normalized_model=reconciled_model,
         observed_at=observed_at,
     )
