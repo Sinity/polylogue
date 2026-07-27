@@ -38,34 +38,30 @@ pytestmark = pytest.mark.contract
 
 
 class TestNoColorEnv:
-    """``NO_COLOR`` follows the cross-tool convention and forces plain mode."""
+    """``NO_COLOR`` follows the cross-tool convention and forces plain mode.
 
-    def test_no_color_detection_respects_presence(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Presence of ``NO_COLOR`` (any non-empty value) requests no color."""
-        monkeypatch.delenv("NO_COLOR", raising=False)
+    Actual ``NO_COLOR`` environment-variable resolution happens once, in the
+    5-layer config resolution (``ConfigInventoryEntry(env_var="NO_COLOR")``,
+    pinned by ``tests/unit/core/test_config_inventory.py``). By the time CLI
+    code reaches ``no_color_requested`` / ``should_use_plain`` the value has
+    already been resolved into a plain bool, so these tests exercise that
+    passthrough contract directly rather than re-reading the environment.
+    """
+
+    def test_no_color_requested_passes_through_resolved_value(self) -> None:
+        """``no_color_requested`` returns whatever resolved value it is given."""
         assert no_color_requested() is False
-        monkeypatch.setenv("NO_COLOR", "1")
-        assert no_color_requested() is True
-        monkeypatch.setenv("NO_COLOR", "anything-truthy")
-        assert no_color_requested() is True
+        assert no_color_requested(no_color=False) is False
+        assert no_color_requested(no_color=True) is True
 
-    def test_no_color_empty_string_is_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Empty ``NO_COLOR`` (set but blank) is treated as not requesting."""
-        monkeypatch.setenv("NO_COLOR", "")
-        assert no_color_requested() is False
+    def test_should_use_plain_bridges_no_color(self) -> None:
+        """A resolved ``no_color=True`` forces plain mode even off force_plain/tty state."""
+        assert should_use_plain(plain=False, no_color=True) is True
 
-    def test_should_use_plain_bridges_no_color(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``NO_COLOR`` forces plain mode even when --plain is not passed."""
-        monkeypatch.delenv("POLYLOGUE_FORCE_PLAIN", raising=False)
-        monkeypatch.setenv("NO_COLOR", "1")
-        assert should_use_plain(plain=False) is True
-
-    def test_should_use_plain_no_color_unset_keeps_tty_behavior(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Without ``NO_COLOR`` (and not in a TTY), plain mode comes from non-TTY detection."""
-        monkeypatch.delenv("POLYLOGUE_FORCE_PLAIN", raising=False)
-        monkeypatch.delenv("NO_COLOR", raising=False)
+    def test_should_use_plain_no_color_false_keeps_tty_behavior(self) -> None:
+        """With ``no_color=False`` (and not in a TTY), plain mode comes from non-TTY detection."""
         # CliRunner / pytest runs non-TTY, so plain falls out of the TTY check.
-        assert should_use_plain(plain=False) is True
+        assert should_use_plain(plain=False, no_color=False) is True
 
     def test_cli_list_with_no_color_produces_no_ansi(
         self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, object]

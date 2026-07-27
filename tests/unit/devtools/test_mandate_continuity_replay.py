@@ -102,12 +102,31 @@ def test_build_repository_claim_graph_raises_explicitly_for_missing_ledger(tmp_p
 
 
 def test_work_evidence_effect_proof_evaluates_claims_with_a_corroborating_commit(tmp_path: Path) -> None:
+    from polylogue.insights.work_effects import (
+        BeadsIssueEffectAdapter,
+        GitCommitEffectAdapter,
+        GitHubPullRequestEffectAdapter,
+    )
+
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
     _commit(repo, filename="a.txt", message="fix: land the work (Ref polylogue-7fj)")
 
-    proof = mcr.run_work_evidence_effect_proof(repo_path=repo, beads_ledger_path=_BEADS_FIXTURE)
+    proof = mcr.run_work_evidence_effect_proof(
+        repo_path=repo,
+        beads_ledger_path=_BEADS_FIXTURE,
+        adapters=(
+            GitCommitEffectAdapter(repo_path=repo),
+            BeadsIssueEffectAdapter(jsonl_path=_BEADS_FIXTURE),
+            # A deterministically-missing `gh_path`, not the real "gh" binary:
+            # the real one succeeds on any machine authenticated against
+            # Sinity/polylogue (this devbox included), which would make the
+            # "GitHub fails" assertion below environment-dependent rather
+            # than a property of the code.
+            GitHubPullRequestEffectAdapter(repo="Sinity/polylogue", gh_path="polylogue-test-missing-gh-binary"),
+        ),
+    )
 
     assert proof.claims_total == 1
     assert proof.claims_evaluated == 1

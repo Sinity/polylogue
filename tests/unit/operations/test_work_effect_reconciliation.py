@@ -152,11 +152,18 @@ async def test_adapter_failures_are_recorded_not_swallowed_or_fatal(tmp_path: Pa
         summary = await reconcile_graph_repository_effects(
             repository,
             graph_id=graph.graph_id,
-            adapters=(GitHubPullRequestEffectAdapter(repo="Sinity/polylogue"),),
+            # A deterministically-missing `gh_path`, not the real "gh"
+            # binary: the real one succeeds on any machine authenticated
+            # against Sinity/polylogue (this devbox included), which would
+            # make the "adapter fails" assertion below environment-dependent
+            # rather than a property of the code.
+            adapters=(
+                GitHubPullRequestEffectAdapter(repo="Sinity/polylogue", gh_path="polylogue-test-missing-gh-binary"),
+            ),
             apply=False,
         )
 
     assert summary.effect_count_by_authority == {}
     assert summary.adapter_failures == ({"authority": "github", "reason": summary.adapter_failures[0]["reason"]},)
-    assert "Sinity/polylogue" in summary.adapter_failures[0]["reason"]
+    assert "polylogue-test-missing-gh-binary" in summary.adapter_failures[0]["reason"]
     assert summary.claims_evaluated == 0

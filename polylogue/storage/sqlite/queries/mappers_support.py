@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from typing import TypeGuard, TypeVar, overload
 
 from polylogue.core.errors import DatabaseError
-from polylogue.core.json import JSONValue, json_document, loads
+from polylogue.core.json import JSONDecodeError, JSONValue, json_document, loads
 
 _T = TypeVar("_T", bound=object)
 _RowValue = str | int | float | bytes | bytearray | None
@@ -35,7 +34,7 @@ def _parse_json(
     raw_preview = raw[:80]
     try:
         return loads(raw)
-    except json.JSONDecodeError as exc:
+    except JSONDecodeError as exc:
         raise DatabaseError(f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw_preview!r})") from exc
 
 
