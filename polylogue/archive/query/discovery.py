@@ -137,6 +137,14 @@ SESSION_COLUMNS = (
     "repo",
     "cwd_display",
     "flags",
+    # Recursive-graph projection fields (#z9gh.3, added by PR #3296 to
+    # SessionListRowPayload): present on every session row, populated only
+    # for lineage-seeded (``lineage:id:<ref>``) pages. Declared here so the
+    # non-lineage ``session-repository`` example's projection_columns stays
+    # byte-identical to the real payload model shape.
+    "parent_refs",
+    "child_refs",
+    "continuation",
 )
 RANKED_SESSION_COLUMNS = (
     "session.id",
