@@ -205,11 +205,14 @@ commit the updated `docs/plans/topology-target.yaml` + `docs/topology-status.md`
   (`storage/repository/__init__.py`: archive reads, archive writes, raw,
   vectors, + six insight readers — profile, run-projection, timeline, thread,
   summary, topology) and on `services.py`.
-- **MCP** (`mcp/`): the large agent-facing surface (103 tools across
-  `server_*.py`, pinned by `tests/unit/mcp/test_server_surfaces.py` against
-  `EXPECTED_TOOL_NAMES`) — search/list/get, insights, corrections,
-  context/recall, postmortem bundles. This, not the API, is the continuity
-  surface. Adding a tool requires updating `EXPECTED_TOOL_NAMES` + a tool
+- **MCP** (`mcp/`): the large agent-facing surface — consolidated into 10
+  role-gated operation-dispatcher tools (`status`, `read`, `get`, `query`,
+  `explain`, `context`, plus `write`/`run` behind the write role, `judge`
+  behind the review role, `maintenance` behind the admin role), pinned by
+  `tests/unit/mcp/test_server_surfaces.py` against `EXPECTED_TOOL_NAMES` —
+  search/list/get, insights, corrections, context/recall, postmortem
+  bundles. This, not the API, is the continuity surface. Adding an
+  operation requires updating the dispatcher's declared verb table + a tool
   contract.
 - **Insights** (`insights/registry.py`): descriptor-driven — one
   `INSIGHT_REGISTRY` where each `InsightType` declares field accessors + a
@@ -477,7 +480,8 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
 - New Click params on query verbs must go **last** — a positional shift silently
   reroutes args.
 - New MCP tool → update `EXPECTED_TOOL_NAMES` (lives in `tests/infra/mcp.py`,
-  103 tools currently) + tool contract, or discovery tests fail.
+  10 role-gated dispatcher tools currently) + tool contract, or discovery
+  tests fail.
 - New `AssertionKind` is schema-free (`TEXT`, no CHECK) but its enum is embedded
   in `render openapi` + `render cli-output-schemas` — regenerate them.
 - Per-PR CI **skips the heavy `test` suite** (runs post-merge on master). A green
