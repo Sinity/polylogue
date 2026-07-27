@@ -12,7 +12,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_runtime import SessionRuntimeMixin
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
-from polylogue.core.enums import Origin, SessionKind
+from polylogue.core.enums import Origin, SessionKind, TitleSource
 from polylogue.core.sources import source_name_to_origin
 from polylogue.core.types import SessionId
 from polylogue.core.web_urls import canonical_session_url, native_id_from_session_id
@@ -24,12 +24,19 @@ def _coerce_origin(v: object) -> Origin:
     return Origin.from_string(source_name_to_origin(v))
 
 
+def _coerce_title_source(v: object) -> TitleSource | None:
+    if v is None or isinstance(v, TitleSource):
+        return v
+    return TitleSource(str(v))
+
+
 class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     """Lightweight session metadata without messages."""
 
     id: SessionId
     origin: Origin
     title: str | None = None
+    title_source: TitleSource | None = None
     session_kind: SessionKind = SessionKind.STANDARD
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -61,6 +68,11 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     def coerce_session_kind(cls, v: object) -> SessionKind:
         return SessionKind.normalize(v)
 
+    @field_validator("title_source", mode="before")
+    @classmethod
+    def coerce_title_source(cls, v: object) -> TitleSource | None:
+        return _coerce_title_source(v)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def canonical_url(self) -> str | None:
@@ -74,6 +86,7 @@ class Session(SessionRuntimeMixin, BaseModel):
     id: SessionId
     origin: Origin
     title: str | None = None
+    title_source: TitleSource | None = None
     session_kind: SessionKind = SessionKind.STANDARD
     messages: MessageCollection
     created_at: datetime | None = None
@@ -104,6 +117,11 @@ class Session(SessionRuntimeMixin, BaseModel):
     @classmethod
     def coerce_session_kind(cls, v: object) -> SessionKind:
         return SessionKind.normalize(v)
+
+    @field_validator("title_source", mode="before")
+    @classmethod
+    def coerce_title_source(cls, v: object) -> TitleSource | None:
+        return _coerce_title_source(v)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

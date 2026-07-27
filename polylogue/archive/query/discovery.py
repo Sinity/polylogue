@@ -125,6 +125,7 @@ SESSION_COLUMNS = (
     "id",
     "origin",
     "title",
+    "title_source",
     "target_ref",
     "anchor",
     "actions",

@@ -20,7 +20,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import MaterialOrigin, Origin
+from polylogue.core.enums import MaterialOrigin, Origin, TitleSource
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 
@@ -172,11 +172,16 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
     }
 
 
+def _coerce_title_source(value: str | None) -> TitleSource | None:
+    return TitleSource(value) if value is not None else None
+
+
 def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
     return SessionSummary(
         id=SessionId(summary.session_id),
         origin=Origin.from_string(summary.origin),
         title=summary.title,
+        title_source=_coerce_title_source(summary.title_source),
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
         working_directories=tuple(summary.working_directories),
@@ -253,6 +258,7 @@ def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
         id=SessionId(session.session_id),
         origin=origin,
         title=session.title,
+        title_source=_coerce_title_source(session.title_source),
         messages=MessageCollection(messages=messages),
         created_at=min(timestamps) if timestamps else None,
         updated_at=max(timestamps) if timestamps else None,

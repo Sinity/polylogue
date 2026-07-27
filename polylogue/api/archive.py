@@ -31,7 +31,7 @@ from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
 )
-from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
+from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, TitleSource
 from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import (
@@ -1821,6 +1821,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
         id=SessionId(session.session_id),
         origin=origin,
         title=session.title,
+        title_source=TitleSource(session.title_source) if session.title_source is not None else None,
         messages=MessageCollection(messages=messages),
         created_at=stored_created or (min(timestamps) if timestamps else None),
         updated_at=stored_updated or (max(timestamps) if timestamps else None),
@@ -1839,6 +1840,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         id=SessionId(summary.session_id),
         origin=Origin.from_string(summary.origin),
         title=summary.title,
+        title_source=TitleSource(summary.title_source) if summary.title_source is not None else None,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
         working_directories=tuple(summary.working_directories),

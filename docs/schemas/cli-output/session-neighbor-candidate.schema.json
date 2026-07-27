@@ -163,6 +163,18 @@
           "title": "Title",
           "type": "string"
         },
+        "title_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title Source"
+        },
         "updated_at": {
           "anyOf": [
             {

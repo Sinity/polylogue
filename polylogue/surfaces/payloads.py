@@ -859,6 +859,7 @@ class SessionSummaryPayload(SurfacePayloadModel):
     id: str
     origin: str
     title: str
+    title_source: str | None = None
     message_count: int
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
@@ -873,6 +874,7 @@ class SessionSummaryPayload(SurfacePayloadModel):
             id=session_id,
             origin=session.origin,
             title=session.display_title,
+            title_source=session.title_source.value if session.title_source else None,
             message_count=len(session.messages),
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
@@ -892,6 +894,7 @@ class SessionSummaryPayload(SurfacePayloadModel):
             id=session_id,
             origin=summary.origin,
             title=summary.display_title,
+            title_source=summary.title_source.value if summary.title_source else None,
             message_count=summary.message_count or 0 if message_count is None else message_count,
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
@@ -938,6 +941,7 @@ class SessionListRowPayload(SurfacePayloadModel):
     id: str
     origin: str
     title: str
+    title_source: str | None = None
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
     actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
@@ -969,6 +973,7 @@ class SessionListRowPayload(SurfacePayloadModel):
             id=session_id,
             origin=session.origin,
             title=session.display_title,
+            title_source=session.title_source.value if session.title_source else None,
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
             created_at=created_at,
@@ -1000,6 +1005,7 @@ class SessionListRowPayload(SurfacePayloadModel):
             id=session_id,
             origin=summary.origin,
             title=summary.display_title,
+            title_source=summary.title_source.value if summary.title_source else None,
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
             created_at=created_at,
