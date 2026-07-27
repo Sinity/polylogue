@@ -16,16 +16,6 @@
 
 gaps:
   cli:
-    - name: 'agents conflicts'
-      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
-    - name: 'agents current'
-      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
-    - name: 'agents handoff'
-      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
-    - name: 'agents overlap'
-      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
-    - name: 'agents self'
-      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
     - name: 'agents status'
       reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
     - name: 'agents work-item'

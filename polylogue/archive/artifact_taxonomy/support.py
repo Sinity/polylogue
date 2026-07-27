@@ -31,10 +31,6 @@ _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider
 _BEADS_INTERACTION_KEYS = frozenset({"id", "kind", "created_at", "issue_id", "extra"})
 
 
-def path_only_sidecars() -> dict[str, str]:
-    return _PATH_ONLY_SIDECARS
-
-
 def path_only_sidecar_reason(name: str) -> str | None:
     lowered = name.lower()
     if lowered in _PATH_ONLY_SIDECARS:

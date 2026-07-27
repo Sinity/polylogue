@@ -7,7 +7,6 @@ from datetime import datetime
 
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.viewport.viewports import ReasoningTrace, ToolCall
-from polylogue.core.json import JSONDocument, json_document
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,20 +53,6 @@ class ProjectionSemanticFacts:
     tool_messages: int
     renderable_role_counts: dict[str, int]
 
-    def to_evidence_input(self) -> JSONDocument:
-        return json_document(
-            {
-                "total_messages": self.total_messages,
-                "renderable_messages": self.renderable_messages,
-                "timestamped_renderable_messages": self.timestamped_renderable_messages,
-                "attachment_count": self.attachment_count,
-                "empty_messages": self.empty_messages,
-                "thinking_messages": self.thinking_messages,
-                "tool_messages": self.tool_messages,
-                "renderable_role_counts": self.renderable_role_counts,
-            }
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class SessionSemanticFacts:
@@ -97,29 +82,6 @@ class SessionSemanticFacts:
     wall_duration_ms: int
     message_facts: tuple[MessageSemanticFacts, ...]
 
-    def to_evidence_input(self) -> JSONDocument:
-        return json_document(
-            {
-                "session_id": self.session_id,
-                "origin": self.origin,
-                "title": self.title,
-                "date": self.date,
-                "total_messages": self.total_messages,
-                "text_messages": self.text_messages,
-                "message_ids": list(self.message_ids),
-                "text_message_ids": list(self.text_message_ids),
-                "text_role_counts": self.text_role_counts,
-                "timestamped_text_messages": self.timestamped_text_messages,
-                "timestamped_messages": self.timestamped_messages,
-                "untimestamped_messages": self.untimestamped_messages,
-                "timestamp_coverage": self.timestamp_coverage,
-                "attachment_count": self.attachment_count,
-                "thinking_messages": self.thinking_messages,
-                "tool_messages": self.tool_messages,
-                "branch_messages": self.branch_messages,
-            }
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class SummarySemanticFacts:
@@ -130,19 +92,6 @@ class SummarySemanticFacts:
     messages: int
     tags: tuple[str, ...]
     summary: str | None
-
-    def to_evidence_input(self) -> JSONDocument:
-        return json_document(
-            {
-                "session_id": self.session_id,
-                "origin": self.origin,
-                "title": self.title,
-                "date": self.date,
-                "messages": self.messages,
-                "tags": list(self.tags),
-                "summary": self.summary,
-            }
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,26 +111,6 @@ class StreamSemanticFacts:
     message_roles: tuple[str, ...]
     message_limit: int | None
 
-    def to_evidence_input(self) -> JSONDocument:
-        return json_document(
-            {
-                "session_id": self.session_id,
-                "origin": self.origin,
-                "title": self.title,
-                "date": self.date,
-                "text_messages": self.text_messages,
-                "text_message_ids": list(self.text_message_ids),
-                "text_role_counts": self.text_role_counts,
-                "timestamped_text_messages": self.timestamped_text_messages,
-                "attachment_count": self.attachment_count,
-                "thinking_messages": self.thinking_messages,
-                "tool_messages": self.tool_messages,
-                "branch_messages": self.branch_messages,
-                "message_roles": list(self.message_roles),
-                "message_limit": self.message_limit,
-            }
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class MCPDetailSemanticFacts:
@@ -199,25 +128,6 @@ class MCPDetailSemanticFacts:
     tool_messages: int
     branch_messages: int
 
-    def to_evidence_input(self) -> JSONDocument:
-        return json_document(
-            {
-                "session_id": self.session_id,
-                "origin": self.origin,
-                "title": self.title,
-                "created_at": self.created_at,
-                "updated_at": self.updated_at,
-                "messages": self.messages,
-                "message_ids": list(self.message_ids),
-                "role_counts": self.role_counts,
-                "timestamped_messages": self.timestamped_messages,
-                "attachment_count": self.attachment_count,
-                "thinking_messages": self.thinking_messages,
-                "tool_messages": self.tool_messages,
-                "branch_messages": self.branch_messages,
-            }
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class MCPSummarySemanticFacts:
@@ -229,20 +139,6 @@ class MCPSummarySemanticFacts:
     updated_at: str | None
     tags: tuple[str, ...]
     summary: str | None
-
-    def to_evidence_input(self) -> JSONDocument:
-        return json_document(
-            {
-                "session_id": self.session_id,
-                "origin": self.origin,
-                "title": self.title,
-                "messages": self.messages,
-                "created_at": self.created_at,
-                "updated_at": self.updated_at,
-                "tags": list(self.tags),
-                "summary": self.summary,
-            }
-        )
 
 
 __all__ = [

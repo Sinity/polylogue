@@ -138,7 +138,6 @@ from polylogue.archive.query.metadata import (
     structural_query_units,
     terminal_query_source_list,
     terminal_query_source_pairs,
-    terminal_query_unit,
 )
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -1644,13 +1643,6 @@ def _is_boolean_expression(expression: str) -> bool:
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
-def _source_where_unit(source: str) -> QueryUnitName:
-    unit = terminal_query_unit(source.strip().lower())
-    if unit is not None:
-        return unit
-    raise ExpressionCompileError(f"unsupported query source {source!r}", field=None)
-
-
 def _transform_boolean_predicate(expression: str) -> QueryPredicate:
     try:
         tree = _QUERY_PARSER.parse(expression, start="boolean_query")
@@ -1935,11 +1927,6 @@ def _canonicalize_with_projection(tail: str) -> tuple[tuple[str, ...], dict[str,
             else:
                 field_map[descriptor.unit] = fields
     return tuple(canonical), field_map
-
-
-def _canonicalize_with_units(tail: str) -> tuple[str, ...]:
-    units, _fields = _canonicalize_with_projection(tail)
-    return units
 
 
 def _split_with_projection_clause(expression: str) -> tuple[str, tuple[str, ...], dict[str, tuple[str, ...]]]:
@@ -2914,10 +2901,6 @@ def _parse_relative_date(value: str) -> str:
         return f"{num_str} {unit_map[unit_char]} ago"
     # Otherwise pass through (ISO date or natural language) and let parse_date validate
     return value
-
-
-def _merge_tuples(existing: tuple[str, ...], new_values: tuple[str, ...]) -> tuple[str, ...]:
-    return existing + new_values
 
 
 @dataclass
