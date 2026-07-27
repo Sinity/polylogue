@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -122,6 +123,47 @@ def _parse_history_file(history_path: Path) -> dict[str, str]:
     return titles
 
 
+def _parse_codex_state_titles(sessions_root: Path) -> dict[str, str]:
+    """Read ``threads.title`` from the live Codex ``state_5.sqlite`` store.
+
+    On modern Codex installs ``state_5.sqlite`` (a live SQLite database in
+    WAL mode) is a richer, more actively maintained successor of
+    ``session_index.jsonl`` — it can carry a curated ``threads.title`` even
+    when ``session_index.jsonl`` no longer exists. Codex itself may hold this
+    file open for writing at any time, so treat it as an unreliable, optional
+    evidence source: any failure (missing file, lock contention, schema
+    drift, corruption) degrades to an empty mapping rather than raising.
+    """
+    state_path = sessions_root.parent / "state_5.sqlite"
+    if not state_path.exists():
+        return {}
+    return _cached_parse(state_path, _parse_state_db_file)
+
+
+def _parse_state_db_file(state_path: Path) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    try:
+        # mode=ro avoids ever taking a write lock; WAL mode lets us read
+        # concurrently with a live Codex writer. A short timeout keeps a
+        # momentarily-locked file from stalling ingest.
+        conn = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error as exc:
+        logger.debug("Failed to open Codex state_5.sqlite: %s", exc)
+        return {}
+    try:
+        try:
+            rows = conn.execute("SELECT id, title FROM threads").fetchall()
+        except sqlite3.Error as exc:
+            logger.debug("Failed to query Codex state_5.sqlite threads: %s", exc)
+            return {}
+        for thread_id, title in rows:
+            if isinstance(thread_id, str) and thread_id and isinstance(title, str) and title.strip():
+                titles[thread_id] = title.strip()
+    finally:
+        conn.close()
+    return titles
+
+
 def _title_preview(text: str) -> str | None:
     """First non-empty line, bounded, or None when nothing usable remains."""
     for line in text.strip().splitlines():
@@ -143,6 +185,7 @@ class CodexAssemblySpec:
         """
         thread_names: dict[str, str] = {}
         history_titles: dict[str, str] = {}
+        state_titles: dict[str, str] = {}
         seen_roots: set[Path] = set()
         for path in source_paths:
             # Walk up to find the sessions root
@@ -151,16 +194,22 @@ class CodexAssemblySpec:
                     seen_roots.add(parent)
                     thread_names.update(_parse_codex_session_index(parent))
                     history_titles.update(_parse_codex_history(parent))
+                    state_titles.update(_parse_codex_state_titles(parent))
                     break
-        return {"thread_names": thread_names, "history_titles": history_titles}
+        return {
+            "thread_names": thread_names,
+            "history_titles": history_titles,
+            "state_titles": state_titles,
+        }
 
     def enrich_session(
         self,
         conv: ParsedSession,
         sidecar_data: SidecarData,
     ) -> ParsedSession:
-        """Resolve a Codex title: thread name → authored history → first
-        human-authored message → leave the native id.
+        """Resolve a Codex title: thread name → authored history →
+        state_5.sqlite thread title → first human-authored message → leave
+        the native id.
 
         A ``role=user`` row alone never becomes a title: Codex runtime
         context and operator protocol rows share that role, so only
@@ -169,6 +218,7 @@ class CodexAssemblySpec:
         """
         thread_names: CodexThreadNames = sidecar_data.get("thread_names", {})
         history_titles: CodexHistoryTitles = sidecar_data.get("history_titles", {})
+        state_titles: CodexHistoryTitles = sidecar_data.get("state_titles", {})
         cid = conv.provider_session_id
 
         # 1. Provider thread name — authoritative, may replace a stale title.
@@ -200,7 +250,23 @@ class CodexAssemblySpec:
                     }
                 )
 
-        # 3. First human-authored message in the parsed session.
+        # 3. state_5.sqlite live thread title — a richer, more actively
+        # maintained sibling of session_index.jsonl (which some modern
+        # Codex installs no longer even write). Only fills the gap left by
+        # thread name / authored history above; it never overrides an
+        # authored-history title already resolved in step 2.
+        state_text = state_titles.get(cid)
+        if state_text:
+            preview = _title_preview(state_text)
+            if preview:
+                return conv.model_copy(
+                    update={
+                        "title": preview,
+                        "title_source": TitleSource.ORIGIN,
+                    }
+                )
+
+        # 4. First human-authored message in the parsed session.
         for msg in conv.messages:
             if msg.material_origin is not MaterialOrigin.HUMAN_AUTHORED:
                 continue
@@ -215,7 +281,7 @@ class CodexAssemblySpec:
                     }
                 )
 
-        # 4. Nothing enrichable — the native id stands.
+        # 5. Nothing enrichable — the native id stands.
         return conv
 
 
@@ -235,4 +301,5 @@ __all__ = [
     "CodexAssemblySpec",
     "_parse_codex_history",
     "_parse_codex_session_index",
+    "_parse_codex_state_titles",
 ]
