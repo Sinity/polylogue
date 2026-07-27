@@ -38,6 +38,7 @@ class _ClaudeCodeSidecarData(TypedDict, total=False):
 class _CodexSidecarData(TypedDict, total=False):
     thread_names: CodexThreadNames
     history_titles: CodexHistoryTitles
+    state_titles: CodexHistoryTitles
 
 
 class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, total=False):

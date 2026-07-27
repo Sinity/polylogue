@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,12 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import MaterialOrigin, Provider, TitleSource
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
-from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_history, _parse_codex_session_index
+from polylogue.sources.assembly_codex import (
+    CodexAssemblySpec,
+    _parse_codex_history,
+    _parse_codex_session_index,
+    _parse_codex_state_titles,
+)
 from polylogue.sources.assembly_gemini import GeminiAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude.index import (
@@ -78,10 +84,12 @@ def _parsed_session(
 def _thread_sidecars(
     thread_names: dict[str, str] | None = None,
     history_titles: dict[str, str] | None = None,
+    state_titles: dict[str, str] | None = None,
 ) -> SidecarData:
     return {
         "thread_names": {} if thread_names is None else thread_names,
         "history_titles": {} if history_titles is None else history_titles,
+        "state_titles": {} if state_titles is None else state_titles,
     }
 
 
@@ -782,3 +790,206 @@ class TestCodexHistoryTitles:
         sessions_root = tmp_path / ".codex" / "sessions"
         sessions_root.mkdir(parents=True)
         assert _parse_codex_history(sessions_root) == {}
+
+
+# ---------------------------------------------------------------------------
+# Codex state_5.sqlite live thread titles (polylogue-ih67)
+# ---------------------------------------------------------------------------
+
+
+def _write_codex_state_db(codex_dir: Path, rows: list[tuple[str, str]]) -> Path:
+    """Create a minimal ``state_5.sqlite`` with a ``threads(id, title)`` table."""
+    state_path = codex_dir / "state_5.sqlite"
+    conn = sqlite3.connect(state_path)
+    try:
+        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '')")
+        conn.executemany("INSERT INTO threads (id, title) VALUES (?, ?)", rows)
+        conn.commit()
+    finally:
+        conn.close()
+    return state_path
+
+
+class TestCodexStateTitles:
+    def test_discover_sidecars_includes_state_titles(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        sessions_dir = codex_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        session_file = sessions_dir / "thread-1" / "session.jsonl"
+        session_file.parent.mkdir()
+        session_file.touch()
+        _write_codex_state_db(
+            codex_dir,
+            [("thread-1", "Live-DB curated title"), ("thread-2", ""), ("thread-3", "  ")],
+        )
+
+        sidecar_data = CodexAssemblySpec().discover_sidecars([session_file])
+
+        assert sidecar_data["state_titles"] == {"thread-1": "Live-DB curated title"}
+
+    def test_discover_sidecars_handles_missing_state_db(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        sessions_dir = codex_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        session_file = sessions_dir / "thread-1" / "session.jsonl"
+        session_file.parent.mkdir()
+        session_file.touch()
+
+        sidecar_data = CodexAssemblySpec().discover_sidecars([session_file])
+
+        assert sidecar_data["state_titles"] == {}
+
+    def test_discover_sidecars_handles_malformed_state_db(self, tmp_path: Path) -> None:
+        """A non-SQLite file at the expected path degrades to empty, never raises."""
+        codex_dir = tmp_path / ".codex"
+        sessions_dir = codex_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        session_file = sessions_dir / "thread-1" / "session.jsonl"
+        session_file.parent.mkdir()
+        session_file.touch()
+        (codex_dir / "state_5.sqlite").write_bytes(b"not a sqlite file at all")
+
+        sidecar_data = CodexAssemblySpec().discover_sidecars([session_file])
+
+        assert sidecar_data["state_titles"] == {}
+
+    def test_discover_sidecars_handles_schema_mismatch(self, tmp_path: Path) -> None:
+        """A state_5.sqlite without the expected threads/title shape degrades to empty."""
+        codex_dir = tmp_path / ".codex"
+        sessions_dir = codex_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        session_file = sessions_dir / "thread-1" / "session.jsonl"
+        session_file.parent.mkdir()
+        session_file.touch()
+        state_path = codex_dir / "state_5.sqlite"
+        conn = sqlite3.connect(state_path)
+        try:
+            conn.execute("CREATE TABLE unrelated_table (foo TEXT)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        sidecar_data = CodexAssemblySpec().discover_sidecars([session_file])
+
+        assert sidecar_data["state_titles"] == {}
+
+    def test_discover_sidecars_handles_locked_state_db(self, tmp_path: Path) -> None:
+        """A concurrently write-locked state_5.sqlite degrades to empty, never raises."""
+        codex_dir = tmp_path / ".codex"
+        sessions_dir = codex_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        session_file = sessions_dir / "thread-1" / "session.jsonl"
+        session_file.parent.mkdir()
+        session_file.touch()
+        state_path = _write_codex_state_db(codex_dir, [("thread-1", "Curated title")])
+
+        # Hold an exclusive write lock (default rollback-journal mode, not
+        # WAL) to simulate Codex mid-write while we attempt a read.
+        locker = sqlite3.connect(state_path, timeout=0)
+        locker.execute("BEGIN EXCLUSIVE")
+        try:
+            sidecar_data = CodexAssemblySpec().discover_sidecars([session_file])
+            assert sidecar_data["state_titles"] == {}
+        finally:
+            locker.rollback()
+            locker.close()
+
+    def test_state_title_fills_gap_when_no_thread_name_or_history(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        sidecar_data = _thread_sidecars(state_titles={"thread-1": "Curated live title"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Curated live title"
+        assert enriched.title_source == TitleSource.ORIGIN
+
+    def test_thread_name_beats_state_title(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        sidecar_data = _thread_sidecars(
+            thread_names={"thread-1": "Named thread"},
+            state_titles={"thread-1": "Curated live title"},
+        )
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Named thread"
+
+    def test_history_title_beats_state_title(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        sidecar_data = _thread_sidecars(
+            history_titles={"thread-1": "History opening prompt"},
+            state_titles={"thread-1": "Curated live title"},
+        )
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "History opening prompt"
+
+    def test_state_title_beats_first_message_fallback(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "message body that would otherwise win")],
+        )
+        sidecar_data = _thread_sidecars(state_titles={"thread-1": "Curated live title"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Curated live title"
+        assert enriched.title_source == TitleSource.ORIGIN
+
+    def test_state_title_uses_first_line_bounded(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        long_first_line = "C" * 100
+        sidecar_data = _thread_sidecars(state_titles={"thread-1": f"\n\n{long_first_line}\nsecond line"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "C" * 80 + "..."
+
+    def test_state_title_never_replaces_real_title(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "A real existing title", [])
+        sidecar_data = _thread_sidecars(state_titles={"thread-1": "Curated live title"})
+
+        result = spec.enrich_session(conv, sidecar_data)
+
+        assert result is conv
+
+    def test_parse_codex_state_titles_missing_file(self, tmp_path: Path) -> None:
+        sessions_root = tmp_path / ".codex" / "sessions"
+        sessions_root.mkdir(parents=True)
+        assert _parse_codex_state_titles(sessions_root) == {}
+
+    def test_state_titles_cache_invalidates_on_file_change(self, tmp_path: Path) -> None:
+        import os
+
+        codex_dir = tmp_path / ".codex"
+        sessions_dir = codex_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        session_file = sessions_dir / "thread-1" / "session.jsonl"
+        session_file.parent.mkdir()
+        session_file.touch()
+        state_path = _write_codex_state_db(codex_dir, [("thread-1", "first version")])
+        spec = CodexAssemblySpec()
+
+        first = spec.discover_sidecars([session_file])["state_titles"]
+        assert first == {"thread-1": "first version"}
+
+        conn = sqlite3.connect(state_path)
+        try:
+            conn.execute("UPDATE threads SET title = ? WHERE id = ?", ("rewritten", "thread-1"))
+            conn.commit()
+        finally:
+            conn.close()
+        stat = state_path.stat()
+        os.utime(state_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        second = spec.discover_sidecars([session_file])["state_titles"]
+        assert second == {"thread-1": "rewritten"}
