@@ -392,19 +392,37 @@ def _configure_fts_automerge_sync(db: Path) -> None:
         conn.close()
 
 
+#: Live incident 2026-07-27: a long-running ingest/append pass can hold the
+#: sole-writer lock for 14+ minutes straight (observed: 860s for one live
+#: watcher catch-up chunk). At the previous 300s interval this starved the
+#: merge task outright during exactly the backlog conditions it exists to
+#: help with -- messages_fts_data grew to 700K+ rows (steady state is far
+#: lower) before a merge got a turn, and unmerged segment bloat itself makes
+#: every subsequent per-block FTS5 insert slower, which lengthens the next
+#: writer hold and starves the merge task further: a genuine, self-
+#: reinforcing degradation spiral, not merely a slow one-off pass. Shortening
+#: the interval does not touch the per-call work bound (still the same small,
+#: bounded 500-work-unit / 2-4 MiB chunk -- the merge pass itself must never
+#: become a long writer hold, see fts_automerge.py) -- it only asks for the
+#: writer's turn more often, so once contention eases the backlog clears
+#: roughly 5x faster than before. This does not fix worst-case starvation
+#: (a single 14-minute hold still blocks every queued actor including this
+#: one) -- see polylogue-de2a for the harder writer-fairness question.
+_FTS_MERGE_INTERVAL_SECONDS = 60
+
+
 async def _periodic_fts_merge() -> None:
-    """Run a bounded FTS5 merge every 5 minutes to amortise segment cost (#1851).
+    """Run a bounded FTS5 merge every 60s to amortise segment cost (#1851).
 
     With automerge=0, level-0 FTS5 segments accumulate over time.  This
     periodic pass merges them in bounded 500-work-unit chunks so query
     performance stays good without ever paying the full merge cost in a
-    single write transaction.  The 5-minute interval matches the WAL
-    checkpoint loop so the two share the same maintenance cadence.
+    single write transaction.
     """
     from polylogue.daemon.fts_automerge import run_periodic_fts_merge_sync
 
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(_FTS_MERGE_INTERVAL_SECONDS)
         db = _active_index_db_path()
         if not db.exists():
             continue
