@@ -248,13 +248,14 @@
     },
     "self-inspection": {
       "facts": {
-        "read_view_count": 11,
+        "read_view_count": 12,
         "read_view_ids": [
           "chronicle",
           "context",
           "context-image",
           "correlation",
           "dialogue",
+          "hooks",
           "messages",
           "neighbors",
           "raw",
