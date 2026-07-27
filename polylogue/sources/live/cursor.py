@@ -26,6 +26,10 @@ from polylogue.sources.live.convergence_debt_retry import (
     retry_is_future,
     same_pending_convergence_debt,
 )
+from polylogue.sources.live.cursor_lifecycle import (
+    CursorLifecycleActuator,
+    validate_cursor_lifecycle_transition,
+)
 from polylogue.sources.live.sqlite_locking import best_effort_cursor_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
@@ -351,7 +355,11 @@ class CursorStore:
         return best_effort_cursor_write("archive ops cursor sync", write)
 
     def _read_modify_write_cursor_record(
-        self, path: Path, mutate: Callable[[CursorRecord | None], CursorRecord | None]
+        self,
+        path: Path,
+        mutate: Callable[[CursorRecord | None], CursorRecord | None],
+        *,
+        actuator: CursorLifecycleActuator,
     ) -> None:
         """Read the current record and write the mutated result inside ONE
         connection/transaction, so no other writer can observe or clobber the
@@ -361,6 +369,14 @@ class CursorStore:
         window ``get_record`` + ``set`` used to leave open across two
         connections. ``mutate`` returns ``None`` to skip the write entirely
         (e.g. there is no existing record to mutate).
+
+        ``actuator`` names this call site against the declared cursor
+        lifecycle (``polylogue.sources.live.cursor_lifecycle``,
+        polylogue-yeq.1 first slice). The resulting transition is validated
+        *inside* this same locked transaction, before any write: an
+        undeclared transition raises :class:`CursorLifecycleViolationError`
+        instead of committing, so a would-be safety violation never lands
+        durably.
         """
 
         def write() -> None:
@@ -368,6 +384,7 @@ class CursorStore:
                 conn.execute("BEGIN IMMEDIATE")
                 current = self._get_record_on_conn(conn, path)
                 updated = mutate(current)
+                validate_cursor_lifecycle_transition(actuator=actuator, before=current, after=updated)
                 if updated is not None:
                     self._write_cursor_record_on_conn(conn, updated)
 
@@ -1148,7 +1165,7 @@ class CursorStore:
                 next_retry_at=datetime.fromtimestamp(retry_at, tz=UTC).isoformat(),
             )
 
-        self._read_modify_write_cursor_record(path, mutate)
+        self._read_modify_write_cursor_record(path, mutate, actuator="mark_failed")
 
     def defer_full_cursor_reconciliation(self, path: Path) -> None:
         """Retry archive-backed full-cursor handoff without poisoning the source.
@@ -1172,7 +1189,7 @@ class CursorStore:
                 excluded=False,
             )
 
-        self._read_modify_write_cursor_record(path, mutate)
+        self._read_modify_write_cursor_record(path, mutate, actuator="defer_full_cursor_reconciliation")
 
     def mark_excluded(self, path: Path) -> None:
         """Quarantine a source file (poison pill)."""
@@ -1182,7 +1199,7 @@ class CursorStore:
                 return None
             return replace(current, updated_at=datetime.now(UTC).isoformat(), excluded=True)
 
-        self._read_modify_write_cursor_record(path, mutate)
+        self._read_modify_write_cursor_record(path, mutate, actuator="mark_excluded")
 
     def revive_replaced_exclusion(
         self,
@@ -1218,7 +1235,7 @@ class CursorStore:
                 excluded=False,
             )
 
-        self._read_modify_write_cursor_record(path, mutate)
+        self._read_modify_write_cursor_record(path, mutate, actuator="revive_replaced_exclusion")
 
     def reset_failures(self, path: Path) -> None:
         """Clear failure count and backoff after a successful parse."""
@@ -1233,7 +1250,7 @@ class CursorStore:
                 next_retry_at=None,
             )
 
-        self._read_modify_write_cursor_record(path, mutate)
+        self._read_modify_write_cursor_record(path, mutate, actuator="reset_failures")
 
     def list_excluded(self) -> list[str]:
         """Return quarantined source paths."""
