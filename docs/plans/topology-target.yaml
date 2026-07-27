@@ -1008,7 +1008,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2611
+    loc: 2619
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1681,11 +1681,11 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2987
+    loc: 3005
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
-    loc: 494
+    loc: 499
     target: polylogue/daemon/status_snapshot.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -3244,7 +3244,7 @@ files:
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/cursor_lifecycle.py
-    loc: 258
+    loc: 262
     target: polylogue/sources/live/cursor_lifecycle.py
     owner: stable
   - path: polylogue/sources/live/dedup.py
@@ -4440,7 +4440,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/usage.py
-    loc: 2086
+    loc: 2546
     target: polylogue/storage/usage.py
     owner: storage-root
     reason: storage-root cross-cutting helper
