@@ -22,6 +22,22 @@ logger = get_logger(__name__)
 MAX_COMPRESSION_RATIO = 1000
 MAX_UNCOMPRESSED_SIZE = 10 * 1024 * 1024 * 1024
 
+#: Aggregate ceiling (bytes) on the sum of declared ``file_size`` across every
+#: entry admitted from a single ZIP archive (polylogue-lqxx). The per-entry
+#: cap above bounds one entry but does nothing to stop a "zip bomb by many
+#: entries": thousands of entries each just under the 10 GiB per-entry cap
+#: would still sum to an unbounded total. 64 GiB is chosen to comfortably
+#: exceed any real single-archive GDPR/Takeout export this repo has observed
+#: (the largest full raw corpus recorded across this operator's *entire*
+#: archive history, spanning every session ever ingested, is ~52.1 GiB --
+#: see `sources/revision_backfill.py`'s newest-revision-raws comment) while
+#: still bounding aggregate decompression well below the terabyte-scale
+#: totals a many-small-entries zip bomb would otherwise reach. It is also in
+#: the same order of magnitude as the daemon's other whole-pass resource
+#: envelopes (e.g. the whale-pass `raw_authority_whale_payload_bytes`
+#: default of 8 GiB for a *single* stream-safe-gated component).
+MAX_AGGREGATE_UNCOMPRESSED_SIZE = 64 * 1024 * 1024 * 1024
+
 #: Chunk size used when bounding ZIP entry decompression. Read in fixed
 #: windows so a malicious entry cannot allocate more than this much extra
 #: memory beyond the running total before the ceiling check fires.
@@ -97,7 +113,7 @@ def open_bounded_zip_entry(
 class ZipEntryValidator:
     """Validate ZIP entries for security and relevance."""
 
-    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path", "_session_only")
+    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path", "_session_only", "_aggregate_total")
 
     def __init__(
         self,
@@ -111,6 +127,7 @@ class ZipEntryValidator:
         self._cursor_state = cursor_state
         self._zip_path = zip_path
         self._session_only = session_only
+        self._aggregate_total = 0
 
     def filter_entries(self, entries: list[zipfile.ZipInfo]) -> Iterable[zipfile.ZipInfo]:
         """Yield safe, relevant entries and record failures in cursor state."""
@@ -158,6 +175,32 @@ class ZipEntryValidator:
                     )
                     if path_classification is not None and not path_classification.parse_as_session:
                         continue
+
+                # Aggregate cap: the per-entry check above bounds one entry,
+                # but a zip bomb built from many entries each just under the
+                # per-entry cap would otherwise sum to an unbounded total.
+                # Check the running total of declared uncompressed sizes
+                # against MAX_AGGREGATE_UNCOMPRESSED_SIZE before yielding, so
+                # rejection happens from central-directory metadata alone --
+                # before any entry is opened/decompressed.
+                projected_total = self._aggregate_total + info.file_size
+                if projected_total > MAX_AGGREGATE_UNCOMPRESSED_SIZE:
+                    logger.warning(
+                        "Skipping %s in %s: aggregate uncompressed size %d would exceed the %d-byte archive-wide limit",
+                        name,
+                        self._zip_path,
+                        projected_total,
+                        MAX_AGGREGATE_UNCOMPRESSED_SIZE,
+                    )
+                    _record_cursor_failure(
+                        self._cursor_state,
+                        f"{self._zip_path}:{name}",
+                        f"Aggregate uncompressed size {projected_total} exceeds archive-wide limit "
+                        f"{MAX_AGGREGATE_UNCOMPRESSED_SIZE}",
+                    )
+                    continue
+
+                self._aggregate_total = projected_total
                 yield info
 
 
@@ -249,6 +292,7 @@ def process_zip(
 
 
 __all__ = [
+    "MAX_AGGREGATE_UNCOMPRESSED_SIZE",
     "MAX_COMPRESSION_RATIO",
     "MAX_UNCOMPRESSED_SIZE",
     "ZipBombError",

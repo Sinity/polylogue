@@ -14,6 +14,7 @@ from polylogue.sources.decoder_json import (
     iter_json_stream_with,
 )
 from polylogue.sources.decoder_zip import (
+    MAX_AGGREGATE_UNCOMPRESSED_SIZE,
     MAX_COMPRESSION_RATIO,
     MAX_UNCOMPRESSED_SIZE,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "_ZipEntryValidator",
     "_zip_entry_provider_hint",
     "_process_zip",
+    "MAX_AGGREGATE_UNCOMPRESSED_SIZE",
     "MAX_COMPRESSION_RATIO",
     "MAX_UNCOMPRESSED_SIZE",
 ]

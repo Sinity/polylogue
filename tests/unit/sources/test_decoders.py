@@ -15,6 +15,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.sources.decoders import (
+    MAX_AGGREGATE_UNCOMPRESSED_SIZE,
     MAX_UNCOMPRESSED_SIZE,
     _decode_json_bytes,
     _iter_json_stream,
@@ -308,3 +309,63 @@ class TestZipEntryValidator:
         failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
         assert cursor_state["failed_count"] >= 1
         assert len(failed_files) >= 1
+
+    def test_aggregate_size_limit_rejects_many_entries_under_per_entry_cap(self) -> None:
+        """A zip bomb built from many entries, each individually under
+        MAX_UNCOMPRESSED_SIZE, is rejected once their SUM would exceed
+        MAX_AGGREGATE_UNCOMPRESSED_SIZE (polylogue-lqxx).
+
+        Each entry here is deliberately just 1 byte under the per-entry
+        cap, so this proves the aggregate check fires on its own -- the
+        existing per-entry check alone would accept every single one of
+        these entries.
+        """
+        cursor_state = _seeded_cursor_state()
+        validator = _ZipEntryValidator(
+            "chatgpt",
+            cursor_state=cursor_state,
+            zip_path=Path("bomb.zip"),
+        )
+        per_entry_size = MAX_UNCOMPRESSED_SIZE - 1
+        assert per_entry_size <= MAX_UNCOMPRESSED_SIZE  # sanity: never trips the per-entry cap
+
+        # 7 entries * (10 GiB - 1 byte) ~= 70 GiB, comfortably over the
+        # 64 GiB aggregate cap, while no single entry is oversized.
+        entry_count = (MAX_AGGREGATE_UNCOMPRESSED_SIZE // per_entry_size) + 2
+        entries = [
+            self._make_zip_info(f"conversation_{i}.json", file_size=per_entry_size, compress_size=per_entry_size)
+            for i in range(entry_count)
+        ]
+
+        accepted = list(validator.filter_entries(entries))
+
+        # Every accepted entry was individually under the per-entry cap
+        # (proven above), yet not all entries were accepted -- the
+        # aggregate check, not the per-entry check, did the rejecting.
+        assert len(accepted) < entry_count
+        assert sum(info.file_size for info in accepted) <= MAX_AGGREGATE_UNCOMPRESSED_SIZE
+
+        failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
+        assert cursor_state["failed_count"] >= 1
+        assert any("Aggregate uncompressed size" in failure["error"] for failure in failed_files)
+
+    def test_aggregate_size_limit_allows_archive_comfortably_under_cap(self) -> None:
+        """Multiple entries whose sum stays well under the aggregate cap
+        all decode successfully -- no regression for legitimate
+        multi-file exports."""
+        validator = _ZipEntryValidator(
+            "chatgpt",
+            cursor_state=None,
+            zip_path=Path("normal_export.zip"),
+        )
+        # 3 entries of 1 GiB each = 3 GiB total, far under both the 10 GiB
+        # per-entry cap and the 64 GiB aggregate cap.
+        one_gib = 1024 * 1024 * 1024
+        entries = [
+            self._make_zip_info(f"conversation_{i}.json", file_size=one_gib, compress_size=one_gib) for i in range(3)
+        ]
+
+        accepted = list(validator.filter_entries(entries))
+
+        assert len(accepted) == 3
+        assert sum(info.file_size for info in accepted) == 3 * one_gib
