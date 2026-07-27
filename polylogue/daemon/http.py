@@ -80,6 +80,7 @@ from polylogue.rendering.semantic_cards import (
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import archive_message_display_text
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     MutationResultPayload,
@@ -3614,7 +3615,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         semantic_card_suppressed: bool = False,
     ) -> dict[str, object]:
         message_id = str(message.message_id)
-        text = "\n\n".join(str(block.text) for block in message.blocks if block.text)
+        text = archive_message_display_text(message.blocks)
         has_paste = bool(message.has_paste)
         return {
             "id": message_id,

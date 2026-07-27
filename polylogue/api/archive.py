@@ -64,6 +64,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAttachmentRow,
     ArchiveMessageRow,
     ArchiveSessionEnvelope,
+    archive_message_display_text,
 )
 from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
@@ -1767,7 +1768,7 @@ def _archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachmen
 
 
 def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message:
-    text = "\n\n".join(block.text for block in message.blocks if block.text) or None
+    text = archive_message_display_text(message.blocks) or None
     content_blocks: list[dict[str, object]] = [
         {
             key: value
