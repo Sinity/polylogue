@@ -5,15 +5,10 @@ from __future__ import annotations
 import difflib
 from typing import Literal
 
-from pygments import highlight
-from pygments.formatters import Terminal256Formatter
-from pygments.lexers import get_lexer_by_name
 from rich.align import Align
 from rich.box import Box
 from rich.console import Console, RenderableType
-from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.text import Text
 
 from polylogue.ui.facade_console import ConsoleLike
@@ -95,6 +90,8 @@ def render_markdown(console: ConsoleLike, *, plain: bool, panel_box: Box, conten
         console.print(content)
         return
 
+    from rich.markdown import Markdown
+
     md = Markdown(content, style="summary.text")
     _render_panel(
         console,
@@ -109,6 +106,8 @@ def render_code(console: ConsoleLike, *, plain: bool, panel_box: Box, code: str,
     if plain:
         console.print(code)
         return
+
+    from rich.syntax import Syntax
 
     syntax = Syntax(code, language, theme=syntax_theme("terminal_code"), line_numbers=True)
     _render_panel(
@@ -145,6 +144,10 @@ def render_diff(
 
     try:
         if isinstance(console, Console):
+            from pygments import highlight
+            from pygments.formatters import Terminal256Formatter
+            from pygments.lexers import get_lexer_by_name
+
             with console.pager():
                 lexer = get_lexer_by_name("diff")
                 highlighted = highlight(diff_text, lexer, Terminal256Formatter(style=syntax_theme("terminal_diff")))
@@ -153,6 +156,8 @@ def render_diff(
             console.print(diff_text)
     except (ImportError, AttributeError):
         if isinstance(console, Console):
+            from rich.syntax import Syntax
+
             syntax = Syntax(diff_text, "diff", theme=syntax_theme("terminal_diff"))
             console.print(syntax)
         else:
