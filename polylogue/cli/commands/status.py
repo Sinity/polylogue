@@ -335,7 +335,6 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     ),
     "find_stuck_session_latency_profile_insights": ("archive_routed", "index", "reads latency profiles from index.db"),
     "explain_query_expression": ("archive_routed", "index", "explains query DSL parsing and lowering"),
-    "get_actions": ("archive_direct", "index", "derives actions from index.db content blocks"),
     "get_actions_batch": (
         "archive_direct",
         "index",
@@ -366,7 +365,6 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "get_stats_by": ("archive_direct", "index", "groups session counts from index.db"),
     "get_thread": ("archive_routed", "index", "reads session topology from index.db"),
     "get_view": ("archive_routed", "user", "reads saved views through user.db"),
-    "get_view_by_name": ("archive_routed", "user", "reads saved views through user.db"),
     "get_thread_insight": ("archive_routed", "index", "reads work threads from index.db"),
     "get_workspace": ("archive_routed", "user", "reads workspaces through user.db"),
     "health_check": ("archive_routed", "index", "returns archive tier/index readiness"),
@@ -415,11 +413,6 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "post_blackboard_note": ("archive_routed", "user", "writes blackboard notes through user.db"),
     "postmortem_bundle": ("archive_routed", "index", "compiles postmortem bundles from archive-routed session reads"),
     "pathology_report": ("archive_routed", "index", "compiles pathology reports from archive-routed projections"),
-    "materialize_pathology_assertions": (
-        "archive_routed",
-        "user",
-        "writes pathology candidate assertions through user.db",
-    ),
     "portfolio_bundle": ("archive_routed", "index", "builds portfolio bundles from archive-routed session reads"),
     "provider_usage_report": ("archive_routed", "index", "delegates to the provider usage report archive helper"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
