@@ -374,6 +374,12 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'context-snapshot ObjectRef identity key.'
+- path: polylogue/insights/incident_evidence_materialization.py
+  function: '<module>.incident_corpus_snapshot_ref'
+  call: hashlib.sha256
+  occurrence: 0
+  classification: identifier
+  note: 'incident-evidence-v1 context-snapshot ObjectRef identity key over the exact session/run/event refs materialized.'
 - path: polylogue/insights/judgment/blinding.py
   function: '<module>.blind_items'
   call: hash_payload

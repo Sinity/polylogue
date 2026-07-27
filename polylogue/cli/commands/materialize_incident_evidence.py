@@ -117,7 +117,7 @@ def materialize_incident_evidence_command(
                 session_filter = session_filter.contains(contains_text)
             session_filter = session_filter.limit(selection_limit)
             summaries = await session_filter.list_summaries()
-            return [summary.session_id for summary in summaries]
+            return [str(summary.id) for summary in summaries]
 
         resolved_session_ids.extend(run_coroutine_sync(_select()))
 
