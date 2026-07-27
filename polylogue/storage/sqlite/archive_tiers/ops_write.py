@@ -21,6 +21,13 @@ ROUTE_OBSERVATION_ROW_CAP = 20_000
 # practice; the cap is a hard backstop against a runaway sampling loop).
 FTS_DRIFT_SAMPLE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 FTS_DRIFT_SAMPLE_ROW_CAP = 5_000
+# polylogue-da1: the sentinel's rate must be windowed since a date, not
+# lifetime, or an old archive's many historical clean records permanently
+# dilute a recent provider-shape regression. 30 days matches the FTS drift
+# sample precedent above; the row cap is a hard backstop against a runaway
+# per-record sampling loop (one row per drifted record, not per session).
+SCHEMA_DRIFT_SAMPLE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+SCHEMA_DRIFT_SAMPLE_ROW_CAP = 20_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +279,199 @@ def _fts_drift_sample_from_row(row: sqlite3.Row | tuple[object, ...]) -> Archive
         identity_mismatch_rows=_int_value(row[8]),
         sampled_at_ms=_int_value(row[9]),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveSchemaDriftSample:
+    """One classified format-drift sample for a single ingested record."""
+
+    sample_id: str
+    origin: str
+    element_kind: str
+    classification: str
+    unseen_key_signature: str
+    native_id_example: str
+    raw_id: str
+    observed_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaDriftOriginSummary:
+    """Windowed per-origin drift rate for the ``polylogue ops status`` line."""
+
+    origin: str
+    total: int
+    risky: int
+    benign: int
+    since_ms: int
+    example_native_ids: tuple[str, ...]
+
+    @property
+    def risky_rate(self) -> float:
+        return self.risky / self.total if self.total else 0.0
+
+
+def record_schema_drift_sample(
+    conn: sqlite3.Connection,
+    *,
+    origin: str,
+    element_kind: str,
+    classification: str,
+    unseen_key_signature: str,
+    native_id_example: str,
+    raw_id: str,
+    observed_at_ms: int,
+    sample_id: str | None = None,
+) -> str:
+    """Record one format-drift sample and return its id.
+
+    Best-effort telemetry like ``record_fts_drift_sample``: a plain direct
+    INSERT, pruned by both time (``SCHEMA_DRIFT_SAMPLE_RETENTION_MS``) and
+    row count (``SCHEMA_DRIFT_SAMPLE_ROW_CAP``) so it cannot grow unbounded
+    across a long-running archive (polylogue-da1).
+    """
+    if sample_id is None:
+        sample_id = str(uuid.uuid4())
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO schema_drift_samples (
+                sample_id, origin, element_kind, classification,
+                unseen_key_signature, native_id_example, raw_id, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sample_id,
+                origin,
+                element_kind,
+                classification,
+                unseen_key_signature,
+                native_id_example,
+                raw_id,
+                observed_at_ms,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM schema_drift_samples WHERE observed_at_ms < ?",
+            (observed_at_ms - SCHEMA_DRIFT_SAMPLE_RETENTION_MS,),
+        )
+        row_count = int(conn.execute("SELECT COUNT(*) FROM schema_drift_samples").fetchone()[0])
+        if row_count > SCHEMA_DRIFT_SAMPLE_ROW_CAP:
+            excess = row_count - SCHEMA_DRIFT_SAMPLE_ROW_CAP
+            conn.execute(
+                """
+                DELETE FROM schema_drift_samples WHERE sample_id IN (
+                    SELECT sample_id FROM schema_drift_samples
+                    ORDER BY observed_at_ms ASC LIMIT ?
+                )
+                """,
+                (excess,),
+            )
+    return sample_id
+
+
+def list_schema_drift_samples(
+    conn: sqlite3.Connection,
+    *,
+    origin: str | None = None,
+    since_ms: int | None = None,
+    limit: int = 1000,
+) -> tuple[ArchiveSchemaDriftSample, ...]:
+    """Return schema-drift samples newest-first, optionally filtered."""
+    query = """
+        SELECT sample_id, origin, element_kind, classification,
+               unseen_key_signature, native_id_example, raw_id, observed_at_ms
+        FROM schema_drift_samples
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if origin is not None:
+        clauses.append("origin = ?")
+        params.append(origin)
+    if since_ms is not None:
+        clauses.append("observed_at_ms >= ?")
+        params.append(since_ms)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY observed_at_ms DESC, sample_id DESC LIMIT ?"
+    params.append(limit)
+    return tuple(_schema_drift_sample_from_row(row) for row in conn.execute(query, tuple(params)).fetchall())
+
+
+def _schema_drift_sample_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveSchemaDriftSample:
+    return ArchiveSchemaDriftSample(
+        sample_id=str(row[0]),
+        origin=str(row[1]),
+        element_kind=str(row[2]),
+        classification=str(row[3]),
+        unseen_key_signature=str(row[4]),
+        native_id_example=str(row[5]),
+        raw_id=str(row[6]),
+        observed_at_ms=_int_value(row[7]),
+    )
+
+
+def summarize_schema_drift_since(
+    conn: sqlite3.Connection,
+    *,
+    since_ms: int,
+    example_limit: int = 5,
+) -> tuple[SchemaDriftOriginSummary, ...]:
+    """Return one windowed drift-rate summary per origin since ``since_ms``.
+
+    ``risky`` counts ``field_changed``/``unseen_shape`` samples (a known
+    field disappeared/changed type, or the shape matched no committed
+    package at all); ``benign`` counts ``new_field`` samples (an
+    additional, schema-permitted field). Origins with zero samples in the
+    window are omitted. ``example_native_ids`` is bounded to
+    ``example_limit`` and favors risky samples over benign ones so an
+    operator sees the more actionable examples first.
+    """
+    from polylogue.schemas.drift_sentinel import RISKY_CLASSIFICATIONS
+
+    origins = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT origin FROM schema_drift_samples WHERE observed_at_ms >= ? ORDER BY origin",
+            (since_ms,),
+        ).fetchall()
+    ]
+    summaries: list[SchemaDriftOriginSummary] = []
+    for origin in origins:
+        rows = conn.execute(
+            """
+            SELECT classification, native_id_example FROM schema_drift_samples
+            WHERE origin = ? AND observed_at_ms >= ?
+            ORDER BY observed_at_ms DESC
+            """,
+            (origin, since_ms),
+        ).fetchall()
+        total = len(rows)
+        risky = sum(1 for classification, _ in rows if classification in RISKY_CLASSIFICATIONS)
+        benign = total - risky
+        risky_examples = [
+            str(native_id) for classification, native_id in rows if classification in RISKY_CLASSIFICATIONS
+        ]
+        other_examples = [
+            str(native_id) for classification, native_id in rows if classification not in RISKY_CLASSIFICATIONS
+        ]
+        examples: list[str] = []
+        for native_id in risky_examples + other_examples:
+            if native_id not in examples:
+                examples.append(native_id)
+            if len(examples) >= example_limit:
+                break
+        summaries.append(
+            SchemaDriftOriginSummary(
+                origin=origin,
+                total=total,
+                risky=risky,
+                benign=benign,
+                since_ms=since_ms,
+                example_native_ids=tuple(examples),
+            )
+        )
+    return tuple(summaries)
 
 
 def record_query_run(
@@ -1432,12 +1632,17 @@ __all__ = [
     "ArchiveFtsDriftSample",
     "ArchiveOtlpSpan",
     "ArchiveRouteObservation",
+    "ArchiveSchemaDriftSample",
     "FTS_DRIFT_SAMPLE_RETENTION_MS",
     "FTS_DRIFT_SAMPLE_ROW_CAP",
+    "SCHEMA_DRIFT_SAMPLE_RETENTION_MS",
+    "SCHEMA_DRIFT_SAMPLE_ROW_CAP",
+    "SchemaDriftOriginSummary",
     "OpsCompactState",
     "add_convergence_debt",
     "list_cursor_lag_samples",
     "list_fts_drift_samples",
+    "list_schema_drift_samples",
     "latest_daemon_lifecycle",
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
@@ -1458,6 +1663,8 @@ __all__ = [
     "record_ingest_attempt",
     "record_query_run",
     "record_route_observation",
+    "record_schema_drift_sample",
+    "summarize_schema_drift_since",
     "upsert_embedding_catchup_run",
     "upsert_ingest_cursor",
     "upsert_otlp_span",

@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6720
+    loc: 6722
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -326,7 +326,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/archive_execution.py
-    loc: 686
+    loc: 692
     target: polylogue/archive/query/archive_execution.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -341,7 +341,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/discovery.py
-    loc: 1575
+    loc: 1576
     target: polylogue/archive/query/discovery.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -628,7 +628,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/domain_models.py
-    loc: 117
+    loc: 135
     target: polylogue/archive/session/domain_models.py
     owner: archive-session
     reason: archive-domain semantics
@@ -819,7 +819,7 @@ files:
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 607
+    loc: 652
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -999,7 +999,7 @@ files:
     target: polylogue/cli/commands/manual.py
     owner: stable
   - path: polylogue/cli/commands/materialize_incident_evidence.py
-    loc: 149
+    loc: 150
     target: polylogue/cli/commands/materialize_incident_evidence.py
     owner: stable
   - path: polylogue/cli/commands/note.py
@@ -1027,7 +1027,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2280
+    loc: 2383
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1527,7 +1527,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2791
+    loc: 2836
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1583,11 +1583,11 @@ files:
     target: polylogue/daemon/event_bus.py
     owner: stable
   - path: polylogue/daemon/events.py
-    loc: 439
+    loc: 408
     target: polylogue/daemon/events.py
     owner: stable
   - path: polylogue/daemon/events_http.py
-    loc: 181
+    loc: 180
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/fts_automerge.py
@@ -1607,7 +1607,7 @@ files:
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 1307
+    loc: 1374
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -1756,7 +1756,7 @@ files:
     target: polylogue/daemon/web_shell_reader.py
     owner: stable
   - path: polylogue/daemon/web_shell_realtime.py
-    loc: 287
+    loc: 268
     target: polylogue/daemon/web_shell_realtime.py
     owner: stable
   - path: polylogue/daemon/web_shell_selection.py
@@ -2450,7 +2450,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1771
+    loc: 1786
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_memory.py
@@ -2458,7 +2458,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_memory.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
-    loc: 132
+    loc: 134
     target: polylogue/pipeline/services/ingest_batch/_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -2471,7 +2471,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_summary.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
-    loc: 697
+    loc: 749
     target: polylogue/pipeline/services/ingest_worker.py
     owner: stable
   - path: polylogue/pipeline/services/parsing.py
@@ -2728,6 +2728,14 @@ files:
   - path: polylogue/schemas/code_detection/tree_sitter.py
     loc: 132
     target: polylogue/schemas/code_detection/tree_sitter.py
+    owner: stable
+  - path: polylogue/schemas/drift_sentinel.py
+    loc: 125
+    target: polylogue/schemas/drift_sentinel.py
+    owner: stable
+  - path: polylogue/schemas/drift_sentinel_sampling.py
+    loc: 84
+    target: polylogue/schemas/drift_sentinel_sampling.py
     owner: stable
   - path: polylogue/schemas/field_stats/__init__.py
     loc: 1
@@ -3243,11 +3251,11 @@ files:
     target: polylogue/sources/live/_lag_sample_ddl.py
     owner: stable
   - path: polylogue/sources/live/append_ingest.py
-    loc: 233
+    loc: 247
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 2721
+    loc: 2756
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -3255,7 +3263,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 582
+    loc: 592
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -3291,7 +3299,7 @@ files:
     target: polylogue/sources/live/hook_paste_enrichment.py
     owner: stable
   - path: polylogue/sources/live/metrics.py
-    loc: 169
+    loc: 181
     target: polylogue/sources/live/metrics.py
     owner: stable
   - path: polylogue/sources/live/parse_prefetch.py
@@ -4052,7 +4060,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 13038
+    loc: 13116
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -4108,11 +4116,11 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops.py
-    loc: 285
+    loc: 309
     target: polylogue/storage/sqlite/archive_tiers/ops.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops_write.py
-    loc: 1464
+    loc: 1671
     target: polylogue/storage/sqlite/archive_tiers/ops_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
@@ -4488,7 +4496,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 3871
+    loc: 3877
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py

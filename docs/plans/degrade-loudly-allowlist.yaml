@@ -172,6 +172,12 @@ entries:
   occurrence: 0
   reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
 - path: polylogue/daemon/health.py
+  function: <module>._check_schema_drift_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern (polylogue-da1).'
+- path: polylogue/daemon/health.py
   function: <module>._check_schema_version_fast
   exceptions:
   - Exception

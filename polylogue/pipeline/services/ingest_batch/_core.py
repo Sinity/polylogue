@@ -615,6 +615,8 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         if ir.serialized_size_bytes > summary.max_result_bytes:
             summary.max_result_bytes = ir.serialized_size_bytes
             summary.max_result_raw_id = ir.raw_id
+    if ir.schema_drift is not None:
+        summary.schema_drift_observations.append(ir.schema_drift)
 
 
 def _observe_current_rss(summary: _IngestBatchSummary) -> None:
@@ -1355,6 +1357,19 @@ def _process_ingest_batch_sync(
                     reason=optimize_observation.reason,
                     analysis_limit=optimize_observation.analysis_limit,
                     error=optimize_observation.error,
+                )
+            if summary.schema_drift_observations:
+                from polylogue.schemas.drift_sentinel_sampling import (
+                    record_schema_drift_observations_to_ops_sync,
+                )
+
+                # Best-effort ops.db telemetry (polylogue-da1). Runs after
+                # the index.db commit above so a drift-shaped record is
+                # never held back by, or made to depend on, this write --
+                # the sentinel only augments ingest, it never gates it.
+                record_schema_drift_observations_to_ops_sync(
+                    db_path,
+                    summary.schema_drift_observations,
                 )
     except Exception:
         # Roll back the row writes.  If a caller explicitly opted into
