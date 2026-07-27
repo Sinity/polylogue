@@ -3613,6 +3613,185 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
         ).fetchone() == (None,)
 
 
+def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_current_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """polylogue-lpen: an active byte-revision chain must not poison an unrelated raw.
+
+    Root cause (11 of 73 live ``claude-code-session`` parse-failed raws, found
+    via ``polylogue ops debt list``): ``_apply_membership_sessions`` sweeps
+    *every* full-only raw sharing a logical identity
+    (``archive.convertible_full_revision_raw_ids``) and unconditionally tries
+    to retire each one out of byte-revision governance
+    (``replace_raw_membership_census(..., retire_full_revision_governance=
+    True)``), as a side effect of processing some entirely different,
+    currently-ingesting raw (``source_raw_id``). It never checks whether a
+    candidate still has a live byte-chain dependent -- another raw whose
+    ``predecessor_raw_id``/``baseline_raw_id`` points at it -- before
+    attempting the retirement; that invariant is enforced only deeper inside
+    ``replace_raw_membership_census``, which raises
+    ``ActiveByteRevisionChainError`` (a ``RuntimeError``) when it finds one.
+    Pre-fix, that exception propagated all the way up through
+    ``_apply_membership_sessions`` into the live-watcher's blanket
+    ``except Exception`` (``sources/live/batch.py``), which called
+    ``archive.mark_raw_parse_failed`` on ``source_raw_id`` -- the CURRENT,
+    unrelated raw -- permanently quarantining it even though it had nothing
+    to do with the chain conflict.
+
+    Fixture: raw_a (baseline) and raw_b (a genuine byte-extension of raw_a's
+    bytes) form a real byte-proven full-revision chain for ``codex:shared``
+    via ``classify_raw_revision_cohort`` -- raw_b's ``predecessor_raw_id``
+    durably points at raw_a, exactly the "active byte-revision chain"
+    dependency ``replace_raw_membership_census`` refuses to break. A third,
+    unrelated raw (raw_c) then triggers ``_apply_membership_sessions`` for
+    the same logical identity (mirroring the live "no accepted chain but no
+    retired siblings either" / multi-session bundle call sites). The
+    retirement sweep order is pinned (raw_a before raw_b) so the parent is
+    always attempted while its dependent is still live, regardless of
+    raw_id hash ordering.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_a = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"a":1}\n',
+            source_path=str(tmp_path / "a.jsonl"),
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_a,
+            RawRevisionEnvelope(
+                "codex:shared", RawRevisionKind.FULL, "rev-a", 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        raw_b = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"a":1}\n{"b":2}\n',
+            source_path=str(tmp_path / "b.jsonl"),
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            raw_b,
+            RawRevisionEnvelope(
+                "codex:shared", RawRevisionKind.FULL, "rev-b", 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        archive.classify_raw_revision_cohort("codex:shared")
+        archive.commit()
+        raw_c = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"c":1}\n',
+            source_path=str(tmp_path / "c.jsonl"),
+            acquired_at_ms=3,
+        )
+        archive.commit()
+
+    # Sanity: the byte chain really was proven, and raw_b really is a live
+    # dependent of raw_a -- this is the exact condition the fixture claims.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = dict(
+            conn.execute(
+                "SELECT raw_id, predecessor_raw_id FROM raw_sessions WHERE logical_source_key = 'codex:shared'"
+            ).fetchall()
+        )
+    assert rows[raw_a] is None
+    assert rows[raw_b] == raw_a
+
+    def session(native_id: str, *texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            messages=[
+                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(texts)
+            ],
+        )
+
+    session_a = session("shared", "base")
+    session_b = session("shared", "base", "extra")
+    session_c = session("shared", "base")
+    sessions_by_raw_id = {raw_a: session_a, raw_b: session_b}
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=tmp_path),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        processor,
+        "_parse_retained_raw_sessions",
+        lambda _archive, raw_id: [sessions_by_raw_id[raw_id]],
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        # Confirm the lower-level invariant still fails closed on its own --
+        # the fix belongs in the caller's handling of this, not in silently
+        # dropping the check.
+        with pytest.raises(archive_tier_module.ActiveByteRevisionChainError):
+            archive.replace_raw_membership_census(
+                raw_a,
+                [session_a],
+                parser_fingerprint="test-parser",
+                censused_at_ms=10,
+                retire_full_revision_governance=True,
+            )
+        archive.rollback()
+
+        # Pin the sweep order to (parent, child) regardless of raw_id hash
+        # ordering, so the parent is always attempted while its dependent
+        # (raw_b) is still live.
+        monkeypatch.setattr(archive, "convertible_full_revision_raw_ids", lambda _key: (raw_a, raw_b))
+
+        # Mirror every production call site: source_raw_id is always censused
+        # (without retiring anything) immediately before
+        # ``_apply_membership_sessions`` is invoked.
+        archive.replace_raw_membership_census(
+            raw_c,
+            [session_c],
+            parser_fingerprint="test-parser",
+            censused_at_ms=10,
+        )
+
+        with caplog.at_level("WARNING", logger="polylogue.sources.live.batch"):
+            session_ids, session_count, message_count, complete = processor._apply_membership_sessions(
+                archive,
+                raw_c,
+                [session_c],
+                acquired_at_ms=10,
+                allow_current_complete_raw=True,
+            )
+        archive.commit()
+
+    # The unrelated raw_c ingest completes -- it is not poisoned by raw_a's
+    # unresolved sibling-retirement conflict.
+    assert session_count == 1
+    assert message_count >= 1
+    assert any("deferring" in record.message and raw_a in record.message for record in caplog.records)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        # raw_a's dependent (raw_b) was still live when its retirement was
+        # attempted -- deferred, not retired: its byte-chain evidence survives
+        # intact for a later tick to retry once raw_b resolves.
+        assert conn.execute(
+            "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (raw_a,),
+        ).fetchone() == ("codex:shared", "byte_proven")
+        # raw_b had no live dependent of its own -- it retired successfully.
+        assert conn.execute(
+            "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (raw_b,),
+        ).fetchone() == (None, "quarantined")
+        # raw_c itself never failed -- no parse_error was ever recorded for it.
+        assert conn.execute(
+            "SELECT parse_error FROM raw_sessions WHERE raw_id = ?",
+            (raw_c,),
+        ).fetchone() == (None,)
+
+
 def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_path: Path) -> None:
     """Pins the exact narrow scoping of the polylogue-emx2 fix (de0b2df7a regression, polylogue-lvz6 triage).
 
