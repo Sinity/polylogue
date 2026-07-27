@@ -171,6 +171,12 @@ def test_owned_location_reclaims_lock_left_by_dead_process(tmp_path: Path) -> No
     owned = OwnedArchiveLocation.acquire(location)
     try:
         assert owned.owner_id is not None
+        # Reclaim must retry the SAME inode, never create a competing one: a
+        # prior implementation swapped in a fresh file via os.replace, which
+        # could let two racing reclaimers each believe they hold exclusive
+        # ownership of a *different* inode. No such artifact should exist.
+        ownership_paths = [p.name for p in root.iterdir() if "ownership" in p.name]
+        assert ownership_paths == [lock_path.name]
     finally:
         owned.release()
 

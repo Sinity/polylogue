@@ -7,6 +7,7 @@ import logging
 import os
 import socket
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -388,24 +389,39 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
+_STALE_RECLAIM_ATTEMPTS = 20
+_STALE_RECLAIM_RETRY_SECONDS = 0.01
+
+
 def _acquire_ownership_lock_fd(path: Path, *, owner: str) -> int:
     """Open ``path`` and take an exclusive, non-blocking ``flock`` proving ownership.
 
     Never opens a sqlite3 connection -- callers rely on this to fail before
-    any SQLite tier file is touched. A lock file whose recorded holder pid
-    is no longer running is reclaimed: a fresh file is written at the same
-    path and swapped in atomically, handing a brand-new, guaranteed-unlocked
-    inode to the new owner while any surviving reference to the old one is
-    left orphaned.
+    any SQLite tier file is touched.
+
+    A lock file whose recorded holder pid is no longer running is reclaimed
+    by retrying the *same* ``flock`` call against the *same* inode, never by
+    creating a second one. An earlier version of this function raced two
+    reclaimers by opening a fresh inode and ``os.replace``-ing it over
+    ``path``: if the true holder had just died, one reclaimer could win the
+    direct ``flock`` on the original (now-unlocked) inode while a second
+    reclaimer, having already observed ``BlockingIOError``, swapped in a
+    brand-new inode via rename -- leaving two processes each holding a lock
+    on a *different* inode and both believing they own the location. A dead
+    holder's ``flock`` is released by the kernel the moment its last fd
+    closes (process exit tears down the fd table), which happens at or
+    before the point another process can read pid= from the file and
+    confirm it's dead -- so retrying the identical ``flock`` call converges
+    quickly without ever creating a second inode to race against.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
-        os.close(fd)
         holder_pid = _lock_holder_pid(path)
         if holder_pid is None or _pid_is_alive(holder_pid):
+            os.close(fd)
             suffix = f" (pid={holder_pid})" if holder_pid is not None else ""
             raise ArchiveOwnershipError(f"archive location already owned: {path}{suffix}") from exc
         logger.warning(
@@ -413,16 +429,15 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str) -> int:
             path,
             holder_pid,
         )
-        reclaim = path.with_name(f".{path.name}.reclaim-{uuid.uuid4().hex}")
-        reclaimed_fd = os.open(reclaim, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            fcntl.flock(reclaimed_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(reclaimed_fd)
-            reclaim.unlink(missing_ok=True)
+        for _ in range(_STALE_RECLAIM_ATTEMPTS):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(_STALE_RECLAIM_RETRY_SECONDS)
+        else:
+            os.close(fd)
             raise ArchiveOwnershipError(f"archive location already owned: {path}") from exc
-        os.replace(reclaim, path)
-        fd = reclaimed_fd
     os.ftruncate(fd, 0)
     os.write(fd, owner.encode("utf-8"))
     os.fsync(fd)
