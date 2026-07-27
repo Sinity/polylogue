@@ -198,6 +198,20 @@ class UnsupportedSessionTerminalActionError(ExpressionCompileError):
     """Raised when a session-source terminal action is not supported."""
 
 
+class QueryDepthExceededError(ExpressionCompileError):
+    """Raised when a query expression's parenthesis nesting is too deep to parse safely.
+
+    The Boolean grammar's ``expr`` rule is recursive (``"(" expr ")"``), so an
+    adversarially deep run of nested parens drives Lark's post-parse
+    ``Transformer.transform()`` walk (a stock mutually-recursive tree-walker
+    with no depth guard of its own) into a Python ``RecursionError`` -- a
+    cheap way to burn real CPU on the shared daemon/MCP/HTTP query surface
+    (polylogue-u0dm). This error is raised by a linear, quote-aware scan over
+    the raw expression *before* the Lark parse/transform is attempted, so a
+    rejected expression costs a bounded scan rather than a partial parse.
+    """
+
+
 #: Recognized ``has:`` sub-tokens that map to boolean spec flags.
 #: Other values pass through to ``has_types``.
 _HAS_BOOL_MAP: dict[str, str] = {
@@ -1643,7 +1657,71 @@ def _is_boolean_expression(expression: str) -> bool:
     return ":" in expression and bool(re.search(r"\b(?:and|or|not)\b", expression, re.IGNORECASE))
 
 
+#: Maximum parenthesis nesting depth accepted by the Boolean grammar's
+#: recursive ``expr`` rule. Comfortably covers any legitimate hand- or
+#: tool-authored query (real Boolean queries in this codebase nest at most a
+#: handful of levels deep) while sitting well below Python's default
+#: recursion limit (1000), so a rejection never risks tripping a
+#: ``RecursionError`` of its own inside the cheap preflight scan itself.
+_MAX_QUERY_NESTING_DEPTH = 64
+
+
+def _expression_nesting_depth(expression: str) -> int:
+    """Return the maximum parenthesis nesting depth of *expression*.
+
+    A linear, single-pass scan over the raw text -- no Lark grammar,
+    tokenization, or recursion of its own. Quoted string literals (and
+    backslash-escaped characters within them) are skipped so that
+    parentheses appearing inside quoted text, such as
+    ``fts:"note (see appendix)"``, are not counted as structural nesting
+    (mirrors the quote/escape handling in :func:`_split_pipeline_stages`).
+    """
+
+    depth = 0
+    max_depth = 0
+    in_quote = False
+    escaped = False
+    for char in expression:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_quote:
+            escaped = True
+            continue
+        if char == '"':
+            in_quote = not in_quote
+            continue
+        if in_quote:
+            continue
+        if char == "(":
+            depth += 1
+            if depth > max_depth:
+                max_depth = depth
+        elif char == ")":
+            depth = max(0, depth - 1)
+    return max_depth
+
+
+def _check_query_nesting_depth(expression: str) -> None:
+    """Reject over-deep parenthesis nesting before the Lark parse is attempted.
+
+    Raises:
+        QueryDepthExceededError: if *expression* nests parentheses deeper than
+            :data:`_MAX_QUERY_NESTING_DEPTH`.
+    """
+
+    depth = _expression_nesting_depth(expression)
+    if depth > _MAX_QUERY_NESTING_DEPTH:
+        raise QueryDepthExceededError(
+            f"query expression nesting depth {depth} exceeds the maximum of "
+            f"{_MAX_QUERY_NESTING_DEPTH}; simplify the expression by reducing "
+            "nested parenthesized groups",
+            field=None,
+        )
+
+
 def _transform_boolean_predicate(expression: str) -> QueryPredicate:
+    _check_query_nesting_depth(expression)
     try:
         tree = _QUERY_PARSER.parse(expression, start="boolean_query")
     except UnexpectedInput as exc:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,8 +29,10 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.archive.query.expression import (
+    _MAX_QUERY_NESTING_DEPTH,
     EXPRESSION_FIELD_REGISTRY,
     ExpressionCompileError,
+    QueryDepthExceededError,
     QueryUnitPipeline,
     QueryUnitSessionScopeStage,
     QueryUnitSource,
@@ -513,6 +516,90 @@ class TestExplainExpression:
         lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
         assert lowering_plan["pipeline"] == unit_source["pipeline"]
         assert lowering_plan["pipeline_stages"] == unit_source["pipeline_stages"]
+
+
+class TestQueryNestingDepthGuard:
+    """polylogue-u0dm: reject adversarial nesting cheaply, before Lark parse/transform.
+
+    ``sessions where (((...)))`` recurses through the Boolean grammar's
+    ``expr`` rule, and Lark's stock ``Transformer.transform()`` walk has no
+    depth guard of its own -- deep-enough nesting previously spent real CPU
+    (~0.83s observed for n=250) building a parse tree only to blow Python's
+    recursion limit during the transform walk. The fix short-circuits with a
+    linear, quote-aware scan before the parse is even attempted.
+    """
+
+    def test_reasonable_nesting_still_parses(self) -> None:
+        # One level below the ceiling: legitimate deep-but-bounded nesting
+        # (e.g. programmatically generated queries) must not false-positive.
+        depth = _MAX_QUERY_NESTING_DEPTH - 1
+        expression = "sessions where " + "(" * depth + "repo:polylogue" + ")" * depth
+
+        spec = compile_expression(expression)
+
+        assert spec.boolean_predicate is not None
+
+    def test_nesting_at_the_ceiling_still_parses(self) -> None:
+        expression = (
+            "sessions where " + "(" * _MAX_QUERY_NESTING_DEPTH + "repo:polylogue" + ")" * _MAX_QUERY_NESTING_DEPTH
+        )
+
+        spec = compile_expression(expression)
+
+        assert spec.boolean_predicate is not None
+
+    def test_quoted_parens_do_not_count_toward_depth(self) -> None:
+        # Parens inside a quoted FTS phrase are literal text, not structural
+        # nesting -- a long run of them must not trip the guard.
+        quoted_parens = "(" * (_MAX_QUERY_NESTING_DEPTH * 2)
+        expression = f'sessions where ~"note {quoted_parens} appendix"'
+
+        spec = compile_expression(expression)
+
+        assert spec.boolean_predicate is not None
+
+    def test_excessive_nesting_raises_purpose_built_error_not_generic_fallback(self) -> None:
+        depth = _MAX_QUERY_NESTING_DEPTH + 1
+        expression = "sessions where " + "(" * depth + "repo:polylogue" + ")" * depth
+
+        with pytest.raises(QueryDepthExceededError, match=r"nesting depth \d+ exceeds the maximum") as exc_info:
+            compile_expression(expression)
+
+        # Purpose-built subclass of the module's typed compile-error base,
+        # not the base ``ExpressionCompileError`` (which would indicate the
+        # generic fallback path) and not a bare ``RecursionError``.
+        assert isinstance(exc_info.value, ExpressionCompileError)
+        assert type(exc_info.value) is QueryDepthExceededError
+
+    def test_adversarial_bomb_payload_rejected_cheaply(self) -> None:
+        # The exact shape reported in polylogue-u0dm: ~245 bytes, n=250
+        # nesting levels, previously costing ~0.83s CPU to hit
+        # ``RecursionError`` inside the transform walk.
+        n = 250
+        payload = "sessions where " + "(" * n + "repo:polylogue" + ")" * n
+
+        started = time.perf_counter()
+        with pytest.raises(QueryDepthExceededError):
+            compile_expression(payload)
+        elapsed = time.perf_counter() - started
+
+        # A fast rejection, not a slow one: generous ceiling still an order
+        # of magnitude below the previously observed ~0.83s RecursionError cost.
+        assert elapsed < 0.1
+
+    def test_depth_guard_covers_pipeline_stage_and_unit_source_entry_points(self) -> None:
+        # `_transform_boolean_predicate` is the single choke point for every
+        # Boolean-grammar entry (top-level `sessions where`, pipeline stages,
+        # and `<unit> where` terminal sources) -- exercise the non-top-level
+        # paths directly so a future refactor that adds a new bypass is caught.
+        n = _MAX_QUERY_NESTING_DEPTH + 1
+        bomb = "(" * n + "repo:polylogue" + ")" * n
+
+        with pytest.raises(QueryDepthExceededError):
+            compile_expression(f"messages where {bomb}")
+
+        with pytest.raises(QueryDepthExceededError):
+            compile_expression(f"sessions where {bomb} | count")
 
 
 class TestBooleanQueryExpression:
