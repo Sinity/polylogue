@@ -33,6 +33,7 @@ from polylogue.schemas.inference.semantic.runtime import (
     infer_semantic_roles,
 )
 from tests.infra.schema_access import (
+    fail_missing_schema,
     schema_items,
     schema_node,
     schema_properties,
@@ -616,21 +617,23 @@ class TestFieldStatsCollection:
 
 
 def _load_schema(provider: str) -> JSONDocument | None:
-    """Load a packaged provider schema, returning None if absent."""
-    try:
-        from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
+    """Load a packaged provider schema, returning None if absent.
 
-        registry = SchemaRegistry(storage_root=SCHEMA_DIR)
-        package = registry.get_package(provider, version="default")
-        if package is None:
-            return None
-        return registry.get_element_schema(
-            provider,
-            version=package.version,
-            element_kind=package.default_element_kind,
-        )
-    except Exception:
+    Deliberately does not catch exceptions: a packaging/registry error here
+    is real breakage that should surface as a test failure, not be absorbed
+    into the "schema not available" skip/fail path below.
+    """
+    from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
+
+    registry = SchemaRegistry(storage_root=SCHEMA_DIR)
+    package = registry.get_package(provider, version="default")
+    if package is None:
         return None
+    return registry.get_element_schema(
+        provider,
+        version=package.version,
+        element_kind=package.default_element_kind,
+    )
 
 
 def _find_annotations(
@@ -689,7 +692,7 @@ class TestSchemaAnnotations:
     def test_chatgpt_role_semantic(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
-            pytest.skip("ChatGPT schema not available")
+            fail_missing_schema("ChatGPT schema not available")
 
         role_schema = _get_nested(schema, "mapping.additionalProperties.message.author.role")
         assert role_schema is not None
@@ -700,7 +703,7 @@ class TestSchemaAnnotations:
     def test_chatgpt_uuid_format(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
-            pytest.skip("ChatGPT schema not available")
+            fail_missing_schema("ChatGPT schema not available")
 
         current_node = schema_property(schema, "current_node")
         assert current_node
@@ -712,7 +715,7 @@ class TestSchemaAnnotations:
     def test_chatgpt_timestamp_format(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
-            pytest.skip("ChatGPT schema not available")
+            fail_missing_schema("ChatGPT schema not available")
 
         create_time = schema_property(schema, "create_time")
         assert create_time
@@ -723,7 +726,7 @@ class TestSchemaAnnotations:
     def test_chatgpt_reference_detection(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
-            pytest.skip("ChatGPT schema not available")
+            fail_missing_schema("ChatGPT schema not available")
 
         current_node = schema_property(schema, "current_node")
         assert current_node
@@ -732,7 +735,7 @@ class TestSchemaAnnotations:
     def test_claude_code_has_annotations(self) -> None:
         schema = _load_schema("claude-code")
         if schema is None:
-            pytest.skip("Claude Code schema not available")
+            fail_missing_schema("Claude Code schema not available")
 
         annotations = _find_annotations(schema)
         total = sum(len(values) for values in annotations.values())
@@ -744,7 +747,7 @@ class TestSchemaAnnotations:
     def test_claude_code_type_enum(self) -> None:
         schema = _load_schema("claude-code")
         if schema is None:
-            pytest.skip("Claude Code schema not available")
+            fail_missing_schema("Claude Code schema not available")
 
         type_schema = schema_property(schema, "type")
         assert type_schema
@@ -754,7 +757,7 @@ class TestSchemaAnnotations:
     def test_claude_ai_sender_semantic(self) -> None:
         schema = _load_schema("claude-ai")
         if schema is None:
-            pytest.skip("Claude AI schema not available")
+            fail_missing_schema("Claude AI schema not available")
 
         messages = schema_property(schema, "chat_messages")
         assert messages
@@ -775,7 +778,7 @@ class TestSchemaAnnotations:
     def test_frequency_values_in_range(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
-            pytest.skip(f"{provider} schema not available")
+            fail_missing_schema(f"{provider} schema not available")
 
         for path, frequency in _find_annotations(schema).get("x-polylogue-frequency", []):
             assert not isinstance(frequency, bool) and isinstance(frequency, (int, float))
@@ -785,7 +788,7 @@ class TestSchemaAnnotations:
     def test_numeric_ranges_plausible(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
-            pytest.skip(f"{provider} schema not available")
+            fail_missing_schema(f"{provider} schema not available")
 
         for path, value_range in _find_annotations(schema).get("x-polylogue-range", []):
             assert isinstance(value_range, list) and len(value_range) == 2
@@ -796,7 +799,7 @@ class TestSchemaAnnotations:
     def test_format_values_are_known(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
-            pytest.skip(f"{provider} schema not available")
+            fail_missing_schema(f"{provider} schema not available")
 
         known_formats = {
             "uuid4",
@@ -817,7 +820,7 @@ class TestSchemaAnnotations:
     def test_values_are_nonempty_lists(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
-            pytest.skip(f"{provider} schema not available")
+            fail_missing_schema(f"{provider} schema not available")
 
         for path, values in _find_annotations(schema).get("x-polylogue-values", []):
             assert isinstance(values, list), f"{provider} {path}: values not a list"

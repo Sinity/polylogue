@@ -486,8 +486,14 @@ def _clear_polylogue_env(
     # caused the CLI under test to connect to the host daemon instead of the
     # fixture archive. Iterate ``os.environ`` so future POLYLOGUE_* additions
     # are stripped automatically.
+    from tests.infra.schema_access import ALLOW_MISSING_SCHEMAS_ENV
+
     for key in list(os.environ):
-        if key.startswith("POLYLOGUE_"):
+        # ALLOW_MISSING_SCHEMAS_ENV is a test-only escape hatch (not operator
+        # config) for lanes that intentionally run without packaged provider
+        # schema data; it must survive this sweep or it could never take
+        # effect inside the test suite that is its only consumer.
+        if key.startswith("POLYLOGUE_") and key != ALLOW_MISSING_SCHEMAS_ENV:
             monkeypatch.delenv(key, raising=False)
 
     for key in (
