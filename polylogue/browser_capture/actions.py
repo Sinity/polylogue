@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from polylogue.browser_capture.models import (
+    BrowserActionApprovalDecisionRequest,
     BrowserActionAttachment,
     BrowserActionEvent,
     BrowserActionIntent,
@@ -245,6 +246,20 @@ def _request_sha256(request: BrowserActionRequest) -> str:
     return hashlib.sha256(dumps_bytes(payload, sort_keys=True)).hexdigest()
 
 
+def _approval_reason_for(request: BrowserActionRequest) -> str | None:
+    """Return why a request must be held for explicit operator approval, if any.
+
+    ``submit_once`` on ``conversation.reply`` posts one real, provider-visible
+    turn into an EXISTING conversation with no automatic undo -- the operator
+    may not be watching that conversation when the extension would otherwise
+    dispatch it automatically. ``conversation.create`` (a fresh conversation)
+    and ``stage_only`` (never submits) are not gated here.
+    """
+    if request.submit_policy == "submit_once" and request.operation == "conversation.reply":
+        return "destructive_submit"
+    return None
+
+
 def list_actions(*, spool_path: Path | None = None) -> list[BrowserActionIntent]:
     root = action_root(spool_path)
     if not root.exists():
@@ -282,7 +297,7 @@ def enqueue_action(
             if existing.request_sha256 == request_sha256:
                 return existing
             raise BrowserActionConflictError("browser action identity already exists with different input")
-    active_statuses = {"queued", "leased", "preparing", "submit_intent"}
+    active_statuses = {"awaiting_approval", "queued", "leased", "preparing", "submit_intent"}
     if sum(action.status in active_statuses for action in list_actions(spool_path=spool_path)) >= ACTION_MAX_ACTIVE:
         raise BrowserActionQuotaError("active browser action quota exceeded")
 
@@ -315,6 +330,7 @@ def enqueue_action(
         decoded.append((attachment, content))
 
     now = _now()
+    approval_reason = _approval_reason_for(request)
     action = BrowserActionIntent(
         action_id=action_id,
         idempotency_key=idempotency_key,
@@ -327,10 +343,20 @@ def enqueue_action(
         attachments=attachments,
         presentation=request.presentation,
         submit_policy=request.submit_policy,
+        status="awaiting_approval" if approval_reason else "queued",
+        phase="awaiting_approval" if approval_reason else "queued",
         created_at=_iso(now),
         updated_at=_iso(now),
+        requires_operator_approval=approval_reason is not None,
+        approval_reason=approval_reason,  # type: ignore[arg-type]
+        approval_requested_at=_iso(now) if approval_reason else None,
     )
-    _event(action, "created", "queued")
+    _event(
+        action,
+        "awaiting_approval" if approval_reason else "created",
+        action.phase,
+        detail=f"held for explicit operator approval: {approval_reason}" if approval_reason else None,
+    )
     try:
         for attachment, content in decoded:
             _atomic_write(_action_dir(root, action_id) / "attachments" / attachment.attachment_id, content)
@@ -540,6 +566,46 @@ def reconcile_action(
     return action
 
 
+@_serialized
+def decide_action_approval(
+    action_id: str,
+    request: BrowserActionApprovalDecisionRequest,
+    *,
+    spool_path: Path | None = None,
+) -> BrowserActionIntent | None:
+    """Record the operator's explicit approve/decline decision.
+
+    Approving turns an ``awaiting_approval`` action into an ordinary
+    ``queued`` one -- the same automatic claim/dispatch path any other
+    action follows from that point. Declining is terminal (``cancelled``):
+    it never becomes claimable, so no provider submission can ever occur for
+    it. Deciding on any action not currently ``awaiting_approval`` is a
+    conflict, not a silent no-op -- a decision must land on the exact hold it
+    was made against.
+    """
+    root = action_root(spool_path)
+    action = _read_action(_action_path(root, action_id))
+    if action is None:
+        return None
+    if action.status != "awaiting_approval":
+        raise BrowserActionConflictError("only an awaiting_approval browser action can record an approval decision")
+    now = _now()
+    action.updated_at = _iso(now)
+    if request.decision == "approve":
+        action.status = "queued"
+        action.phase = "queued"
+        action.approved_at = _iso(now)
+        action.approved_by = request.extension_instance_id
+        _event(action, "approved", action.phase, detail=request.detail, owner=request.extension_instance_id)
+    else:
+        action.status = "cancelled"
+        action.phase = "declined"
+        action.declined_at = _iso(now)
+        _event(action, "declined", action.phase, detail=request.detail, owner=request.extension_instance_id)
+    _write_action(root, action)
+    return action
+
+
 def read_action_attachment(
     action_id: str,
     attachment_id: str,
@@ -569,6 +635,7 @@ __all__ = [
     "action_root",
     "browser_action_capabilities",
     "claim_action",
+    "decide_action_approval",
     "enqueue_action",
     "get_action",
     "list_actions",

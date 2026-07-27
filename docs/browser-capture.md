@@ -17,7 +17,7 @@ The receiver listens on `127.0.0.1:8765` by default and accepts the route contra
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`
 - `GET /v1/archive-state?provider=chatgpt&provider_session_id=...` -> `BrowserCaptureArchiveStatePayload`
 - `POST /v1/browser-captures` with `BrowserCaptureEnvelope` -> `BrowserCaptureAcceptedPayload` or `BrowserCaptureErrorPayload`
-- `GET/POST /v1/browser-actions...` -> provider-neutral draft/submit intents, leases, exact receipts, and explicit uncertain-submit reconciliation
+- `GET/POST /v1/browser-actions...` -> provider-neutral draft/submit intents, leases, exact receipts, explicit uncertain-submit reconciliation, and explicit operator approval for destructive submits
 
 `/v1/archive-state` reports archive visibility, not just receiver spool
 presence. Its `state`/`lifecycle` field is one of:

@@ -20,6 +20,7 @@ from polylogue.browser_capture.actions import (
     BrowserActionLeaseError,
     BrowserActionQuotaError,
     claim_action,
+    decide_action_approval,
     enqueue_action,
     get_action,
     read_action_attachment,
@@ -27,6 +28,7 @@ from polylogue.browser_capture.actions import (
     update_action,
 )
 from polylogue.browser_capture.models import (
+    BrowserActionApprovalDecisionRequest,
     BrowserActionAttachmentInput,
     BrowserActionPresentation,
     BrowserActionReceipt,
@@ -236,6 +238,119 @@ def test_reply_and_project_target_are_explicit(tmp_path: Path) -> None:
     assert action.target.project_ref == "g-p-project"
 
 
+def test_submit_once_reply_is_held_for_explicit_operator_approval(tmp_path: Path) -> None:
+    # polylogue-yyvg.7: a submit_once conversation.reply posts one real,
+    # provider-visible turn into an EXISTING conversation with no automatic
+    # undo, so it must never be automatically claimable straight off enqueue.
+    action = enqueue_action(
+        _request(operation="conversation.reply", conversation_id="conversation-1"),
+        receiver_id=_RECEIVER_ID,
+        spool_path=tmp_path,
+    )
+    assert action.status == "awaiting_approval"
+    assert action.phase == "awaiting_approval"
+    assert action.requires_operator_approval is True
+    assert action.approval_reason == "destructive_submit"
+    assert action.approval_requested_at is not None
+    assert action.approved_at is None
+    assert action.declined_at is None
+    assert claim_action("extension-one", spool_path=tmp_path) is None
+
+
+def test_submit_once_create_is_not_held_for_approval(tmp_path: Path) -> None:
+    # A fresh conversation is lower-consequence than replying into an
+    # existing one the operator may not be watching -- only conversation.reply
+    # is gated (regression guard for the default request fixture, which is
+    # conversation.create + submit_once and must remain immediately claimable).
+    action = enqueue_action(_request(), receiver_id=_RECEIVER_ID, spool_path=tmp_path)
+    assert action.status == "queued"
+    assert action.requires_operator_approval is False
+    assert action.approval_reason is None
+    claimed = claim_action("extension-one", spool_path=tmp_path)
+    assert claimed is not None and claimed.action_id == action.action_id
+
+
+def test_stage_only_reply_is_not_held_for_approval(tmp_path: Path) -> None:
+    # A staged draft never submits to the provider on its own -- only
+    # submit_once replies carry the un-undoable consequence that needs an
+    # explicit decision.
+    action = enqueue_action(
+        _request(operation="conversation.reply", conversation_id="conversation-1", submit_policy="stage_only"),
+        receiver_id=_RECEIVER_ID,
+        spool_path=tmp_path,
+    )
+    assert action.status == "queued"
+    assert action.requires_operator_approval is False
+
+
+def test_approving_a_held_action_makes_it_claimable(tmp_path: Path) -> None:
+    action = enqueue_action(
+        _request(operation="conversation.reply", conversation_id="conversation-1"),
+        receiver_id=_RECEIVER_ID,
+        spool_path=tmp_path,
+    )
+    decided = decide_action_approval(
+        action.action_id,
+        BrowserActionApprovalDecisionRequest(
+            extension_instance_id="extension-one",
+            decision="approve",
+            detail="operator reviewed the reply text and target conversation",
+        ),
+        spool_path=tmp_path,
+    )
+    assert decided is not None
+    assert decided.status == "queued"
+    assert decided.approved_at is not None
+    assert decided.approved_by == "extension-one"
+    # The historical fact that this went through approval is preserved even
+    # though the live gate (status) has moved on.
+    assert decided.requires_operator_approval is True
+    assert decided.approval_reason == "destructive_submit"
+
+    claimed = claim_action("extension-two", spool_path=tmp_path)
+    assert claimed is not None and claimed.action_id == action.action_id
+
+
+def test_declining_a_held_action_is_terminal_and_never_claimable(tmp_path: Path) -> None:
+    action = enqueue_action(
+        _request(operation="conversation.reply", conversation_id="conversation-1"),
+        receiver_id=_RECEIVER_ID,
+        spool_path=tmp_path,
+    )
+    decided = decide_action_approval(
+        action.action_id,
+        BrowserActionApprovalDecisionRequest(
+            extension_instance_id="extension-one",
+            decision="decline",
+            detail="wrong conversation target",
+        ),
+        spool_path=tmp_path,
+    )
+    assert decided is not None
+    assert decided.status == "cancelled"
+    assert decided.declined_at is not None
+    assert claim_action("extension-one", spool_path=tmp_path) is None
+    # A second decision against an already-decided action is a conflict, not
+    # a silent no-op -- it must land on the exact hold it was made against.
+    with pytest.raises(BrowserActionConflictError):
+        decide_action_approval(
+            action.action_id,
+            BrowserActionApprovalDecisionRequest(extension_instance_id="extension-one", decision="approve"),
+            spool_path=tmp_path,
+        )
+
+
+def test_deciding_on_an_action_that_was_never_held_is_a_conflict(tmp_path: Path) -> None:
+    action = enqueue_action(_request(), receiver_id=_RECEIVER_ID, spool_path=tmp_path)
+    assert action.status == "queued"
+    with pytest.raises(BrowserActionConflictError):
+        decide_action_approval(
+            action.action_id,
+            BrowserActionApprovalDecisionRequest(extension_instance_id="extension-one", decision="approve"),
+            spool_path=tmp_path,
+        )
+
+
 def test_pre_submit_lease_is_replaceable_but_submit_intent_is_quarantined(
     tmp_path: Path,
     frozen_clock: FrozenClock,
@@ -403,6 +518,12 @@ def test_reply_receipt_must_match_the_requested_conversation(tmp_path: Path) -> 
         receiver_id=_RECEIVER_ID,
         spool_path=tmp_path,
     )
+    assert action.status == "awaiting_approval"
+    decide_action_approval(
+        action.action_id,
+        BrowserActionApprovalDecisionRequest(extension_instance_id="extension-one", decision="approve"),
+        spool_path=tmp_path,
+    )
     claimed = claim_action("extension-one", spool_path=tmp_path) or pytest.fail("action was not claimed")
     wrong_receipt = _receipt(action.action_id).model_copy(
         update={
@@ -512,6 +633,54 @@ def test_http_contract_create_claim_attachment_update_and_read(tmp_path: Path) -
         assert json.loads(content)["action"]["receipt"]["provider_turn_id"] == "turn-user-1"
 
 
+def test_http_contract_approval_gates_a_destructive_reply_until_the_operator_decides(tmp_path: Path) -> None:
+    with _receiver(tmp_path) as (host, port):
+        status, content, _ = _http(
+            host,
+            port,
+            "POST",
+            "/v1/browser-actions",
+            body=_request(operation="conversation.reply", conversation_id="conversation-1").model_dump(mode="json"),
+        )
+        assert status == HTTPStatus.ACCEPTED
+        created = json.loads(content)["action"]
+        assert created["status"] == "awaiting_approval"
+        assert created["requires_operator_approval"] is True
+        assert created["approval_reason"] == "destructive_submit"
+
+        # Not claimable while the decision is pending.
+        status, content, _ = _http(host, port, "GET", "/v1/browser-actions?claim_by=extension-one")
+        assert status == HTTPStatus.OK
+        assert json.loads(content)["actions"] == []
+
+        status, content, _ = _http(
+            host,
+            port,
+            "POST",
+            f"/v1/browser-actions/{created['action_id']}/approval",
+            body={"extension_instance_id": "extension-one", "decision": "approve"},
+        )
+        assert status == HTTPStatus.OK
+        approved = json.loads(content)["action"]
+        assert approved["status"] == "queued"
+        assert approved["approved_by"] == "extension-one"
+
+        status, content, _ = _http(host, port, "GET", "/v1/browser-actions?claim_by=extension-one")
+        assert status == HTTPStatus.OK
+        assert json.loads(content)["actions"][0]["action_id"] == created["action_id"]
+
+        # Deciding again on an already-decided action is a conflict.
+        status, content, _ = _http(
+            host,
+            port,
+            "POST",
+            f"/v1/browser-actions/{created['action_id']}/approval",
+            body={"extension_instance_id": "extension-one", "decision": "decline"},
+        )
+        assert status == HTTPStatus.CONFLICT
+        assert json.loads(content)["error"] == "browser_action_approval_conflict"
+
+
 def test_http_contract_rejects_noncanonical_action_ids(tmp_path: Path) -> None:
     with _receiver(tmp_path) as (host, port):
         for method, path, body in (
@@ -573,7 +742,9 @@ def test_route_contracts_cover_every_browser_action_route() -> None:
         "browser_action_attachment",
         "browser_action_update",
         "browser_action_reconcile",
+        "browser_action_approval",
     } <= kinds
     assert browser_capture_route_contract_for("GET", "/v1/browser-actions/action-1") is not None
     assert browser_capture_route_contract_for("POST", "/v1/browser-actions/action-1/events") is not None
     assert browser_capture_route_contract_for("POST", "/v1/browser-actions/action-1/reconcile") is not None
+    assert browser_capture_route_contract_for("POST", "/v1/browser-actions/action-1/approval") is not None

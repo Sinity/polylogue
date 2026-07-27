@@ -33,6 +33,7 @@ BrowserCaptureRouteKind = Literal[
     "browser_action_attachment",
     "browser_action_update",
     "browser_action_reconcile",
+    "browser_action_approval",
     "capture_job_capabilities",
     "capture_job_create",
     "capture_job_discover",
@@ -161,6 +162,16 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserActionReconcileRequest",
         "BrowserActionPayload | BrowserCaptureErrorPayload",
         "Explicitly binds provider evidence to an outcome_unknown action; never retries it implicitly.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/browser-actions/{action_id}/approval",
+        "browser_action_approval",
+        "bearer_if_web_origin",
+        "BrowserActionApprovalDecisionRequest",
+        "BrowserActionPayload | BrowserCaptureErrorPayload",
+        "Records the operator's explicit approve/decline decision on an awaiting_approval action; "
+        "approve makes it claimable for the first time, decline is terminal.",
     ),
     BrowserCaptureRouteContract(
         "GET",
