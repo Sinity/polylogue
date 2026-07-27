@@ -9,8 +9,10 @@ Removing the git/Beads I/O, or the direct-identifier restriction in
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -158,21 +160,153 @@ def test_beads_issue_adapter_ignores_non_interaction_lines(tmp_path: Path) -> No
     assert effects[0].ref.object_id == "proj-1:int-x"
 
 
-# ── GitHubPullRequestEffectAdapter (honest stub) ─────────────────────
+# ── GitHubPullRequestEffectAdapter ────────────────────────────────────
+
+_PR_RECORDS = [
+    {
+        "number": 42,
+        "title": "fix: land the effect (Ref polylogue-1vpm.6.2)",
+        "body": "Closes the reconciliation gap.",
+        "state": "MERGED",
+        "url": "https://github.com/Sinity/polylogue/pull/42",
+        "createdAt": "2026-07-10T09:00:00Z",
+        "updatedAt": "2026-07-10T10:00:00Z",
+        "closedAt": "2026-07-10T10:00:00Z",
+        "mergedAt": "2026-07-10T10:00:00Z",
+        "mergeCommit": {"oid": "abc123def456abc123def456abc123def456abc1"},
+    },
+    {
+        "number": 43,
+        "title": "docs: unrelated cleanup",
+        "body": "",
+        "state": "OPEN",
+        "url": "https://github.com/Sinity/polylogue/pull/43",
+        "createdAt": "2026-07-11T09:00:00Z",
+        "updatedAt": "2026-07-11T09:00:00Z",
+        "closedAt": None,
+        "mergedAt": None,
+        "mergeCommit": None,
+    },
+]
 
 
-def test_github_adapter_fails_explicitly_instead_of_returning_empty() -> None:
+def _fake_gh_run(stdout: str = "", returncode: int = 0, stderr: str = "") -> MagicMock:
+    return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def test_github_adapter_reads_real_gh_cli_output_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: exercises the adapter's own gh-invocation and JSON-decode
+    path, not a stand-in double -- only the OS-level subprocess boundary
+    (there is no real GitHub network access in this test suite) is faked."""
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        seen["cmd"] = cmd
+        return _fake_gh_run(stdout=json.dumps(_PR_RECORDS))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
     adapter = GitHubPullRequestEffectAdapter(repo="Sinity/polylogue")
+    effects = adapter.collect()
 
-    with pytest.raises(EffectAdapterUnavailableError, match="Sinity/polylogue"):
-        adapter.collect()
+    assert seen["cmd"][:4] == ["gh", "pr", "list", "--repo"]
+    assert "Sinity/polylogue" in seen["cmd"]
+    assert len(effects) == 2
+    assert {effect.authority for effect in effects} == {"github"}
+    merged, opened = sorted(effects, key=lambda e: e.ref.object_id)
+    assert merged.ref == ObjectRef(kind="github-pr", object_id="Sinity/polylogue#42")
+    assert "polylogue-1vpm.6.2" in merged.label
+    assert "abc123def456" in merged.label
+    assert merged.occurred_at_ms is not None
+    assert opened.ref.object_id == "Sinity/polylogue#43"
+    assert opened.occurred_at_ms is not None
+    assert effects[0].repository_snapshot_ref.kind == "context-snapshot"
 
 
-def test_collect_repository_effects_records_adapter_failures_without_losing_others(tmp_path: Path) -> None:
+def test_github_adapter_time_bounds_exclude_out_of_window_prs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_gh_run(stdout=json.dumps(_PR_RECORDS)))
+
+    adapter = GitHubPullRequestEffectAdapter(repo="Sinity/polylogue")
+    all_effects = adapter.collect()
+    assert len(all_effects) == 2
+
+    far_future_ms = max(e.occurred_at_ms for e in all_effects if e.occurred_at_ms is not None) + 1000 * 60 * 60 * 24
+    assert adapter.collect(since_ms=far_future_ms) == ()
+
+
+def test_github_adapter_raises_explicitly_when_gh_binary_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(*_a: object, **_k: object) -> MagicMock:
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(EffectAdapterUnavailableError, match="not found on PATH"):
+        GitHubPullRequestEffectAdapter(repo="Sinity/polylogue").collect()
+
+
+def test_github_adapter_raises_explicitly_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: _fake_gh_run(returncode=1, stderr="gh: authentication required"),
+    )
+
+    with pytest.raises(EffectAdapterUnavailableError, match="authentication required"):
+        GitHubPullRequestEffectAdapter(repo="Sinity/polylogue").collect()
+
+
+def test_github_adapter_raises_explicitly_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(*_a: object, **_k: object) -> MagicMock:
+        raise subprocess.TimeoutExpired(cmd="gh", timeout=45)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(EffectAdapterUnavailableError, match="timed out"):
+        GitHubPullRequestEffectAdapter(repo="Sinity/polylogue").collect()
+
+
+def test_github_adapter_raises_explicitly_on_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_gh_run(stdout="not json"))
+
+    with pytest.raises(EffectAdapterUnavailableError, match="not valid JSON"):
+        GitHubPullRequestEffectAdapter(repo="Sinity/polylogue").collect()
+
+
+def test_github_adapter_judgments_link_pr_effects_by_shared_identifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_gh_run(stdout=json.dumps(_PR_RECORDS)))
+
+    effects = GitHubPullRequestEffectAdapter(repo="Sinity/polylogue").collect()
+    matching_claim = _claim_node("claim:matches-pr", "Claude Workflow finalResult: closed polylogue-1vpm.6.2")
+    graph = WorkEvidenceGraph(graph_id="g", corpus_snapshot_ref=_SNAPSHOT, nodes=(matching_claim,), edges=())
+
+    judgments = derive_direct_identifier_judgments(graph, effects)
+
+    assert len(judgments) == 1
+    [judgment] = judgments
+    assert judgment.claim_ref == matching_claim.ref
+    assert judgment.effect_ref == ObjectRef(kind="github-pr", object_id="Sinity/polylogue#42")
+    assert judgment.evaluation == "supported"
+
+
+def test_collect_repository_effects_records_adapter_failures_without_losing_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
     _commit(repo, filename="a.txt", message="plain commit, no bead ref")
+
+    # Only fake the `gh` invocation; let git's own subprocess calls (made by
+    # both the adapter under test and the `_commit`/`_init_git_repo` fixture
+    # helpers) run for real -- this isolates "no gh CLI" from "no git".
+    real_run = subprocess.run
+
+    def selective_fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:1] == ["gh"]:
+            raise FileNotFoundError("gh")
+        return real_run(cmd, **kwargs)  # type: ignore[call-overload, no-any-return]
+
+    monkeypatch.setattr(subprocess, "run", selective_fake_run)
 
     result = collect_repository_effects(
         (
@@ -185,7 +319,7 @@ def test_collect_repository_effects_records_adapter_failures_without_losing_othe
     assert result.effects[0].authority == "git"
     assert len(result.unavailable) == 1
     assert result.unavailable[0].authority == "github"
-    assert "Sinity/polylogue" in result.unavailable[0].reason
+    assert "not found on PATH" in result.unavailable[0].reason
 
 
 # ── derive_direct_identifier_judgments ────────────────────────────────
