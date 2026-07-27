@@ -29,9 +29,9 @@ Run the tour in a throwaway archive:
 nix run github:Sinity/polylogue -- demo tour
 ```
 
-The tour imports synthetic provider-shaped artifacts through the normal parsers,
-queries structured tool results, follows copied session lineage, and writes a
-report with source references. It does not require a provider account or access
+The tour imports sample files for the supported providers, queries structured
+tool results, and reconstructs a parent session with its child branch while
+preserving source references. It does not require a provider account or access
 to the author's archive.
 
 From a source checkout:
@@ -47,9 +47,10 @@ nix develop -c polylogue demo tour
 - Search conversations and coding sessions across supported sources.
 - Inspect tool calls and provider-reported outcomes without inferring success or
   failure from prose.
-- Follow branches, continuations, subagents, and compaction lineage.
+- Follow branches, continuations, subagent sessions, and compacted histories.
 - Distinguish human-authored text from injected runtime context.
-- Query usage and cost while keeping incompatible token lanes separate.
+- Query usage and cost without combining provider fields that mean different
+  things.
 - Add notes, tags, corrections, and judgments without changing imported source
   data.
 - Let agents read the archive through MCP.
@@ -109,7 +110,7 @@ polylogue "actions where tool:shell AND command:pytest | group by is_error | cou
 `polylogue init` writes a starter `polylogue.toml` from detected sources.
 `polylogued run` imports those sources and continues watching the live ones.
 
-## Example: structured tool outcomes
+## Example: query tool outcomes
 
 Tool execution is stored as structured data when the source provides it. Missing
 outcome fields remain unknown rather than being guessed from assistant text.
@@ -148,7 +149,7 @@ from data that can be rebuilt.
 
 | File | Contents | Durability |
 |---|---|---|
-| `source.db` | acquired source artifacts and hook records | durable |
+| `source.db` | acquired source artifacts and runtime hook events | durable |
 | `index.db` | normalized sessions, messages, blocks, actions, lineage, FTS, analytics | rebuildable |
 | `embeddings.db` | optional semantic-search vectors | rebuildable |
 | `user.db` | notes, tags, corrections, candidates, and judgments | durable |
@@ -160,11 +161,11 @@ same archive root.
 The data model keeps several distinctions explicit:
 
 - Unknown tool outcomes remain unknown.
-- Message role and material authorship are separate.
+- A message's provider role is stored separately from who or what supplied its
+  content.
 - Copied parent history is represented through lineage rather than counted as
   new work in every child session.
-- Provider usage fields and pricing lanes are kept separate unless combining
-  them is valid.
+- Token counts are not combined when providers define them differently.
 
 See [docs/data-model.md](docs/data-model.md) and
 [docs/architecture.md](docs/architecture.md).
@@ -217,18 +218,18 @@ Start with the task-oriented guides below. The complete documentation map is in
 
 | Document | Description |
 |----------|-------------|
-| [Getting Started](docs/getting-started.md) | First archive, first query, and the next documentation steps. |
-| [Installation](docs/installation.md) | Source checkout, Nix flake, and managed NixOS/Home Manager install paths. |
-| [Demos and Proofs](docs/demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
-| [Proof Artifacts](docs/proof-artifacts.md) | Claim-to-proof map for public-facing demo and evidence claims. |
-| [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
-| [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
-| [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
-| [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
-| [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
-| [Security](docs/security.md) | Security boundaries for local archives and readers. |
-| [Developer Tools](docs/devtools.md) | Generated surfaces, validation, and repo hygiene. |
-| [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
+| [Getting Started](docs/getting-started.md) | Install Polylogue, create an archive, and run a first query. |
+| [Installation](docs/installation.md) | Package, source-checkout, Nix, and managed deployment options. |
+| [Demos and Proofs](docs/demos.md) | Run the private-data-free tour and see what each demo establishes. |
+| [Proof Artifacts](docs/proof-artifacts.md) | Links between public claims and reproducible checks. |
+| [Architecture](docs/architecture.md) | Storage, data flow, and component responsibilities. |
+| [Search & Query](docs/search.md) | Search syntax, filters, action queries, ranking, and output formats. |
+| [CLI Reference](docs/cli-reference.md) | Commands and options generated from the current CLI. |
+| [MCP Integration](docs/mcp-integration.md) | Configure an MCP client to read or write the archive. |
+| [Configuration](docs/configuration.md) | Paths, environment variables, and runtime settings. |
+| [Security](docs/security.md) | Local trust boundaries, authentication, and privacy controls. |
+| [Developer Tools](docs/devtools.md) | Repository commands and validation checks. |
+| [Providers](docs/providers/README.md) | Supported inputs and provider-specific parsing limits. |
 
 <!-- END GENERATED: docs-surface -->
 
