@@ -98,7 +98,7 @@ dev = [
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
 fuzz = [
-  "atheris>=2.3.0",  # Google's Python fuzzer
+  "atheris>=3.1.0",  # Google's Python fuzzer
   "mutmut>=3.6.0",  # Mutation testing
 ]
 sqlite-compat = [
