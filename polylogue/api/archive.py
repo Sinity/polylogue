@@ -1732,44 +1732,6 @@ def _archive_judge_assertion_candidates(
         raise RuntimeError(f"failed to judge assertion candidates: {exc}") from exc
 
 
-def _archive_emit_pathology_assertions(
-    config: Config,
-    findings_by_session: Mapping[str, Sequence[Any]],
-) -> int:
-    """Upsert pathology findings as candidate assertions in ``user.db`` (#2383).
-
-    Returns the number of candidate assertion rows written. Idempotent: the
-    deterministic assertion id means re-emitting identical findings updates the
-    same candidate rows rather than duplicating them.
-    """
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import (
-        upsert_pathology_findings_as_assertions,
-    )
-
-    if not findings_by_session:
-        return 0
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        raise ValueError("assertion user tier is not initialized")
-    emitted = 0
-    try:
-        conn = open_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            for session_id, findings in findings_by_session.items():
-                if not findings:
-                    continue
-                envelopes = upsert_pathology_findings_as_assertions(conn, session_id, list(findings))
-                emitted += len(envelopes)
-            conn.commit()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to emit pathology assertions: {exc}") from exc
-    return emitted
-
-
 def _archive_count_table_rows(conn: Any, table_name: str) -> int | None:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
@@ -2491,69 +2453,6 @@ class PolylogueArchiveMixin:
             if digest is not None:
                 projections.append(digest.run_projection)
         return compile_pathology_report(projections)
-
-    async def materialize_pathology_assertions(
-        self,
-        spec: SessionQuerySpec | None = None,
-        *,
-        limit: int | None = None,
-    ) -> int:
-        """Emit pathology findings as candidate assertions queryable via #2006 (#2383).
-
-        Runs the deterministic detectors over a matched session scope (the same
-        path :meth:`pathology_report` uses) and upserts each finding as a private,
-        non-injected ``AssertionKind.PATHOLOGY`` candidate in ``user.db``. The
-        candidates are then queryable through the standard assertion-claims surface
-        (``list_assertion_claims(kinds="pathology")``) and promotable through the
-        existing accept/reject/defer lifecycle (Ref #2182) — nothing is
-        auto-injected into agent context. Returns the number of candidate rows
-        written. Idempotent by deterministic assertion id. The analysis cap
-        defaults to 200 sessions.
-        """
-        from polylogue.insights.pathology import detect_session_pathologies
-
-        cap = limit if limit is not None and limit > 0 else 200
-        summaries = await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.pathology_assertions.scope",
-            arguments={"spec": spec, "limit": cap},
-            work=lambda archive: (
-                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
-                if spec is not None and spec.has_filters()
-                else archive.list_summaries(limit=1_000_000)
-            ),
-            page_size=cap,
-            projection="session-scope",
-            workload_class="scan",
-        )
-
-        session_ids: list[str] = []
-        seen: set[str] = set()
-        for summary in summaries:
-            if summary.session_id in seen:
-                continue
-            seen.add(summary.session_id)
-            session_ids.append(summary.session_id)
-
-        matched = len(session_ids)
-        analyzed_ids = session_ids[:cap]
-        if matched > cap:
-            logger.warning(
-                "materialize_pathology_assertions truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
-                matched,
-                cap,
-                matched - cap,
-                session_ids[cap : cap + 5],
-            )
-        findings_by_session: dict[str, list[Any]] = {}
-        for sid in analyzed_ids:
-            digest = await self._session_digest(sid)
-            if digest is None:
-                continue
-            findings = detect_session_pathologies(digest.run_projection)
-            if findings:
-                findings_by_session[sid] = findings
-        return _archive_emit_pathology_assertions(self.config, findings_by_session)
 
     async def portfolio_bundle(
         self,
@@ -4208,27 +4107,17 @@ class PolylogueArchiveMixin:
                 rows.append(row)
         return rows
 
-    async def get_actions(self, session_id: str) -> tuple[Action, ...]:
-        """Derive a session's actions from its content blocks.
-
-        ``index.db`` exposes an ``actions`` view; these actions
-        are derived on read from the session's tool-use/tool-result blocks —
-        the same source the archive materializer hashed into durable rows.
-        Returns an empty tuple when the session is absent.
-        """
-        session = await self.get_session(session_id)
-        if session is None:
-            return ()
-        return _actions_for_session(session)
-
     async def get_actions_batch(
         self,
         session_ids: builtins.list[str],
     ) -> dict[str, tuple[Action, ...]]:
-        """Batch counterpart of :meth:`get_actions`.
+        """Derive actions for a batch of sessions from their content blocks.
 
-        Missing sessions are omitted from the result mapping, mirroring
-        the archive repository batch reader.
+        ``index.db`` exposes an ``actions`` view; these actions are derived on
+        read from each session's tool-use/tool-result blocks — the same
+        source the archive materializer hashed into durable rows. Missing
+        sessions are omitted from the result mapping, mirroring the archive
+        repository batch reader.
         """
         sessions = await self.get_sessions(session_ids)
         return {str(session.id): _actions_for_session(session) for session in sessions}
@@ -6138,16 +6027,6 @@ class PolylogueArchiveMixin:
             operation="user_state.view.get",
             arguments={"view_id": view_id},
             work=lambda archive: archive.get_view(view_id),
-            projection="saved-view",
-        )
-
-    async def get_view_by_name(self, name: str) -> dict[str, str] | None:
-        """Get a saved view by name."""
-        return await run_archive_read(
-            _active_archive_root(self.config),
-            operation="user_state.view_by_name.get",
-            arguments={"name": name},
-            work=lambda archive: archive.get_view_by_name(name),
             projection="saved-view",
         )
 

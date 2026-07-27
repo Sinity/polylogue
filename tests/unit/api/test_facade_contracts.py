@@ -97,7 +97,6 @@ READ_BY_ID_EMPTY_METHODS: frozenset[str] = frozenset(
         "get_session_tree",
         "get_raw_artifacts_for_session",
         "bulk_get_messages",
-        "get_actions",
     }
 )
 
@@ -206,7 +205,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "get_annotation",
         "save_view",
         "get_view",
-        "get_view_by_name",
         "delete_view",
         "save_workspace",
         "get_workspace",
@@ -259,7 +257,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "session_correlation_payload",
         # Pathology and portfolio read methods added in recent PRs.
         "pathology_report",
-        "materialize_pathology_assertions",
         "portfolio_bundle",
         # Session analysis primitives sunk from the MCP-only surface into the
         # shared facade (#1691 / polylogue-9e5.24) -- covered by
@@ -1633,12 +1630,12 @@ async def test_list_assertion_claims_filters_lifecycle_claims(tmp_path: Path) ->
         await archive.close()
 
 
-async def test_get_actions_derives_from_archive_blocks(tmp_path: Path) -> None:
-    """``get_actions`` derives tool invocations from content blocks.
+async def test_get_actions_batch_derives_from_archive_blocks(tmp_path: Path) -> None:
+    """``get_actions_batch`` derives tool invocations from content blocks.
 
     Archives have no materialized ``actions`` table; the facade
     rebuilds actions on read from the session's tool-use blocks. This pins that
-    derivation contract (single, batch, and the missing-id empty cases).
+    derivation contract (batch and the missing-id empty cases).
     """
     archive = _archive(tmp_path)
     with ArchiveStore(archive.config.archive_root) as archive_db:
@@ -1669,14 +1666,10 @@ async def test_get_actions_derives_from_archive_blocks(tmp_path: Path) -> None:
         assert len(summaries) == 1
         native_id = str(summaries[0].id)
 
-        actions = await archive.get_actions(native_id)
-        assert [action.tool_name for action in actions] == ["Bash"]
-
         batch = await archive.get_actions_batch([native_id])
-        assert batch[native_id] == actions
+        assert [action.tool_name for action in batch[native_id]] == ["Bash"]
 
-        # Unknown IDs: empty tuple, and omitted from the batch mapping.
-        assert await archive.get_actions("nonexistent") == ()
+        # Unknown IDs are omitted from the batch mapping.
         assert await archive.get_actions_batch(["nonexistent"]) == {}
     finally:
         await archive.close()
@@ -5110,7 +5103,6 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         view_renamed_id = await archive.save_view("view-v2", "Needs Review", '{"provider":"codex","tag":"second"}')
         view = await archive.get_view("view-v1")
         replaced_view = await archive.get_view("view-v2")
-        view_by_name = await archive.get_view_by_name("Needs Review")
         views = await archive.list_views()
 
         pack_created = await archive.create_recall_pack(
@@ -5159,7 +5151,6 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         assert view_renamed_id is False
         assert view is None
         assert replaced_view is not None
-        assert view_by_name == replaced_view
         assert views == [replaced_view]
         assert json.loads(replaced_view["query_json"]) == {"provider": "codex", "tag": "second"}
         assert pack_created is True
