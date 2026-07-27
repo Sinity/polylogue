@@ -202,7 +202,11 @@ def _small_ai_studio_session(session_id: str, text: str, *, top_level_chunks: bo
 def test_detector_order_is_tight_and_one_document_streams_keep_specificity() -> None:
     """Detector-order mutation: moving the weak Gemini check upward must fail."""
     valid_chunk = {"role": "user", "text": "safe"}
-    chatgpt_ambiguous = {"mapping": {}, "chunks": [valid_chunk]}
+    # A non-empty mapping is required since polylogue-t0ta tightened ChatGPT
+    # detection to reject a bare/empty ``mapping`` dict-key; this still
+    # proves detector *ordering* (chatgpt.looks_like_fragment before the
+    # weaker gemini chunk check), not detector strength.
+    chatgpt_ambiguous = {"mapping": {"n1": {}}, "chunks": [valid_chunk]}
     cli_ambiguous = {**_gemini_cli_payload(), "chunks": [valid_chunk]}
 
     assert detect_provider({"chunks": []}) is None

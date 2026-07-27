@@ -203,7 +203,11 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         return Provider.CODEX
     if claude.looks_like_code([dict(record)]):
         return Provider.CLAUDE_CODE
-    if chatgpt.looks_like(record):
+    # A single record here may be an intentionally partial ChatGPT fragment
+    # (e.g. one line of a streamed JSONL sniff), not a whole assembled
+    # export document, so this uses the fragment-level check rather than
+    # ``chatgpt.looks_like``'s document-identity requirements (polylogue-t0ta).
+    if chatgpt.looks_like_fragment(record):
         return Provider.CHATGPT
     if claude.looks_like_ai(record):
         return Provider.CLAUDE_AI
@@ -232,7 +236,11 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
             return Provider.HERMES
         if beads.looks_like(first_record):
             return Provider.BEADS
-        if is_json_document(first_record.get("mapping")):
+        # The first record of a *sequence* is a whole assembled document
+        # (e.g. one conversation from a ChatGPT bundle array), not a
+        # partial per-line fragment, so this uses the strict document-level
+        # check rather than ``looks_like_fragment`` (polylogue-t0ta).
+        if chatgpt.looks_like(first_record):
             return Provider.CHATGPT
         if isinstance(first_record.get("chat_messages"), list):
             return Provider.CLAUDE_AI
@@ -718,7 +726,10 @@ def _lower_drive_like_payload(
         return [_local_agent_document_spec(Provider.GEMINI_CLI, record, fallback_id)]
     if _record_messages(record) is not None:
         return [_generic_messages_spec(provider, record, fallback_id)]
-    if chatgpt.looks_like(record):
+    # This handles one already-lowered record, not a whole document/list, so
+    # it uses the fragment-level check rather than requiring document-identity
+    # fields (polylogue-t0ta) -- consistent with ``_detect_provider_from_record``.
+    if chatgpt.looks_like_fragment(record):
         return [_single_record_spec(Provider.CHATGPT, record, fallback_id)]
     if _looks_like_chunked_session(record):
         return [_chunked_prompt_spec(provider, record, fallback_id)]
@@ -772,7 +783,9 @@ def _lower_fallback_payload(
         return []
     if _record_messages(record) is not None:
         return [_generic_messages_spec(provider, record, fallback_id)]
-    if chatgpt.looks_like(record):
+    # Same rationale as the fallback branch in ``_lower_drive_like_payload``
+    # above: one record, not a whole document, so fragment-level detection.
+    if chatgpt.looks_like_fragment(record):
         return [_single_record_spec(Provider.CHATGPT, record, fallback_id)]
     if _looks_like_chunked_session(record):
         return [_chunked_prompt_spec(provider, record, fallback_id)]

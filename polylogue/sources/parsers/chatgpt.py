@@ -6,11 +6,14 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
+from pydantic import ValidationError
+
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 
 from .base import (
     ParsedAttachment,
@@ -833,10 +836,112 @@ def extract_messages_from_mapping(
     return (messages, attachments)
 
 
-def looks_like(payload: object) -> bool:
+def _mapping_nodes_are_valid(mapping: Mapping[str, object]) -> bool:
+    """Pydantic-validate every ``mapping`` entry against the typed node shape.
+
+    Requires the full ``ChatGPTNode`` shape, including a real ``id`` field
+    (and, transitively, a real ``message.id`` when a message is present).
+    This is the whole-document check's node validator -- see
+    ``_mapping_node_shape_is_plausible`` for the lighter fragment-level
+    check.
+    """
+    for node in mapping.values():
+        if not isinstance(node, dict):
+            return False
+        try:
+            ChatGPTNode.model_validate(node)
+        except ValidationError:
+            return False
+    return True
+
+
+def _mapping_node_shape_is_plausible(mapping: Mapping[str, object]) -> bool:
+    """Loosely validate mapping-node shape for fragment-level detection.
+
+    A per-record fragment (one JSONL line, or one already-lowered record
+    passed without the surrounding document -- see ``looks_like_fragment``)
+    routinely omits the ``id``/``message.id`` fields ``ChatGPTNode`` treats
+    as mandatory: those fields duplicate identity the caller already knows
+    from the mapping key / conversation context, so real per-record
+    fragments do not always repeat them. Full ``ChatGPTNode`` Pydantic
+    validation is therefore too strict for this tier. This instead checks
+    the shape ``ChatGPTNode``/``ChatGPTMessage`` actually constrain
+    structurally: every node is a dict, and when a node carries a
+    ``message`` it is a dict with an ``author`` dict (the one field every
+    real ChatGPT message node has, fragment or not). This still rejects an
+    arbitrary dict-with-a-``mapping``-key payload from an unrelated
+    provider (empty nodes, non-dict nodes, malformed ``message``/``author``
+    shapes), which is what the original bare ``isinstance(mapping, dict)``
+    check silently accepted.
+    """
+    for node in mapping.values():
+        if not isinstance(node, dict):
+            return False
+        message = node.get("message")
+        if message is None:
+            continue
+        if not isinstance(message, dict) or not isinstance(message.get("author"), dict):
+            return False
+    return True
+
+
+def looks_like_fragment(payload: object) -> bool:
+    """Detect a ChatGPT conversation-mapping *fragment*.
+
+    Individual-record detection (e.g. per-line JSONL sniffing in
+    ``sources/emitter.py``, or a single already-lowered record in
+    ``dispatch._detect_provider_from_record``/fallback lowering) sees only
+    the divergent slice of a conversation a caller chose to hand over one
+    record at a time -- it legitimately lacks document-level identity
+    fields (``current_node``/``create_time``/``conversation_id``/``id``,
+    and even per-node/per-message ``id``) that only exist once a full
+    exported document is assembled. This checks the one structural signal
+    that *is* present per-record: a non-empty ``mapping`` dict whose nodes
+    have a plausible ChatGPT node/message shape (see
+    ``_mapping_node_shape_is_plausible``). See ``looks_like`` for the
+    stricter whole-document check (polylogue-t0ta).
+    """
     if not isinstance(payload, dict):
         return False
-    return isinstance(payload.get("mapping"), dict)
+    mapping = payload.get("mapping")
+    if not isinstance(mapping, dict) or not mapping:
+        return False
+    return _mapping_node_shape_is_plausible(mapping)
+
+
+def looks_like(payload: object) -> bool:
+    """Detect the ChatGPT conversation-export shape (whole document).
+
+    ChatGPT's export format is externally versioned by OpenAI, outside this
+    repo's control, so a bare "has a mapping dict-key" check is the loosest,
+    highest format-drift-risk detector in dispatch: it silently accepts any
+    payload that happens to carry a "mapping" key, including malformed or
+    entirely unrelated shapes. This tightens detection to the export's
+    stable structural fields -- confirmed present across every real fixture
+    and corpus representative in this repo (native/browser-capture/regression
+    fixtures, schema catalog representatives) -- plus Pydantic-validated node
+    shape for every entry in ``mapping``, mirroring the typed-validation
+    pattern already load-bearing for Codex (``codex.looks_like``).
+
+    Use this only where a whole document/list-of-documents is available
+    (``dispatch._detect_provider_from_sequence``'s first-record check, and
+    direct callers validating an assembled export). For a single record
+    that may be an intentionally partial fragment (streamed JSONL lines,
+    already-lowered single records), use ``looks_like_fragment`` instead --
+    it lacks the document-identity fields this function requires.
+    """
+    if not isinstance(payload, dict):
+        return False
+    mapping = payload.get("mapping")
+    if not isinstance(mapping, dict) or not mapping:
+        return False
+    if not isinstance(payload.get("current_node"), str):
+        return False
+    if not isinstance(payload.get("create_time"), (int, float)):
+        return False
+    if not isinstance(payload.get("conversation_id"), str) and not isinstance(payload.get("id"), str):
+        return False
+    return _mapping_nodes_are_valid(mapping)
 
 
 def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:

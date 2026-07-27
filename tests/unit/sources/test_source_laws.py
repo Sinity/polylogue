@@ -865,7 +865,13 @@ def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
         ),
         (
             "drive",
-            {"mapping": {}, "conversation_id": "chatgpt-ish", "id": "chatgpt-ish"},
+            {
+                "conversation_id": "chatgpt-ish",
+                "id": "chatgpt-ish",
+                "create_time": 1704067200.0,
+                "current_node": "n1",
+                "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+            },
             "chatgpt",
             1,
         ),
@@ -2071,8 +2077,20 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
             "sessions.json",
             json.dumps(
                 [
-                    {"id": "chatgpt-1", "mapping": {}},
-                    {"id": "chatgpt-2", "mapping": {}},
+                    {
+                        "id": "chatgpt-1",
+                        "conversation_id": "chatgpt-1",
+                        "create_time": 1704067200.0,
+                        "current_node": "n1",
+                        "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+                    },
+                    {
+                        "id": "chatgpt-2",
+                        "conversation_id": "chatgpt-2",
+                        "create_time": 1704067200.0,
+                        "current_node": "n1",
+                        "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+                    },
                 ]
             ).encode("utf-8"),
             Provider.CHATGPT,
@@ -2130,8 +2148,20 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
             "nested/sessions.json",
             json.dumps(
                 [
-                    {"id": "chatgpt-1", "mapping": {}},
-                    {"id": "chatgpt-2", "mapping": {}},
+                    {
+                        "id": "chatgpt-1",
+                        "conversation_id": "chatgpt-1",
+                        "create_time": 1704067200.0,
+                        "current_node": "n1",
+                        "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+                    },
+                    {
+                        "id": "chatgpt-2",
+                        "conversation_id": "chatgpt-2",
+                        "create_time": 1704067200.0,
+                        "current_node": "n1",
+                        "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+                    },
                 ]
             ).encode("utf-8"),
         )
@@ -2198,8 +2228,20 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
             "nested/sessions.json",
             json.dumps(
                 [
-                    {"id": "chatgpt-1", "mapping": {}},
-                    {"id": "chatgpt-2", "mapping": {}},
+                    {
+                        "id": "chatgpt-1",
+                        "conversation_id": "chatgpt-1",
+                        "create_time": 1704067200.0,
+                        "current_node": "n1",
+                        "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+                    },
+                    {
+                        "id": "chatgpt-2",
+                        "conversation_id": "chatgpt-2",
+                        "create_time": 1704067200.0,
+                        "current_node": "n1",
+                        "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+                    },
                 ]
             ).encode("utf-8"),
         )
@@ -2257,7 +2299,15 @@ def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
 ) -> None:
     from polylogue.storage.blob_store import get_blob_store
 
-    entry_bytes = json.dumps({"id": "chatgpt-1", "mapping": {}}).encode("utf-8")
+    entry_bytes = json.dumps(
+        {
+            "id": "chatgpt-1",
+            "conversation_id": "chatgpt-1",
+            "create_time": 1704067200.0,
+            "current_node": "n1",
+            "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+        }
+    ).encode("utf-8")
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/chatgpt-export.json", entry_bytes)
@@ -2279,9 +2329,27 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payloads = [
-        {"id": "chatgpt-1", "mapping": {}},
-        {"id": "chatgpt-2", "mapping": {}},
-        {"id": "chatgpt-3", "mapping": {}},
+        {
+            "id": "chatgpt-1",
+            "conversation_id": "chatgpt-1",
+            "create_time": 1704067200.0,
+            "current_node": "n1",
+            "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+        },
+        {
+            "id": "chatgpt-2",
+            "conversation_id": "chatgpt-2",
+            "create_time": 1704067200.0,
+            "current_node": "n1",
+            "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+        },
+        {
+            "id": "chatgpt-3",
+            "conversation_id": "chatgpt-3",
+            "create_time": 1704067200.0,
+            "current_node": "n1",
+            "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
+        },
     ]
     detect_calls: list[JSONDocument] = []
     original_detect_provider = dispatch_module.detect_provider
@@ -2317,27 +2385,35 @@ def test_iter_entry_payloads_preserves_decimal_bearing_chatgpt_records() -> None
     payloads = [
         {
             "id": "chatgpt-1",
+            "conversation_id": "chatgpt-1",
             "title": "Decimal timestamp",
             "create_time": Decimal("1704995846.046526"),
+            "current_node": "root",
             "mapping": {
                 "root": {
+                    "id": "root",
                     "message": {
+                        "id": "root-message",
                         "author": {"role": "user"},
                         "content": {"content_type": "text", "parts": ["hello"]},
-                    }
+                    },
                 }
             },
         },
         {
             "id": "chatgpt-2",
+            "conversation_id": "chatgpt-2",
             "title": "Integral timestamp",
             "create_time": Decimal("1704995847"),
+            "current_node": "root",
             "mapping": {
                 "root": {
+                    "id": "root",
                     "message": {
+                        "id": "root-message",
                         "author": {"role": "assistant"},
                         "content": {"content_type": "text", "parts": ["hi"]},
-                    }
+                    },
                 }
             },
         },

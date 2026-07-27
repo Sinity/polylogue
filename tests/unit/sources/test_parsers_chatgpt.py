@@ -45,10 +45,40 @@ def _looks_like_code_payload(data: object) -> bool:
 
 
 # MERGED FORMAT + COERCE DETECTION
+_CHATGPT_MINIMAL_VALID: ChatGPTMapping = {
+    "id": "conv-1",
+    "conversation_id": "conv-1",
+    "create_time": 1_700_000_000.0,
+    "current_node": "node1",
+    "mapping": {"node1": {"id": "node1", "parent": None, "children": []}},
+}
 PROVIDER_FORMAT_DETECTION_CASES: list[ProviderDetectionCase] = [
-    # ChatGPT
-    ({"mapping": {}}, True, chatgpt_looks_like, "ChatGPT: valid empty mapping"),
-    ({"mapping": {"node1": {}}}, True, chatgpt_looks_like, "ChatGPT: valid with nodes"),
+    # ChatGPT: a bare "mapping" dict-key is no longer sufficient (polylogue-t0ta)
+    # -- detection also requires the export's stable identity fields
+    # (conversation_id/id, create_time, current_node) and every mapping node
+    # must validate against the typed ChatGPTNode shape.
+    ({**_CHATGPT_MINIMAL_VALID, "mapping": {}}, False, chatgpt_looks_like, "ChatGPT: empty mapping is rejected"),
+    (_CHATGPT_MINIMAL_VALID, True, chatgpt_looks_like, "ChatGPT: valid with nodes"),
+    ({"mapping": {}}, False, chatgpt_looks_like, "ChatGPT: bare mapping key alone is not enough"),
+    ({"mapping": {"node1": {}}}, False, chatgpt_looks_like, "ChatGPT: mapping node missing required id rejected"),
+    (
+        {**_CHATGPT_MINIMAL_VALID, "mapping": {"node1": {"not_a_node": True}}},
+        False,
+        chatgpt_looks_like,
+        "ChatGPT: malformed/format-drifted node shape rejected",
+    ),
+    (
+        {**_CHATGPT_MINIMAL_VALID, "current_node": 123},
+        False,
+        chatgpt_looks_like,
+        "ChatGPT: non-string current_node rejected",
+    ),
+    (
+        {k: v for k, v in _CHATGPT_MINIMAL_VALID.items() if k != "create_time"},
+        False,
+        chatgpt_looks_like,
+        "ChatGPT: missing create_time rejected",
+    ),
     ({}, False, chatgpt_looks_like, "ChatGPT: missing mapping"),
     (None, False, chatgpt_looks_like, "ChatGPT: None input"),
     # Claude AI

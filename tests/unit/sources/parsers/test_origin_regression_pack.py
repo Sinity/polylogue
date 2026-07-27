@@ -166,7 +166,10 @@ def _chatgpt_payload() -> dict[str, Any]:
     """
     return {
         "id": "chatgpt-session-reg-1",
+        "conversation_id": "chatgpt-session-reg-1",
         "title": "ChatGPT regression fixture",
+        "create_time": 1_704_067_200.0,
+        "current_node": "t1",
         "mapping": {
             "u1": {
                 "id": "u1",
@@ -175,7 +178,7 @@ def _chatgpt_payload() -> dict[str, Any]:
                 "message": {
                     "id": "u1",
                     "author": {"role": "user"},
-                    "content": {"parts": ["[Pasted text #1]\nrun checks"]},
+                    "content": {"content_type": "text", "parts": ["[Pasted text #1]\nrun checks"]},
                     "create_time": 1_704_067_200.0,
                 },
             },
@@ -223,7 +226,6 @@ def _chatgpt_payload() -> dict[str, Any]:
                 },
             },
         },
-        "current_node": "t1",
     }
 
 

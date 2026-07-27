@@ -86,7 +86,22 @@ ADVERSARIAL_CATALOG.append(
 ADVERSARIAL_CATALOG.append(
     (
         {
-            "mapping": {"msg-1": {"message": {"content": {"parts": ["hello"]}, "author": {"role": "user"}}}},
+            "id": "adversarial-conv",
+            "conversation_id": "adversarial-conv",
+            "create_time": 1_700_000_000.0,
+            "current_node": "msg-1",
+            "mapping": {
+                "msg-1": {
+                    "id": "msg-1",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "id": "msg-1",
+                        "content": {"content_type": "text", "parts": ["hello"]},
+                        "author": {"role": "user"},
+                    },
+                }
+            },
             "chat_messages": [{"id": "msg-1", "text": "hello", "sender": "human"}],
         },
         Provider.CHATGPT,
@@ -174,7 +189,24 @@ def test_dispatch_ordering(payload: object, expected_provider: Provider, rationa
     ("payload", "expected_provider"),
     [
         (
-            {"mapping": {"msg-1": {"message": {"content": {"parts": ["hi"]}, "author": {"role": "user"}}}}},
+            {
+                "id": "unambiguous-conv",
+                "conversation_id": "unambiguous-conv",
+                "create_time": 1_700_000_000.0,
+                "current_node": "msg-1",
+                "mapping": {
+                    "msg-1": {
+                        "id": "msg-1",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "msg-1",
+                            "content": {"content_type": "text", "parts": ["hi"]},
+                            "author": {"role": "user"},
+                        },
+                    }
+                },
+            },
             Provider.CHATGPT,
         ),
         ({"chat_messages": [{"id": "1", "text": "hi", "sender": "human"}]}, Provider.CLAUDE_AI),

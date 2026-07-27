@@ -209,6 +209,8 @@ def test_bare_legacy_duration_remains_message_local_without_a_synthetic_lifecycl
         "JSONDocument",
         {
             "id": "legacy-duration-only",
+            "conversation_id": "legacy-duration-only",
+            "create_time": 1_700_000_000.0,
             "current_node": "answer-node",
             "mapping": {
                 "answer-node": {
@@ -240,6 +242,8 @@ def test_malformed_native_timing_does_not_promote_a_legacy_duration_to_lifecycle
         "JSONDocument",
         {
             "id": "malformed-native-with-legacy-duration",
+            "conversation_id": "malformed-native-with-legacy-duration",
+            "create_time": 1_700_000_000.0,
             "current_node": "answer-node",
             "mapping": {
                 "answer-node": {
@@ -273,7 +277,15 @@ def test_browser_capture_detector_short_circuits_the_weaker_chatgpt_mapping_shap
     """The browser envelope detector must run before the weak mapping detector."""
 
     payload = _load_fixture(_BROWSER_FIXTURE)
-    payload["mapping"] = {"decoy-chatgpt-node": {}}
+    # A decoy that also satisfies the tightened chatgpt.looks_like structural
+    # check (conversation_id/id, create_time, current_node, plus a
+    # Pydantic-valid mapping node) so this still proves ordering, not just
+    # detector strength.
+    payload["conversation_id"] = "decoy-conversation"
+    payload["id"] = "decoy-conversation"
+    payload["create_time"] = 1_700_000_000.0
+    payload["current_node"] = "decoy-chatgpt-node"
+    payload["mapping"] = {"decoy-chatgpt-node": {"id": "decoy-chatgpt-node", "parent": None, "children": []}}
     assert browser_capture.looks_like(payload)
     assert chatgpt.looks_like(payload)
 
