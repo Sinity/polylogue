@@ -31,7 +31,7 @@ from polylogue.archive.query.expression import (
     split_with_projection_clause,
 )
 from polylogue.archive.query.metadata import query_unit_descriptor
-from polylogue.archive.query.predicate import QueryPredicate
+from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate, QueryPredicate
 from polylogue.archive.query.spec import (
     QuerySpecError,
     SessionQuerySpec,
@@ -262,6 +262,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     sort = compiled_spec.sort
     reverse = compiled_spec.reverse
     similar_text = compiled_spec.similar_text
+    similar_session_id = compiled_spec.similar_session_id
     retrieval_lane = _optional_str(params.get("retrieval_lane")) or compiled_spec.retrieval_lane
     delete_matched = bool(params.get("delete_matched"))
     excluded_origins = compiled_spec.excluded_origins or _resolve_excluded_origins(params)
@@ -298,6 +299,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     }
     if compiled_spec.boolean_predicate is not None:
         filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate
+    lineage_seed_session_id = _lineage_seed_from_predicate(compiled_spec.boolean_predicate)
     if _try_emit_daemon_session_page(
         env,
         config=config,
@@ -323,6 +325,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         sort=sort,
         reverse=reverse,
         similar_text=similar_text,
+        similar_session_id=similar_session_id,
         retrieval_lane=retrieval_lane,
     ):
         return
@@ -564,7 +567,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         if conv_id:
             try:
                 session_id = archive.resolve_session_id(str(conv_id))
-                if query or similar_text:
+                if query or similar_text or similar_session_id:
                     if sample_count is not None:
                         raise click.UsageError("Root query does not combine --sample with search terms.")
                     hits, resolved_lane = _query_hits(
@@ -572,6 +575,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         config=config,
                         query=query,
                         similar_text=similar_text,
+                        similar_session_id=similar_session_id,
                         retrieval_lane=retrieval_lane,
                         limit=limit + 1,
                         offset=page_offset,
@@ -621,11 +625,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     _emit_search(
                         page_hits,
                         archive=archive,
-                        query=similar_text or query,
+                        query=similar_text or query or similar_session_id or "",
                         total=_count_root_matches(
                             archive,
                             query=query,
                             similar_text=similar_text,
+                            similar_session_id=similar_session_id,
                             session_id=session_id,
                             filter_kwargs=filter_kwargs,
                         ),
@@ -684,7 +689,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     fields=fields,
                 )
                 return
-        if query or similar_text:
+        if query or similar_text or similar_session_id:
             if sample_count is not None:
                 raise click.UsageError("Root query does not combine --sample with search terms.")
             fetch_limit = limit + 1
@@ -693,6 +698,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 config=config,
                 query=query,
                 similar_text=similar_text,
+                similar_session_id=similar_session_id,
                 retrieval_lane=retrieval_lane,
                 limit=fetch_limit,
                 offset=page_offset,
@@ -738,11 +744,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             _emit_search(
                 page_hits,
                 archive=archive,
-                query=similar_text or query,
+                query=similar_text or query or similar_session_id or "",
                 total=_count_root_matches(
                     archive,
                     query=query,
                     similar_text=similar_text,
+                    similar_session_id=similar_session_id,
                     session_id=None,
                     filter_kwargs=filter_kwargs,
                 ),
@@ -820,7 +827,29 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             archive=archive,
             with_units=with_units,
             with_unit_fields=with_unit_fields,
+            lineage_seed_session_id=lineage_seed_session_id,
         )
+
+
+def _lineage_seed_from_predicate(predicate: QueryPredicate | None) -> str | None:
+    """Return the ``lineage:id:`` seed session id carried by ``predicate``, if any.
+
+    ``lineage:id:<ref>`` compiles to :class:`QueryLineagePredicate` (possibly
+    ANDed with other clauses), which the SQL layer already uses to filter
+    session rows to one shared-root lineage family. This walks the same
+    boolean-predicate tree to detect that shape so the list route can
+    materialize the declared recursive-graph projection columns for it (#z9gh.3).
+    """
+    if predicate is None:
+        return None
+    if isinstance(predicate, QueryLineagePredicate):
+        return predicate.seed_session_id
+    if isinstance(predicate, QueryBoolPredicate):
+        for child in predicate.children:
+            seed = _lineage_seed_from_predicate(child)
+            if seed is not None:
+                return seed
+    return None
 
 
 def _reject_unsupported_params(params: dict[str, object]) -> None:
@@ -841,6 +870,7 @@ def _query_hits(
     config: Config,
     query: str,
     similar_text: str | None,
+    similar_session_id: str | None,
     retrieval_lane: str,
     limit: int,
     offset: int,
@@ -851,6 +881,34 @@ def _query_hits(
 ) -> tuple[list[ArchiveSessionSearchHit], str]:
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     embeddings_db = archive_root / "embeddings.db"
+    if similar_session_id is not None:
+        # near:id: is an explicit request to rank by a *stored* session's
+        # embeddings; unlike near:"text" there is no lexical fallback query.
+        # Reuse the same VectorProvider mechanism (sqlite-vec + Voyage
+        # embeddings) that backs the near:"text" branch below and the
+        # SessionFilter route (archive_execution.py's ``_session_seed_scored``)
+        # rather than silently degrading to an unfiltered session list
+        # (polylogue-z9gh.3).
+        from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
+
+        vector_provider = create_vector_provider(config, db_path=embeddings_db)
+        if vector_provider is None:
+            raise click.UsageError(
+                "near:id: requires configured sqlite-vec and Voyage embeddings; none is available for this archive."
+            )
+        pool = max(limit + offset, limit) * 3
+        try:
+            seed_scored = vector_provider.query_by_session(similar_session_id, limit=pool)
+        except SqliteVecError as exc:
+            raise click.UsageError(str(exc)) from exc
+        seed_hits = archive.semantic_summaries(
+            seed_scored,
+            limit=pool,
+            offset=0,
+            session_id=session_id,
+            **filter_kwargs,
+        )
+        return seed_hits[offset : offset + limit], "semantic"
     # ``auto`` is intentionally lexical. A default ``find`` must not open or scan
     # embeddings.db before returning FTS results; large active archives can make
     # that probe block in I/O wait. Vector retrieval remains explicit through
@@ -914,6 +972,7 @@ def _count_root_matches(
     *,
     query: str,
     similar_text: str | None,
+    similar_session_id: str | None = None,
     session_id: str | None,
     filter_kwargs: _ArchiveFilterKwargs,
 ) -> int | None:
@@ -926,7 +985,7 @@ def _count_root_matches(
     primitives and retain the full total even when the page itself is bounded.
     """
 
-    if similar_text is not None:
+    if similar_text is not None or similar_session_id is not None:
         return None
     counter = getattr(archive, "count_search_sessions" if query else "count_sessions", None)
     if not callable(counter):
@@ -964,6 +1023,7 @@ def _try_emit_daemon_session_page(
     sort: str | None,
     reverse: bool,
     similar_text: str | None,
+    similar_session_id: str | None,
     retrieval_lane: str,
 ) -> bool:
     """Use the running daemon for ordinary session pages when it is safe.
@@ -990,6 +1050,7 @@ def _try_emit_daemon_session_page(
         sort=sort,
         reverse=reverse,
         similar_text=similar_text,
+        similar_session_id=similar_session_id,
         retrieval_lane=retrieval_lane,
     ):
         return False
@@ -1131,6 +1192,7 @@ def _daemon_session_page_supported(
     sort: str | None,
     reverse: bool,
     similar_text: str | None,
+    similar_session_id: str | None,
     retrieval_lane: str,
 ) -> bool:
     if unit_source is not None or with_units or with_unit_fields:
@@ -1141,7 +1203,11 @@ def _daemon_session_page_supported(
         return False
     if sample_count is not None or cursor is not None or sort is not None or reverse:
         return False
-    if similar_text is not None or retrieval_lane not in {"auto", "dialogue"}:
+    if similar_text is not None or similar_session_id is not None or retrieval_lane not in {"auto", "dialogue"}:
+        # near:id: session-seeded ranking has no equivalent in the daemon's
+        # split-archive `/api/sessions` fast path (_do_archive_session_list only
+        # handles FTS terms and plain filters), so this must fall through to
+        # local CLI execution, which resolves the vector provider itself.
         return False
     if compiled_spec.boolean_predicate is not None or compiled_spec.since_session_id is not None:
         return False
@@ -2059,8 +2125,37 @@ def _emit_list(
     archive: ArchiveStore | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    lineage_seed_session_id: str | None = None,
 ) -> None:
-    items = [_summary_payload(summary) for summary in summaries]
+    lineage_edges: dict[str, tuple[str | None, tuple[str, ...]]] = {}
+    if lineage_seed_session_id is not None and archive is not None and summaries:
+        # Materialize the declared recursive-graph projection columns
+        # (parent_refs/child_refs/continuation) for a lineage:id:-seeded page:
+        # per-page direct edges plus the page-level cursor, reusing the
+        # already-fetched page instead of a second unbounded graph walk
+        # (#z9gh.3).
+        lineage_edges = archive.session_lineage_edges([summary.session_id for summary in summaries])
+
+    def _parent_refs(session_id: str) -> tuple[str, ...] | None:
+        edge = lineage_edges.get(session_id)
+        if edge is None:
+            return None
+        parent_id = edge[0]
+        return (parent_id,) if parent_id else ()
+
+    def _child_refs(session_id: str) -> tuple[str, ...] | None:
+        edge = lineage_edges.get(session_id)
+        return edge[1] if edge is not None else None
+
+    items = [
+        _summary_payload(
+            summary,
+            parent_refs=_parent_refs(summary.session_id),
+            child_refs=_child_refs(summary.session_id),
+            continuation=(next_cursor if lineage_seed_session_id is not None else None),
+        )
+        for summary in summaries
+    ]
     _inject_attached_units(
         items,
         [summary.session_id for summary in summaries],
@@ -2414,7 +2509,13 @@ def _csv(items: list[dict[str, object]]) -> str:
     return buf.getvalue()
 
 
-def _summary_payload(summary: ArchiveSessionSummary) -> dict[str, object]:
+def _summary_payload(
+    summary: ArchiveSessionSummary,
+    *,
+    parent_refs: tuple[str, ...] | None = None,
+    child_refs: tuple[str, ...] | None = None,
+    continuation: str | None = None,
+) -> dict[str, object]:
     return cast(
         "dict[str, object]",
         model_json_document(
@@ -2431,6 +2532,9 @@ def _summary_payload(summary: ArchiveSessionSummary) -> dict[str, object]:
                 words=summary.word_count,
                 repo=summary.git_repository_url,
                 cwd_display=summary.working_directories[0] if summary.working_directories else None,
+                parent_refs=parent_refs,
+                child_refs=child_refs,
+                continuation=continuation,
             ),
             exclude_none=True,
         ),

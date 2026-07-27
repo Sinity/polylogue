@@ -1578,6 +1578,28 @@ components:
           - $ref: '#/components/schemas/SessionFlagsPayload'
           - type: 'null'
           default: null
+        parent_refs:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Parent Refs
+        child_refs:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Child Refs
+        continuation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Continuation
       required:
       - id
       - origin

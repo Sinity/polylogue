@@ -2299,6 +2299,219 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
     assert decode_search_cursor(payload["next_cursor"]).lane == "semantic"
 
 
+def test_async_execute_query_archive_uses_vector_provider_for_session_seed_similarity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``near:id:<ref>`` through the CLI root query route ranks by vector similarity.
+
+    Regression for polylogue-z9gh.3: this route used to have no
+    ``similar_session_id`` handling at all and silently fell through to a
+    plain unfiltered ``list_summaries`` page. ``FakeArchiveStore.list_summaries``
+    raises if invoked, proving the fixed route never reaches that fallback and
+    instead resolves through the same vector-provider mechanism as ``near:"text"``.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeVectorProvider:
+        def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+            assert session_id == "codex-session:seed"
+            assert limit == 6
+            return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+
+    class FakeArchiveStore:
+        index_db_path = archive_root / "index.db"
+
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def semantic_summaries(
+            self,
+            scored_message_ids: list[tuple[str, float]],
+            **kwargs: object,
+        ) -> list[ArchiveSessionSearchHit]:
+            assert scored_message_ids == [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+            return [
+                ArchiveSessionSearchHit(
+                    rank=1,
+                    session_id="codex-session:native-1",
+                    block_id="codex-session:native-1:m1:0",
+                    message_id="codex-session:native-1:m1",
+                    origin="codex-session",
+                    title="Seed neighbor",
+                    snippet="near hit",
+                ),
+                ArchiveSessionSearchHit(
+                    rank=2,
+                    session_id="codex-session:native-2",
+                    block_id="codex-session:native-2:m1:0",
+                    message_id="codex-session:native-2:m1",
+                    origin="codex-session",
+                    title="Seed neighbor 2",
+                    snippet="near hit 2",
+                ),
+            ]
+
+        def read_summary(self, session_id: str) -> ArchiveSessionSummary:
+            native_id = session_id.removeprefix("codex-session:")
+            return ArchiveSessionSummary(
+                session_id=session_id,
+                native_id=native_id,
+                origin="codex-session",
+                title=f"Seed neighbor {native_id[-1]}",
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+                word_count=1,
+                tags=(),
+            )
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            raise AssertionError("near:id: must not fall through to the plain unfiltered list_summaries route")
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: FakeVectorProvider()
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "similar_session_id": "codex-session:seed",
+                "limit": 1,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["retrieval_lane"] == "semantic"
+    assert payload["items"][0]["session"]["id"] == "codex-session:native-1"
+    assert [item["session"]["id"] for item in payload["items"]] != []
+
+
+def test_async_execute_query_archive_session_seed_without_vector_backend_raises_usage_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No configured vector backend must fail typed, never degrade to a plain list."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        index_db_path = archive_root / "index.db"
+
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            raise AssertionError("near:id: must not fall through to the plain unfiltered list_summaries route")
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+    monkeypatch.setattr("polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: None)
+
+    with pytest.raises(click.UsageError, match="near:id: requires configured"):
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "similar_session_id": "codex-session:seed",
+                    "limit": 1,
+                    "output_format": "json",
+                },
+            )
+        )
+
+
+def test_lineage_id_cli_query_materializes_parent_child_refs(cli_workspace: dict[str, Path]) -> None:
+    """``lineage:id:<ref>`` through the CLI root query route projects lineage edges.
+
+    Regression for polylogue-z9gh.3: the ``lineage:id:`` predicate already
+    filtered session rows to one shared-root family via SQL, but the CLI list
+    route never populated the declared ``parent_refs``/``child_refs``/
+    ``continuation`` projection columns on the emitted rows. This exercises the
+    real production ``ArchiveStore`` (via ``write_parsed_session_to_archive``
+    through ``SessionBuilder``) rather than a mock, so it fails if the fix only
+    special-cases a synthetic double.
+    """
+    from polylogue.cli import cli
+    from tests.infra.storage_records import SessionBuilder
+
+    index_db = cli_workspace["archive_root"] / "index.db"
+    (
+        SessionBuilder(index_db, "lineage-parent")
+        .provider("codex")
+        .title("Lineage parent")
+        .add_message("m1", role="user", text="root session message")
+        .save()
+    )
+    (
+        SessionBuilder(index_db, "lineage-child")
+        .provider("codex")
+        .title("Lineage child")
+        .parent_session("ext-lineage-parent")
+        .add_message("m1", role="user", text="child session message")
+        .save()
+    )
+    # An unrelated session must not appear in the lineage-seeded page.
+    (
+        SessionBuilder(index_db, "unrelated")
+        .provider("codex")
+        .title("Unrelated session")
+        .add_message("m1", role="user", text="unrelated")
+        .save()
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "--no-daemon", "find", "lineage:id:codex-session:ext-lineage-parent", "-f", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["mode"] == "list"
+    items_by_id = {item["id"]: item for item in payload["items"]}
+    assert set(items_by_id) == {
+        "codex-session:ext-lineage-parent",
+        "codex-session:ext-lineage-child",
+    }
+
+    parent_row = items_by_id["codex-session:ext-lineage-parent"]
+    child_row = items_by_id["codex-session:ext-lineage-child"]
+    assert parent_row["parent_refs"] == []
+    assert parent_row["child_refs"] == ["codex-session:ext-lineage-child"]
+    assert child_row["parent_refs"] == ["codex-session:ext-lineage-parent"]
+    assert child_row["child_refs"] == []
+    # No further page remains, so the per-row continuation cursor is absent.
+    assert parent_row.get("continuation") is None
+    assert child_row.get("continuation") is None
+
+
 def test_async_execute_query_archive_accepts_explicit_semantic_lane(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

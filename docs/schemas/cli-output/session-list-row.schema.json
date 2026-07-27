@@ -183,6 +183,33 @@
       "default": null,
       "title": "Anchor"
     },
+    "child_refs": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Child Refs"
+    },
+    "continuation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Continuation"
+    },
     "created_at": {
       "anyOf": [
         {
@@ -230,6 +257,21 @@
     "origin": {
       "title": "Origin",
       "type": "string"
+    },
+    "parent_refs": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Refs"
     },
     "repo": {
       "anyOf": [

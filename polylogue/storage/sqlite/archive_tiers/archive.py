@@ -3996,6 +3996,46 @@ class ArchiveStore:
         ).fetchone()
         return row is not None
 
+    def session_lineage_edges(self, session_ids: Sequence[str]) -> dict[str, tuple[str | None, tuple[str, ...]]]:
+        """Return ``(parent_session_id, child_session_ids)`` per requested id.
+
+        Reuses the same ``sessions.parent_session_id`` column the
+        ``lineage:id:`` predicate already filters sessions by (shared
+        ``root_session_id``) to materialize the direct parent/child edges for
+        one already-selected page of a lineage family, rather than performing
+        a second unbounded recursive graph traversal (#z9gh.3). Only direct
+        (one-hop) edges are returned; children outside ``session_ids`` are
+        still discovered (the child query is unscoped by the input set), but
+        parents outside ``session_ids`` are reported by id only, not hydrated.
+        """
+        if not session_ids:
+            return {}
+        ids = tuple(dict.fromkeys(session_ids))
+        placeholders = ",".join("?" for _ in ids)
+        parent_rows = self._conn.execute(
+            f"SELECT session_id, parent_session_id FROM sessions WHERE session_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        parent_by_id: dict[str, str | None] = {
+            str(row["session_id"]): (str(row["parent_session_id"]) if row["parent_session_id"] else None)
+            for row in parent_rows
+        }
+        child_rows = self._conn.execute(
+            f"SELECT session_id, parent_session_id FROM sessions WHERE parent_session_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        children_by_parent: dict[str, list[str]] = {}
+        for row in child_rows:
+            parent_id = str(row["parent_session_id"])
+            children_by_parent.setdefault(parent_id, []).append(str(row["session_id"]))
+        return {
+            session_id: (
+                parent_by_id.get(session_id),
+                tuple(children_by_parent.get(session_id, ())),
+            )
+            for session_id in ids
+        }
+
     def get_session_tree(self, session_id: str) -> list[ArchiveSessionEnvelope]:
         """Return the rooted archive session tree containing ``session_id``."""
         try:
