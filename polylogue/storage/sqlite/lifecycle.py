@@ -233,6 +233,51 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
     IndexDeltaDeclaration(
+        version=40,
+        # Adds query_unit_frame_state (polylogue-z9gh.9, PR #3068): a
+        # singleton, trigger-maintained epoch counter that composes with the
+        # user-tier assertion epoch to bind query-unit continuation resumes
+        # to the exact archive snapshot they were issued against. Insert,
+        # update, and delete triggers on session_links, sessions, messages,
+        # blocks, session_tags, session_profiles, and delegation_facts each
+        # bump the counter -- every table already exists at v39 and gains
+        # only a maintenance trigger, so no row is reparsed or reshaped. The
+        # table itself starts at epoch=0 via INSERT OR IGNORE. A clone can
+        # therefore create the table and its 21 triggers verbatim from
+        # canonical INDEX_DDL with no semantic reparse of raw evidence.
+        classes=(DerivedDeltaClass.INDEX_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v40-query-unit-frame-state",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(
+                    ("table", "query_unit_frame_state"),
+                    ("trigger", "query_unit_frame_session_links_insert"),
+                    ("trigger", "query_unit_frame_session_links_update"),
+                    ("trigger", "query_unit_frame_session_links_delete"),
+                    ("trigger", "query_unit_frame_sessions_insert"),
+                    ("trigger", "query_unit_frame_sessions_update"),
+                    ("trigger", "query_unit_frame_sessions_delete"),
+                    ("trigger", "query_unit_frame_messages_insert"),
+                    ("trigger", "query_unit_frame_messages_update"),
+                    ("trigger", "query_unit_frame_messages_delete"),
+                    ("trigger", "query_unit_frame_blocks_insert"),
+                    ("trigger", "query_unit_frame_blocks_update"),
+                    ("trigger", "query_unit_frame_blocks_delete"),
+                    ("trigger", "query_unit_frame_session_tags_insert"),
+                    ("trigger", "query_unit_frame_session_tags_update"),
+                    ("trigger", "query_unit_frame_session_tags_delete"),
+                    ("trigger", "query_unit_frame_session_profiles_insert"),
+                    ("trigger", "query_unit_frame_session_profiles_update"),
+                    ("trigger", "query_unit_frame_session_profiles_delete"),
+                    ("trigger", "query_unit_frame_delegation_facts_insert"),
+                    ("trigger", "query_unit_frame_delegation_facts_update"),
+                    ("trigger", "query_unit_frame_delegation_facts_delete"),
+                ),
+            ),
+        ),
+    ),
+    IndexDeltaDeclaration(
         version=41,
         # action_pairs stops materializing tool_input/output_text text
         # copies (polylogue-2i2w) -- every tool interaction existed ~3x on
