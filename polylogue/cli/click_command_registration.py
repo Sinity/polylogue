@@ -107,6 +107,7 @@ _SHORT_HELP: dict[str, str] = {
     "judge": "Interactively triage candidate assertions.",
     "maintenance": "Preview and run maintenance backfill operations.",
     "manual": "Render the installed CLI manual offline.",
+    "materialize_incident_evidence": "Materialize a work-evidence graph from archive session/run evidence.",
     "note": "Capture a terminal memory candidate.",
     "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
@@ -140,6 +141,7 @@ _GROUP_ATTRS: dict[str, str] = {
 _COMMAND_ATTRS: dict[str, str] = {
     "import_command": "import_command",
     "judge": "judge_command",
+    "materialize_incident_evidence": "materialize_incident_evidence_command",
     "reconcile_work_effects": "reconcile_work_effects_command",
 }
 
@@ -188,6 +190,7 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("excise"),
     _L("insights"),
     _L("maintenance"),
+    _L("materialize_incident_evidence"),
     _L("reconcile_work_effects"),
     _L("reset"),
     _L("scan_secrets"),
