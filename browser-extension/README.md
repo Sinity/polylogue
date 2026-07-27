@@ -225,7 +225,7 @@ pages the badge shows grey and no data is sent.
 
 ## Architecture
 
-```
+```text
 Browser (ChatGPT/Claude page/app state)
     │
     │  content script captures provider-native state or DOM fallback
