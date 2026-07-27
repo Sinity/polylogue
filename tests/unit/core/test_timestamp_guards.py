@@ -418,10 +418,13 @@ def test_parse_archive_datetime_raises_on_malformed_non_empty_string() -> None:
 
 
 @given(
-    st.datetimes(
-        min_value=datetime(1970, 1, 2),
-        max_value=datetime(2100, 1, 1),
-        timezones=st.just(timezone.utc) | st.none(),
+    st.one_of(
+        st.datetimes(min_value=datetime(1970, 1, 2), max_value=datetime(2100, 1, 1)),
+        st.datetimes(
+            min_value=datetime(1970, 1, 2),
+            max_value=datetime(2100, 1, 1),
+            timezones=st.just(timezone.utc),
+        ),
     )
 )
 def test_parse_archive_datetime_is_always_aware_for_valid_iso_input(dt: datetime) -> None:
