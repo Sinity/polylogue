@@ -138,7 +138,9 @@ class TestWriteTool:
             assert added["outcome"] == "added"
 
             removed = json.loads(
-                await invoke_surface_async(write_fn, operation="remove_tag", session_id=session_id, tag="reviewed")
+                await invoke_surface_async(
+                    write_fn, operation="remove_tag", session_id=session_id, tag="reviewed", confirm=True
+                )
             )
             assert removed.get("is_error") is not True, removed
             assert removed["outcome"] == "removed"
@@ -241,7 +243,256 @@ class TestWriteTool:
             view_id = saved["key"]
 
             deleted = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="delete_saved_view", fields={"view_id": view_id}, confirm=True
+                )
+            )
+            assert deleted.get("is_error") is not True, deleted
+            assert deleted["status"] == "deleted"
+
+
+class TestWriteToolConfirmGates:
+    """polylogue-jn40: every destructive ``write`` operation must fail closed.
+
+    Mirrors ``TestWriteTool.test_delete_session_without_confirm_is_refused``
+    for the sibling destructive operations that previously had no gate at
+    all: ``remove_tag`` is covered directly in ``TestWriteTool`` (round trip
+    now passes ``confirm=True``); the remainder are covered here, each with
+    a refusal case (asserting the underlying state is unchanged) and a
+    ``confirm=True`` success case.
+    """
+
+    @pytest.mark.asyncio
+    async def test_remove_tag_without_confirm_is_refused_and_tag_survives(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with _installed_runtime_services(archive_root):
+            added = json.loads(
+                await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
+            )
+            assert added.get("is_error") is not True, added
+
+            refused = json.loads(
+                await invoke_surface_async(write_fn, operation="remove_tag", session_id=session_id, tag="reviewed")
+            )
+            assert refused.get("is_error") is True
+            assert "confirm" in refused.get("message", "").lower()
+
+            # Prove the tag actually survived the refused call: a confirmed
+            # removal afterwards still finds it present ("removed", not
+            # "not_found").
+            removed = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="remove_tag", session_id=session_id, tag="reviewed", confirm=True
+                )
+            )
+            assert removed.get("is_error") is not True, removed
+            assert removed["outcome"] == "removed"
+
+    @pytest.mark.asyncio
+    async def test_remove_mark_without_confirm_is_refused_and_mark_survives(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with _installed_runtime_services(archive_root):
+            added = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="add_mark", session_id=session_id, fields={"mark_type": "star"}
+                )
+            )
+            assert added.get("is_error") is not True, added
+
+            refused = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="remove_mark", session_id=session_id, fields={"mark_type": "star"}
+                )
+            )
+            assert refused.get("is_error") is True
+            assert "confirm" in refused.get("message", "").lower()
+
+            removed = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="remove_mark",
+                    session_id=session_id,
+                    fields={"mark_type": "star"},
+                    confirm=True,
+                )
+            )
+            assert removed.get("is_error") is not True, removed
+            assert removed["outcome"] == "removed"
+
+    @pytest.mark.asyncio
+    async def test_delete_metadata_without_confirm_is_refused_and_key_survives(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with _installed_runtime_services(archive_root):
+            set_result = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="set_metadata", session_id=session_id, key="note", value="keep"
+                )
+            )
+            assert set_result.get("is_error") is not True, set_result
+
+            refused = json.loads(
+                await invoke_surface_async(write_fn, operation="delete_metadata", session_id=session_id, key="note")
+            )
+            assert refused.get("is_error") is True
+            assert "confirm" in refused.get("message", "").lower()
+
+            deleted = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="delete_metadata", session_id=session_id, key="note", confirm=True
+                )
+            )
+            assert deleted.get("is_error") is not True, deleted
+            assert deleted["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_delete_annotation_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with _installed_runtime_services(archive_root):
+            saved = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="save_annotation",
+                    session_id=session_id,
+                    fields={"annotation_id": "note-1", "note_text": "a durable note"},
+                )
+            )
+            assert saved.get("is_error") is not True, saved
+
+            refused = json.loads(
+                await invoke_surface_async(write_fn, operation="delete_annotation", fields={"annotation_id": "note-1"})
+            )
+            assert refused.get("is_error") is True
+            assert "confirm" in refused.get("message", "").lower()
+
+            deleted = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="delete_annotation",
+                    fields={"annotation_id": "note-1"},
+                    confirm=True,
+                )
+            )
+            assert deleted.get("is_error") is not True, deleted
+            assert deleted["status"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_delete_saved_view_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with _installed_runtime_services(archive_root):
+            saved = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="save_saved_view",
+                    fields={"name": "needle sessions", "query_json": json.dumps({"query": "needle"})},
+                )
+            )
+            assert saved.get("is_error") is not True, saved
+            view_id = saved["key"]
+
+            refused = json.loads(
                 await invoke_surface_async(write_fn, operation="delete_saved_view", fields={"view_id": view_id})
+            )
+            assert refused.get("is_error") is True
+            assert "confirm" in refused.get("message", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_recall_pack_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with _installed_runtime_services(archive_root):
+            saved = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="save_recall_pack",
+                    fields={
+                        "pack_id": "pack-1",
+                        "label": "Recall pack",
+                        "payload_json": json.dumps({"items": []}),
+                    },
+                )
+            )
+            assert saved.get("is_error") is not True, saved
+
+            refused = json.loads(
+                await invoke_surface_async(write_fn, operation="delete_recall_pack", fields={"pack_id": "pack-1"})
+            )
+            assert refused.get("is_error") is True
+            assert "confirm" in refused.get("message", "").lower()
+
+            deleted = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="delete_recall_pack", fields={"pack_id": "pack-1"}, confirm=True
+                )
+            )
+            assert deleted.get("is_error") is not True, deleted
+            assert deleted["status"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_delete_workspace_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with _installed_runtime_services(archive_root):
+            saved = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="save_workspace",
+                    fields={"workspace_id": "workspace-1", "name": "My workspace"},
+                )
+            )
+            assert saved.get("is_error") is not True, saved
+
+            refused = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="delete_workspace", fields={"workspace_id": "workspace-1"}
+                )
+            )
+            assert refused.get("is_error") is True
+            assert "confirm" in refused.get("message", "").lower()
+
+            deleted = json.loads(
+                await invoke_surface_async(
+                    write_fn, operation="delete_workspace", fields={"workspace_id": "workspace-1"}, confirm=True
+                )
             )
             assert deleted.get("is_error") is not True, deleted
             assert deleted["status"] == "deleted"
@@ -401,6 +652,131 @@ class TestMaintenanceTool:
             )
             assert result.get("is_error") is True
             assert result.get("code") == "not_found"
+
+
+class TestMaintenanceConfirmGates:
+    """polylogue-jn40: full-effect maintenance operations must fail closed.
+
+    ``rebuild_index`` and ``rebuild_insights`` route through
+    ``hooks.get_polylogue()`` (the installed runtime services / seeded
+    archive); ``execute`` with ``dry_run=false`` routes through the
+    planner's own ``Config`` (a pre-existing, unrelated quirk -- see
+    ``_dispatch_maintenance``), so its refusal case is verified independent
+    of archive content and its confirmed-success case merely asserts the
+    call is not refused.
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_with_dry_run_false_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    maintenance_fn, operation="execute", targets=["session_insights"], dry_run=False
+                )
+            )
+            assert result.get("is_error") is True
+            assert "confirm" in result.get("message", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_execute_with_dry_run_true_does_not_require_confirm(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    maintenance_fn, operation="execute", targets=["session_insights"], dry_run=True
+                )
+            )
+            assert result.get("is_error") is not True, result
+
+    @pytest.mark.asyncio
+    async def test_execute_with_dry_run_false_and_confirm_true_succeeds(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    maintenance_fn,
+                    operation="execute",
+                    targets=["session_insights"],
+                    dry_run=False,
+                    confirm=True,
+                )
+            )
+            assert result.get("is_error") is not True, result
+
+    @pytest.mark.asyncio
+    async def test_rebuild_index_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_index"))
+            assert result.get("is_error") is True
+            assert "confirm" in result.get("message", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_rebuild_index_with_confirm_succeeds(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_index", confirm=True))
+            assert result.get("is_error") is not True, result
+            assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_rebuild_insights_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_insights"))
+            assert result.get("is_error") is True
+            assert "confirm" in result.get("message", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_rebuild_insights_with_confirm_succeeds(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_insights", confirm=True))
+            assert result.get("is_error") is not True, result
+            assert result["status"] == "ok"
 
 
 class TestQuerySessionsProjection:

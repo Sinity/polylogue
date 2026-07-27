@@ -187,7 +187,10 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "write",
-        "Apply a declared mutation operation after shared authorization.",
+        "Apply a declared mutation operation after shared authorization. Destructive "
+        "operations (delete_session, remove_tag, remove_mark, delete_metadata, "
+        "delete_annotation, delete_saved_view, delete_recall_pack, delete_workspace) "
+        "require confirm=true and fail closed without it.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
         "write",
@@ -238,7 +241,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "maintenance",
-        "Preview, execute, list, and inspect maintenance operations.",
+        "Preview, execute, list, and inspect maintenance operations. execute with "
+        "dry_run=false, rebuild_index, and rebuild_insights require confirm=true "
+        "and fail closed without it.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
         "maintenance",

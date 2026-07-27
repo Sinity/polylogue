@@ -911,6 +911,19 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         register_declared_handler(mcp, handler, name=handler.__name__)
 
 
+def _require_confirm(hooks: ServerCallbacks, confirm: bool, *, verb: str, **context: str) -> str | None:
+    """Fail-closed safety guard: return an error payload unless ``confirm`` is True.
+
+    Mirrors the ``delete_session`` safety-guard message shape (interim
+    mitigation ahead of polylogue-t46.9's executable OperationSpec authority;
+    see polylogue-jn40). Every destructive operation reachable from write/
+    judge/admin roles must call this before it touches storage.
+    """
+    if confirm:
+        return None
+    return hooks.error_json(f"Safety guard: set confirm=true to {verb}", **context)
+
+
 def _field(fields: dict[str, object] | None, name: str) -> object | None:
     return None if fields is None else fields.get(name)
 
@@ -999,6 +1012,11 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 return hooks.error_json(
                     "write(operation='remove_tag') requires session_id and tag", code="invalid_argument"
                 )
+            confirm_error = _require_confirm(
+                hooks, confirm, verb="remove tag", session_id=session_id, detail=f"tag={tag}"
+            )
+            if confirm_error is not None:
+                return confirm_error
             resolved, err = await resolve_session_or_error(hooks, session_id)
             if err:
                 return err
@@ -1073,6 +1091,11 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 return hooks.error_json(
                     "write(operation='delete_metadata') requires session_id and key", code="invalid_argument"
                 )
+            confirm_error = _require_confirm(
+                hooks, confirm, verb="delete metadata", session_id=session_id, detail=f"key={key}"
+            )
+            if confirm_error is not None:
+                return confirm_error
             from polylogue.api.archive import SessionNotFoundError
             from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
 
@@ -1120,6 +1143,12 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             mark_type = _require_field(hooks, fields, "mark_type", operation=operation)
             if not is_mark_type_supported(mark_type):
                 return hooks.error_json(f"mark_type must be one of: {', '.join(MARK_TYPE_NAMES)}", detail=mark_type)
+            if operation == "remove_mark":
+                confirm_error = _require_confirm(
+                    hooks, confirm, verb="remove mark", session_id=session_id, detail=f"mark_type={mark_type}"
+                )
+                if confirm_error is not None:
+                    return confirm_error
             resolved, err = await resolve_session_or_error(hooks, session_id)
             if err:
                 return err
@@ -1197,6 +1226,11 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
 
         if operation == "delete_annotation":
             annotation_id = _require_field(hooks, fields, "annotation_id", operation=operation)
+            confirm_error = _require_confirm(
+                hooks, confirm, verb="delete annotation", detail=f"annotation_id={annotation_id}"
+            )
+            if confirm_error is not None:
+                return confirm_error
             deleted = await poly.delete_annotation(annotation_id)
             return hooks.json_payload(
                 MutationResultPayload(
@@ -1354,6 +1388,9 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
 
         if operation == "delete_saved_view":
             view_id = _require_field(hooks, fields, "view_id", operation=operation)
+            confirm_error = _require_confirm(hooks, confirm, verb="delete saved view", detail=f"view_id={view_id}")
+            if confirm_error is not None:
+                return confirm_error
             deleted = await poly.delete_view(view_id)
             return hooks.json_payload(
                 MutationResultPayload(
@@ -1392,6 +1429,9 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
 
         if operation == "delete_recall_pack":
             pack_id = _require_field(hooks, fields, "pack_id", operation=operation)
+            confirm_error = _require_confirm(hooks, confirm, verb="delete recall pack", detail=f"pack_id={pack_id}")
+            if confirm_error is not None:
+                return confirm_error
             deleted = await poly.delete_recall_pack(pack_id)
             return hooks.json_payload(
                 MutationResultPayload(
@@ -1441,6 +1481,11 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
 
         if operation == "delete_workspace":
             workspace_id = _require_field(hooks, fields, "workspace_id", operation=operation)
+            confirm_error = _require_confirm(
+                hooks, confirm, verb="delete workspace", detail=f"workspace_id={workspace_id}"
+            )
+            if confirm_error is not None:
+                return confirm_error
             deleted = await poly.delete_workspace(workspace_id)
             return hooks.json_payload(
                 MutationResultPayload(
@@ -1639,6 +1684,12 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
             envelope = envelope_from_operation(result, origin="mcp", mode="preview")
         else:
             dry_run = bool(kwargs.get("dry_run") or False)
+            if not dry_run:
+                confirm_error = _require_confirm(
+                    hooks, bool(kwargs.get("confirm") or False), verb="execute maintenance with dry_run=false"
+                )
+                if confirm_error is not None:
+                    return confirm_error
             result = execute_backfill(config, targets=resolved_targets, dry_run=dry_run, scope_filter=scope_filter)
             envelope = envelope_from_operation(result, origin="mcp", mode="execute")
             if result.status is BackfillStatus.FAILED:
@@ -1699,6 +1750,9 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
     if operation == "rebuild_index":
         from polylogue.mcp.payloads import MCPMutationStatusPayload
 
+        confirm_error = _require_confirm(hooks, bool(kwargs.get("confirm") or False), verb="rebuild the index")
+        if confirm_error is not None:
+            return confirm_error
         poly = hooks.get_polylogue()
         success = await poly.rebuild_index()
         status_info = await poly.get_index_status()
@@ -1726,6 +1780,9 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         )
 
     if operation == "rebuild_insights":
+        confirm_error = _require_confirm(hooks, bool(kwargs.get("confirm") or False), verb="rebuild session insights")
+        if confirm_error is not None:
+            return confirm_error
         session_ids = kwargs.get("session_ids")
         counts = await hooks.get_polylogue().rebuild_insights(session_ids=list(session_ids) if session_ids else None)
         return hooks.json_payload(
@@ -1796,6 +1853,12 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             operation-specific value beyond those (see each operation's
             retired single-purpose tool for the exact field names, e.g.
             ``fields={"mark_type": "star"}`` for ``add_mark``).
+
+            Destructive operations require ``confirm=True`` and fail closed
+            without it: ``delete_session``, ``remove_tag``, ``remove_mark``,
+            ``delete_metadata``, ``delete_annotation``, ``delete_saved_view``,
+            ``delete_recall_pack``, and ``delete_workspace`` (interim
+            mitigation, polylogue-jn40).
             """
 
             async def run() -> str:
@@ -1934,8 +1997,15 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             failure_kind: str | None = None,
             parser_version: str | None = None,
             operation_id: str | None = None,
+            confirm: bool = False,
         ) -> str:
-            """Preview, execute, list, and inspect maintenance operations."""
+            """Preview, execute, list, and inspect maintenance operations.
+
+            Destructive/full-effect operations require ``confirm=True``:
+            ``execute`` with ``dry_run=false``, ``rebuild_index``, and
+            ``rebuild_insights`` all fail closed without it (interim
+            mitigation, polylogue-jn40).
+            """
 
             async def run() -> str:
                 return await _dispatch_maintenance(
@@ -1953,6 +2023,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                         "failure_kind": failure_kind,
                         "parser_version": parser_version,
                         "operation_id": operation_id,
+                        "confirm": confirm,
                     },
                 )
 

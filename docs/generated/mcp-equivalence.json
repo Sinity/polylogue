@@ -1134,7 +1134,7 @@
         "notes": "Continuation is opaque and must be the only resume input."
       },
       "deprecation_state": "retained",
-      "description": "Apply a declared mutation operation after shared authorization.",
+      "description": "Apply a declared mutation operation after shared authorization. Destructive operations (delete_session, remove_tag, remove_mark, delete_metadata, delete_annotation, delete_saved_view, delete_recall_pack, delete_workspace) require confirm=true and fail closed without it.",
       "field_discovery": [],
       "grammar_discovery": [],
       "incident_coverage": [],
@@ -1162,7 +1162,7 @@
           }
         ],
         "declaration_id": "mcp.tool.write",
-        "discovery_text": "Apply a declared mutation operation after shared authorization.",
+        "discovery_text": "Apply a declared mutation operation after shared authorization. Destructive operations (delete_session, remove_tag, remove_mark, delete_metadata, delete_annotation, delete_saved_view, delete_recall_pack, delete_workspace) require confirm=true and fail closed without it.",
         "examples": [
           {
             "arguments": [
@@ -1494,7 +1494,7 @@
         "notes": "Continuation is opaque and must be the only resume input."
       },
       "deprecation_state": "retained",
-      "description": "Preview, execute, list, and inspect maintenance operations.",
+      "description": "Preview, execute, list, and inspect maintenance operations. execute with dry_run=false, rebuild_index, and rebuild_insights require confirm=true and fail closed without it.",
       "field_discovery": [],
       "grammar_discovery": [],
       "incident_coverage": [],
@@ -1522,7 +1522,7 @@
           }
         ],
         "declaration_id": "mcp.tool.maintenance",
-        "discovery_text": "Preview, execute, list, and inspect maintenance operations.",
+        "discovery_text": "Preview, execute, list, and inspect maintenance operations. execute with dry_run=false, rebuild_index, and rebuild_insights require confirm=true and fail closed without it.",
         "examples": [
           {
             "arguments": [
