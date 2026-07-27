@@ -24,6 +24,7 @@ from polylogue.browser_capture.actions import (
     BrowserActionStateError,
     browser_action_capabilities,
     claim_action,
+    decide_action_approval,
     enqueue_action,
     get_action,
     list_actions,
@@ -34,6 +35,7 @@ from polylogue.browser_capture.actions import (
 from polylogue.browser_capture.capture_jobs import CaptureJobError, registry_for_receiver
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
+    BrowserActionApprovalDecisionRequest,
     BrowserActionCapabilitiesPayload,
     BrowserActionListPayload,
     BrowserActionPayload,
@@ -472,6 +474,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             action_id = path[len("/v1/browser-actions/") : -len("/reconcile")]
             self._browser_action_reconcile(action_id)
             return
+        if path.startswith("/v1/browser-actions/") and path.endswith("/approval"):
+            action_id = path[len("/v1/browser-actions/") : -len("/approval")]
+            self._browser_action_approval(action_id)
+            return
         if path in {"/v1/capture-jobs", "/v1/capture-jobs/discover"} or (
             path.startswith("/v1/capture-jobs/") and path.endswith(("/adopt", "/update"))
         ):
@@ -689,6 +695,31 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         except (OSError, BrowserActionStateError) as exc:
             logger.warning("browser_capture.action_reconcile_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        if action is None:
+            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action")
+            return
+        self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
+
+    def _browser_action_approval(self, action_id: str) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserActionApprovalDecisionRequest.model_validate(payload)
+            action = decide_action_approval(action_id, request, spool_path=self.server.config.spool_path)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_approval")
+            return
+        except BrowserActionConflictError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_approval_conflict")
+            return
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+            return
+        except (OSError, BrowserActionStateError) as exc:
+            logger.warning("browser_capture.action_approval_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
         if action is None:

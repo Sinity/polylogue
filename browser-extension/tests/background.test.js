@@ -2252,6 +2252,81 @@ describe("browser action polling", () => {
   });
 });
 
+describe("browser action explicit-approval decision (polylogue-yyvg.7)", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await loadBackground({
+      polylogueReceiverPairing: {
+        state: "online",
+        receiver_id: "rx-approval-test",
+        api_schema: "polylogue-browser-capture/v1",
+      },
+    });
+  });
+
+  it("posts an explicit approve decision and wakes the poll loop, never auto-declining", async () => {
+    let approvalBody = null;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-approval-test", api_schema: "polylogue-browser-capture/v1" });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-held-1/approval")) {
+        approvalBody = JSON.parse(options.body);
+        return responseJson({ action: { action_id: "action-held-1", status: "queued" } });
+      }
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        return responseJson({ actions: [] });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const response = await sendRuntimeMessage({
+      type: "polylogue.browserActions.approval",
+      actionId: "action-held-1",
+      decision: "approve",
+    });
+
+    expect(response.ok).toBe(true);
+    expect(response.action).toMatchObject({ action_id: "action-held-1", status: "queued" });
+    expect(approvalBody).toMatchObject({ decision: "approve" });
+    expect(approvalBody.extension_instance_id).toBeTruthy();
+    // Approving must never send a decline, and it should wake the claim loop
+    // so the now-queued action is picked up without waiting for the next alarm.
+    expect(approvalBody.decision).not.toBe("decline");
+    await vi.waitFor(() => expect(
+      fetchCalls.some((call) => String(call.url).includes("/v1/browser-actions?claim_by=")),
+    ).toBe(true));
+  });
+
+  it("posts an explicit decline decision without ever polling for a claim", async () => {
+    let approvalBody = null;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-approval-test", api_schema: "polylogue-browser-capture/v1" });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-held-2/approval")) {
+        approvalBody = JSON.parse(options.body);
+        return responseJson({ action: { action_id: "action-held-2", status: "cancelled" } });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const response = await sendRuntimeMessage({
+      type: "polylogue.browserActions.approval",
+      actionId: "action-held-2",
+      decision: "decline",
+    });
+
+    expect(response.ok).toBe(true);
+    expect(response.action).toMatchObject({ action_id: "action-held-2", status: "cancelled" });
+    expect(approvalBody).toMatchObject({ decision: "decline" });
+    expect(fetchCalls.some((call) => String(call.url).includes("claim_by="))).toBe(false);
+  });
+});
+
 describe("provider-neutral browser action worker", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();

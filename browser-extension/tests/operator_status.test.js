@@ -271,6 +271,20 @@ describe("shared operator status vocabulary", () => {
       detail: "submit channel ended without a receipt",
     });
 
+    const awaitingApproval = api.computeAttention({
+      browserActions: [
+        { status: "submitted" },
+        { status: "awaiting_approval", approval_reason: "destructive_submit" },
+      ],
+      workItems: [{ title: "ChatGPT reply", raw: { cooldown_reason: "capability_mismatch" } }],
+    });
+    expect(awaitingApproval).toMatchObject({
+      kind: "explicit_approval_required",
+      tone: "bad",
+      actionId: "browser-action-approval",
+      actionLabel: "Review request",
+    });
+
     const capabilityMismatch = api.computeAttention({
       workItems: [{ title: "ChatGPT reply", cooldown: "model unavailable", raw: { cooldown_reason: "capability_mismatch" } }],
     });
@@ -290,6 +304,22 @@ describe("shared operator status vocabulary", () => {
       health: { status: "dev_override_stale" },
     });
     expect(devOverrideStale).toMatchObject({ kind: "dev_override_stale", tone: "bad", actionId: "reset-pairing" });
+  });
+
+  it("ranks an unconfirmed action outcome above explicit-approval, and explicit-approval above a capability mismatch", () => {
+    const outcomeBeatsApproval = api.computeAttention({
+      browserActions: [
+        { status: "outcome_unknown", last_error: "no receipt" },
+        { status: "awaiting_approval", approval_reason: "destructive_submit" },
+      ],
+    });
+    expect(outcomeBeatsApproval).toMatchObject({ kind: "action_outcome_unknown" });
+
+    const approvalBeatsCapability = api.computeAttention({
+      browserActions: [{ status: "awaiting_approval", approval_reason: "destructive_submit" }],
+      workItems: [{ title: "ChatGPT reply", raw: { cooldown_reason: "capability_mismatch" } }],
+    });
+    expect(approvalBeatsCapability).toMatchObject({ kind: "explicit_approval_required" });
   });
 
   it("counts only browser actions still awaiting a receipt as pending", () => {

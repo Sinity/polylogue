@@ -79,6 +79,12 @@ function installDom() {
       <span id="cost-tokens" class="conversation-only"></span>
       <span id="assets" class="conversation-only"></span>
       <div id="asset-failures" class="conversation-only"></div>
+      <section id="browser-action-approval" hidden>
+        <div id="browser-action-approval-summary"></div>
+        <p id="browser-action-approval-detail"></p>
+        <button id="browser-action-approve"><span class="button-status"></span></button>
+        <button id="browser-action-decline"><span class="button-status"></span></button>
+      </section>
       <span id="receiver-health"></span>
       <span id="receiver-pairing-status"></span>
       <span id="receiver-pairing-detail"></span>
@@ -300,6 +306,158 @@ describe("popup capture", () => {
     // No actionId is offered for an outcome_unknown action -- there is no safe
     // one-click resolution, only "Details" (progressive disclosure, not a button).
     expect(globalThis.document.getElementById("attention-action").hidden).toBe(true);
+  });
+
+  it("holds a destructive submit_once reply for explicit operator approval and renders one primary action", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.browserActions.status") {
+        return {
+          ok: true,
+          actions: [
+            {
+              action_id: "a-reply-1",
+              status: "awaiting_approval",
+              approval_reason: "destructive_submit",
+              provider: "chatgpt",
+              text: "Here is the reply Polylogue would post on your behalf.",
+              target: { conversation_id: "conversation-1" },
+            },
+          ],
+        };
+      }
+      return { ok: true };
+    });
+
+    await vi.waitFor(() => expect(globalThis.document.getElementById("attention-section").hidden).toBe(false));
+    expect(globalThis.document.getElementById("attention-heading").textContent)
+      .toBe("A browser action needs your explicit approval before it submits");
+    const actionButton = globalThis.document.getElementById("attention-action");
+    expect(actionButton.hidden).toBe(false);
+    expect(actionButton.querySelector(".button-label").textContent).toBe("Review request");
+
+    // The primary action opens diagnostics and focuses the approval panel --
+    // it never auto-approves or auto-declines on its own.
+    const diagnostics = globalThis.document.getElementById("diagnostics");
+    diagnostics.open = false;
+    actionButton.dispatchEvent(new globalThis.window.Event("click", { bubbles: true }));
+    expect(diagnostics.open).toBe(true);
+
+    const panel = globalThis.document.getElementById("browser-action-approval");
+    expect(panel.hidden).toBe(false);
+    expect(panel.dataset.actionId).toBe("a-reply-1");
+    expect(globalThis.document.getElementById("browser-action-approval-summary").textContent)
+      .toContain("conversation-1");
+  });
+
+  it("sends an explicit approve decision only when the operator clicks Approve", async () => {
+    let decisionCalls = [];
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.browserActions.status") {
+        return {
+          ok: true,
+          actions: [{
+            action_id: "a-reply-2",
+            status: "awaiting_approval",
+            approval_reason: "destructive_submit",
+            provider: "chatgpt",
+            text: "reply text",
+            target: { conversation_id: "conversation-2" },
+          }],
+        };
+      }
+      if (message.type === "polylogue.browserActions.approval") {
+        decisionCalls.push(message);
+        return { ok: true, action: { action_id: message.actionId, status: "queued" } };
+      }
+      return { ok: true };
+    });
+
+    await vi.waitFor(() => expect(globalThis.document.getElementById("browser-action-approval").hidden).toBe(false));
+    globalThis.document.getElementById("browser-action-approve")
+      .dispatchEvent(new globalThis.window.Event("click", { bubbles: true }));
+
+    await vi.waitFor(() => expect(decisionCalls).toHaveLength(1));
+    expect(decisionCalls[0]).toMatchObject({
+      type: "polylogue.browserActions.approval",
+      actionId: "a-reply-2",
+      decision: "approve",
+    });
+  });
+
+  it("sends an explicit decline decision, and never a silent approve, when the operator clicks Decline", async () => {
+    let decisionCalls = [];
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.browserActions.status") {
+        return {
+          ok: true,
+          actions: [{
+            action_id: "a-reply-3",
+            status: "awaiting_approval",
+            approval_reason: "destructive_submit",
+            provider: "chatgpt",
+            text: "reply text",
+            target: { conversation_id: "conversation-3" },
+          }],
+        };
+      }
+      if (message.type === "polylogue.browserActions.approval") {
+        decisionCalls.push(message);
+        return { ok: true, action: { action_id: message.actionId, status: "cancelled" } };
+      }
+      return { ok: true };
+    });
+
+    await vi.waitFor(() => expect(globalThis.document.getElementById("browser-action-approval").hidden).toBe(false));
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    try {
+      globalThis.document.getElementById("browser-action-decline")
+        .dispatchEvent(new globalThis.window.Event("click", { bubbles: true }));
+
+      await vi.waitFor(() => expect(decisionCalls).toHaveLength(1));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(decisionCalls[0]).toMatchObject({
+      type: "polylogue.browserActions.approval",
+      actionId: "a-reply-3",
+      decision: "decline",
+    });
+    expect(decisionCalls.every((call) => call.decision !== "approve")).toBe(true);
+  });
+
+  it("does not send any approval decision when the operator cancels the decline confirmation", async () => {
+    let decisionCalls = [];
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.browserActions.status") {
+        return {
+          ok: true,
+          actions: [{
+            action_id: "a-reply-4",
+            status: "awaiting_approval",
+            approval_reason: "destructive_submit",
+            provider: "chatgpt",
+            text: "reply text",
+            target: { conversation_id: "conversation-4" },
+          }],
+        };
+      }
+      if (message.type === "polylogue.browserActions.approval") {
+        decisionCalls.push(message);
+        return { ok: true, action: { action_id: message.actionId, status: "cancelled" } };
+      }
+      return { ok: true };
+    });
+
+    await vi.waitFor(() => expect(globalThis.document.getElementById("browser-action-approval").hidden).toBe(false));
+    vi.stubGlobal("confirm", vi.fn(() => false));
+    try {
+      globalThis.document.getElementById("browser-action-decline")
+        .dispatchEvent(new globalThis.window.Event("click", { bubbles: true }));
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(decisionCalls).toHaveLength(0);
   });
 
   it("renders DOM fallback with concrete next action", async () => {

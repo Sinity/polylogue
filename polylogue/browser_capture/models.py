@@ -399,6 +399,7 @@ BrowserActionProvider = Literal["chatgpt", "claude"]
 BrowserActionOperation = Literal["conversation.create", "conversation.reply"]
 BrowserActionSubmitPolicy = Literal["stage_only", "submit_once"]
 BrowserActionStatus = Literal[
+    "awaiting_approval",
     "queued",
     "leased",
     "preparing",
@@ -410,6 +411,21 @@ BrowserActionStatus = Literal[
     "failed",
     "cancelled",
 ]
+#: Why a browser action is held at ``awaiting_approval`` instead of being
+#: claimable immediately after enqueue. Only ``destructive_submit`` is wired
+#: to a real trigger today (polylogue-yyvg.7): a ``submit_once`` action whose
+#: operation is ``conversation.reply`` posts one real, provider-visible turn
+#: into an EXISTING conversation the operator may not currently be watching,
+#: with no automatic undo. That is the "explicit submit/destructive approval"
+#: category the redesign's AC3 names and the popup previously had no data to
+#: back. A second AC3-named category, "destructive conflict", is deliberately
+#: NOT modeled here: the receiver's ``claim_action`` already serializes to one
+#: in-flight action at a time (see its "any(...) return None" guard below), so
+#: there is no genuine two-actions-racing-for-one-resource scenario in the
+#: current architecture to attach it to. Adding a value for it now would be an
+#: unbacked, unfireable enum member; a future bead should add it once a real
+#: collision scenario exists (e.g. multi-instance orchestration).
+BrowserActionApprovalReason = Literal["destructive_submit"]
 BrowserActionOutcome = Literal[
     "progress",
     "drafted",
@@ -555,6 +571,15 @@ class BrowserActionIntent(BaseModel):
     retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
     receipt: BrowserActionReceipt | None = None
     events: list[BrowserActionEvent] = Field(default_factory=list)
+    #: True once this action was ever held for explicit operator approval
+    #: (stays True after approve/decline -- it is a historical fact, not a
+    #: live gate; the live gate is ``status == "awaiting_approval"``).
+    requires_operator_approval: bool = False
+    approval_reason: BrowserActionApprovalReason | None = None
+    approval_requested_at: str | None = None
+    approved_at: str | None = None
+    approved_by: str | None = None
+    declined_at: str | None = None
 
 
 class BrowserActionUpdateRequest(BaseModel):
@@ -572,6 +597,19 @@ class BrowserActionReconcileRequest(BaseModel):
     resolution: Literal["submitted", "drafted"]
     detail: str = Field(min_length=1, max_length=4_000)
     receipt: BrowserActionReceipt
+
+
+class BrowserActionApprovalDecisionRequest(BaseModel):
+    """The operator's explicit approve/decline decision on a held action.
+
+    Unlike ``BrowserActionUpdateRequest``, this does not require a lease --
+    an ``awaiting_approval`` action has never been leased, and approving one
+    is exactly what makes it claimable for the first time.
+    """
+
+    extension_instance_id: str = Field(min_length=1, max_length=128)
+    decision: Literal["approve", "decline"]
+    detail: str | None = Field(default=None, max_length=4_000)
 
 
 class BrowserActionListPayload(BaseModel):
@@ -619,6 +657,8 @@ __all__ = [
     "BrowserBackfillCheckpointPayload",
     "BrowserBackfillCheckpointRecord",
     "BrowserBackfillCheckpointRequest",
+    "BrowserActionApprovalDecisionRequest",
+    "BrowserActionApprovalReason",
     "BrowserActionAttachment",
     "BrowserActionAttachmentInput",
     "BrowserActionCapabilitiesPayload",

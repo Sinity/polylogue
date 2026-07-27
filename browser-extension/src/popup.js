@@ -531,6 +531,45 @@ function renderAttention(attention) {
   }
 }
 
+function renderBrowserActionApproval(browserActions) {
+  const section = document.getElementById("browser-action-approval");
+  if (!section) return;
+  const action = (Array.isArray(browserActions) ? browserActions : [])
+    .find((item) => item?.status === "awaiting_approval");
+  section.hidden = !action;
+  if (!action) return;
+  section.dataset.actionId = action.action_id;
+  const summary = document.getElementById("browser-action-approval-summary");
+  if (summary) {
+    const provider = operatorStatusApi.providerLabel
+      ? operatorStatusApi.providerLabel(action.provider)
+      : action.provider;
+    const preview = String(action.text || "").slice(0, 160);
+    summary.textContent = `${provider} · reply into ${action.target?.conversation_id || "existing conversation"}: "${preview}"`;
+  }
+}
+
+document.getElementById("browser-action-approve")?.addEventListener("click", async () => {
+  const actionId = document.getElementById("browser-action-approval")?.dataset.actionId;
+  if (!actionId) return;
+  await withAction("browser-action-approve", async () => {
+    await chrome.runtime.sendMessage({ type: "polylogue.browserActions.approval", actionId, decision: "approve" });
+    await render();
+  }, { busy: "Approving", ok: "Approved" });
+});
+
+document.getElementById("browser-action-decline")?.addEventListener("click", async () => {
+  const actionId = document.getElementById("browser-action-approval")?.dataset.actionId;
+  if (!actionId) return;
+  const confirmed = typeof globalThis.confirm !== "function"
+    || globalThis.confirm("Decline this browser action? It will not be submitted and cannot be resumed.");
+  if (!confirmed) return;
+  await withAction("browser-action-decline", async () => {
+    await chrome.runtime.sendMessage({ type: "polylogue.browserActions.approval", actionId, decision: "decline" });
+    await render();
+  }, { busy: "Declining", ok: "Declined" });
+});
+
 async function loadMissionSnapshot() {
   try {
     const result = await chrome.runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false });
@@ -625,6 +664,7 @@ async function render() {
   if (pendingActionCountNode) {
     pendingActionCountNode.textContent = String(operatorStatusApi.pendingBrowserActionCount(browserActions));
   }
+  renderBrowserActionApproval(browserActions);
   const extensionBuild = document.getElementById("extension-build");
   if (extensionBuild) {
     const runtime = mission?.extension;

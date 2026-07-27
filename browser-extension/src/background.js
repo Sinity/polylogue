@@ -2196,6 +2196,19 @@ async function updateBrowserAction(actionId, ownerInstanceId, patch) {
   });
 }
 
+// The operator's explicit approve/decline decision on an action the receiver
+// is holding at "awaiting_approval" (polylogue-yyvg.7). Unlike
+// updateBrowserAction this carries no lease -- an awaiting_approval action
+// has never been leased, and approving it is what makes it claimable for the
+// first time.
+async function decideBrowserActionApproval(actionId, decision) {
+  const ownerInstanceId = await browserActionExecutorId();
+  return postJson(`/v1/browser-actions/${encodeURIComponent(actionId)}/approval`, {
+    extension_instance_id: ownerInstanceId,
+    decision,
+  });
+}
+
 async function browserActionAttachmentBytes(action) {
   const settings = await receiverSettings();
   const attachments = [];
@@ -3240,6 +3253,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (message.type === "polylogue.browserActions.poll") {
       sendResponse({ ok: true, ...(await pollBrowserActions()) });
+      return;
+    }
+    if (message.type === "polylogue.browserActions.approval") {
+      const result = await decideBrowserActionApproval(message.actionId, message.decision);
+      if (message.decision === "approve") void pollBrowserActions();
+      sendResponse({ ok: true, action: result.action });
       return;
     }
   })().catch(async (error) => {

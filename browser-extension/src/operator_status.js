@@ -496,10 +496,12 @@
   // time (polylogue-yyvg.7 AC3). This is a strict typed priority list, not a
   // free-form aggregation: auth/pairing mismatch (the receiver cannot be
   // trusted) outranks an unconfirmed action outcome (a stuck submit, never
-  // auto-retried), which outranks a typed capability mismatch on queued
-  // work, which outranks a hard archive failure on the current conversation.
-  // Anything else is healthy/automatic and returns null — silence is the
-  // correct answer far more often than not.
+  // auto-retried), which outranks a browser action explicitly held for
+  // operator approval (a genuinely destructive submit that must not
+  // auto-resolve either way), which outranks a typed capability mismatch on
+  // queued work, which outranks a hard archive failure on the current
+  // conversation. Anything else is healthy/automatic and returns null —
+  // silence is the correct answer far more often than not.
   function computeAttention({
     conversationState = null,
     pairing = null,
@@ -552,6 +554,24 @@
       };
     }
 
+    // A submit_once reply posts one real, provider-visible turn into an
+    // EXISTING conversation with no automatic undo (polylogue-yyvg.7). The
+    // receiver holds it at "awaiting_approval" instead of dispatching it, so
+    // this is the one attention category the popup must never auto-resolve:
+    // the operator explicitly approves or declines, there is no third option.
+    const awaitingApproval = (Array.isArray(browserActions) ? browserActions : [])
+      .find((action) => action?.status === "awaiting_approval");
+    if (awaitingApproval) {
+      return {
+        kind: "explicit_approval_required",
+        tone: "bad",
+        headline: "A browser action needs your explicit approval before it submits",
+        detail: "This will post a real reply into an existing conversation. Review the request, then approve or decline it.",
+        actionId: "browser-action-approval",
+        actionLabel: "Review request",
+      };
+    }
+
     const capabilityItem = (Array.isArray(workItems) ? workItems : [])
       .find((item) => ["capability_mismatch", "receiver_contract_incompatible"].includes(item?.raw?.cooldown_reason));
     if (capabilityItem) {
@@ -597,6 +617,7 @@
     operatorStatusForState,
     operatorStatusLabel,
     pendingBrowserActionCount,
+    providerLabel,
     receiverPairingPresentation,
   });
 })(globalThis);
