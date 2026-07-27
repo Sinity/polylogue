@@ -269,3 +269,35 @@ def test_upsert_recall_pack_without_explicit_id_updates_same_named_pack(tmp_path
 
     refreshed = read_archive_recall_pack_envelope(conn, first.recall_pack_id)
     assert refreshed.payload == {"session_ids": ["session-1", "session-2"]}
+
+
+def test_upsert_blackboard_note_default_id_is_content_hash_append_only_by_design(tmp_path: Path) -> None:
+    """Confirmed-intentional identity model (polylogue-tilk): body IS the identity.
+
+    Unlike ``upsert_recall_pack``/``upsert_saved_view``, ``upsert_blackboard_note``'s
+    content-hash default is a deliberate append-only-log design for the
+    persistent agent blackboard, not a bug -- its real caller
+    (``post_blackboard_note``) always mints a fresh explicit id per post so
+    every call appends a distinct note. This pins the function's own two
+    halves of that contract: byte-identical repeat calls (no explicit id)
+    collapse to one row, while a body change computes a different id and
+    correctly forks a new, independent note rather than overwriting the
+    previous one.
+    """
+    conn = _connect(tmp_path / "user.db")
+
+    first = upsert_blackboard_note(conn, "status update", target_type="session", target_id="session-1", now_ms=1)
+    identical_repeat = upsert_blackboard_note(
+        conn, "status update", target_type="session", target_id="session-1", now_ms=2
+    )
+    assert identical_repeat.note_id == first.note_id
+    notes_after_repeat = list_assertions_for_target(conn, "session:session-1", kind=AssertionKind.NOTE)
+    assert len(notes_after_repeat) == 1
+
+    edited = upsert_blackboard_note(
+        conn, "status update, revised", target_type="session", target_id="session-1", now_ms=3
+    )
+    assert edited.note_id != first.note_id
+    notes_after_edit = list_assertions_for_target(conn, "session:session-1", kind=AssertionKind.NOTE)
+    assert len(notes_after_edit) == 2
+    assert {note.body_text for note in notes_after_edit} == {"status update", "status update, revised"}

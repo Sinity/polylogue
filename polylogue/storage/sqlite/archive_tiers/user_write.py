@@ -718,7 +718,20 @@ def upsert_annotation(
     annotation_id: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveAnnotationEnvelope:
-    """Insert-or-update one annotation assertion with deterministic identity."""
+    """Insert-or-update one annotation assertion with deterministic identity.
+
+    Identity model: a caller-provided ``annotation_id`` is authoritative and
+    is how every current product surface calls this (``save_annotation`` /
+    the ``mark --note`` CLI verb require an explicit id, so the ``body``-hash
+    default below is unreachable from any live caller today). Without an
+    explicit id, the fallback id incorporates ``body`` -- this makes the
+    function idempotent for byte-identical repeat calls but means a content
+    edit computes a *different* id and inserts a new row rather than
+    updating in place, unlike ``upsert_mark``/``upsert_saved_view``. A
+    future caller wanting update-in-place-by-target semantics (as
+    ``mark --note`` does, polylogue-tilk) must supply a target-stable id
+    itself -- do not rely on this default for that.
+    """
     timestamp = now_ms if now_ms is not None else _now_ms()
     resolved_id = annotation_id or _deterministic_id("annotation", target_type, target_id, body)
     upsert_assertion(
@@ -857,7 +870,24 @@ def upsert_blackboard_note(
     context_policy: Mapping[str, object] | AssertionContextPolicy | None = None,
     now_ms: int | None = None,
 ) -> ArchiveBlackboardNoteEnvelope:
-    """Insert-or-update one blackboard note assertion."""
+    """Insert-or-update one blackboard note assertion.
+
+    Identity model: confirmed intentional append-only-log by content-hash
+    default (polylogue-tilk investigation, dogfood-2 round 2). Without an
+    explicit ``note_id``, the id incorporates ``body`` -- byte-identical
+    repeat calls collapse to one row, but any content change appends a new,
+    distinct note rather than updating the previous one. The sole live
+    caller, ``post_blackboard_note`` (``api/archive.py``, backing the MCP
+    ``blackboard_post`` tool), deliberately mints a fresh ``uuid4`` id on
+    every call -- its own docstring states "a fresh note id is allocated,
+    so each call appends a distinct note". That is the intended product
+    semantic for the persistent agent blackboard (an append-only log, not a
+    single mutable note), in contrast to ``upsert_annotation``'s
+    ``mark --note`` caller, which was a genuine bug (fixed to a target-stable
+    id) rather than a deliberate design choice. Do not "fix" this default
+    to be target-stable without re-confirming the blackboard's intended
+    semantics first.
+    """
     timestamp = now_ms if now_ms is not None else _now_ms()
     resolved_id = note_id or _deterministic_id("blackboard-note", target_type or "", target_id or "", body)
     upsert_assertion(
