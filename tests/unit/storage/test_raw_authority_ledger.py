@@ -34,6 +34,7 @@ from polylogue.storage.raw_authority import (
     resolve_raw_authority_blocker,
     validate_raw_replay_plan,
 )
+from polylogue.storage.raw_reconciler import RawAuthorityFrontierState, inspect_raw_authority_frontier
 from polylogue.storage.repair import RepairResult, repair_raw_materialization
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -1233,3 +1234,103 @@ def test_repair_result_omits_unbounded_receipt_rows_from_outcome_sample() -> Non
     assert len(cast(list[object], sample["input_raw_id_sample"])) == 8
     assert sample["input_raw_id_sample_truncated"] is True
     assert "input_raw_ids" not in sample
+
+
+def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Path) -> None:
+    """polylogue-lkrc AC1/AC6/AC7: the CORRUPT terminal state had zero
+    regression coverage anywhere in the suite even though it is one of the
+    eight mutually exclusive frontier states the reconciler declares and
+    persists as a durable blocker.
+
+    This reproduces the first of ``_classify_frontier``'s three CORRUPT
+    triggers (``polylogue/storage/raw_reconciler.py``): ``raw_revision_heads``
+    still names a ``session_id`` but the materialized session row it points at
+    is gone (a torn write, an interrupted rebuild, or manual tampering with
+    the rebuildable index tier). Proven-current accepted heads must never
+    silently read as healthy in this shape.
+    """
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="dangling-session", source_path="dangling.jsonl", acquired_at_ms=1)
+    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        session_id = index_conn.execute(
+            "SELECT session_id FROM raw_revision_heads WHERE accepted_raw_id = ?", (raw_id,)
+        ).fetchone()[0]
+        # Simulate the accepted head surviving while its materialized session
+        # vanishes underneath it -- the index tier is rebuildable and this is
+        # exactly the kind of partial state a crash mid-rebuild can leave.
+        index_conn.execute("PRAGMA foreign_keys = OFF")
+        index_conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        index_conn.commit()
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    item = next(entry for entry in census.items if entry.raw_id == raw_id)
+    assert item.state is RawAuthorityFrontierState.CORRUPT
+    assert item.reason == "accepted head has no matching materialized session"
+    assert item.executable is False
+    assert census.state_counts[RawAuthorityFrontierState.CORRUPT.value] == 1
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        blocker = source_conn.execute(
+            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE plan_id = ?",
+            (item.plan_id,),
+        ).fetchone()
+    assert blocker is not None
+    assert blocker[1] is None
+
+    readiness = raw_materialization_readiness_snapshot(tmp_path)
+    assert readiness["raw_authority_frontier_blocking_count"] == 1
+    assert raw_materialization_ready(readiness) is False
+    refs = cast(list[dict[str, object]], readiness["raw_authority_frontier_remediation_refs"])
+    assert item.plan_id in {ref["plan_id"] for ref in refs}
+
+
+def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path) -> None:
+    """polylogue-lkrc AC1/AC6/AC7: reproduces the second reachable CORRUPT
+    trigger -- the accepted head names one raw as authoritative
+    (``accepted_raw_id``) while the materialized session it points at was
+    actually built from a *different* raw. This is the torn-write shape the
+    reconciler's own comment describes ("accepted revision head and
+    materialized session select different raw authority"): a genuine
+    disagreement between two derived-tier tables that a read-only census
+    must surface as a durable blocker rather than silently trust the head.
+    """
+    initialize_active_archive_root(tmp_path)
+    accepted_raw_id = _write_codex_raw(
+        tmp_path, native_id="mismatch-one", source_path="mismatch.jsonl", acquired_at_ms=1
+    )
+    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+    # An independent, never-materialized raw acquisition -- stands in for the
+    # "wrong" raw a corrupted head could point at.
+    phantom_raw_id = _write_codex_raw(tmp_path, native_id="phantom-only", source_path="phantom.jsonl", acquired_at_ms=2)
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        logical_source_key = index_conn.execute(
+            "SELECT logical_source_key FROM raw_revision_heads WHERE accepted_raw_id = ?", (accepted_raw_id,)
+        ).fetchone()[0]
+        index_conn.execute(
+            "UPDATE raw_revision_heads SET accepted_raw_id = ? WHERE logical_source_key = ?",
+            (phantom_raw_id, logical_source_key),
+        )
+        index_conn.commit()
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    # The session itself was materialized from accepted_raw_id, so the
+    # classifier resolves the raw row by the SESSION's own raw_id, not the
+    # (now wrong) value stashed on the head row -- the surfaced item is still
+    # keyed by the real session raw, with the head's disagreement in the
+    # reason/evidence.
+    item = next(entry for entry in census.items if entry.raw_id == accepted_raw_id)
+    assert item.state is RawAuthorityFrontierState.CORRUPT
+    assert item.reason == "accepted revision head and materialized session select different raw authority"
+    assert item.executable is False
+    assert item.index_preconditions["head_accepted_raw_id"] == phantom_raw_id
+    assert item.index_preconditions["accepted_raw_id"] == accepted_raw_id
+    assert census.state_counts[RawAuthorityFrontierState.CORRUPT.value] == 1
+
+    readiness = raw_materialization_readiness_snapshot(tmp_path)
+    assert readiness["raw_authority_frontier_blocking_count"] == 1
+    assert raw_materialization_ready(readiness) is False
