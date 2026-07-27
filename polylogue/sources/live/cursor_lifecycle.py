@@ -220,6 +220,10 @@ CURSOR_LIFECYCLE_TRANSITIONS: frozenset[tuple[CursorLifecycleState, CursorLifecy
     )
 )
 
+assert {actuator for _, actuator, _ in CURSOR_LIFECYCLE_TRANSITIONS} == set(CURSOR_LIFECYCLE_ACTUATORS), (
+    "every declared actuator must have at least one declared transition"
+)
+
 
 def validate_cursor_lifecycle_transition(
     *,
