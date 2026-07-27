@@ -101,12 +101,21 @@ def _build_fixture_db(path: Path, *, source_updated_at: str, source_sort_key: fl
             """,
             (_SESSION_ID, SESSION_INSIGHT_MATERIALIZER_VERSION, source_sort_key, source_updated_at),
         )
-        # Every non-thread materialization type fully stamped and sort-key-agreeing
-        # (source_sort_key_ms compares directly against sort_key_ms, which is
-        # NULL here, so COALESCE both sides to 0 for an exact NULL/NULL match).
+        # Every materialization type -- including "thread" -- fully stamped and
+        # sort-key-agreeing (source_sort_key_ms compares directly against
+        # sort_key_ms, which is NULL here, so COALESCE both sides to 0 for an
+        # exact NULL/NULL match). Every non-child session gets a "thread" stamp
+        # in production (``_materialize_thread_spine_sync`` stamps it for every
+        # member of the session's own singleton-or-larger thread, root included
+        # -- see ``polylogue/storage/insights/session/rebuild.py``), so leaving
+        # it unstamped here is a fixture gap, not a real "timeless session
+        # never gets threaded" scenario: it left repair's generic per-type
+        # ``NOT EXISTS`` check in ``_targeted_session_insight_rebuild_ids``
+        # unconditionally true for "thread" (no row at all, regardless of sort
+        # key agreement), which is a different failure axis than the
+        # session-profile/session-latency-profile predicate this test isolates
+        # and was spuriously making these tests fail on that unrelated axis.
         for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES:
-            if insight_type == "thread":
-                continue
             conn.execute(
                 "INSERT INTO insight_materialization (insight_type, session_id, materializer_version, "
                 "source_sort_key_ms) VALUES (?, ?, ?, NULL)",
