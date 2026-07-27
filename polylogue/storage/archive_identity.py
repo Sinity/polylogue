@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
+import socket
 import sys
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
 from typing import Literal
 
 from polylogue.version import VERSION_INFO
@@ -261,3 +266,179 @@ def assert_writable_archive_identity(*, configured_root: Path, active_root: Path
             f"active_index={active.tier('index').resolved_path}"
         )
     return active
+
+
+class ArchiveOwnershipError(RuntimeError):
+    """A maintenance/campaign writer could not prove exclusive ownership of an archive location."""
+
+
+class OwnedArchiveLocation:
+    """Exclusive maintenance/campaign ownership proof over one :class:`ArchiveLocation`.
+
+    ``ArchiveLocation``/``ArchiveIdentity`` answer *what* a configured root,
+    tier, or resolved generation names.  They deliberately say nothing about
+    *who* may mutate it.  A maintenance or campaign writer (an offline index
+    rebuild, a devtools benchmark/scale campaign, a b5l generation
+    transition) must call :meth:`acquire` and receive a distinct
+    ``OwnedArchiveLocation`` token before opening SQLite against the
+    location's tiers -- an ``ArchiveLocation`` alone is never sufficient
+    authorization to write.
+
+    Acquisition is a pure filesystem preflight: it takes an exclusive
+    ``flock`` on a lock file under the configured root and never opens a
+    sqlite3 connection.  A location already owned by another live process
+    therefore fails closed -- ``ArchiveOwnershipError`` -- before any tier
+    file is created or touched, rather than surfacing later as a confusing
+    runtime error against an already-open writer connection (or, worse, two
+    writers silently racing the same generation).  This mirrors
+    ``assert_writable_archive_identity``'s preflight shape one level up: that
+    function proves *one coherent generation*; this one proves *one writer*
+    for that generation.
+    """
+
+    def __init__(self, location: ArchiveLocation) -> None:
+        self.location = location
+        self.lock_path = location.configured_root / ".archive-ownership.lock"
+        self.owner_id: str | None = None
+        self._fd: int | None = None
+
+    @classmethod
+    def acquire(cls, location: ArchiveLocation, *, owner_id: str | None = None) -> OwnedArchiveLocation:
+        """Claim exclusive ownership of ``location`` for a maintenance/campaign writer.
+
+        Raises :class:`ArchiveOwnershipError` immediately -- before any
+        SQLite tier file is opened -- when another live process already
+        holds the lock.  A lock file left behind by a process that is no
+        longer running is reclaimed rather than treated as a permanent
+        blocker, matching ``index_generation``'s stale-lease handling.
+        """
+        owner = owner_id or f"pid={os.getpid()} host={socket.gethostname()} token={uuid.uuid4().hex}"
+        instance = cls(location)
+        instance._fd = _acquire_ownership_lock_fd(instance.lock_path, owner=owner)
+        instance.owner_id = owner
+        return instance
+
+    def release(self) -> None:
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            os.close(self._fd)
+            self._fd = None
+
+    def __enter__(self) -> OwnedArchiveLocation:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc, traceback
+        self.release()
+
+
+def assert_owns_archive_location(owned: OwnedArchiveLocation, location: ArchiveLocation) -> None:
+    """Fail before SQLite opens when an ownership proof does not cover ``location``.
+
+    An ``OwnedArchiveLocation`` is a token for one configured root at one
+    resolved active generation.  Reusing it against a different root (wrong
+    archive entirely) or the same root after its active generation moved on
+    (stale proof -- the pointer rotated after acquisition, e.g. a concurrent
+    promotion) must fail here rather than let the caller silently write
+    against tiers it never actually claimed.
+    """
+    if owned.location.configured_root != location.configured_root:
+        raise ArchiveOwnershipError(
+            "archive ownership proof does not cover this location: "
+            f"owned={owned.location.configured_root} target={location.configured_root}"
+        )
+    if not owned.location.active_index.same_file(location.active_index):
+        raise ArchiveOwnershipError(
+            "archive ownership proof is stale for the current active generation: "
+            f"owned={owned.location.active_index.stable_id} "
+            f"current={location.active_index.stable_id}"
+        )
+
+
+def _lock_holder_pid(path: Path) -> int | None:
+    """Best-effort recorded pid from an existing lock file; ``None`` if absent/unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for token in text.split():
+        if token.startswith("pid="):
+            try:
+                return int(token[len("pid=") :])
+            except ValueError:
+                return None
+    return None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Whether ``pid`` still names a live process, best-effort via ``kill(pid, 0)``."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Owned by another user but still running.
+        return True
+    return True
+
+
+_STALE_RECLAIM_ATTEMPTS = 20
+_STALE_RECLAIM_RETRY_SECONDS = 0.01
+
+
+def _acquire_ownership_lock_fd(path: Path, *, owner: str) -> int:
+    """Open ``path`` and take an exclusive, non-blocking ``flock`` proving ownership.
+
+    Never opens a sqlite3 connection -- callers rely on this to fail before
+    any SQLite tier file is touched.
+
+    A lock file whose recorded holder pid is no longer running is reclaimed
+    by retrying the *same* ``flock`` call against the *same* inode, never by
+    creating a second one. An earlier version of this function raced two
+    reclaimers by opening a fresh inode and ``os.replace``-ing it over
+    ``path``: if the true holder had just died, one reclaimer could win the
+    direct ``flock`` on the original (now-unlocked) inode while a second
+    reclaimer, having already observed ``BlockingIOError``, swapped in a
+    brand-new inode via rename -- leaving two processes each holding a lock
+    on a *different* inode and both believing they own the location. A dead
+    holder's ``flock`` is released by the kernel the moment its last fd
+    closes (process exit tears down the fd table), which happens at or
+    before the point another process can read pid= from the file and
+    confirm it's dead -- so retrying the identical ``flock`` call converges
+    quickly without ever creating a second inode to race against.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        holder_pid = _lock_holder_pid(path)
+        if holder_pid is None or _pid_is_alive(holder_pid):
+            os.close(fd)
+            suffix = f" (pid={holder_pid})" if holder_pid is not None else ""
+            raise ArchiveOwnershipError(f"archive location already owned: {path}{suffix}") from exc
+        logger.warning(
+            "reclaiming stale archive ownership lock %s: recorded holder pid=%d is no longer running",
+            path,
+            holder_pid,
+        )
+        for _ in range(_STALE_RECLAIM_ATTEMPTS):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(_STALE_RECLAIM_RETRY_SECONDS)
+        else:
+            os.close(fd)
+            raise ArchiveOwnershipError(f"archive location already owned: {path}") from exc
+    os.ftruncate(fd, 0)
+    os.write(fd, owner.encode("utf-8"))
+    os.fsync(fd)
+    return fd
