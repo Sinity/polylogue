@@ -3079,6 +3079,1144 @@ components:
       - error
       title: QueryErrorPayload
       type: object
+    QueryBoolPredicateAst:
+      additionalProperties: false
+      description: N-ary Boolean operator over predicate subtrees.
+      properties:
+        kind:
+          enum:
+          - and
+          - or
+          title: Kind
+          type: string
+        children:
+          items:
+            discriminator:
+              mapping:
+                and: '#/components/schemas/QueryBoolPredicateAst'
+                exists: '#/components/schemas/QueryExistsPredicateAst'
+                field: '#/components/schemas/QueryFieldPredicateAst'
+                fts: '#/components/schemas/QueryTextPredicateAst'
+                lineage: '#/components/schemas/QueryLineagePredicateAst'
+                not: '#/components/schemas/QueryNotPredicateAst'
+                or: '#/components/schemas/QueryBoolPredicateAst'
+                semantic: '#/components/schemas/QuerySemanticPredicateAst'
+                sequence: '#/components/schemas/QuerySequencePredicateAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryFieldPredicateAst'
+            - $ref: '#/components/schemas/QueryNotPredicateAst'
+            - $ref: '#/components/schemas/QueryBoolPredicateAst'
+            - $ref: '#/components/schemas/QueryExistsPredicateAst'
+            - $ref: '#/components/schemas/QuerySequencePredicateAst'
+            - $ref: '#/components/schemas/QueryTextPredicateAst'
+            - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+            - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          title: Children
+          type: array
+      required:
+      - kind
+      title: QueryBoolPredicateAst
+      type: object
+    QueryExistsPredicateAst:
+      additionalProperties: false
+      description: Correlated structural predicate over a child archive unit.
+      properties:
+        kind:
+          const: exists
+          default: exists
+          title: Kind
+          type: string
+        unit:
+          enum:
+          - message
+          - action
+          - block
+          - assertion
+          - file
+          - run
+          - observed-event
+          - context-snapshot
+          - delegation
+          title: Unit
+          type: string
+        child:
+          discriminator:
+            mapping:
+              and: '#/components/schemas/QueryBoolPredicateAst'
+              exists: '#/components/schemas/QueryExistsPredicateAst'
+              field: '#/components/schemas/QueryFieldPredicateAst'
+              fts: '#/components/schemas/QueryTextPredicateAst'
+              lineage: '#/components/schemas/QueryLineagePredicateAst'
+              not: '#/components/schemas/QueryNotPredicateAst'
+              or: '#/components/schemas/QueryBoolPredicateAst'
+              semantic: '#/components/schemas/QuerySemanticPredicateAst'
+              sequence: '#/components/schemas/QuerySequencePredicateAst'
+            propertyName: kind
+          oneOf:
+          - $ref: '#/components/schemas/QueryFieldPredicateAst'
+          - $ref: '#/components/schemas/QueryNotPredicateAst'
+          - $ref: '#/components/schemas/QueryBoolPredicateAst'
+          - $ref: '#/components/schemas/QueryExistsPredicateAst'
+          - $ref: '#/components/schemas/QuerySequencePredicateAst'
+          - $ref: '#/components/schemas/QueryTextPredicateAst'
+          - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+          - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          title: Child
+      required:
+      - unit
+      - child
+      title: QueryExistsPredicateAst
+      type: object
+    QueryExpressionAstNodeAst:
+      additionalProperties: false
+      description: 'Mirrors ``_ast_payload()``''s dict shape: one entry-tagged AST node.'
+      properties:
+        entry:
+          enum:
+          - json
+          - reference_pipeline
+          - unit_source
+          - boolean
+          - compact
+          title: Entry
+          type: string
+        clauses:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/QueryExpressionClauseAst'
+            type: array
+          - type: 'null'
+          default: null
+          title: Clauses
+        predicate:
+          anyOf:
+          - discriminator:
+              mapping:
+                and: '#/components/schemas/QueryBoolPredicateAst'
+                exists: '#/components/schemas/QueryExistsPredicateAst'
+                field: '#/components/schemas/QueryFieldPredicateAst'
+                fts: '#/components/schemas/QueryTextPredicateAst'
+                lineage: '#/components/schemas/QueryLineagePredicateAst'
+                not: '#/components/schemas/QueryNotPredicateAst'
+                or: '#/components/schemas/QueryBoolPredicateAst'
+                semantic: '#/components/schemas/QuerySemanticPredicateAst'
+                sequence: '#/components/schemas/QuerySequencePredicateAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryFieldPredicateAst'
+            - $ref: '#/components/schemas/QueryNotPredicateAst'
+            - $ref: '#/components/schemas/QueryBoolPredicateAst'
+            - $ref: '#/components/schemas/QueryExistsPredicateAst'
+            - $ref: '#/components/schemas/QuerySequencePredicateAst'
+            - $ref: '#/components/schemas/QueryTextPredicateAst'
+            - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+            - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          - type: 'null'
+          default: null
+          title: Predicate
+        unit_source:
+          anyOf:
+          - $ref: '#/components/schemas/QueryUnitSourceAst'
+          - type: 'null'
+          default: null
+        reference_pipeline:
+          anyOf:
+          - $ref: '#/components/schemas/ReferenceQueryPipelineAst'
+          - type: 'null'
+          default: null
+      required:
+      - entry
+      title: QueryExpressionAstNodeAst
+      type: object
+    QueryExpressionClauseAst:
+      additionalProperties: false
+      description: Mirrors ``QueryExpressionExplainClause.to_payload()``.
+      properties:
+        kind:
+          enum:
+          - field
+          - count
+          - count_range
+          - date
+          - date_range
+          - text
+          - json
+          title: Kind
+          type: string
+        field:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Field
+        value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Value
+        negated:
+          default: false
+          title: Negated
+          type: boolean
+        quoted:
+          default: false
+          title: Quoted
+          type: boolean
+        op:
+          anyOf:
+          - enum:
+            - '='
+            - '>'
+            - '>='
+            - <
+            - <=
+            type: string
+          - type: 'null'
+          default: null
+          title: Op
+        number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Number
+        min_number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Min Number
+        max_number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Max Number
+        min_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Min Value
+        max_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Max Value
+      required:
+      - kind
+      title: QueryExpressionClauseAst
+      type: object
+    QueryFieldPredicateAst:
+      additionalProperties: false
+      description: Leaf predicate over one supported session-query field.
+      properties:
+        kind:
+          const: field
+          default: field
+          title: Kind
+          type: string
+        field:
+          title: Field
+          type: string
+        op:
+          default: '='
+          enum:
+          - '='
+          - '>'
+          - '>='
+          - <
+          - <=
+          title: Op
+          type: string
+        values:
+          items:
+            type: string
+          title: Values
+          type: array
+        field_ref:
+          anyOf:
+          - $ref: '#/components/schemas/QueryFieldRefAst'
+          - type: 'null'
+          default: null
+      required:
+      - field
+      title: QueryFieldPredicateAst
+      type: object
+    QueryFieldRefAst:
+      additionalProperties: false
+      description: Validated field identity carried by a field-predicate leaf.
+      properties:
+        scope:
+          enum:
+          - session
+          - unit
+          title: Scope
+          type: string
+        name:
+          title: Name
+          type: string
+        source_name:
+          title: Source Name
+          type: string
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Unit
+      required:
+      - scope
+      - name
+      - source_name
+      title: QueryFieldRefAst
+      type: object
+    QueryLineagePredicateAst:
+      additionalProperties: false
+      description: Session-topology predicate selecting the seed's logical lineage.
+      properties:
+        kind:
+          const: lineage
+          default: lineage
+          title: Kind
+          type: string
+        unit:
+          const: session
+          default: session
+          title: Unit
+          type: string
+        seed_session_id:
+          title: Seed Session Id
+          type: string
+      required:
+      - seed_session_id
+      title: QueryLineagePredicateAst
+      type: object
+    QueryLoweringPlanAst:
+      additionalProperties: false
+      description: Mirrors ``_lowering_plan_payload()``.
+      properties:
+        lowerer:
+          title: Lowerer
+          type: string
+        selected_units:
+          items:
+            type: string
+          title: Selected Units
+          type: array
+        execution_legs:
+          items:
+            type: string
+          title: Execution Legs
+          type: array
+        plan_description:
+          items:
+            type: string
+          title: Plan Description
+          type: array
+        compatibility_selector:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Compatibility Selector
+        pipeline:
+          anyOf:
+          - $ref: '#/components/schemas/QueryUnitPipelineAst'
+          - type: 'null'
+          default: null
+        pipeline_stages:
+          anyOf:
+          - items:
+              discriminator:
+                mapping:
+                  count: '#/components/schemas/QueryUnitCountStageAst'
+                  group: '#/components/schemas/QueryUnitGroupStageAst'
+                  limit: '#/components/schemas/QueryUnitLimitStageAst'
+                  offset: '#/components/schemas/QueryUnitOffsetStageAst'
+                  session_scope: '#/components/schemas/QueryUnitSessionScopeStageAst'
+                  sort: '#/components/schemas/QueryUnitSortStageAst'
+                  terminal: '#/components/schemas/QueryUnitTerminalStageAst'
+                  transform: '#/components/schemas/QueryUnitTransformStageAst'
+                propertyName: kind
+              oneOf:
+              - $ref: '#/components/schemas/QueryUnitSessionScopeStageAst'
+              - $ref: '#/components/schemas/QueryUnitSortStageAst'
+              - $ref: '#/components/schemas/QueryUnitLimitStageAst'
+              - $ref: '#/components/schemas/QueryUnitOffsetStageAst'
+              - $ref: '#/components/schemas/QueryUnitGroupStageAst'
+              - $ref: '#/components/schemas/QueryUnitCountStageAst'
+              - $ref: '#/components/schemas/QueryUnitTransformStageAst'
+              - $ref: '#/components/schemas/QueryUnitTerminalStageAst'
+            type: array
+          - type: 'null'
+          default: null
+          title: Pipeline Stages
+        reference_lineage:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Reference Lineage
+      required:
+      - lowerer
+      title: QueryLoweringPlanAst
+      type: object
+    QueryNotPredicateAst:
+      additionalProperties: false
+      description: Boolean negation over a predicate subtree.
+      properties:
+        kind:
+          const: not
+          default: not
+          title: Kind
+          type: string
+        child:
+          discriminator:
+            mapping:
+              and: '#/components/schemas/QueryBoolPredicateAst'
+              exists: '#/components/schemas/QueryExistsPredicateAst'
+              field: '#/components/schemas/QueryFieldPredicateAst'
+              fts: '#/components/schemas/QueryTextPredicateAst'
+              lineage: '#/components/schemas/QueryLineagePredicateAst'
+              not: '#/components/schemas/QueryNotPredicateAst'
+              or: '#/components/schemas/QueryBoolPredicateAst'
+              semantic: '#/components/schemas/QuerySemanticPredicateAst'
+              sequence: '#/components/schemas/QuerySequencePredicateAst'
+            propertyName: kind
+          oneOf:
+          - $ref: '#/components/schemas/QueryFieldPredicateAst'
+          - $ref: '#/components/schemas/QueryNotPredicateAst'
+          - $ref: '#/components/schemas/QueryBoolPredicateAst'
+          - $ref: '#/components/schemas/QueryExistsPredicateAst'
+          - $ref: '#/components/schemas/QuerySequencePredicateAst'
+          - $ref: '#/components/schemas/QueryTextPredicateAst'
+          - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+          - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          title: Child
+      required:
+      - child
+      title: QueryNotPredicateAst
+      type: object
+    QuerySemanticPredicateAst:
+      additionalProperties: false
+      description: Semantic vector predicate over session message/block text.
+      properties:
+        kind:
+          const: semantic
+          default: semantic
+          title: Kind
+          type: string
+        unit:
+          const: session
+          default: session
+          title: Unit
+          type: string
+        text:
+          title: Text
+          type: string
+      required:
+      - text
+      title: QuerySemanticPredicateAst
+      type: object
+    QuerySequenceConstraintAst:
+      additionalProperties: false
+      description: Constraint on the edge between two action-sequence steps.
+      properties:
+        kind:
+          default: ordered
+          enum:
+          - ordered
+          - next
+          - within
+          title: Kind
+          type: string
+        within_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Within Ms
+      title: QuerySequenceConstraintAst
+      type: object
+    QuerySequencePredicateAst:
+      additionalProperties: false
+      description: Ordered action-sequence predicate over a session.
+      properties:
+        kind:
+          const: sequence
+          default: sequence
+          title: Kind
+          type: string
+        unit:
+          const: action
+          default: action
+          title: Unit
+          type: string
+        steps:
+          items:
+            discriminator:
+              mapping:
+                and: '#/components/schemas/QueryBoolPredicateAst'
+                exists: '#/components/schemas/QueryExistsPredicateAst'
+                field: '#/components/schemas/QueryFieldPredicateAst'
+                fts: '#/components/schemas/QueryTextPredicateAst'
+                lineage: '#/components/schemas/QueryLineagePredicateAst'
+                not: '#/components/schemas/QueryNotPredicateAst'
+                or: '#/components/schemas/QueryBoolPredicateAst'
+                semantic: '#/components/schemas/QuerySemanticPredicateAst'
+                sequence: '#/components/schemas/QuerySequencePredicateAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryFieldPredicateAst'
+            - $ref: '#/components/schemas/QueryNotPredicateAst'
+            - $ref: '#/components/schemas/QueryBoolPredicateAst'
+            - $ref: '#/components/schemas/QueryExistsPredicateAst'
+            - $ref: '#/components/schemas/QuerySequencePredicateAst'
+            - $ref: '#/components/schemas/QueryTextPredicateAst'
+            - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+            - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          title: Steps
+          type: array
+        constraints:
+          items:
+            $ref: '#/components/schemas/QuerySequenceConstraintAst'
+          title: Constraints
+          type: array
+        actions:
+          items:
+            type: string
+          title: Actions
+          type: array
+      title: QuerySequencePredicateAst
+      type: object
+    QueryTextPredicateAst:
+      additionalProperties: false
+      description: Lexical FTS predicate over session message/block text.
+      properties:
+        kind:
+          const: fts
+          default: fts
+          title: Kind
+          type: string
+        unit:
+          const: session
+          default: session
+          title: Unit
+          type: string
+        text:
+          title: Text
+          type: string
+      required:
+      - text
+      title: QueryTextPredicateAst
+      type: object
+    QueryUnitCountStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: count
+          default: count
+          title: Kind
+          type: string
+        metric:
+          const: count
+          default: count
+          title: Metric
+          type: string
+      title: QueryUnitCountStageAst
+      type: object
+    QueryUnitGroupStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: group
+          default: group
+          title: Kind
+          type: string
+        field:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Field
+        fields:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Fields
+      title: QueryUnitGroupStageAst
+      type: object
+    QueryUnitLimitStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: limit
+          default: limit
+          title: Kind
+          type: string
+        value:
+          title: Value
+          type: integer
+      required:
+      - value
+      title: QueryUnitLimitStageAst
+      type: object
+    QueryUnitOffsetStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: offset
+          default: offset
+          title: Kind
+          type: string
+        value:
+          title: Value
+          type: integer
+      required:
+      - value
+      title: QueryUnitOffsetStageAst
+      type: object
+    QueryUnitPipelineAst:
+      additionalProperties: false
+      description: Mirrors ``QueryUnitPipeline.to_payload()``.
+      properties:
+        source:
+          $ref: '#/components/schemas/QueryUnitPipelineSourceAst'
+        stages:
+          items:
+            discriminator:
+              mapping:
+                count: '#/components/schemas/QueryUnitCountStageAst'
+                group: '#/components/schemas/QueryUnitGroupStageAst'
+                limit: '#/components/schemas/QueryUnitLimitStageAst'
+                offset: '#/components/schemas/QueryUnitOffsetStageAst'
+                session_scope: '#/components/schemas/QueryUnitSessionScopeStageAst'
+                sort: '#/components/schemas/QueryUnitSortStageAst'
+                terminal: '#/components/schemas/QueryUnitTerminalStageAst'
+                transform: '#/components/schemas/QueryUnitTransformStageAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryUnitSessionScopeStageAst'
+            - $ref: '#/components/schemas/QueryUnitSortStageAst'
+            - $ref: '#/components/schemas/QueryUnitLimitStageAst'
+            - $ref: '#/components/schemas/QueryUnitOffsetStageAst'
+            - $ref: '#/components/schemas/QueryUnitGroupStageAst'
+            - $ref: '#/components/schemas/QueryUnitCountStageAst'
+            - $ref: '#/components/schemas/QueryUnitTransformStageAst'
+            - $ref: '#/components/schemas/QueryUnitTerminalStageAst'
+          title: Stages
+          type: array
+        session_scope:
+          anyOf:
+          - discriminator:
+              mapping:
+                and: '#/components/schemas/QueryBoolPredicateAst'
+                exists: '#/components/schemas/QueryExistsPredicateAst'
+                field: '#/components/schemas/QueryFieldPredicateAst'
+                fts: '#/components/schemas/QueryTextPredicateAst'
+                lineage: '#/components/schemas/QueryLineagePredicateAst'
+                not: '#/components/schemas/QueryNotPredicateAst'
+                or: '#/components/schemas/QueryBoolPredicateAst'
+                semantic: '#/components/schemas/QuerySemanticPredicateAst'
+                sequence: '#/components/schemas/QuerySequencePredicateAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryFieldPredicateAst'
+            - $ref: '#/components/schemas/QueryNotPredicateAst'
+            - $ref: '#/components/schemas/QueryBoolPredicateAst'
+            - $ref: '#/components/schemas/QueryExistsPredicateAst'
+            - $ref: '#/components/schemas/QuerySequencePredicateAst'
+            - $ref: '#/components/schemas/QueryTextPredicateAst'
+            - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+            - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          - type: 'null'
+          default: null
+          title: Session Scope
+        result:
+          anyOf:
+          - $ref: '#/components/schemas/QueryUnitPipelineResultAst'
+          - type: 'null'
+          default: null
+      required:
+      - source
+      title: QueryUnitPipelineAst
+      type: object
+    QueryUnitPipelineResultAst:
+      additionalProperties: false
+      properties:
+        sort:
+          anyOf:
+          - $ref: '#/components/schemas/QueryUnitSortSpecAst'
+          - type: 'null'
+          default: null
+        group_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Group By
+        aggregate:
+          anyOf:
+          - const: count
+            type: string
+          - type: 'null'
+          default: null
+          title: Aggregate
+        limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Limit
+        offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Offset
+      title: QueryUnitPipelineResultAst
+      type: object
+    QueryUnitPipelineSourceAst:
+      additionalProperties: false
+      properties:
+        unit:
+          enum:
+          - message
+          - action
+          - block
+          - assertion
+          - file
+          - run
+          - observed-event
+          - context-snapshot
+          - delegation
+          title: Unit
+          type: string
+        predicate:
+          discriminator:
+            mapping:
+              and: '#/components/schemas/QueryBoolPredicateAst'
+              exists: '#/components/schemas/QueryExistsPredicateAst'
+              field: '#/components/schemas/QueryFieldPredicateAst'
+              fts: '#/components/schemas/QueryTextPredicateAst'
+              lineage: '#/components/schemas/QueryLineagePredicateAst'
+              not: '#/components/schemas/QueryNotPredicateAst'
+              or: '#/components/schemas/QueryBoolPredicateAst'
+              semantic: '#/components/schemas/QuerySemanticPredicateAst'
+              sequence: '#/components/schemas/QuerySequencePredicateAst'
+            propertyName: kind
+          oneOf:
+          - $ref: '#/components/schemas/QueryFieldPredicateAst'
+          - $ref: '#/components/schemas/QueryNotPredicateAst'
+          - $ref: '#/components/schemas/QueryBoolPredicateAst'
+          - $ref: '#/components/schemas/QueryExistsPredicateAst'
+          - $ref: '#/components/schemas/QuerySequencePredicateAst'
+          - $ref: '#/components/schemas/QueryTextPredicateAst'
+          - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+          - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          title: Predicate
+      required:
+      - unit
+      - predicate
+      title: QueryUnitPipelineSourceAst
+      type: object
+    QueryUnitSessionScopeStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: session_scope
+          default: session_scope
+          title: Kind
+          type: string
+        predicate:
+          discriminator:
+            mapping:
+              and: '#/components/schemas/QueryBoolPredicateAst'
+              exists: '#/components/schemas/QueryExistsPredicateAst'
+              field: '#/components/schemas/QueryFieldPredicateAst'
+              fts: '#/components/schemas/QueryTextPredicateAst'
+              lineage: '#/components/schemas/QueryLineagePredicateAst'
+              not: '#/components/schemas/QueryNotPredicateAst'
+              or: '#/components/schemas/QueryBoolPredicateAst'
+              semantic: '#/components/schemas/QuerySemanticPredicateAst'
+              sequence: '#/components/schemas/QuerySequencePredicateAst'
+            propertyName: kind
+          oneOf:
+          - $ref: '#/components/schemas/QueryFieldPredicateAst'
+          - $ref: '#/components/schemas/QueryNotPredicateAst'
+          - $ref: '#/components/schemas/QueryBoolPredicateAst'
+          - $ref: '#/components/schemas/QueryExistsPredicateAst'
+          - $ref: '#/components/schemas/QuerySequencePredicateAst'
+          - $ref: '#/components/schemas/QueryTextPredicateAst'
+          - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+          - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          title: Predicate
+      required:
+      - predicate
+      title: QueryUnitSessionScopeStageAst
+      type: object
+    QueryUnitSortSpecAst:
+      additionalProperties: false
+      description: Mirrors ``QueryUnitSort`` (field/direction).
+      properties:
+        field:
+          enum:
+          - time
+          - count
+          - key
+          title: Field
+          type: string
+        direction:
+          default: asc
+          enum:
+          - asc
+          - desc
+          title: Direction
+          type: string
+      required:
+      - field
+      title: QueryUnitSortSpecAst
+      type: object
+    QueryUnitSortStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: sort
+          default: sort
+          title: Kind
+          type: string
+        sort:
+          $ref: '#/components/schemas/QueryUnitSortSpecAst'
+      required:
+      - sort
+      title: QueryUnitSortStageAst
+      type: object
+    QueryUnitSourceAst:
+      additionalProperties: false
+      description: Mirrors the ``unit_source`` branch of ``_ast_payload()``.
+      properties:
+        unit:
+          enum:
+          - message
+          - action
+          - block
+          - assertion
+          - file
+          - run
+          - observed-event
+          - context-snapshot
+          - delegation
+          title: Unit
+          type: string
+        predicate:
+          discriminator:
+            mapping:
+              and: '#/components/schemas/QueryBoolPredicateAst'
+              exists: '#/components/schemas/QueryExistsPredicateAst'
+              field: '#/components/schemas/QueryFieldPredicateAst'
+              fts: '#/components/schemas/QueryTextPredicateAst'
+              lineage: '#/components/schemas/QueryLineagePredicateAst'
+              not: '#/components/schemas/QueryNotPredicateAst'
+              or: '#/components/schemas/QueryBoolPredicateAst'
+              semantic: '#/components/schemas/QuerySemanticPredicateAst'
+              sequence: '#/components/schemas/QuerySequencePredicateAst'
+            propertyName: kind
+          oneOf:
+          - $ref: '#/components/schemas/QueryFieldPredicateAst'
+          - $ref: '#/components/schemas/QueryNotPredicateAst'
+          - $ref: '#/components/schemas/QueryBoolPredicateAst'
+          - $ref: '#/components/schemas/QueryExistsPredicateAst'
+          - $ref: '#/components/schemas/QuerySequencePredicateAst'
+          - $ref: '#/components/schemas/QueryTextPredicateAst'
+          - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+          - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          title: Predicate
+        session_predicate:
+          anyOf:
+          - discriminator:
+              mapping:
+                and: '#/components/schemas/QueryBoolPredicateAst'
+                exists: '#/components/schemas/QueryExistsPredicateAst'
+                field: '#/components/schemas/QueryFieldPredicateAst'
+                fts: '#/components/schemas/QueryTextPredicateAst'
+                lineage: '#/components/schemas/QueryLineagePredicateAst'
+                not: '#/components/schemas/QueryNotPredicateAst'
+                or: '#/components/schemas/QueryBoolPredicateAst'
+                semantic: '#/components/schemas/QuerySemanticPredicateAst'
+                sequence: '#/components/schemas/QuerySequencePredicateAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryFieldPredicateAst'
+            - $ref: '#/components/schemas/QueryNotPredicateAst'
+            - $ref: '#/components/schemas/QueryBoolPredicateAst'
+            - $ref: '#/components/schemas/QueryExistsPredicateAst'
+            - $ref: '#/components/schemas/QuerySequencePredicateAst'
+            - $ref: '#/components/schemas/QueryTextPredicateAst'
+            - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+            - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          - type: 'null'
+          default: null
+          title: Session Predicate
+        limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Limit
+        offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Offset
+        sort:
+          anyOf:
+          - $ref: '#/components/schemas/QueryUnitSortSpecAst'
+          - type: 'null'
+          default: null
+        group_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Group By
+        aggregate:
+          anyOf:
+          - const: count
+            type: string
+          - type: 'null'
+          default: null
+          title: Aggregate
+        pipeline_stages:
+          items:
+            discriminator:
+              mapping:
+                count: '#/components/schemas/QueryUnitCountStageAst'
+                group: '#/components/schemas/QueryUnitGroupStageAst'
+                limit: '#/components/schemas/QueryUnitLimitStageAst'
+                offset: '#/components/schemas/QueryUnitOffsetStageAst'
+                session_scope: '#/components/schemas/QueryUnitSessionScopeStageAst'
+                sort: '#/components/schemas/QueryUnitSortStageAst'
+                terminal: '#/components/schemas/QueryUnitTerminalStageAst'
+                transform: '#/components/schemas/QueryUnitTransformStageAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryUnitSessionScopeStageAst'
+            - $ref: '#/components/schemas/QueryUnitSortStageAst'
+            - $ref: '#/components/schemas/QueryUnitLimitStageAst'
+            - $ref: '#/components/schemas/QueryUnitOffsetStageAst'
+            - $ref: '#/components/schemas/QueryUnitGroupStageAst'
+            - $ref: '#/components/schemas/QueryUnitCountStageAst'
+            - $ref: '#/components/schemas/QueryUnitTransformStageAst'
+            - $ref: '#/components/schemas/QueryUnitTerminalStageAst'
+          title: Pipeline Stages
+          type: array
+        pipeline:
+          $ref: '#/components/schemas/QueryUnitPipelineAst'
+      required:
+      - unit
+      - predicate
+      - pipeline
+      title: QueryUnitSourceAst
+      type: object
+    QueryUnitTerminalStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: terminal
+          default: terminal
+          title: Kind
+          type: string
+        action:
+          title: Action
+          type: string
+        args:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          default: null
+          title: Args
+      required:
+      - action
+      title: QueryUnitTerminalStageAst
+      type: object
+    QueryUnitTransformStageAst:
+      additionalProperties: false
+      properties:
+        kind:
+          const: transform
+          default: transform
+          title: Kind
+          type: string
+        name:
+          title: Name
+          type: string
+        args:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          default: null
+          title: Args
+      required:
+      - name
+      title: QueryUnitTransformStageAst
+      type: object
+    RefOperandAst:
+      additionalProperties: false
+      description: Mirrors ``RefOperand.to_payload()``.
+      properties:
+        kind:
+          const: ref_operand
+          default: ref_operand
+          title: Kind
+          type: string
+        reference:
+          title: Reference
+          type: string
+        reference_kind:
+          title: Reference Kind
+          type: string
+        evaluation_mode:
+          enum:
+          - re-evaluate
+          - retained
+          - resolver-defined
+          title: Evaluation Mode
+          type: string
+        grain:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Grain
+      required:
+      - reference
+      - reference_kind
+      - evaluation_mode
+      title: RefOperandAst
+      type: object
+    ReferenceQueryPipelineAst:
+      additionalProperties: false
+      description: Mirrors ``ReferenceQueryPipeline.to_payload()``.
+      properties:
+        source:
+          $ref: '#/components/schemas/RefOperandAst'
+        stages:
+          items:
+            type: string
+          title: Stages
+          type: array
+      required:
+      - source
+      title: ReferenceQueryPipelineAst
+      type: object
+    QueryExpressionExplanationAst:
+      additionalProperties: false
+      description: 'Canonical, versioned projection of ``QueryExpressionExplanation.to_payload()``.
+
+
+        This is the schema published in ``docs/openapi/search.yaml`` and the
+
+        documented shape of the MCP ``explain`` operation''s ``kind="query"``
+
+        result (``polylogue.mcp.server_cutover:explain`` ->
+
+        ``Polylogue.explain_query_expression``). It is deliberately additive over
+
+        history: every field already existed in the hand-rolled payload dict this
+
+        module validates against; ``schema_version`` is the only new key.'
+      properties:
+        schema_version:
+          const: polylogue.query-explain-ast.v1
+          default: polylogue.query-explain-ast.v1
+          title: Schema Version
+          type: string
+        source_text:
+          title: Source Text
+          type: string
+        clauses:
+          items:
+            $ref: '#/components/schemas/QueryExpressionClauseAst'
+          title: Clauses
+          type: array
+        predicate:
+          anyOf:
+          - discriminator:
+              mapping:
+                and: '#/components/schemas/QueryBoolPredicateAst'
+                exists: '#/components/schemas/QueryExistsPredicateAst'
+                field: '#/components/schemas/QueryFieldPredicateAst'
+                fts: '#/components/schemas/QueryTextPredicateAst'
+                lineage: '#/components/schemas/QueryLineagePredicateAst'
+                not: '#/components/schemas/QueryNotPredicateAst'
+                or: '#/components/schemas/QueryBoolPredicateAst'
+                semantic: '#/components/schemas/QuerySemanticPredicateAst'
+                sequence: '#/components/schemas/QuerySequencePredicateAst'
+              propertyName: kind
+            oneOf:
+            - $ref: '#/components/schemas/QueryFieldPredicateAst'
+            - $ref: '#/components/schemas/QueryNotPredicateAst'
+            - $ref: '#/components/schemas/QueryBoolPredicateAst'
+            - $ref: '#/components/schemas/QueryExistsPredicateAst'
+            - $ref: '#/components/schemas/QuerySequencePredicateAst'
+            - $ref: '#/components/schemas/QueryTextPredicateAst'
+            - $ref: '#/components/schemas/QuerySemanticPredicateAst'
+            - $ref: '#/components/schemas/QueryLineagePredicateAst'
+          - type: 'null'
+          default: null
+          title: Predicate
+        ast:
+          anyOf:
+          - $ref: '#/components/schemas/QueryExpressionAstNodeAst'
+          - type: 'null'
+          default: null
+        lowerer:
+          title: Lowerer
+          type: string
+        lowering_plan:
+          anyOf:
+          - $ref: '#/components/schemas/QueryLoweringPlanAst'
+          - type: 'null'
+          default: null
+        selected_units:
+          items:
+            type: string
+          title: Selected Units
+          type: array
+        execution_legs:
+          items:
+            type: string
+          title: Execution Legs
+          type: array
+        plan_description:
+          items:
+            type: string
+          title: Plan Description
+          type: array
+        unsupported_nodes:
+          items:
+            type: string
+          title: Unsupported Nodes
+          type: array
+      required:
+      - source_text
+      - lowerer
+      title: QueryExpressionExplanationAst
+      type: object
   securitySchemes:
     machineBearer:
       type: http
@@ -3663,3 +4801,11 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: credential_and_same_origin
   response_contract: mutation envelope
+x-polylogue-query-ast:
+  schema_version: polylogue.query-explain-ast.v1
+  schema: '#/components/schemas/QueryExpressionExplanationAst'
+  description: Canonical, versioned projection of the query DSL's compiled predicate tree, unit-source pipeline, and lowering
+    plan. Every query DSL expression -- fielded compact queries, ``sessions where ...`` Boolean expressions, terminal unit
+    sources (``actions where ...``), and durable-reference pipelines (``from result-set:... | ...``) -- lowers to this one
+    documented shape. Obtain it via the MCP ``explain`` operation (``kind="query"``) or ``Polylogue.explain_query_expression(expression)``;
+    there is no separate HTTP route yet (tracked as a future extension of this schema's live surface).

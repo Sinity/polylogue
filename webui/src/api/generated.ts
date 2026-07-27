@@ -234,11 +234,90 @@ export type ObservedEventQueryRowPayload = {
   readonly unit?: "observed-event";
 };
 
+export type QueryBoolPredicateAst = {
+  readonly children?: ReadonlyArray<QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst>;
+  readonly kind: "and" | "or";
+};
+
 export type QueryErrorPayload = {
   readonly detail?: string | null;
   readonly error: string;
   readonly field?: string | null;
   readonly ok?: false;
+};
+
+export type QueryExistsPredicateAst = {
+  readonly child: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst;
+  readonly kind?: "exists";
+  readonly unit: "message" | "action" | "block" | "assertion" | "file" | "run" | "observed-event" | "context-snapshot" | "delegation";
+};
+
+export type QueryExpressionAstNodeAst = {
+  readonly clauses?: ReadonlyArray<QueryExpressionClauseAst> | null;
+  readonly entry: "json" | "reference_pipeline" | "unit_source" | "boolean" | "compact";
+  readonly predicate?: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst | null;
+  readonly reference_pipeline?: ReferenceQueryPipelineAst | null;
+  readonly unit_source?: QueryUnitSourceAst | null;
+};
+
+export type QueryExpressionClauseAst = {
+  readonly field?: string | null;
+  readonly kind: "field" | "count" | "count_range" | "date" | "date_range" | "text" | "json";
+  readonly max_number?: number | null;
+  readonly max_value?: string | null;
+  readonly min_number?: number | null;
+  readonly min_value?: string | null;
+  readonly negated?: boolean;
+  readonly number?: number | null;
+  readonly op?: "=" | ">" | ">=" | "<" | "<=" | null;
+  readonly quoted?: boolean;
+  readonly value?: string | null;
+};
+
+export type QueryExpressionExplanationAst = {
+  readonly ast?: QueryExpressionAstNodeAst | null;
+  readonly clauses?: ReadonlyArray<QueryExpressionClauseAst>;
+  readonly execution_legs?: ReadonlyArray<string>;
+  readonly lowerer: string;
+  readonly lowering_plan?: QueryLoweringPlanAst | null;
+  readonly plan_description?: ReadonlyArray<string>;
+  readonly predicate?: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst | null;
+  readonly schema_version?: "polylogue.query-explain-ast.v1";
+  readonly selected_units?: ReadonlyArray<string>;
+  readonly source_text: string;
+  readonly unsupported_nodes?: ReadonlyArray<string>;
+};
+
+export type QueryFieldPredicateAst = {
+  readonly field: string;
+  readonly field_ref?: QueryFieldRefAst | null;
+  readonly kind?: "field";
+  readonly op?: "=" | ">" | ">=" | "<" | "<=";
+  readonly values?: ReadonlyArray<string>;
+};
+
+export type QueryFieldRefAst = {
+  readonly name: string;
+  readonly scope: "session" | "unit";
+  readonly source_name: string;
+  readonly unit?: string | null;
+};
+
+export type QueryLineagePredicateAst = {
+  readonly kind?: "lineage";
+  readonly seed_session_id: string;
+  readonly unit?: "session";
+};
+
+export type QueryLoweringPlanAst = {
+  readonly compatibility_selector?: string | null;
+  readonly execution_legs?: ReadonlyArray<string>;
+  readonly lowerer: string;
+  readonly pipeline?: QueryUnitPipelineAst | null;
+  readonly pipeline_stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst> | null;
+  readonly plan_description?: ReadonlyArray<string>;
+  readonly reference_lineage?: ReadonlyArray<string> | null;
+  readonly selected_units?: ReadonlyArray<string>;
 };
 
 export type QueryMissDiagnosticsPayload = {
@@ -255,6 +334,36 @@ export type QueryMissReasonPayload = {
   readonly detail?: string | null;
   readonly severity: string;
   readonly summary: string;
+};
+
+export type QueryNotPredicateAst = {
+  readonly child: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst;
+  readonly kind?: "not";
+};
+
+export type QuerySemanticPredicateAst = {
+  readonly kind?: "semantic";
+  readonly text: string;
+  readonly unit?: "session";
+};
+
+export type QuerySequenceConstraintAst = {
+  readonly kind?: "ordered" | "next" | "within";
+  readonly within_ms?: number | null;
+};
+
+export type QuerySequencePredicateAst = {
+  readonly actions?: ReadonlyArray<string>;
+  readonly constraints?: ReadonlyArray<QuerySequenceConstraintAst>;
+  readonly kind?: "sequence";
+  readonly steps?: ReadonlyArray<QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst>;
+  readonly unit?: "action";
+};
+
+export type QueryTextPredicateAst = {
+  readonly kind?: "fts";
+  readonly text: string;
+  readonly unit?: "session";
 };
 
 export type QueryUnitAggregateEnvelope = {
@@ -292,6 +401,11 @@ export type QueryUnitAggregateRowPayload = {
   readonly unit: "message" | "action" | "block" | "assertion" | "file" | "run" | "observed-event" | "context-snapshot" | "delegation";
 };
 
+export type QueryUnitCountStageAst = {
+  readonly kind?: "count";
+  readonly metric?: "count";
+};
+
 export type QueryUnitEnvelope = {
   readonly continuation?: string | null;
   readonly items: ReadonlyArray<MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload | AssertionQueryRowPayload | FileQueryRowPayload | RunQueryRowPayload | ObservedEventQueryRowPayload | ContextSnapshotQueryRowPayload | DelegationQueryRowPayload>;
@@ -320,12 +434,105 @@ export type QueryUnitEnvelope = {
   readonly unit: "message" | "action" | "block" | "assertion" | "file" | "run" | "observed-event" | "context-snapshot" | "delegation";
 };
 
+export type QueryUnitGroupStageAst = {
+  readonly field?: string | null;
+  readonly fields?: ReadonlyArray<string> | null;
+  readonly kind?: "group";
+};
+
+export type QueryUnitLimitStageAst = {
+  readonly kind?: "limit";
+  readonly value: number;
+};
+
+export type QueryUnitOffsetStageAst = {
+  readonly kind?: "offset";
+  readonly value: number;
+};
+
+export type QueryUnitPipelineAst = {
+  readonly result?: QueryUnitPipelineResultAst | null;
+  readonly session_scope?: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst | null;
+  readonly source: QueryUnitPipelineSourceAst;
+  readonly stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst>;
+};
+
+export type QueryUnitPipelineResultAst = {
+  readonly aggregate?: "count" | null;
+  readonly group_by?: string | null;
+  readonly limit?: number | null;
+  readonly offset?: number | null;
+  readonly sort?: QueryUnitSortSpecAst | null;
+};
+
+export type QueryUnitPipelineSourceAst = {
+  readonly predicate: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst;
+  readonly unit: "message" | "action" | "block" | "assertion" | "file" | "run" | "observed-event" | "context-snapshot" | "delegation";
+};
+
+export type QueryUnitSessionScopeStageAst = {
+  readonly kind?: "session_scope";
+  readonly predicate: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst;
+};
+
+export type QueryUnitSortSpecAst = {
+  readonly direction?: "asc" | "desc";
+  readonly field: "time" | "count" | "key";
+};
+
+export type QueryUnitSortStageAst = {
+  readonly kind?: "sort";
+  readonly sort: QueryUnitSortSpecAst;
+};
+
+export type QueryUnitSourceAst = {
+  readonly aggregate?: "count" | null;
+  readonly group_by?: string | null;
+  readonly limit?: number | null;
+  readonly offset?: number | null;
+  readonly pipeline: QueryUnitPipelineAst;
+  readonly pipeline_stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst>;
+  readonly predicate: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst;
+  readonly session_predicate?: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst | null;
+  readonly sort?: QueryUnitSortSpecAst | null;
+  readonly unit: "message" | "action" | "block" | "assertion" | "file" | "run" | "observed-event" | "context-snapshot" | "delegation";
+};
+
+export type QueryUnitTerminalStageAst = {
+  readonly action: string;
+  readonly args?: ({
+  readonly [key: string]: string;
+}) | null;
+  readonly kind?: "terminal";
+};
+
+export type QueryUnitTransformStageAst = {
+  readonly args?: ({
+  readonly [key: string]: string;
+}) | null;
+  readonly kind?: "transform";
+  readonly name: string;
+};
+
 export type ReaderActionAvailabilityPayload = {
   readonly disabled_reason?: string | null;
   readonly enabled?: boolean;
   readonly inspect_path?: string | null;
   readonly repair_path?: string | null;
   readonly state?: "enabled" | "disabled" | "partial" | "dangerous" | "loading" | "target" | "unavailable";
+};
+
+export type RefOperandAst = {
+  readonly evaluation_mode: "re-evaluate" | "retained" | "resolver-defined";
+  readonly grain?: string | null;
+  readonly kind?: "ref_operand";
+  readonly reference: string;
+  readonly reference_kind: string;
+};
+
+export type ReferenceQueryPipelineAst = {
+  readonly source: RefOperandAst;
+  readonly stages?: ReadonlyArray<string>;
 };
 
 export type RouteReadinessPayload = {
