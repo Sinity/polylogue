@@ -225,7 +225,11 @@ def _disk_free_bytes(path: Path) -> int:
 
 def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error: str | None = None) -> JSONDocument:
     """Return a request-safe status envelope with no archive-scale scans."""
-    from polylogue.daemon.status import _check_daemon_liveness, browser_capture_status_public_payload
+    from polylogue.daemon.status import (
+        _check_daemon_liveness,
+        _gil_enabled,
+        browser_capture_status_public_payload,
+    )
 
     dbf = active_index_db_path()
     wal = dbf.with_suffix(".db-wal")
@@ -246,6 +250,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "daemon": "polylogued",
         "daemon_liveness": _check_daemon_liveness(),
         "checked_at": now,
+        "gil_enabled": _gil_enabled(),
         "component_state": {
             "watcher": _component_state_from_flag(runtime.watcher_enabled),
             "api": _component_state_from_flag(runtime.api_enabled, default_when_unknown="running"),

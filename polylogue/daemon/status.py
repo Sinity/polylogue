@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -406,6 +407,9 @@ class DaemonStatus(BaseModel):
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
+    # Whether the running interpreter has the GIL enabled; False means a
+    # free-threaded (PEP 703) build such as 3.14t (polylogue-dcz5).
+    gil_enabled: bool = True
     checked_at: str = ""
     # Memory pressure — surfaced from the most recent running live ingest attempt
     rss_current_mb: float | None = None
@@ -1013,6 +1017,19 @@ def _safe_float(value: object, *, default: float = 0.0) -> float:
         except ValueError:
             return default
     return default
+
+
+def _gil_enabled() -> bool:
+    """Whether the running interpreter has the GIL enabled (polylogue-dcz5).
+
+    ``sys._is_gil_enabled`` exists only on Python 3.13+ builds capable of
+    running free-threaded (PEP 703); interpreters predating it never had a
+    disableable GIL, so the safe fallback is ``True`` (GIL enabled).
+    """
+    checker = getattr(sys, "_is_gil_enabled", None)
+    if checker is None:
+        return True
+    return bool(checker())
 
 
 def _fmt_bytes(value: int) -> str:
@@ -2396,6 +2413,7 @@ def build_daemon_status(
         rss_current_mb=rss_current_mb,
         rss_peak_mb=rss_peak_mb,
         cgroup_memory_current_mb=cgroup_memory_current_mb,
+        gil_enabled=_gil_enabled(),
         checked_at=datetime.now(UTC).isoformat(),
     )
 
