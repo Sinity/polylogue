@@ -369,3 +369,44 @@ class TestZipEntryValidator:
 
         assert len(accepted) == 3
         assert sum(info.file_size for info in accepted) == 3 * one_gib
+
+    def test_session_only_excludes_non_session_artifact_via_real_classification(self) -> None:
+        """``session_only=True`` (what ``process_zip`` always passes in
+        production) must actually exclude a real non-session artifact via a
+        genuine, non-monkeypatched ``classify_artifact_path`` call.
+
+        Regression test for polylogue-dc1k: every ``OriginArtifactRule.path_pattern``
+        in ``origin_specs.py`` is anchored ``(?:^|/)``, but the entry was
+        classified on ``f"{zip_path}:{name}"`` -- the character immediately
+        before the pattern's leading segment was ``:``, never ``/`` or
+        start-of-string, so no rule could ever match and this exclusion was
+        dead code for every zip import. Builds a *real* zip (not a bare
+        ``ZipInfo``) so the entries here are exactly what ``zf.infolist()``
+        would hand ``filter_entries`` in production.
+        """
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            # Matches the "workflow_run" OriginArtifactRule for claude-code
+            # (parse_policy="fact" -> parse_as_session=False): must be excluded.
+            zf.writestr("workflows/run.json", json.dumps({"run_id": "abc"}))
+            # Matches the "agent_transcript" OriginArtifactRule for claude-code
+            # (parse_policy="session" -> parse_as_session=True): must survive.
+            zf.writestr("subagents/agent-1.jsonl", json.dumps({"type": "user"}) + "\n")
+            # No OriginArtifactRule matches this path at all (classify_artifact_path
+            # returns None): must also survive -- session_only only excludes on an
+            # affirmative non-session classification, never on "unclassified".
+            zf.writestr("sessions.json", json.dumps({"conversations": []}))
+        buffer.seek(0)
+
+        with zipfile.ZipFile(buffer) as zf:
+            validator = _ZipEntryValidator(
+                "claude-code",
+                cursor_state=_seeded_cursor_state(),
+                zip_path=Path("export.zip"),
+                session_only=True,
+            )
+            accepted = [info.filename for info in validator.filter_entries(zf.infolist())]
+
+        assert "workflows/run.json" not in accepted
+        assert "subagents/agent-1.jsonl" in accepted
+        assert "sessions.json" in accepted
