@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +14,10 @@ from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
-from polylogue.pipeline.services.process_pool import resolve_parse_worker_count
+from polylogue.pipeline.services.process_pool import (
+    process_pool_executor,
+    resolve_parse_worker_count,
+)
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
     iter_antigravity_language_server_sessions,
@@ -273,7 +276,7 @@ async def parse_sources_archive(
 
             failed = 0
             total_paths = 0
-            with ProcessPoolExecutor(max_workers=workers) as pool:
+            with process_pool_executor(max_workers=workers) as pool:
                 future_to_source: dict[Any, tuple[Source, Path]] = {}
                 for source in sources:
                     walk = _setup_source_walk(
