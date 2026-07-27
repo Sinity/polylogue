@@ -497,6 +497,7 @@ def _classify_frontier(
                 blob_store.root.parent,
                 raw_id,
                 duplicate_siblings[0],
+                str(row["logical_source_key"]),
             )
         if duplicate_item.status not in {"eligible", "already_repaired"}:
             raise RuntimeError(f"duplicate alias lacks an exact strategy proof: {duplicate_item.reason}")
@@ -1111,20 +1112,25 @@ def _apply_strategy(
         canonical_ids = tuple(raw_id for raw_id in item.input_raw_ids if raw_id != item.raw_id)
         if len(canonical_ids) != 1:
             raise RuntimeError("duplicate-alias plan does not identify exactly one canonical twin")
+        if item.logical_source_key is None:
+            raise RuntimeError("duplicate-alias plan is missing the logical source key it was proven against")
+        logical_source_key = item.logical_source_key
         with RebuildLease(root), closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
             conn.execute("BEGIN IMMEDIATE")
             try:
-                duplicate_locked = _inspect_duplicate_raw_identity(conn, root, item.raw_id, canonical_ids[0])
+                duplicate_locked = _inspect_duplicate_raw_identity(
+                    conn, root, item.raw_id, canonical_ids[0], logical_source_key
+                )
                 if _duplicate_strategy_witness(duplicate_locked) != item.strategy_witness:
                     raise RuntimeError("duplicate strategy proof changed after plan authorization")
                 if duplicate_locked.status == "eligible":
                     _apply_duplicate_raw_identity_repair(conn, duplicate_locked)
                 elif duplicate_locked.status != "already_repaired":
                     raise RuntimeError(f"duplicate strategy lost its exact proof: {duplicate_locked.reason}")
-                after = _inspect_duplicate_raw_identity(conn, root, item.raw_id, canonical_ids[0])
+                after = _inspect_duplicate_raw_identity(conn, root, item.raw_id, canonical_ids[0], logical_source_key)
                 if after.status != "already_repaired":
                     raise RuntimeError("duplicate strategy did not reach its typed terminal postcondition")
                 conn.commit()

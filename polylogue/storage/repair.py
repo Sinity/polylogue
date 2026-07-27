@@ -3390,7 +3390,11 @@ def _duplicate_raw_identity_proof_digest(item: DuplicateRawIdentityRepairItem) -
 
 
 def _inspect_duplicate_raw_identity(
-    conn: sqlite3.Connection, archive_root: Path, stale_raw_id: str, canonical_raw_id: str
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    stale_raw_id: str,
+    canonical_raw_id: str,
+    logical_source_key: str,
 ) -> DuplicateRawIdentityRepairItem:
     """Prove one ``(stale, canonical)`` raw pair is the exact pre-/post-#2729 duplicate shape.
 
@@ -3398,9 +3402,26 @@ def _inspect_duplicate_raw_identity(
     deterministic id its own recorded fields predict under its own scheme
     (``native_id``-inclusive for the stale raw, ``native_id=NULL`` for the
     canonical raw -- see ``deterministic_raw_session_id``, #2729); the stale
-    raw must be the *current* accepted head and session pointer; and the
-    canonical raw must be a genuinely dangling duplicate -- not itself an
-    accepted head or session pointer anywhere. Read-only; never mutates state.
+    raw must be the *current* accepted head and session pointer *for
+    ``logical_source_key``*; and the canonical raw must be a genuinely
+    dangling duplicate -- not itself an accepted head or session pointer
+    anywhere. Read-only; never mutates state.
+
+    ``logical_source_key`` disambiguates which accepted-head row this proof is
+    about. A single physical raw acquisition (one ``raw_id`` under the old
+    native-id-inclusive scheme) can legitimately be the accepted head for
+    *several* logical source keys/sessions at once -- forked/subagent/resumed
+    sessions replay the same parent JSONL, so their materialization can each
+    independently accept the identical raw as their own head (polylogue-ihc8).
+    Looking the head up by ``accepted_raw_id`` alone is ambiguous in that case
+    -- ``fetchone()`` would silently pick an arbitrary one of the matching
+    logical source keys, proving (and later "already-repairing") a witness for
+    a *different* session than the one the caller is actually folding. The
+    fold itself is inherently per-session (it repoints exactly one
+    ``sessions.raw_id``), so every lookup below that reads the stale raw's own
+    head is scoped to this specific key; only the *canonical* raw's head/
+    session checks stay unscoped, since canonical eligibility genuinely is a
+    global "not claimed by anyone yet" fact.
     """
     from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
@@ -3462,17 +3483,21 @@ def _inspect_duplicate_raw_identity(
         """
         SELECT logical_source_key, session_id, accepted_source_revision, accepted_content_hash,
                accepted_frontier_kind, accepted_frontier, decided_at_ms
-        FROM raw_revision_heads WHERE accepted_raw_id = ?
+        FROM raw_revision_heads WHERE accepted_raw_id = ? AND logical_source_key = ?
         """,
-        (stale_raw_id,),
+        (stale_raw_id, logical_source_key),
     ).fetchone()
     canonical_head = conn.execute(
         "SELECT logical_source_key FROM raw_revision_heads WHERE accepted_raw_id = ?", (canonical_raw_id,)
     ).fetchone()
 
     if stale_head is None:
-        if canonical_head is not None:
-            head_key = str(canonical_head["logical_source_key"])
+        # Canonical must be the accepted head of *this* logical source key,
+        # not merely of some other key this same physical raw also happens to
+        # serve (see the fan-out note in the docstring above) -- otherwise a
+        # fold performed for a sibling session would be misreported as having
+        # already repaired this one.
+        if canonical_head is not None and str(canonical_head["logical_source_key"]) == logical_source_key:
             session = conn.execute(
                 "SELECT session_id, raw_id FROM sessions WHERE raw_id = ?", (canonical_raw_id,)
             ).fetchone()
@@ -3488,7 +3513,7 @@ def _inspect_duplicate_raw_identity(
                 SELECT 1 FROM raw_revision_applications
                 WHERE raw_id = ? AND logical_source_key = ? AND decision = ? AND accepted_raw_id = ?
                 """,
-                (stale_raw_id, head_key, ApplicationDecision.SUPERSEDED.value, canonical_raw_id),
+                (stale_raw_id, logical_source_key, ApplicationDecision.SUPERSEDED.value, canonical_raw_id),
             ).fetchone()
             if session is not None and stale_superseded is not None:
                 return DuplicateRawIdentityRepairItem(
@@ -3497,9 +3522,9 @@ def _inspect_duplicate_raw_identity(
                     status="already_repaired",
                     reason="",
                     session_id=str(session["session_id"]),
-                    logical_source_key=head_key,
+                    logical_source_key=logical_source_key,
                 )
-        return ineligible("stale raw is not the currently accepted head of any logical source key")
+        return ineligible("stale raw is not the currently accepted head of this logical source key")
     if canonical_head is not None:
         return ineligible("canonical raw is already an accepted head; not a dangling duplicate")
     session = conn.execute(

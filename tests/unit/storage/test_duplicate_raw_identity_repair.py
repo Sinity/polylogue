@@ -398,3 +398,200 @@ def test_unified_frontier_recovers_crash_after_outcome_before_postflight(
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
     with closing(sqlite3.connect(root / f"{tier}.db")) as conn:
         return sorted(conn.execute(f"SELECT * FROM {table} WHERE {where}", params).fetchall())
+
+
+def _seed_duplicate_raw_fanout(root: Path) -> tuple[str, str, tuple[tuple[str, str], ...]]:
+    """Seed one stale raw shared as the accepted head across TWO sessions.
+
+    Reproduces polylogue-ihc8: forked/subagent/resumed sessions can physically
+    replay the identical parent evidence, so the exact same pre-#2729
+    native-id-inclusive ``raw_id`` can legitimately be the accepted head of
+    *more than one* logical source key/session at once. Only one canonical
+    (native_id=NULL) duplicate raw exists for the shared content, so at most
+    one of the sessions can ever be folded onto it -- the other must be
+    provably distinguished from "already repaired", not silently
+    misclassified as if it were the one that got folded.
+    """
+    initialize_active_archive_root(root)
+    payload = json.dumps({"marker": "duplicate-raw-fanout-fixture"}).encode()
+    source_path = "codex-session/carryover-fanout.jsonl"
+    legacy_native_id = "legacy-native-id-fanout"
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        canonical_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=payload, source_path=source_path, acquired_at_ms=2
+        )
+        source_conn = archive._ensure_source_conn()
+        row = source_conn.execute(
+            """
+            SELECT origin, capture_mode, source_path, source_index, blob_hash, blob_size
+            FROM raw_sessions WHERE raw_id = ?
+            """,
+            (canonical_raw_id,),
+        ).fetchone()
+        origin, capture_mode, stored_source_path, source_index, blob_hash, blob_size = row
+        stale_raw_id = deterministic_raw_session_id(
+            str(origin), str(stored_source_path), int(source_index), bytes(blob_hash), native_id=legacy_native_id
+        )
+        blob_hash_hex = bytes(blob_hash).hex()
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms,
+                revision_kind, source_revision, baseline_raw_id, acquisition_generation, revision_authority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'full', ?, ?, 0, 'byte_proven')
+            """,
+            (
+                stale_raw_id,
+                origin,
+                capture_mode,
+                legacy_native_id,
+                stored_source_path,
+                source_index,
+                blob_hash,
+                blob_size,
+                1,
+                blob_hash_hex,
+                stale_raw_id,
+            ),
+        )
+        source_conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, ?, ?)
+            """,
+            (blob_hash, stale_raw_id, stored_source_path, blob_size, 1),
+        )
+        source_conn.commit()
+
+        heads: list[tuple[str, str]] = []
+        for suffix in ("a", "b"):
+            session = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=f"fanout-session-{suffix}",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text=f"hello-{suffix}")],
+            )
+            _stored, session_id = archive.write_parsed_for_retained_raw(
+                session,
+                raw_id=stale_raw_id,
+                source_path=source_path,
+                acquired_at_ms=1,
+                revision_authoritative=True,
+            )
+            logical_source_key = f"codex:fanout-session-{suffix}"
+            accepted_hash = bytes.fromhex(session_content_hash(session))
+            record_revision_application_sync(
+                archive._conn,
+                RevisionApplicationReceipt(
+                    raw_id=stale_raw_id,
+                    session_id=session_id,
+                    logical_source_key=logical_source_key,
+                    source_revision=blob_hash_hex,
+                    acquisition_generation=0,
+                    decision=ApplicationDecision.SELECTED_BASELINE,
+                    accepted_raw_id=stale_raw_id,
+                    accepted_source_revision=blob_hash_hex,
+                    accepted_content_hash=accepted_hash,
+                    accepted_frontier_kind="byte",
+                    accepted_frontier=blob_size,
+                    baseline_raw_id=stale_raw_id,
+                    detail=f"pre-#2729 duplicate-raw fanout fixture ({suffix})",
+                ),
+                decided_at_ms=1,
+            )
+            heads.append((session_id, logical_source_key))
+        archive.commit()
+        return stale_raw_id, canonical_raw_id, tuple(heads)
+
+
+def test_duplicate_alias_witness_is_scoped_to_its_own_session_not_a_fanout_sibling(tmp_path: Path) -> None:
+    """polylogue-ihc8 regression: classification must not cross-contaminate siblings.
+
+    Before the fix, ``_inspect_duplicate_raw_identity`` looked up the stale
+    raw's accepted-head row by ``accepted_raw_id`` alone. When that raw_id was
+    the accepted head of two different logical source keys (the fanout
+    shape), ``fetchone()`` picked one arbitrarily -- so the frontier item
+    classified for session A could carry a strategy witness describing
+    session B's head instead of its own.
+    """
+    stale_raw_id, canonical_raw_id, heads = _seed_duplicate_raw_fanout(tmp_path)
+    (session_a, key_a), (session_b, key_b) = heads
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    duplicate_items = [
+        item
+        for item in census.items
+        if item.raw_id == stale_raw_id and item.state is RawAuthorityFrontierState.DUPLICATE_ALIAS
+    ]
+    assert len(duplicate_items) == 2
+    by_key = {item.logical_source_key: item for item in duplicate_items}
+    assert set(by_key) == {key_a, key_b}
+    for logical_source_key, session_id in ((key_a, session_a), (key_b, session_b)):
+        item = by_key[logical_source_key]
+        assert item.actuator is RawAuthorityActuator.FOLD_DUPLICATE_ALIAS
+        assert item.session_id == session_id
+        # The strategy witness bound to THIS item must describe THIS item's
+        # own session/key -- not whichever sibling an unscoped lookup happened
+        # to find first.
+        assert item.strategy_witness["session_id"] == session_id
+        assert item.strategy_witness["logical_source_key"] == logical_source_key
+        assert item.strategy_witness["canonical_raw_id"] == canonical_raw_id
+    assert by_key[key_a].plan_id != by_key[key_b].plan_id
+
+
+def test_duplicate_alias_fold_reaches_terminal_postcondition_under_fanout(tmp_path: Path) -> None:
+    """polylogue-ihc8 regression: applying one fanout sibling must not corrupt the other.
+
+    Before the fix, applying the plan for one sibling's head could instead
+    repoint a *different* sibling's head (whichever the ambiguous
+    ``accepted_raw_id``-only lookup happened to find), so the typed re-inspect
+    postcondition then failed every retry with the exact plan hash unchanged
+    -- an infinite non-converging RuntimeError loop (observed live: 7
+    identical failures over 90 minutes for one plan, matching this exact
+    shape). With the fix, each sibling's plan folds its own head only; this is
+    verified from both directions -- whichever sibling is selected reaches the
+    canonical twin, and the untouched sibling's own head/session pointer is
+    provably unaffected.
+    """
+    for selected, other in (("a", "b"), ("b", "a")):
+        stale_raw_id, canonical_raw_id, heads = _seed_duplicate_raw_fanout(tmp_path / selected)
+        by_suffix = dict(zip(("a", "b"), heads, strict=True))
+        selected_session, selected_key = by_suffix[selected]
+        other_session, other_key = by_suffix[other]
+
+        preview = inspect_raw_authority_frontier(_config(tmp_path / selected))
+        duplicate_items = {
+            item.logical_source_key: item
+            for item in preview.items
+            if item.raw_id == stale_raw_id and item.state is RawAuthorityFrontierState.DUPLICATE_ALIAS
+        }
+        plan_id = duplicate_items[selected_key].plan_id
+
+        report = apply_raw_authority_frontier(
+            _config(tmp_path / selected),
+            preview_census_id=preview.census_id,
+            selected_plan_ids=(plan_id,),
+        )
+
+        assert report.selected_plan_count == report.executed_plan_count == 1
+        assert report.retryable_plan_count == 0
+
+        with sqlite3.connect(tmp_path / selected / "index.db") as conn:
+            assert conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+                (selected_key,),
+            ).fetchone() == (canonical_raw_id,)
+            assert conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (selected_session,)).fetchone() == (
+                canonical_raw_id,
+            )
+            # The other fanout sibling's own head/session pointer must be
+            # untouched -- the ambiguity bug repointed whichever sibling an
+            # unscoped lookup happened to find, which could corrupt this row
+            # instead of the one actually selected.
+            assert conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+                (other_key,),
+            ).fetchone() == (stale_raw_id,)
+            assert conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (other_session,)).fetchone() == (
+                stale_raw_id,
+            )
