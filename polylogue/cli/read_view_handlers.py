@@ -37,6 +37,7 @@ from polylogue.cli.read_views.context import (
 from polylogue.cli.read_views.correlation import build_correlation_options, run_read_correlation
 from polylogue.cli.read_views.messages import (
     build_message_options,
+    run_read_hooks,
     run_read_messages,
     run_read_raw,
 )
@@ -86,6 +87,12 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="json",
         accepted_options=MESSAGE_READ_VIEW_OPTION_NAMES,
         option_builder=build_message_options,
+    ),
+    "hooks": ReadViewHandler(
+        "hooks",
+        "required",
+        run_read_hooks,
+        default_format="json",
     ),
     "context": ReadViewHandler(
         "context",

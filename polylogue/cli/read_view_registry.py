@@ -53,6 +53,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "dialogue": ReadViewHandlerMetadata("dialogue", "required", accepts_query_set=True),
     "messages": ReadViewHandlerMetadata("messages", "required", MESSAGE_READ_VIEW_OPTION_NAMES),
     "raw": ReadViewHandlerMetadata("raw", "required", MESSAGE_READ_VIEW_OPTION_NAMES),
+    "hooks": ReadViewHandlerMetadata("hooks", "required"),
     "context": ReadViewHandlerMetadata("context", "required", CONTEXT_READ_VIEW_OPTION_NAMES),
     "context-image": ReadViewHandlerMetadata("context-image", "none", CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES),
     "neighbors": ReadViewHandlerMetadata("neighbors", "query_or_session", NEIGHBOR_READ_VIEW_OPTION_NAMES),

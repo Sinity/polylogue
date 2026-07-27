@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.cli.messages import run_messages, run_raw
+from polylogue.cli.messages import run_hooks, run_messages, run_raw
 from polylogue.cli.read_views.messages import _write_messages_file
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -30,18 +30,21 @@ class _FakeApi:
         *,
         messages_result: tuple[list[dict[str, object]], int] | None = None,
         raw_result: tuple[list[dict[str, object]], int] = ([], 0),
+        hook_summary_result: dict[str, object] | None = None,
         paginate_messages: bool = False,
         session_origin: str = "codex-session",
         topology: object | None = None,
     ) -> None:
         self.messages_result = messages_result
         self.raw_result = raw_result
+        self.hook_summary_result = hook_summary_result
         self.paginate_messages = paginate_messages
         self.session_origin = session_origin
         self.topology = topology
         self.messages_kwargs: dict[str, object] = {}
         self.messages_calls: list[dict[str, object]] = []
         self.raw_kwargs: dict[str, object] = {}
+        self.hook_summary_kwargs: dict[str, object] = {}
 
     def _message_objects(self, msgs: list[dict[str, object]]) -> list[object]:
         defaults: dict[str, object] = {
@@ -122,6 +125,10 @@ class _FakeApi:
     ) -> tuple[list[dict[str, object]], int]:
         self.raw_kwargs = {"session_id": session_id, **kwargs}
         return self.raw_result
+
+    async def get_hook_event_summary_for_session(self, session_id: str) -> dict[str, object] | None:
+        self.hook_summary_kwargs = {"session_id": session_id}
+        return self.hook_summary_result
 
     async def get_session(self, session_id: str) -> object:
         return type(
@@ -459,3 +466,38 @@ def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path, capsys: pytest.
     with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(raw_result=([], 0))):
         run_raw(empty_env, _request(tmp_path), session_id="missing")
     _ui_error(empty_env).assert_called_once_with("No raw artifacts found for session: missing")
+
+
+def test_run_hooks_emits_json_yaml_and_missing_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    api = _FakeApi(
+        hook_summary_result={
+            "session_id": "conv-hooks",
+            "total": 3,
+            "by_event_type": {"PostToolUse": 2, "PreToolUse": 1},
+            "first_observed_at": "2026-07-10T10:00:00Z",
+            "last_observed_at": "2026-07-10T10:00:02Z",
+        }
+    )
+    env = _env()
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_hooks(env, _request(tmp_path), session_id="conv-hooks")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == 3
+    assert payload["by_event_type"] == {"PostToolUse": 2, "PreToolUse": 1}
+    assert payload["first_observed_at"] == "2026-07-10T10:00:00Z"
+    assert payload["last_observed_at"] == "2026-07-10T10:00:02Z"
+    assert api.hook_summary_kwargs == {"session_id": "conv-hooks"}
+    _ui_print(env).assert_not_called()
+
+    yaml_env = _env()
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_hooks(yaml_env, _request(tmp_path), session_id="conv-hooks", output_format="yaml")
+    assert "PostToolUse" in capsys.readouterr().out
+    _ui_print(yaml_env).assert_not_called()
+
+    missing_env = _env()
+    with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(hook_summary_result=None)):
+        run_hooks(missing_env, _request(tmp_path), session_id="missing")
+    _ui_error(missing_env).assert_called_once_with("Session not found: missing")

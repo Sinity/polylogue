@@ -23,6 +23,7 @@ class EvidenceFamily(str, Enum):
     BLOCKS = "blocks"
     ACTIONS = "actions"
     RAW = "raw"
+    HOOKS = "hooks"
     CONTEXT = "context"
     CHRONICLE = "chronicle"
     NEIGHBORS = "neighbors"
@@ -152,6 +153,7 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "dialogue": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "messages": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "raw": (EvidenceFamily.RAW,),
+    "hooks": (EvidenceFamily.HOOKS,),
     "context": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
     "context-image": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
     "chronicle": (EvidenceFamily.CHRONICLE, EvidenceFamily.SESSIONS, EvidenceFamily.MESSAGES),
