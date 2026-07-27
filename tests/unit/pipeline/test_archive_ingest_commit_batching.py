@@ -14,7 +14,6 @@ import asyncio
 import multiprocessing
 import os
 import sqlite3
-import sys
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -148,51 +147,70 @@ def test_direct_grouped_reingest_reserves_raw_blob_until_source_commit(
     assert final_gc.skipped_referenced >= 1
 
 
-@pytest.mark.xfail(
-    condition=sys.version_info >= (3, 14),
-    reason=(
-        "This test's cross-process observer (multiprocessing.Process forked "
-        "from a pytest process running an asyncio event loop, synchronized "
-        "via multiprocessing.Event handshakes) hangs under Python 3.14 even "
-        "when the fork context is pinned explicitly -- likely the same "
-        "fork()-after-threads/after-live-event-loop hazard class that "
-        "motivated CPython 3.14's own default multiprocessing start-method "
-        "change away from 'fork' on Linux. parse_sources_archive itself "
-        "(the code under test) completes normally on 3.14 in isolation; "
-        "only this test's harness is affected. Tracked in polylogue-90k1 "
-        "for a harness redesign (polylogue-xikl 3.14 migration)."
-    ),
-    # The observed failure mode is the AssertionError from `assert not error`
-    # (the observer's own caught AssertionError relayed over the pipe), but
-    # if timing shifts enough that observation.join(timeout=10) expires
-    # while the observer is still alive, this test instead raises via
-    # pytest.fail("process-route observer did not terminate") --
-    # pytest.fail.Exception (an alias for _pytest.outcomes.Failed), not
-    # AssertionError. Cover both so a timing-dependent rerun still xfails
-    # instead of surfacing as an unexpected hard failure.
-    raises=(AssertionError, pytest.fail.Exception),
-    strict=True,
-)
 def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_ref(
     tmp_path: Path,
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # This test's observer process is forked from the main pytest process
-    # (which has monkeypatched BlobStore.publish_many /
-    # ArchiveStore.write_raw_and_parsed_result and runs an asyncio event
-    # loop) to watch sqlite/blob-store state via multiprocessing.Event
-    # handshakes. It does not go through production's process pool (which
-    # already pins "spawn" explicitly, see
-    # process_pool.py::process_pool_context) -- it needs its own primitives
-    # pinned to "fork" explicitly rather than relying on the ambient global
-    # default, because Python 3.14 changed that default from "fork" to
-    # "forkserver" on Linux (empirically confirmed: 3.13 default="fork",
-    # 3.14 default="forkserver"; forkserver's preloaded worker would not
-    # inherit the events the same way). Pinning fork explicitly is still not
-    # sufficient to make this test pass on 3.14 -- see the xfail above and
-    # polylogue-90k1.
+    # This test observes the *real* archive_ingest.py process-pool path
+    # (line ~276: a bare `ProcessPoolExecutor(max_workers=workers)` with no
+    # explicit `mp_context`, unlike process_pool.py::process_pool_executor
+    # which pins "spawn"). Each parse worker builds its own
+    # ArchiveBlobPublisher and flushes it -- i.e. `BlobStore.publish_many`
+    # actually runs *inside the worker process*, not the main pytest
+    # process -- so this test's `monkeypatch.setattr(BlobStore,
+    # "publish_many", ...)` (applied only to the main process's in-memory
+    # class object) only reaches the worker if the worker process is
+    # fork()ed from this already-patched main process: a fork()ed child
+    # inherits a copy-on-write snapshot of the parent's class objects,
+    # patched attribute included.
+    #
+    # That inheritance is what silently made this test pass on Python
+    # 3.13: the *global default* multiprocessing start method on Linux was
+    # "fork", so the unpinned `ProcessPoolExecutor` in archive_ingest.py
+    # picked "fork" implicitly and each worker saw the patch. Python 3.14
+    # changed that global default to "forkserver" (a persistent helper
+    # process bootstrapped once, early, from a *separate* preload of
+    # `__main__` -- see process_pool_context()'s docstring). Workers forked
+    # from that forkserver inherit the forkserver's own minimal, unpatched
+    # state, re-import `polylogue.storage.blob_publication` fresh when the
+    # submitted worker function runs, and call the ORIGINAL
+    # `BlobStore.publish_many` -- so `reservation_committed` is never set
+    # and the observer's own `.wait(timeout=10)` fails with an
+    # AssertionError inside ~10s. This was previously misdiagnosed as an
+    # indefinite fork()-after-asyncio-loop hang; it is actually a bounded,
+    # deterministic ~10s failure caused by the monkeypatch never reaching
+    # the process that runs the patched code. `parse_sources_archive`
+    # itself is correct on 3.14 (per the isolated repro in polylogue-90k1);
+    # only this test's implicit reliance on the ambient default start
+    # method was broken.
+    #
+    # The fix: this test's own observer primitives (Events/Pipe/Process)
+    # already use an explicit `multiprocessing.get_context("fork")`
+    # (`fork_ctx` below) so they behave identically across Python versions.
+    # The remaining gap was that archive_ingest.py's *own* pool construction
+    # was never routed through that context. Monkeypatching
+    # `archive_ingest.ProcessPoolExecutor` to force `mp_context=fork_ctx`
+    # (the exact same monkeypatch target `test_parse_workers_override_
+    # bypasses_process_pool` above already spies on) makes the real parse
+    # workers fork from this patched process on every supported Python
+    # version, restoring the cross-process observability this test needs --
+    # without touching archive_ingest.py's production pool-construction
+    # behavior for real callers, who never monkeypatch its class attributes.
     fork_ctx = multiprocessing.get_context("fork")
+
+    class _ForkedProcessPoolExecutor(ProcessPoolExecutor):
+        """Force the real parse pool to fork from this patched process.
+
+        Only ``mp_context`` is overridden; every other constructor argument
+        (``max_workers``, ``initializer``, ...) passes through unchanged.
+        """
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            kwargs["mp_context"] = fork_ctx
+            super().__init__(*args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(archive_ingest, "ProcessPoolExecutor", _ForkedProcessPoolExecutor)
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "2")
     monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
     archive_root = workspace_env["archive_root"]
