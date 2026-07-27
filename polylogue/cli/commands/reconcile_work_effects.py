@@ -66,6 +66,12 @@ def _render_plain(summary_dict: dict[str, object]) -> None:
     default=None,
     help="Beads interaction ledger (.beads/interactions.jsonl) to read issue-state effects from.",
 )
+@click.option(
+    "--github-repo",
+    "github_repo",
+    default=None,
+    help="'owner/name' GitHub repo to read PR lifecycle effects from via the gh CLI.",
+)
 @click.option("--since", default=None, help="Lower effect time bound (ISO or relative date).")
 @click.option("--until", default=None, help="Upper effect time bound (ISO or relative date).")
 @click.option(
@@ -86,19 +92,28 @@ def reconcile_work_effects_command(
     graph_id: str,
     repo_path: Path,
     beads_jsonl: Path | None,
+    github_repo: str | None,
     since: str | None,
     until: str | None,
     apply: bool,
     output_format: str,
 ) -> None:
-    """Attach observed git/Beads repository effects to a stored work-evidence graph.
+    """Attach observed git/GitHub/Beads repository effects to a stored work-evidence graph.
 
-    Reads commit history from --repo and, if given, issue-state changes from
-    --beads-jsonl. Claims are only linked to an effect through an explicit
-    shared work-item id in their text -- never through time or file
-    proximity. Without --yes this only reports what would change.
+    Reads commit history from --repo, PR lifecycle state from --github-repo
+    (via the gh CLI), and, if given, issue-state changes from --beads-jsonl.
+    Claims are only linked to an effect through an explicit shared work-item
+    id in their text -- never through time or file proximity. Without --yes
+    this only reports what would change. A --github-repo the gh CLI cannot
+    reach (no auth, no network, not installed) shows up as an "adapter
+    unavailable: github" line rather than silently omitting PR effects.
     """
-    from polylogue.insights.work_effects import BeadsIssueEffectAdapter, GitCommitEffectAdapter, RepositoryEffectAdapter
+    from polylogue.insights.work_effects import (
+        BeadsIssueEffectAdapter,
+        GitCommitEffectAdapter,
+        GitHubPullRequestEffectAdapter,
+        RepositoryEffectAdapter,
+    )
     from polylogue.operations.work_effect_reconciliation import (
         WorkEffectReconciliationSummary,
         WorkEvidenceGraphNotFoundError,
@@ -113,6 +128,8 @@ def reconcile_work_effects_command(
     adapters: list[RepositoryEffectAdapter] = [GitCommitEffectAdapter(repo_path=repo_path)]
     if beads_jsonl is not None:
         adapters.append(BeadsIssueEffectAdapter(jsonl_path=beads_jsonl))
+    if github_repo is not None:
+        adapters.append(GitHubPullRequestEffectAdapter(repo=github_repo))
 
     async def _run() -> WorkEffectReconciliationSummary:
         async with SessionRepository(db_path=active_index_db_path()) as repository:

@@ -7,18 +7,28 @@ the missing production half -- adapters that read *independent* repository
 evidence and a conservative matcher that turns shared identifiers into
 judgments, so the reconciler is no longer fed by hand in tests only.
 
-Two adapters are concrete and read-only:
+Three adapters are concrete and read-only:
 
 - :class:`GitCommitEffectAdapter` reads ``git log`` for a local checkout.
 - :class:`BeadsIssueEffectAdapter` reads a Beads ``interactions.jsonl``
   ledger (the same append-only shape ``sources/parsers/beads.py`` ingests).
+- :class:`GitHubPullRequestEffectAdapter` shells out to the ``gh`` CLI (the
+  same subprocess pattern ``insights.correlation_view._enrich_with_github_api``
+  already uses) to read PR lifecycle state -- number, title, body, open/
+  merged/closed state, and merge commit -- for one ``owner/name`` repo.
 
-A third, :class:`GitHubPullRequestEffectAdapter`, is declared but not
-implemented: PR lifecycle/review/merge evidence needs live network or ``gh``
-CLI access this module does not assume is available (auth, rate limits,
-sandboxed/cloud lanes with no egress). Calling its ``collect`` fails
-explicitly with :class:`EffectAdapterUnavailableError` -- an honest "not wired
-yet", never a silent empty result that would read as "no PRs found".
+``gh`` access is genuinely unavailable in some lanes (no network egress,
+missing binary, no ``gh auth login``). Rather than special-case those lanes,
+every failure mode -- missing executable, auth/network error, a non-zero
+``gh`` exit, unparseable output -- raises :class:`EffectAdapterUnavailableError`
+explicitly, exactly like the other two adapters do for their own missing
+inputs. ``collect_repository_effects`` already isolates one adapter's failure
+from the others, so a lane with no GitHub access still gets git/Beads
+effects and an honest "github: <reason>" entry in ``unavailable`` -- never a
+silent empty result that would read as "no PRs found". PR
+review/approval-level granularity (per-reviewer decisions, not just PR
+lifecycle state) is deliberately out of scope here -- see
+polylogue-1vpm.6.2 for that follow-on.
 
 Judgment derivation (``derive_direct_identifier_judgments``) never uses time
 or file-path proximity -- that heuristic already exists as a *candidate-only*
@@ -281,24 +291,51 @@ def _file_identity(path: Path) -> str:
     return sha256(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:16]
 
 
-# ── GitHub adapter (typed stub -- honest degradation) ────────────────
+# ── GitHub PR adapter ─────────────────────────────────────────────────
+
+#: `gh pr list --json` fields this adapter needs. Kept as an explicit tuple
+#: (not `--json '*'`) so a `gh` version that drops/renames a field breaks
+#: loudly at the `_run_gh` non-zero-exit / JSON-decode boundary instead of
+#: silently starving one label of context.
+_PR_JSON_FIELDS: Final = (
+    "number",
+    "title",
+    "body",
+    "state",
+    "url",
+    "createdAt",
+    "updatedAt",
+    "closedAt",
+    "mergedAt",
+    "mergeCommit",
+)
 
 
 @dataclass(frozen=True, slots=True)
 class GitHubPullRequestEffectAdapter:
-    """Declared, pluggable placeholder for PR lifecycle/review/merge effects.
+    """Reads pull-request lifecycle effects from GitHub via the ``gh`` CLI.
 
-    Not implemented in this pass: GitHub PR evidence needs live network or
-    ``gh`` CLI access (auth, rate limits, no egress in cloud/CI lanes) this
-    module deliberately does not assume. ``collect`` always raises
-    :class:`EffectAdapterUnavailableError` -- an honest "not wired yet" rather than
-    a silent empty result indistinguishable from "no PRs found". The type
-    exists so a real ``gh``/GitHub-API-backed adapter can be dropped in later
-    without changing the reconciliation call sites.
+    Read-only: a single ``gh pr list --repo <repo> --state all`` call per
+    ``collect()``, the same subprocess-shelling pattern already used by
+    ``insights.correlation_view._enrich_with_github_api`` elsewhere in this
+    repo. Every PR ``gh`` returns (open, merged, or closed -- ``--state all``)
+    becomes one effect carrying its number, title, body, lifecycle state, and
+    merge commit, so identifier matching against a PR's title/body works the
+    same way it already does for git commit subjects and Beads interactions.
+
+    ``limit`` bounds one ``gh`` call's page size (``gh`` itself paginates
+    beyond it only if asked); ``since_ms``/``until_ms`` are applied
+    client-side against each PR's most recent known lifecycle timestamp
+    (merged, else closed, else updated, else created) after the page is
+    fetched -- ``gh pr list`` has no native time-range filter for arbitrary
+    bounds without changing the query shape into GitHub's search syntax.
     """
 
     repo: str  # "owner/name"
     authority: EffectAuthority = "github"
+    limit: int = 200
+    gh_path: str = "gh"
+    timeout_s: int = 45
 
     def collect(
         self,
@@ -306,10 +343,115 @@ class GitHubPullRequestEffectAdapter:
         since_ms: int | None = None,
         until_ms: int | None = None,
     ) -> tuple[ObservedRepositoryEffect, ...]:
-        raise EffectAdapterUnavailableError(
-            f"GitHub PR effect adapter for {self.repo!r} is not implemented "
-            "(requires network/gh CLI access); see polylogue-1vpm.6.2 follow-up"
+        output = _run_gh(
+            self.gh_path,
+            [
+                "pr",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                "all",
+                "--limit",
+                str(self.limit),
+                "--json",
+                ",".join(_PR_JSON_FIELDS),
+            ],
+            timeout_s=self.timeout_s,
         )
+        try:
+            records = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise EffectAdapterUnavailableError(
+                f"gh pr list for {self.repo!r} returned output that is not valid JSON"
+            ) from exc
+        if not isinstance(records, list):
+            raise EffectAdapterUnavailableError(
+                f"gh pr list for {self.repo!r} returned an unexpected JSON shape ({type(records).__name__})"
+            )
+
+        snapshot_ref = ObjectRef(
+            kind="context-snapshot",
+            object_id=f"github:{self.repo}@{sha256(output.encode('utf-8')).hexdigest()[:16]}",
+        )
+        effects: list[ObservedRepositoryEffect] = []
+        for record in records:
+            if not isinstance(record, dict) or record.get("number") is None:
+                continue
+            number = record["number"]
+            occurred_at_ms = _first_present_ms(record, ("mergedAt", "closedAt", "updatedAt", "createdAt"))
+            if since_ms is not None and (occurred_at_ms is None or occurred_at_ms < since_ms):
+                continue
+            if until_ms is not None and (occurred_at_ms is None or occurred_at_ms > until_ms):
+                continue
+            effects.append(
+                ObservedRepositoryEffect(
+                    ref=ObjectRef(kind="github-pr", object_id=f"{self.repo}#{number}"),
+                    label=_pull_request_label(self.repo, record),
+                    authority="github",
+                    evidence_ref=ObjectRef(kind="artifact", object_id=f"github-pr:{self.repo}:{number}"),
+                    repository_snapshot_ref=snapshot_ref,
+                    occurred_at_ms=occurred_at_ms,
+                )
+            )
+        return tuple(effects)
+
+
+def _run_gh(gh_path: str, args: Sequence[str], *, timeout_s: int) -> str:
+    """Run one ``gh`` subcommand and return its captured stdout.
+
+    Every failure mode raises :class:`EffectAdapterUnavailableError` with a
+    reason a caller can log or surface verbatim -- missing binary, auth/
+    network failure (non-zero exit with ``gh``'s own stderr), and timeout are
+    all distinguishable from "gh ran and found nothing".
+    """
+    command = [gh_path, *args]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise EffectAdapterUnavailableError(
+            f"{gh_path!r} executable not found on PATH -- install the GitHub CLI to collect PR effects"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise EffectAdapterUnavailableError(f"{' '.join(command)} timed out after {timeout_s}s") from exc
+    except OSError as exc:
+        raise EffectAdapterUnavailableError(f"{' '.join(command)} failed to start: {exc}") from exc
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or "(no stderr output)"
+        raise EffectAdapterUnavailableError(f"{' '.join(command)} exited {completed.returncode}: {stderr}")
+    return completed.stdout
+
+
+def _first_present_ms(record: dict[str, object], fields: Sequence[str]) -> int | None:
+    for field in fields:
+        value = record.get(field)
+        if isinstance(value, str) and value:
+            parsed = _parse_iso_ms(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _pull_request_label(repo: str, record: dict[str, object]) -> str:
+    number = record.get("number")
+    title = str(record.get("title") or "").strip()
+    state = str(record.get("state") or "").upper()
+    label = f"{repo}#{number} [{state}] {title}".strip()
+    merge_commit = record.get("mergeCommit")
+    if isinstance(merge_commit, dict):
+        merge_sha = merge_commit.get("oid")
+        if isinstance(merge_sha, str) and merge_sha:
+            label = f"{label} (merge {merge_sha[:12]})"
+    body = str(record.get("body") or "").strip()
+    if body:
+        label = f"{label}\n{body}"
+    return label
 
 
 # ── Collection + judgment derivation ─────────────────────────────────

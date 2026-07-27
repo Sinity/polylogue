@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
@@ -112,6 +113,64 @@ def test_yes_flag_persists_reconciled_graph(
     assert stored is not None
     assert any(node.kind == "effect" for node in stored.nodes)
     assert any(edge.kind == "claimed" for edge in stored.edges)
+
+
+def test_github_repo_flag_wires_in_pr_effects(
+    tmp_path: Path,
+    _seeded_graph: WorkEvidenceGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--github-repo reaches the real GitHubPullRequestEffectAdapter.collect
+    (only the OS-level `gh` subprocess call is faked -- no live GitHub
+    network/auth access in this test suite)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo, message="unrelated plain commit")
+
+    pr_records = [
+        {
+            "number": 7,
+            "title": "fix: land it (Ref polylogue-1vpm.6.2)",
+            "body": "",
+            "state": "MERGED",
+            "url": "https://github.com/Sinity/polylogue/pull/7",
+            "createdAt": "2026-07-10T09:00:00Z",
+            "updatedAt": "2026-07-10T10:00:00Z",
+            "closedAt": "2026-07-10T10:00:00Z",
+            "mergedAt": "2026-07-10T10:00:00Z",
+            "mergeCommit": {"oid": "deadbeef"},
+        }
+    ]
+
+    real_run = subprocess.run
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str] | MagicMock:
+        if cmd[:1] == ["gh"]:
+            return MagicMock(returncode=0, stdout=json.dumps(pr_records), stderr="")
+        return real_run(cmd, **kwargs)  # type: ignore[call-overload, no-any-return]
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = CliRunner().invoke(
+        reconcile_work_effects_command,
+        [
+            "--graph-id",
+            _seeded_graph.graph_id,
+            "--repo",
+            str(repo),
+            "--github-repo",
+            "Sinity/polylogue",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["effect_count_by_authority"] == {"git": 1, "github": 1}
+    assert payload["claims_evaluated"] == 1
+    assert payload["adapter_failures"] == []
 
 
 def test_unknown_graph_id_is_a_usage_error(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
