@@ -2626,7 +2626,10 @@ def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path
     assert failed_cursor.next_retry_at is not None
 
 
-def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_path: Path) -> None:
+def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "split-record.jsonl"
@@ -2667,6 +2670,24 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_p
 
     with path.open("ab") as handle:
         handle.write(split_record[split_at:])
+    # The live full-ingest path records a deferred FTS convergence-debt row
+    # (``record_convergence_debt(stage="fts", ...)`` in batch.py) as soon as
+    # the raw-revision replay lands, then the SAME ``ingest_files`` call
+    # synchronously converges it (``_converge_paths``) and clears it again
+    # before returning -- so inspecting ``cursor.list_convergence_debt()``
+    # after the call proves nothing about whether the deferral was ever
+    # recorded. Spy directly on the persistence call itself to prove the
+    # debt row existed (recorded, not merely a code path CodeRabbit assumed
+    # ran) before this same batch's convergence consumed it.
+    recorded_debt: list[dict[str, str | None]] = []
+    original_record_convergence_debt = CursorStore.record_convergence_debt
+
+    def spy_record_convergence_debt(self: CursorStore, **kwargs: Any) -> None:
+        recorded_debt.append(dict(kwargs))
+        original_record_convergence_debt(self, **kwargs)
+
+    monkeypatch.setattr(CursorStore, "record_convergence_debt", spy_record_convergence_debt)
+
     second = asyncio.run(processor.ingest_files([path]))
 
     assert second.full_file_count == 1
@@ -2677,6 +2698,14 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_p
     assert final_cursor is not None
     assert final_cursor.byte_offset == path.stat().st_size
     assert final_cursor.failure_count == 0
+    assert any(
+        call.get("stage") == "fts" and call.get("subject_id") == "codex-session:split-record" for call in recorded_debt
+    )
+    # And, exactly because this batch's own convergence resolved it
+    # synchronously, no stale FTS debt is left behind for the daemon to
+    # retry -- proving the deferral was a real, consumed debt cycle rather
+    # than one that silently never got recorded (or one that leaks forever).
+    assert cursor.list_convergence_debt(limit=10) == []
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
             ("message-0",),
@@ -3336,6 +3365,24 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
     # acquired and parsed. Its unchanged bytes must not become a retry loop.
     assert second_result.failed == []
     assert second_result.succeeded == [second]
+    # Direct check of the persisted state backing that claim (this layer --
+    # ``_ingest_full_paths_sync`` -- has no CursorStore row of its own; the
+    # durable "not a retry loop" evidence lives in raw_sessions/raw_session_
+    # memberships). ``second``'s raw must show no parse_error (what would
+    # make a later pass retry it as a failure) while its logical identity's
+    # membership decision is durably ambiguous/quarantined -- i.e. the
+    # deferred authority debt is actually persisted for this exact path, not
+    # only implied by the in-memory FullIngestResult lists above.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """
+            SELECT r.parse_error, m.decision, m.revision_authority
+            FROM raw_session_memberships AS m
+            JOIN raw_sessions AS r USING (raw_id)
+            WHERE r.source_path = ? AND m.logical_source_key = 'chatgpt:shared'
+            """,
+            (str(second),),
+        ).fetchone() == (None, "ambiguous", "quarantined")
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE decision = 'ambiguous'").fetchone() == (
             2,
@@ -3553,6 +3600,17 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     assert by_path[str(third)] == "ambiguous"
     assert third_result.failed == []
     assert third_result.succeeded == [third]
+    # Direct check of the persisted state backing "cursor is complete rather
+    # than retried" above: ``_ingest_full_paths_sync`` has no CursorStore row
+    # of its own, so the durable non-retry evidence is raw_sessions.parse_error
+    # staying NULL for third's raw despite the decided-ambiguous membership --
+    # what actually stops the daemon from reprocessing this file as a failure
+    # on every restart, not just the in-memory succeeded/failed lists.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parse_error FROM raw_sessions WHERE source_path = ?",
+            (str(third),),
+        ).fetchone() == (None,)
 
 
 def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_path: Path) -> None:
@@ -3949,6 +4007,26 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     cursor_complete = succeeds or bundle_texts == ("base", "different")
     assert result.failed == ([] if cursor_complete else [older_bundle])
     assert result.succeeded == ([older_bundle] if cursor_complete else [])
+    # Direct check of the persisted state backing both branches: the
+    # succeeded/failed lists above are LiveBatchProcessor's own report, not
+    # proof of what raw_sessions durably holds (this layer -- ``_ingest_full_
+    # paths_sync`` -- has no CursorStore row of its own). A decided-ambiguous
+    # cursor_complete observation is deliberately never materialized
+    # (parsed_at_ms stays NULL -- fail-closed for the head), so the actual
+    # "not a failure/retry loop" evidence is parse_error staying NULL. When
+    # not cursor_complete, the docstring's "must remain retryable" claim
+    # requires the raw to actually carry a parse_error -- what makes a future
+    # daemon pass re-attempt this exact raw instead of silently treating it
+    # as already resolved.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        (parse_error,) = conn.execute(
+            "SELECT parse_error FROM raw_sessions WHERE source_path = ?",
+            (str(older_bundle),),
+        ).fetchone()
+    if cursor_complete:
+        assert parse_error is None
+    else:
+        assert parse_error is not None
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(
@@ -4022,6 +4100,19 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
     # conflict until the file actually changes.
     assert divergent_result.succeeded == [divergent]
     assert divergent_result.failed == []
+    # Direct check of the persisted state backing "cursor success" above:
+    # this layer (``_ingest_full_paths_sync``) has no CursorStore row of its
+    # own, so the durable non-retry evidence is raw_sessions.parse_error
+    # staying NULL for the divergent raw despite the fail-closed membership
+    # decision. A regression that started marking this a parse failure
+    # would make the daemon reprocess the same decided-ambiguous divergence
+    # on every restart, which is exactly what this comment says must not
+    # happen.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parse_error FROM raw_sessions WHERE source_path = ?",
+            (str(divergent),),
+        ).fetchone() == (None,)
     with sqlite3.connect(index_db) as conn:
         assert conn.execute(
             """
