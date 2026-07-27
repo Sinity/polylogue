@@ -197,6 +197,17 @@ def _ingest_append_plans_archive(
                         acquired_at_ms=acquired_at_ms,
                         stage_timings_s=timings,
                         stage_timing_prefix="append",
+                        # polylogue-de2a: this is the live watcher's hot
+                        # per-append path -- called again for every tiny
+                        # append a still-open session receives. Re-indexing
+                        # (not re-parsing) every already-applied historical
+                        # position on every call is what made the writer
+                        # gate's hold time grow with the session's total
+                        # accumulated append count instead of the size of
+                        # just this append (see apply_raw_revision_replay's
+                        # skip_already_applied docstring for the full
+                        # evidence chain).
+                        skip_already_applied=True,
                     )
                     _add_timing(timings, "append.raw_and_index_write", t0)
                     succeeded.append(plan)

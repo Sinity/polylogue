@@ -3099,6 +3099,7 @@ class ArchiveStore:
         bulk_fts: bool = False,
         bulk_build: bool = False,
         defer_fts: bool = False,
+        skip_already_applied: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state.
 
@@ -3129,6 +3130,29 @@ class ArchiveStore:
         relaxes ``assert_session_fts_exact_sync`` to its trigger-presence-only
         check, since the bulk-build caller repopulates ``messages_fts``
         archive-wide exactly once at readiness instead.
+
+        ``skip_already_applied`` (polylogue-de2a, default ``False`` so every
+        existing caller is byte-for-byte unchanged) skips the index write --
+        not the parse, not the bookkeeping/receipt writes -- for every
+        ``plan.accepted_raw_ids`` entry at or before the logical source's
+        current ``raw_revision_heads.accepted_raw_id``. Without this, every
+        single live append replays the WHOLE accumulated chain from its
+        proven baseline through every previously accepted append: each of
+        those historical positions is already durably indexed from an
+        earlier call, so re-running ``_index_parsed_for_retained_raw`` for
+        them is redundant ``INSERT OR REPLACE`` churn against ``messages``/
+        ``blocks`` that re-triggers their ``messages_fts`` insert triggers
+        for content that never changed. A long-lived session accumulating N
+        small live appends over its lifetime pays O(N) redundant historical
+        writes on its Nth append and O(N^2) cumulatively over its life --
+        this is the confirmed root cause of the multi-minute/multi-hour
+        writer-gate holds in polylogue-de2a (observed 860s and 9297s single
+        holds), which in turn starved every other periodic write actor (FTS
+        merge, WAL checkpoint) for the entire hold. Only the live append
+        path opts in; the backfill/restore/membership replay paths keep the
+        full self-healing re-apply (their content may predate a parser fix
+        and legitimately need every historical position rewritten, and they
+        run far less often than a live append).
         """
         if not plan.accepted_raw_ids:
             raise ValueError("cannot apply a revision plan without an accepted chain")
@@ -3160,6 +3184,21 @@ class ArchiveStore:
                    FROM raw_revision_heads WHERE logical_source_key = ?""",
                 (plan.logical_source_key,),
             ).fetchone()
+            # Captured before any clearing below (the quarantined-membership
+            # fold path nulls ``existing_head`` further down): the previous
+            # run's accepted tip is exactly the boundary between "already
+            # durably indexed" and "new tail" for THIS byte chain. If it
+            # isn't present in the current chain at all (a fresh chain, a
+            # cleared/superseded membership head, or a discontinuity), the
+            # lookup below naturally falls back to "no skip" -- every
+            # position gets indexed, identical to today's behavior.
+            previously_accepted_raw_id = str(existing_head[1]) if existing_head is not None else None
+            already_indexed_upto = -1
+            if skip_already_applied and previously_accepted_raw_id is not None:
+                try:
+                    already_indexed_upto = plan.accepted_raw_ids.index(previously_accepted_raw_id)
+                except ValueError:
+                    already_indexed_upto = -1
             accepted_frontier_kind = (
                 "semantic" if existing_head is not None and str(existing_head[4]) == "semantic" else "byte"
             )
@@ -3196,6 +3235,15 @@ class ArchiveStore:
                 )
                 existing_head = None
             for position, raw_id in enumerate(plan.accepted_raw_ids):
+                if position <= already_indexed_upto:
+                    # Already durably written by an earlier accepted replay
+                    # of this exact byte chain (see ``skip_already_applied``
+                    # above) -- its session_id is deterministic from its own
+                    # parsed content, so recover it without re-running the
+                    # write.
+                    parsed = parsed_by_raw_id[raw_id]
+                    session_ids.add(str(make_session_id(parsed.source_name, parsed.provider_session_id)))
+                    continue
                 index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
                     parsed_by_raw_id[raw_id],
