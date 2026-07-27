@@ -623,6 +623,7 @@ export type SessionListRowPayload = {
   readonly tags?: ReadonlyArray<string>;
   readonly target_ref?: TargetRefPayload | null;
   readonly title: string;
+  readonly title_source?: string | null;
   readonly updated_at?: string | null;
   readonly words?: number | null;
 };
@@ -682,6 +683,7 @@ export type SessionSummaryPayload = {
   readonly origin: string;
   readonly target_ref?: TargetRefPayload | null;
   readonly title: string;
+  readonly title_source?: string | null;
   readonly updated_at?: string | null;
 };
 

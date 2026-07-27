@@ -31,6 +31,7 @@ entity.
 | `id` | `SessionId` (str) | Composite ID, `origin:native_id` |
 | `origin` | `Origin` | Source-origin token (see above) |
 | `title` | `str?` | Parsed session title |
+| `title_source` | `TitleSource?` | Provenance of `title`: `origin` (provider-supplied), `path`, `heuristic` (derived, e.g. first human-authored message), `user` (override), `unknown` |
 | `created_at` | `datetime?` | Creation timestamp |
 | `updated_at` | `datetime?` | Last update timestamp |
 | `messages` | `MessageCollection` | Eagerly or lazily materialized messages (`Session` only) |

@@ -1266,6 +1266,12 @@ components:
         title:
           title: Title
           type: string
+        title_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title Source
         message_count:
           title: Message Count
           type: integer
@@ -1511,6 +1517,12 @@ components:
         title:
           title: Title
           type: string
+        title_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title Source
         target_ref:
           anyOf:
           - $ref: '#/components/schemas/TargetRefPayload'
