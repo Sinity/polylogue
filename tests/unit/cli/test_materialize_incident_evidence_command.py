@@ -12,7 +12,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.commands.materialize_incident_evidence import materialize_incident_evidence_command
+from polylogue.cli import cli
 from polylogue.insights.work_evidence import WorkEvidenceGraph
 from polylogue.paths import active_index_db_path
 from polylogue.storage.repository import SessionRepository
@@ -54,8 +54,17 @@ def test_dry_run_reports_json_summary_without_persisting(workspace_env: dict[str
     session_id = _seed_incident_session(workspace_env)
 
     result = CliRunner().invoke(
-        materialize_incident_evidence_command,
-        ["--session-id", session_id, "--graph-id", "incident:cli-demo", "--output-format", "json"],
+        cli,
+        [
+            "ops",
+            "materialize-incident-evidence",
+            "--session-id",
+            session_id,
+            "--graph-id",
+            "incident:cli-demo",
+            "--output-format",
+            "json",
+        ],
         catch_exceptions=False,
     )
 
@@ -77,8 +86,18 @@ def test_yes_flag_persists_materialized_graph(workspace_env: dict[str, Path]) ->
     session_id = _seed_incident_session(workspace_env)
 
     result = CliRunner().invoke(
-        materialize_incident_evidence_command,
-        ["--session-id", session_id, "--graph-id", "incident:cli-apply-demo", "--yes", "--output-format", "json"],
+        cli,
+        [
+            "ops",
+            "materialize-incident-evidence",
+            "--session-id",
+            session_id,
+            "--graph-id",
+            "incident:cli-apply-demo",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
         catch_exceptions=False,
     )
 
@@ -96,8 +115,15 @@ def test_yes_flag_persists_materialized_graph(workspace_env: dict[str, Path]) ->
 
 def test_unknown_session_id_reports_usage_error(workspace_env: dict[str, Path]) -> None:
     result = CliRunner().invoke(
-        materialize_incident_evidence_command,
-        ["--session-id", "codex-session:does-not-exist", "--graph-id", "incident:cli-missing"],
+        cli,
+        [
+            "ops",
+            "materialize-incident-evidence",
+            "--session-id",
+            "codex-session:does-not-exist",
+            "--graph-id",
+            "incident:cli-missing",
+        ],
     )
     assert result.exit_code != 0
     assert "no sessions found" in str(result.output) or (

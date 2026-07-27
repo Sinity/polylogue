@@ -15,7 +15,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.commands.reconcile_work_effects import reconcile_work_effects_command
+from polylogue.cli import cli
 from polylogue.core.refs import ObjectRef
 from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
 from polylogue.paths import active_index_db_path
@@ -74,8 +74,17 @@ def test_dry_run_reports_json_summary_without_persisting(
     _init_git_repo(repo, message="fix: land it (Ref polylogue-1vpm.6.2)")
 
     result = CliRunner().invoke(
-        reconcile_work_effects_command,
-        ["--graph-id", _seeded_graph.graph_id, "--repo", str(repo), "--output-format", "json"],
+        cli,
+        [
+            "ops",
+            "reconcile-work-effects",
+            "--graph-id",
+            _seeded_graph.graph_id,
+            "--repo",
+            str(repo),
+            "--output-format",
+            "json",
+        ],
         catch_exceptions=False,
     )
 
@@ -98,8 +107,18 @@ def test_yes_flag_persists_reconciled_graph(
     _init_git_repo(repo, message="fix: land it (Ref polylogue-1vpm.6.2)")
 
     result = CliRunner().invoke(
-        reconcile_work_effects_command,
-        ["--graph-id", _seeded_graph.graph_id, "--repo", str(repo), "--yes", "--output-format", "json"],
+        cli,
+        [
+            "ops",
+            "reconcile-work-effects",
+            "--graph-id",
+            _seeded_graph.graph_id,
+            "--repo",
+            str(repo),
+            "--yes",
+            "--output-format",
+            "json",
+        ],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
@@ -152,8 +171,10 @@ def test_github_repo_flag_wires_in_pr_effects(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     result = CliRunner().invoke(
-        reconcile_work_effects_command,
+        cli,
         [
+            "ops",
+            "reconcile-work-effects",
             "--graph-id",
             _seeded_graph.graph_id,
             "--repo",
@@ -179,8 +200,8 @@ def test_unknown_graph_id_is_a_usage_error(tmp_path: Path, workspace_env: dict[s
     _init_git_repo(repo, message="irrelevant")
 
     result = CliRunner().invoke(
-        reconcile_work_effects_command,
-        ["--graph-id", "claude-workflow:does-not-exist", "--repo", str(repo)],
+        cli,
+        ["ops", "reconcile-work-effects", "--graph-id", "claude-workflow:does-not-exist", "--repo", str(repo)],
     )
 
     assert result.exit_code != 0
