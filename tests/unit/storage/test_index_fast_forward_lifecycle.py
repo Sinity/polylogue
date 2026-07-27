@@ -102,10 +102,18 @@ def test_nonsemantic_delta_without_operations_is_rejected(monkeypatch: pytest.Mo
         version=37,
         classes=(DerivedDeltaClass.INDEX_ONLY,),
     )
+    # Isolate to declarations at or below 36 (the versions this plan actually
+    # needs) rather than the live module tuple: the live tuple keeps growing
+    # past 37 as later schema versions get declared, and every one of those
+    # would otherwise leak into invalid_versions via the
+    # `declaration.version > current_version` check below.
+    base_declarations = tuple(
+        declaration for declaration in lifecycle.INDEX_DELTA_DECLARATIONS if declaration.version <= 36
+    )
     monkeypatch.setattr(
         lifecycle,
         "INDEX_DELTA_DECLARATIONS",
-        (*lifecycle.INDEX_DELTA_DECLARATIONS, empty_declaration),
+        (*base_declarations, empty_declaration),
     )
 
     report = lifecycle.index_delta_declaration_report(37)
@@ -128,10 +136,14 @@ def test_delta_without_a_declared_class_is_rejected(monkeypatch: pytest.MonkeyPa
             ),
         ),
     )
+    # Same isolation rationale as test_nonsemantic_delta_without_operations_is_rejected above.
+    base_declarations = tuple(
+        declaration for declaration in lifecycle.INDEX_DELTA_DECLARATIONS if declaration.version <= 36
+    )
     monkeypatch.setattr(
         lifecycle,
         "INDEX_DELTA_DECLARATIONS",
-        (*lifecycle.INDEX_DELTA_DECLARATIONS, unclassified_declaration),
+        (*base_declarations, unclassified_declaration),
     )
 
     assert lifecycle.index_delta_declaration_report(37)["invalid_versions"] == (37,)
@@ -143,6 +155,15 @@ def test_schema_policy_rejects_an_index_bump_without_a_delta_declaration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The real lab command must fail before an undeclared bump reaches CI."""
+    # Isolate to declarations at or below the current (pre-bump) schema
+    # version: index_delta_declaration_report's missing_versions accumulates
+    # over the whole expected range, so any future currently-undeclared gap
+    # elsewhere in the live tuple would otherwise leak into this assertion
+    # alongside the version this test deliberately leaves undeclared.
+    complete_declarations = tuple(
+        declaration for declaration in lifecycle.INDEX_DELTA_DECLARATIONS if declaration.version <= INDEX_SCHEMA_VERSION
+    )
+    monkeypatch.setattr(lifecycle, "INDEX_DELTA_DECLARATIONS", complete_declarations)
     monkeypatch.setattr(schema_policy, "INDEX_SCHEMA_VERSION", INDEX_SCHEMA_VERSION + 1)
 
     exit_code = schema_policy.main(["--json"])
