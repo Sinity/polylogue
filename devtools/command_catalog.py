@@ -35,6 +35,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab schema list",
     "lab schema promote",
     "lab schema roundtrip",
+    "lab seed-receipt-compare",
     "lab snapshot read-surface",
     "lab test-economics",
     "lab testmon-proof",
@@ -440,6 +441,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab pytest-witness-repetitions",
             "devtools lab pytest-witness-repetitions --attempts 2 --xdist-workers 3 --json",
+        ),
+    ),
+    CommandSpec(
+        "lab seed-receipt-compare",
+        "verification lab",
+        "Compare two workload receipts for a clean, like-for-like seed/incident proof (polylogue-b054.1.1.3).",
+        "devtools.seed_receipt_compare",
+        use_when=(
+            "Judge a seed-testmon or focused pytest run's resource receipt against a named baseline "
+            "receipt (e.g. a prior incident) — confirms both runs share workload identity and terminated "
+            "cleanly, then scores wall-time speedup and peak-PSS ceiling targets, naming a blocker and "
+            "linked follow-up for any unmet target instead of silently dropping it."
+        ),
+        examples=(
+            "devtools lab seed-receipt-compare --baseline incident.json --candidate current.json",
+            "devtools lab seed-receipt-compare --baseline incident.json --candidate current.json --json",
         ),
     ),
     CommandSpec(

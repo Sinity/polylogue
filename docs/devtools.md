@@ -70,6 +70,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
 | `devtools lab schema promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
 | `devtools lab schema roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |
+| `devtools lab seed-receipt-compare` | Judge a seed-testmon or focused pytest run's resource receipt against a named baseline receipt (e.g. a prior incident) — confirms both runs share workload identity and terminated cleanly, then scores wall-time speedup and peak-PSS ceiling targets, naming a blocker and linked follow-up for any unmet target instead of silently dropping it. |
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
 | `devtools lab test-economics` | Decide where test-writing effort or test-suite pruning actually pays off, by cross-referencing coverage percent, historical fix-commit density, testmon wall-time cost exposure, and testmon selection fan-out per top-level package. |
 | `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
@@ -159,6 +160,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema list` | List committed schema packages, versions, and evidence manifests. |
 | `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
+| `devtools lab seed-receipt-compare` | Compare two workload receipts for a clean, like-for-like seed/incident proof (polylogue-b054.1.1.3). |
 | `devtools lab smoke` | Run direct archive and reader smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools lab test-economics` | Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11). |
