@@ -177,8 +177,10 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         return Provider.ANTIGRAVITY
     if beads.looks_like(record):
         return Provider.BEADS
-    # Specific type-level checks first (Codex, Claude Code use Pydantic
-    # validation), then weaker dict-key checks (ChatGPT, Claude AI, Gemini).
+    # Specific type-level checks first (Codex uses Pydantic validation;
+    # Claude Code uses a dict-key/type shape check, not Pydantic, despite
+    # ClaudeCodeRecord existing as a separate typed parse-time model), then
+    # weaker dict-key checks (ChatGPT, Claude AI, Gemini).
     if codex.looks_like([dict(record)]):
         return Provider.CODEX
     if claude.looks_like_code([dict(record)]):
