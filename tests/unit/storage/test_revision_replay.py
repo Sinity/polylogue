@@ -1276,3 +1276,231 @@ def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_m
         ).fetchone()
         assert stored is not None
         assert bytes(stored[0]).hex() == session_content_hash(export_session)
+
+
+def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-de2a: the live watcher's per-append replay must not re-index
+    every historical append on every new one.
+
+    Simulates the exact live-watcher shape: baseline arrives, then two more
+    appends arrive one at a time, each replaying the WHOLE accumulated chain
+    (as the real ``append_ingest.py`` hot path always does -- it always
+    passes ``parsed_by_raw_id`` for the entire ``plan.accepted_raw_ids``).
+    With ``skip_already_applied=True``, only the newly accepted tail raw_id
+    should reach ``_index_parsed_for_retained_raw`` on the 2nd and 3rd calls
+    -- not the whole chain again. Without the fix, every call re-indexes
+    every position, an O(n) cost per append that made the daemon's writer
+    gate hold for minutes to hours as a session's append count grew
+    (confirmed root cause; see ``apply_raw_revision_replay``'s
+    ``skip_already_applied`` docstring).
+    """
+    initialize_active_archive_root(tmp_path)
+
+    def parsed(*messages: tuple[str, str]) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="session",
+            messages=[
+                ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)
+                for message_id, text in messages
+            ],
+        )
+
+    indexed_raw_ids: list[str] = []
+    original = ArchiveStore._index_parsed_for_retained_raw
+
+    def spy(self: ArchiveStore, session: ParsedSession, *, raw_id: str, **kwargs: object) -> object:
+        indexed_raw_ids.append(raw_id)
+        return original(self, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ArchiveStore, "_index_parsed_for_retained_raw", spy)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope(
+                "codex:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+            ),
+        )
+        plan0 = archive.classify_raw_revision_cohort("codex:session")
+        archive.apply_raw_revision_replay(
+            plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0, skip_already_applied=True
+        )
+        assert indexed_raw_ids == [baseline]
+        indexed_raw_ids.clear()
+
+        append_one = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"b" * 5,
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append_one,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.APPEND,
+                append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
+                1,
+                predecessor_source_revision="full-0",
+                predecessor_raw_id=baseline,
+                baseline_raw_id=baseline,
+                append_start_offset=10,
+                append_end_offset=15,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan1 = archive.classify_raw_revision_cohort("codex:session")
+        assert plan1.accepted_raw_ids == (baseline, append_one)
+        # The real live-watcher hot path always reparses+passes the FULL
+        # accepted chain (see append_ingest.py), not just the new tail.
+        archive.apply_raw_revision_replay(
+            plan1,
+            {baseline: parsed(("m0", "zero")), append_one: parsed(("m1", "one"))},
+            acquired_at_ms=0,
+            skip_already_applied=True,
+        )
+        # Only the NEW tail position was actually indexed -- the baseline
+        # was already durably written by the first call above.
+        assert indexed_raw_ids == [append_one]
+        indexed_raw_ids.clear()
+
+        append_two = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"c" * 5,
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=3,
+        )
+        archive.bind_raw_revision(
+            append_two,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.APPEND,
+                append_source_revision(
+                    append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
+                    hashlib.sha256(b"c" * 5).hexdigest(),
+                ),
+                2,
+                predecessor_source_revision=append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
+                predecessor_raw_id=append_one,
+                baseline_raw_id=baseline,
+                append_start_offset=15,
+                append_end_offset=20,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan2 = archive.classify_raw_revision_cohort("codex:session")
+        assert plan2.accepted_raw_ids == (baseline, append_one, append_two)
+        archive.apply_raw_revision_replay(
+            plan2,
+            {
+                baseline: parsed(("m0", "zero")),
+                append_one: parsed(("m1", "one")),
+                append_two: parsed(("m2", "two")),
+            },
+            acquired_at_ms=0,
+            skip_already_applied=True,
+        )
+        # Again: only the newest position, not the two already-applied ones.
+        assert indexed_raw_ids == [append_two]
+        indexed_raw_ids.clear()
+
+        # Correctness is unaffected by skipping the already-applied writes:
+        # every message from every accepted position is still present.
+        rows = archive._conn.execute(
+            "SELECT block_type, search_text FROM blocks JOIN messages USING (message_id)"
+            " WHERE messages.session_id = 'codex-session:session' ORDER BY messages.position"
+        ).fetchall()
+        texts = [str(row[1]) for row in rows]
+        assert any("zero" in text for text in texts)
+        assert any("one" in text for text in texts)
+        assert any("two" in text for text in texts)
+
+        head = archive._conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"
+        ).fetchone()
+        assert head is not None
+        assert head[0] == append_two
+
+
+def test_skip_already_applied_default_false_still_reindexes_whole_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backfill/restore/membership callers do not pass ``skip_already_applied``
+    and must keep today's full self-healing re-apply of every historical
+    position -- only the live-append hot path opts into the fast tail-only
+    mode.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    def parsed(*messages: tuple[str, str]) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="session",
+            messages=[
+                ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)
+                for message_id, text in messages
+            ],
+        )
+
+    indexed_raw_ids: list[str] = []
+    original = ArchiveStore._index_parsed_for_retained_raw
+
+    def spy(self: ArchiveStore, session: ParsedSession, *, raw_id: str, **kwargs: object) -> object:
+        indexed_raw_ids.append(raw_id)
+        return original(self, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ArchiveStore, "_index_parsed_for_retained_raw", spy)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope(
+                "codex:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+            ),
+        )
+        plan0 = archive.classify_raw_revision_cohort("codex:session")
+        archive.apply_raw_revision_replay(plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0)
+        indexed_raw_ids.clear()
+
+        append_one = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"b" * 5,
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append_one,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.APPEND,
+                append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
+                1,
+                predecessor_source_revision="full-0",
+                predecessor_raw_id=baseline,
+                baseline_raw_id=baseline,
+                append_start_offset=10,
+                append_end_offset=15,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan1 = archive.classify_raw_revision_cohort("codex:session")
+        archive.apply_raw_revision_replay(
+            plan1,
+            {baseline: parsed(("m0", "zero")), append_one: parsed(("m1", "one"))},
+            acquired_at_ms=0,
+        )
+        # Default (no skip): the whole chain is re-indexed, exactly as before
+        # this fix -- pinning that non-opted-in callers are unaffected.
+        assert indexed_raw_ids == [baseline, append_one]
