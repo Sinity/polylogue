@@ -22,7 +22,7 @@ def make_chatgpt_node(
     message: JsonObject = {
         "id": msg_id,
         "author": {"role": role},
-        "content": {"parts": content_parts},
+        "content": {"content_type": "text", "parts": content_parts},
     }
     node: JsonObject = {
         "id": msg_id,
@@ -68,7 +68,8 @@ class ChatGPTExportBuilder:
         self._title: str | None = None
         self._nodes: JsonObjectList = []
         self._node_counter = 0
-        self._timestamp = 1704067200.0
+        self._create_time = 1704067200.0
+        self._timestamp = self._create_time
 
     def title(self, title: str) -> ChatGPTExportBuilder:
         self._title = title
@@ -115,6 +116,9 @@ class ChatGPTExportBuilder:
     def build(self) -> JsonObject:
         result: JsonObject = {
             "id": self.conv_id,
+            "conversation_id": self.conv_id,
+            "create_time": self._create_time,
+            "current_node": str(self._nodes[-1]["id"]) if self._nodes else "root",
             "mapping": {str(node["id"]): node for node in self._nodes},
         }
         if self._title:
@@ -233,6 +237,9 @@ class InboxBuilder:
         else:
             payload = {
                 "id": conv_id,
+                "conversation_id": conv_id,
+                "create_time": 1704067200.0,
+                "current_node": str(nodes[-1]["id"]) if nodes else "root",
                 "mapping": {str(node["id"]): node for node in nodes},
             }
             if title:

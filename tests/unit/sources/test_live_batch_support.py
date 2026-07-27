@@ -3330,6 +3330,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
         return {
             "id": native_id,
             "title": native_id,
+            "create_time": 1_780_000_000.0,
             "current_node": f"{native_id}-node-{len(texts) - 1}",
             "mapping": mapping,
         }
@@ -3503,6 +3504,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
         return {
             "id": native_id,
             "title": native_id,
+            "create_time": 1_780_000_000.0,
             "current_node": f"{native_id}-node-{len(texts) - 1}",
             "mapping": mapping,
         }
@@ -3883,6 +3885,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
         {
             "id": "parser-drift",
             "title": "current title",
+            "create_time": 1_780_000_000.0,
             "current_node": "node",
             "mapping": {
                 "node": {

@@ -12,11 +12,16 @@ from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_
 
 def _chatgpt_payload() -> dict[str, object]:
     return {
+        "id": "chatgpt-preflight-fixture",
+        "conversation_id": "chatgpt-preflight-fixture",
         "title": "Supported ChatGPT fixture",
+        "create_time": 1704067200.0,
+        "current_node": "root",
         "mapping": {
             "root": {
                 "id": "root",
                 "message": {
+                    "id": "root-message",
                     "author": {"role": "user"},
                     "content": {"content_type": "text", "parts": ["hello"]},
                 },
