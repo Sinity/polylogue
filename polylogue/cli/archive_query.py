@@ -839,12 +839,19 @@ def _lineage_seed_from_predicate(predicate: QueryPredicate | None) -> str | None
     session rows to one shared-root lineage family. This walks the same
     boolean-predicate tree to detect that shape so the list route can
     materialize the declared recursive-graph projection columns for it (#z9gh.3).
+
+    Only descends into ``and`` nodes. A ``lineage:id:X or repo:foo`` result
+    set is NOT purely lineage X's family -- rows matched only via the ``or``
+    branch would get X's parent_refs/child_refs/continuation stamped on them,
+    which is wrong, not just imprecise. An ``or`` node (or a ``not`` wrapping
+    the predicate, which isn't a ``QueryBoolPredicate``/``QueryLineagePredicate``
+    at all) correctly yields no seed here.
     """
     if predicate is None:
         return None
     if isinstance(predicate, QueryLineagePredicate):
         return predicate.seed_session_id
-    if isinstance(predicate, QueryBoolPredicate):
+    if isinstance(predicate, QueryBoolPredicate) and predicate.op == "and":
         for child in predicate.children:
             seed = _lineage_seed_from_predicate(child)
             if seed is not None:

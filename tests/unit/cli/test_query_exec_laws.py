@@ -2512,6 +2512,39 @@ def test_lineage_id_cli_query_materializes_parent_child_refs(cli_workspace: dict
     assert child_row.get("continuation") is None
 
 
+def test_lineage_seed_from_predicate_ignores_or_combined_lineage_clause() -> None:
+    """``lineage:id:X or <anything>`` must not yield a lineage seed.
+
+    Regression for a bug found reviewing polylogue-z9gh.3's fix: the seed
+    detector originally walked into ``QueryBoolPredicate.children``
+    regardless of the boolean operator, so an ``or``-combined lineage
+    predicate would incorrectly materialize parent_refs/child_refs for rows
+    that never actually belong to that lineage family - they'd have merely
+    matched the query via the unrelated ``or`` branch. An ``and``-combined
+    lineage clause is unaffected: AND only narrows the result set further,
+    so every remaining row genuinely is a member of the lineage family.
+    """
+    from polylogue.archive.query.predicate import (
+        QueryBoolPredicate,
+        QueryFieldPredicate,
+        QueryLineagePredicate,
+    )
+    from polylogue.cli.archive_query import _lineage_seed_from_predicate
+
+    lineage = QueryLineagePredicate(seed_session_id="codex-session:seed")
+    other = QueryFieldPredicate(field="repo", values=("foo",), op="=")
+
+    or_combined = QueryBoolPredicate(op="or", children=(lineage, other))
+    assert _lineage_seed_from_predicate(or_combined) is None
+
+    and_combined = QueryBoolPredicate(op="and", children=(lineage, other))
+    assert _lineage_seed_from_predicate(and_combined) == "codex-session:seed"
+
+    assert _lineage_seed_from_predicate(lineage) == "codex-session:seed"
+    assert _lineage_seed_from_predicate(None) is None
+    assert _lineage_seed_from_predicate(other) is None
+
+
 def test_async_execute_query_archive_accepts_explicit_semantic_lane(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
