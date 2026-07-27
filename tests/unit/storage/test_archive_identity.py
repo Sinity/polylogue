@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,9 @@ from polylogue.storage.archive_identity import (
     ArchiveIdentity,
     ArchiveIdentityConflictError,
     ArchiveLocation,
+    ArchiveOwnershipError,
+    OwnedArchiveLocation,
+    assert_owns_archive_location,
     assert_writable_archive_identity,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -131,3 +135,92 @@ def test_missing_index_cannot_bypass_split_root_preflight(tmp_path: Path, missin
         assert_writable_archive_identity(configured_root=configured, active_root=active)
 
     assert not (missing_root / "index.db").exists()
+
+
+def test_owned_location_rejects_concurrent_acquire_before_any_sqlite_file_exists(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    # No tier files exist yet -- the fixture proves the failure below happens
+    # strictly before any SQLite tier file is created, not merely before an
+    # already-open connection would have used it.
+    location = ArchiveLocation.resolve(root)
+
+    first = OwnedArchiveLocation.acquire(location)
+    try:
+        with pytest.raises(ArchiveOwnershipError, match="already owned"):
+            OwnedArchiveLocation.acquire(location)
+    finally:
+        first.release()
+
+    for name in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+        assert not (root / name).exists(), f"{name} must not exist: ownership must fail before SQLite opens"
+
+
+def test_owned_location_reclaims_lock_left_by_dead_process(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    location = ArchiveLocation.resolve(root)
+    lock_path = root / ".archive-ownership.lock"
+    # A pid that cannot plausibly be alive: simulate a crashed prior owner
+    # without depending on any real process's exit timing.
+    dead_pid = 2**30
+    while _pid_is_alive_for_test(dead_pid):
+        dead_pid += 1
+    lock_path.write_text(f"pid={dead_pid} host=stale token=dead\n", encoding="utf-8")
+
+    owned = OwnedArchiveLocation.acquire(location)
+    try:
+        assert owned.owner_id is not None
+    finally:
+        owned.release()
+
+
+def _pid_is_alive_for_test(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def test_assert_owns_archive_location_rejects_foreign_root(tmp_path: Path) -> None:
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    _touch_tiers(root_a)
+    _touch_tiers(root_b)
+    location_a = ArchiveLocation.resolve(root_a)
+    location_b = ArchiveLocation.resolve(root_b)
+
+    owned = OwnedArchiveLocation.acquire(location_a)
+    try:
+        with pytest.raises(ArchiveOwnershipError, match="does not cover this location"):
+            assert_owns_archive_location(owned, location_b)
+        # A matching location is accepted without raising.
+        assert_owns_archive_location(owned, location_a)
+    finally:
+        owned.release()
+
+
+def test_assert_owns_archive_location_rejects_stale_generation_after_pointer_rotation(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    generation_a = tmp_path / "gen-a"
+    generation_b = tmp_path / "gen-b"
+    _touch_tiers(root)
+    generation_a.mkdir()
+    generation_b.mkdir()
+    (generation_a / "index.db").touch()
+    (generation_b / "index.db").touch()
+    (root / ".index-active-pointer").write_text(str(generation_a / "index.db"), encoding="utf-8")
+
+    owned = OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+    try:
+        # Simulate a concurrent promotion rotating the active generation
+        # after ownership was acquired: the proof must not silently cover it.
+        (root / ".index-active-pointer").unlink()
+        (root / ".index-active-pointer").write_text(str(generation_b / "index.db"), encoding="utf-8")
+        rotated = ArchiveLocation.resolve(root)
+
+        with pytest.raises(ArchiveOwnershipError, match="stale for the current active generation"):
+            assert_owns_archive_location(owned, rotated)
+    finally:
+        owned.release()
