@@ -187,6 +187,27 @@ class ArchiveSessionEnvelope:
     total_message_count: int | None = None
 
 
+def archive_message_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
+    """Flatten an archive-tier message's blocks into its display ``text``.
+
+    Single source of truth for the ``message.text`` field the daemon's two
+    session-detail routes each used to compute independently (polylogue-6o9b):
+    the DB-backed route (``api/archive.py:_archive_message_to_domain``,
+    reached via ``Polylogue.get_session()``) and the archive-backed route
+    (``daemon/http.py:_archive_message_payload``) both read the same
+    ``ArchiveMessageRow.blocks`` and must produce byte-identical text for
+    the same message, since ``daemon/web_shell_reader.py``'s client-side
+    rendering heuristic (``renderMessageBlocks``) dispatches off this single
+    flattened field. Joins every non-empty block's text in block order,
+    blank-line separated -- this intentionally includes
+    THINKING/TOOL_USE/TOOL_RESULT/CODE block text, not just prose TEXT
+    blocks, matching both routes' prior (independently duplicated) behavior.
+    Narrowing this to prose-only content is a separate follow-up (see
+    ``investigations/rendering-path-divergence.md``), not this fix's scope.
+    """
+    return "\n\n".join(block.text for block in blocks if block.text)
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveInsightMaterialization:
     insight_type: str
