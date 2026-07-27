@@ -51,6 +51,7 @@ from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.logging import get_logger
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
 from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -64,6 +65,7 @@ from polylogue.surfaces.payloads import (
     InvalidSearchCursorError,
     MutationOperation,
     MutationResultPayload,
+    QueryMissDiagnosticsPayload,
     SearchCursor,
     SessionListRowPayload,
     SessionSearchHitPayload,
@@ -75,6 +77,8 @@ from polylogue.surfaces.payloads import (
     reader_anchor,
     reader_message_actions,
 )
+
+logger = get_logger(__name__)
 
 _PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
 
@@ -644,6 +648,11 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         typo_hint=typo_hint,
                         with_units=with_units,
                         with_unit_fields=with_unit_fields,
+                        diagnostics=(
+                            _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why")))
+                            if not page_hits
+                            else None
+                        ),
                     )
                     return
                 if stream:
@@ -763,6 +772,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 typo_hint=typo_hint,
                 with_units=with_units,
                 with_unit_fields=with_unit_fields,
+                diagnostics=(
+                    _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why"))) if not page_hits else None
+                ),
             )
             return
         if params.get("latest"):
@@ -1535,7 +1547,13 @@ def _emit_daemon_search_payload(
         "source": "daemon",
     }
     if not hits:
-        _emit_no_results(envelope, output_format=output_format, typo_hint=typo_hint)
+        diagnostics_payload = payload.get("diagnostics")
+        _emit_no_results(
+            envelope,
+            output_format=output_format,
+            typo_hint=typo_hint,
+            diagnostics=diagnostics_payload if isinstance(diagnostics_payload, Mapping) else None,
+        )
     _emit_rows(envelope, hits, output_format=output_format, text_line=_hit_line, fields=fields)
 
 
@@ -2186,6 +2204,31 @@ def _emit_list(
     _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line, fields=fields)
 
 
+def _search_miss_diagnostics(
+    env: AppEnv,
+    spec: SessionQuerySpec,
+    *,
+    why: bool,
+) -> QueryMissDiagnosticsPayload | None:
+    """Best-effort zero-hit diagnosis for the root query search path.
+
+    Bridges into the async facade (this file is otherwise a synchronous
+    ``ArchiveStore``-direct query path) so ``find``/root search shares the
+    same clause-drop/relaxation/FTS-disagreement diagnosis as the
+    TUI/daemon/API surfaces (polylogue-jnj.12) instead of a third
+    reimplementation. Degrades to ``None`` on any failure -- a failed
+    diagnosis must never turn a legitimate zero-hit result into an error.
+    """
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
+    try:
+        raw_diagnostics = run_coroutine_sync(env.polylogue.diagnose_query_miss(spec, full=why))
+    except Exception:
+        logger.exception("_search_miss_diagnostics: diagnose_query_miss failed")
+        return None
+    return QueryMissDiagnosticsPayload.from_diagnostics(raw_diagnostics)
+
+
 def _emit_search(
     hits: list[ArchiveSessionSearchHit],
     *,
@@ -2202,6 +2245,7 @@ def _emit_search(
     typo_hint: str | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    diagnostics: QueryMissDiagnosticsPayload | None = None,
 ) -> None:
     items = [
         _hit_payload(
@@ -2231,7 +2275,7 @@ def _emit_search(
         "next_cursor": next_cursor,
     }
     if not items:
-        _emit_no_results(envelope, output_format=output_format, typo_hint=typo_hint)
+        _emit_no_results(envelope, output_format=output_format, typo_hint=typo_hint, diagnostics=diagnostics)
     _emit_rows(envelope, items, output_format=output_format, text_line=_hit_line, fields=fields)
 
 
@@ -2262,21 +2306,65 @@ def _emit_session(
     click.echo(_session_text(envelope))
 
 
-def _emit_no_results(envelope: dict[str, object], *, output_format: str, typo_hint: str | None = None) -> NoReturn:
+def _diagnostics_dict(
+    diagnostics: QueryMissDiagnosticsPayload | Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if diagnostics is None:
+        return None
+    if isinstance(diagnostics, Mapping):
+        return dict(diagnostics)
+    return diagnostics.model_dump(mode="json")
+
+
+def _print_diagnostics_lines(diagnostics: dict[str, object]) -> None:
+    """Render the ``Why this may have missed:`` block shared across query surfaces."""
+    reasons = diagnostics.get("reasons")
+    if not isinstance(reasons, list) or not reasons:
+        return
+    click.echo("Why this may have missed:")
+    for reason in reasons:
+        if not isinstance(reason, Mapping):
+            continue
+        summary = reason.get("summary")
+        if summary:
+            click.echo(f"  - {summary}")
+        detail = reason.get("detail")
+        if detail:
+            click.echo(f"    {detail}")
+
+
+def _emit_no_results(
+    envelope: dict[str, object],
+    *,
+    output_format: str,
+    typo_hint: str | None = None,
+    diagnostics: QueryMissDiagnosticsPayload | Mapping[str, object] | None = None,
+) -> NoReturn:
     """Emit the canonical no-results response and exit with status 2.
 
     Status 2 distinguishes "the query ran and matched nothing" from a
     successful read with results (0) and from an error (1), so callers can
     branch on an empty result set. Machine formats still receive a parseable
     empty envelope; text surfaces get the human-readable message.
+
+    ``diagnostics`` (polylogue-jnj.12) carries the shared miss-diagnosis
+    envelope -- either the typed payload or an already-serialized mapping
+    forwarded verbatim from a daemon HTTP response. Machine formats embed it
+    in the empty envelope; text surfaces render a "Why this may have missed:"
+    block, verbosity controlled upstream by the caller's ``--why`` request
+    (bounded clause-drop attribution by default, full breakdown with
+    ``--why``).
     """
     from polylogue.cli.convergence_feedback import convergence_warning_line
 
     convergence_warning = convergence_warning_line()
+    diagnostics_payload = _diagnostics_dict(diagnostics)
     empty = {**envelope, "items": [], "total": 0}
     if convergence_warning is not None:
         empty["archive_converging"] = True
         empty["convergence_warning"] = convergence_warning
+    if diagnostics_payload is not None:
+        empty["diagnostics"] = diagnostics_payload
     if output_format == "json":
         click.echo(json.dumps(empty, indent=2, sort_keys=True))
     elif output_format == "yaml":
@@ -2291,6 +2379,8 @@ def _emit_no_results(envelope: dict[str, object], *, output_format: str, typo_hi
         click.echo("No sessions matched.")
         if typo_hint is not None:
             click.echo(typo_hint)
+        if diagnostics_payload is not None:
+            _print_diagnostics_lines(diagnostics_payload)
     raise SystemExit(2)
 
 

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, cast
 
+from polylogue.archive.query.miss_types import QueryMissDiagnostics, QueryMissReason, Severity
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.enums import Origin
-from polylogue.core.json import JSONDocument
 from polylogue.readiness import VerifyStatus, get_readiness
 
 logger = logging.getLogger(__name__)
@@ -18,63 +17,6 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from polylogue.archive.query.source_freshness import NamedSourceFreshness
     from polylogue.config import Config
-
-Severity = Literal["info", "warning", "error"]
-
-
-@dataclass(frozen=True, slots=True)
-class QueryMissReason:
-    """One observed reason a query may have returned no sessions."""
-
-    code: str
-    severity: Severity
-    summary: str
-    detail: str | None = None
-    count: int | None = None
-
-    def to_dict(self) -> JSONDocument:
-        payload: JSONDocument = {
-            "code": self.code,
-            "severity": self.severity,
-            "summary": self.summary,
-        }
-        if self.detail:
-            payload["detail"] = self.detail
-        if self.count is not None:
-            payload["count"] = self.count
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class QueryMissDiagnostics:
-    """Structured no-result diagnosis shared by CLI and MCP surfaces."""
-
-    message: str
-    filters: tuple[str, ...]
-    reasons: tuple[QueryMissReason, ...]
-    archive_session_count: int | None = None
-    raw_session_count: int | None = None
-
-    def to_dict(self) -> JSONDocument:
-        payload: JSONDocument = {
-            "message": self.message,
-            "filters": list(self.filters),
-            "reasons": [reason.to_dict() for reason in self.reasons],
-        }
-        if self.archive_session_count is not None:
-            payload["archive_session_count"] = self.archive_session_count
-        if self.raw_session_count is not None:
-            payload["raw_session_count"] = self.raw_session_count
-        return payload
-
-    def human_reason_lines(self) -> list[str]:
-        """Return concise human-facing reason lines."""
-        lines: list[str] = []
-        for reason in self.reasons:
-            lines.append(reason.summary)
-            if reason.detail:
-                lines.append(f"  {reason.detail}")
-        return lines
 
 
 def _async_method(obj: object, method_name: str) -> Callable[..., Awaitable[object]] | None:
@@ -217,13 +159,71 @@ def _fallback_reason(archive_count: int | None, reasons: list[QueryMissReason]) 
     return None
 
 
+async def _predicate_attribution_reasons(
+    selection: SessionQuerySpec,
+    config: Config | None,
+    *,
+    full: bool,
+) -> list[QueryMissReason]:
+    """Bounded clause-drop attribution (+ full-mode relaxation/FTS-disagreement).
+
+    ``config`` is required to run any probe (each probe re-runs
+    :meth:`SessionQuerySpec.count`/``list_summaries`` against the live
+    archive); when it's absent this degrades to no additional reasons, the
+    same as every other config-gated check in this module.
+    """
+    if config is None:
+        return []
+    from polylogue.archive.query.miss_predicates import (
+        probe_date_relaxation_reasons,
+        probe_fts_structured_disagreement,
+        probe_predicate_zeroing,
+    )
+
+    try:
+        probe_result = await probe_predicate_zeroing(selection, config)
+    except Exception:
+        logger.exception("_predicate_attribution_reasons: clause-drop probe failed")
+        return []
+    reasons = list(probe_result.reasons)
+    if not full:
+        return reasons
+    try:
+        reasons.extend(
+            await probe_date_relaxation_reasons(
+                selection,
+                config,
+                culprit_fields=probe_result.culprit_fields,
+            )
+        )
+    except Exception:
+        logger.exception("_predicate_attribution_reasons: date relaxation probe failed")
+    try:
+        fts_reason = await probe_fts_structured_disagreement(selection, config)
+    except Exception:
+        logger.exception("_predicate_attribution_reasons: fts-vs-structured probe failed")
+        fts_reason = None
+    if fts_reason is not None:
+        reasons.append(fts_reason)
+    return reasons
+
+
 async def diagnose_query_miss(
     repository: object,
     selection: SessionQuerySpec,
     *,
     config: Config | None = None,
+    full: bool = False,
 ) -> QueryMissDiagnostics:
-    """Build a best-effort diagnosis for an empty query result."""
+    """Build a best-effort diagnosis for an empty query result.
+
+    ``full`` controls verbosity, not correctness: the default (``False``)
+    still runs the bounded clause-drop scan (polylogue-jnj.12) so the
+    returned diagnosis names which predicate(s) zeroed the result set, but
+    skips the extra since/until relaxation and FTS-vs-structured-filter
+    disagreement probes. Pass ``full=True`` (the CLI's ``--why`` flag, and
+    always for MCP/agent-facing callers) for that complete breakdown.
+    """
     filters = tuple(selection.describe())
     stats = await _call_optional(repository, "get_archive_stats")
     archive_count = _archive_count_for_selection(stats, selection)
@@ -247,6 +247,7 @@ async def diagnose_query_miss(
     backlog_reason = _raw_backlog_reason(raw_count, archive_count)
     if backlog_reason is not None:
         reasons.append(backlog_reason)
+    reasons.extend(await _predicate_attribution_reasons(selection, config, full=full))
     fallback_reason = _fallback_reason(archive_count, reasons)
     if fallback_reason is not None:
         reasons.append(fallback_reason)

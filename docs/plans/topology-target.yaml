@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6996
+    loc: 6841
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -376,8 +376,18 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/miss_diagnostics.py
-    loc: 354
+    loc: 355
     target: polylogue/archive/query/miss_diagnostics.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/miss_predicates.py
+    loc: 300
+    target: polylogue/archive/query/miss_predicates.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/miss_types.py
+    loc: 75
+    target: polylogue/archive/query/miss_types.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/path_prefix.py
@@ -800,11 +810,11 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2679
+    loc: 2769
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 606
+    loc: 607
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -812,7 +822,7 @@ files:
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 379
+    loc: 390
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -1144,7 +1154,7 @@ files:
     target: polylogue/cli/read_views/streaming_markdown.py
     owner: stable
   - path: polylogue/cli/root_request.py
-    loc: 190
+    loc: 195
     target: polylogue/cli/root_request.py
     owner: stable
   - path: polylogue/cli/select.py
@@ -2215,7 +2225,7 @@ files:
     target: polylogue/mcp/__init__.py
     owner: stable
   - path: polylogue/mcp/archive_support.py
-    loc: 807
+    loc: 865
     target: polylogue/mcp/archive_support.py
     owner: stable
   - path: polylogue/mcp/call_log.py

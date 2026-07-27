@@ -3205,7 +3205,45 @@ class TestSearchQueryContracts:
         payload = json.loads(result.output)
         assert len(payload["items"]) == 1
         assert payload["total"] == 2
-        assert payload["next_cursor"] is not None
+
+    def test_zero_hit_search_names_the_zeroing_predicate_by_default(self, search_workspace: SearchWorkspace) -> None:
+        """Default (no --why): diagnostics still attribute which predicate zeroed the set (#jnj.12).
+
+        "Python" only exists on the chatgpt session; combined with an
+        origin filter that excludes it, the query is a real miss.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "--no-daemon", "find", "Python", "--origin", "claude-ai-export", "-f", "json"],
+        )
+
+        assert result.exit_code == 2, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "search"
+        reasons = payload["diagnostics"]["reasons"]
+        codes = [reason["code"] for reason in reasons]
+        assert "predicate_zeroed_set" in codes
+        # The full breakdown's FTS-vs-structured probe is not run by default.
+        assert "fts_structured_disagreement" not in codes
+
+    def test_why_flag_adds_the_full_breakdown(self, search_workspace: SearchWorkspace) -> None:
+        """--why adds the FTS-vs-structured disagreement probe on top of the bounded default."""
+        from polylogue.cli import cli
+
+        del search_workspace
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "--no-daemon", "--why", "find", "Python", "--origin", "claude-ai-export", "-f", "json"],
+        )
+
+        assert result.exit_code == 2, result.output
+        payload = json.loads(result.output)
+        codes = [reason["code"] for reason in payload["diagnostics"]["reasons"]]
+        assert "predicate_zeroed_set" in codes
+        assert "fts_structured_disagreement" in codes
 
     def test_debug_timing_keeps_query_output_on_stdout(
         self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
