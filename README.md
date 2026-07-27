@@ -214,7 +214,7 @@ normal path that sends archive text outside the machine. Run
 
 Live site: <https://sinity.github.io/polylogue/>.
 
-Start with the task-oriented guides below; [docs/README.md](docs/README.md) separates guides, reference, internals, operations, evidence, design, and historical records. Current sequencing and active workstreams live in the Beads backlog (`bd ready`, `bd list --status open`).
+Start with the task-oriented guides below. The complete documentation map is in [docs/README.md](docs/README.md).
 
 | Document | Description |
 |----------|-------------|
