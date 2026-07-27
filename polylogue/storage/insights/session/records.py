@@ -57,6 +57,7 @@ class SessionProfileRecord(BaseModel):
     workflow_shape_confidence: float = 0.0
     workflow_shape_features_json: str = "{}"
     terminal_state: str = "unknown"
+    terminal_state_method: str = "unknown"
     terminal_state_confidence: float = 0.0
     terminal_state_evidence_json: str = "{}"
     cost_is_estimated: bool = False

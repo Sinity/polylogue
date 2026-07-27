@@ -533,6 +533,7 @@ def test_build_session_profile_terminal_state_detects_unanswered_user_turn() -> 
 
     assert profile.terminal_state == "question_left"
     assert profile.terminal_state_evidence == {"message_id": "u1", "evidence_class": "raw_evidence"}
+    assert profile.terminal_state_method == "last_message_role"
 
 
 def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
@@ -559,6 +560,7 @@ def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
 
     assert profile.terminal_state == "tool_left"
     assert profile.terminal_state_evidence == {"pending_tool_count": 1, "evidence_class": "raw_evidence"}
+    assert profile.terminal_state_method == "pending_tool_events"
 
 
 def test_build_session_profile_terminal_state_ignores_paired_tool_blocks() -> None:
@@ -599,6 +601,7 @@ def test_build_session_profile_terminal_state_ignores_paired_tool_blocks() -> No
     # deleted (polylogue-ve9z) the terminal state is honest unknown.
     assert profile.terminal_state == "unknown"
     assert profile.terminal_state_evidence == {"message_id": "a2", "evidence_class": "raw_evidence"}
+    assert profile.terminal_state_method == "no_signal"
 
 
 def test_build_session_profile_terminal_state_detects_unpaired_tool_block() -> None:
@@ -629,6 +632,7 @@ def test_build_session_profile_terminal_state_detects_unpaired_tool_block() -> N
 
     assert profile.terminal_state == "tool_left"
     assert profile.terminal_state_evidence == {"pending_tool_count": 1, "evidence_class": "raw_evidence"}
+    assert profile.terminal_state_method == "pending_tool_blocks"
 
 
 def test_build_session_profile_terminal_state_detects_provider_error() -> None:
@@ -671,6 +675,7 @@ def test_build_session_profile_terminal_state_detects_provider_error() -> None:
         "event_id": "conv-error-left:event-1",
         "evidence_class": "raw_evidence",
     }
+    assert profile.terminal_state_method == "event_status"
 
 
 def test_build_session_profile_terminal_state_ignores_recovered_tool_error() -> None:
@@ -731,6 +736,7 @@ def test_build_session_profile_terminal_state_ignores_recovered_tool_error() -> 
     # deleted the honest state is unknown.
     assert profile.terminal_state == "unknown"
     assert profile.terminal_state_evidence == {"message_id": "a2", "evidence_class": "raw_evidence"}
+    assert profile.terminal_state_method == "no_signal"
 
 
 def test_build_session_profile_terminal_state_flags_unrecovered_final_action_failure() -> None:
@@ -773,6 +779,7 @@ def test_build_session_profile_terminal_state_flags_unrecovered_final_action_fai
     assert profile.terminal_state == "error_left"
     assert profile.terminal_state_evidence["evidence_class"] == "raw_evidence"
     assert "action_id" in profile.terminal_state_evidence
+    assert profile.terminal_state_method == "action_outcome"
 
 
 def test_build_session_profile_terminal_state_detects_structural_error_with_silent_prose() -> None:
@@ -821,6 +828,7 @@ def test_build_session_profile_terminal_state_detects_structural_error_with_sile
     assert profile.terminal_state == "error_left"
     assert profile.terminal_state_evidence["evidence_class"] == "raw_evidence"
     assert "action_id" in profile.terminal_state_evidence
+    assert profile.terminal_state_method == "action_outcome"
 
 
 def test_build_session_profile_terminal_state_structural_success_suppresses_misleading_prose() -> None:
@@ -871,6 +879,7 @@ def test_build_session_profile_terminal_state_structural_success_suppresses_misl
 
     assert profile.terminal_state == "unknown"
     assert profile.terminal_state_evidence == {}
+    assert profile.terminal_state_method == "no_signal"
 
 
 def test_build_session_profile_terminal_state_stays_unknown_without_structural_evidence() -> None:
@@ -912,6 +921,7 @@ def test_build_session_profile_terminal_state_stays_unknown_without_structural_e
 
     assert profile.terminal_state == "unknown"
     assert profile.terminal_state_evidence.get("evidence_class") != "text_derived"
+    assert profile.terminal_state_method == "no_signal"
 
 
 def test_build_session_profile_ignores_unpaired_tool_windows() -> None:

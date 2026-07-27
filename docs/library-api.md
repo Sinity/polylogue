@@ -105,6 +105,7 @@ async with Polylogue() as archive:
 - `workflow_shape_confidence`
 - `terminal_state`
 - `terminal_state_confidence`
+- `terminal_state_method`
 - `enrichment`
 - `enrichment_provenance`
 - `repo_names`

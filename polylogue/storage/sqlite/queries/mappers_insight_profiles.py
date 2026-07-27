@@ -101,6 +101,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         workflow_shape_confidence=float(_row_float(row, "workflow_shape_confidence", 0.0) or 0.0),
         workflow_shape_features_json=_row_text(row, "workflow_shape_features_json") or "{}",
         terminal_state=_row_text(row, "terminal_state") or "unknown",
+        terminal_state_method=_row_text(row, "terminal_state_method") or "unknown",
         terminal_state_confidence=float(_row_float(row, "terminal_state_confidence", 0.0) or 0.0),
         terminal_state_evidence_json=_row_text(row, "terminal_state_evidence_json") or "{}",
         cost_is_estimated=bool(int(_row_int(row, "cost_is_estimated", 0) or 0)),

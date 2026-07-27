@@ -278,9 +278,28 @@ def _session_tool_results(session: Session) -> dict[str, _ToolResultSummary]:
     return results
 
 
+#: Closed vocabulary for ``session_profiles.terminal_state_method``
+#: (polylogue-vhjs): which structural detection rule inside
+#: :func:`_terminal_state` produced the returned ``terminal_state``. Every
+#: return path below carries an explicit method token so a reader can tell,
+#: per row, exactly which structural evidence backs the label -- never a
+#: guess and never left NULL.
+TERMINAL_STATE_METHODS = frozenset(
+    {
+        "pending_tool_blocks",  # unpaired tool_use/tool_result content blocks
+        "pending_tool_events",  # unpaired tool-call/tool-output session events
+        "action_outcome",  # actions-view tool_result_is_error outcome
+        "event_status",  # typed status key on a provider tool-call event
+        "last_message_role",  # last meaningful message's authored role
+        "no_signal",  # no structural evidence in either direction
+        "bounded_materialization",  # large-session degraded fallback row (rebuild.py)
+    }
+)
+
+
 def _terminal_state(
     session: Session, analysis: SessionAnalysis
-) -> tuple[str, float, dict[str, int | float | str | None]]:
+) -> tuple[str, float, dict[str, int | float | str | None], str]:
     """Classify how a session's tool/turn activity ended.
 
     The error signal is purely structural: the session-wide
@@ -292,6 +311,11 @@ def _terminal_state(
     50.5% agreement with structural truth): where structural evidence is
     absent the state is ``unknown``, never a keyword guess. Returned
     ``evidence_class`` entries are therefore ``"raw_evidence"`` throughout.
+
+    Returns ``(terminal_state, confidence, evidence, method)`` where
+    ``method`` is one of :data:`TERMINAL_STATE_METHODS` -- the provenance
+    token persisted to ``session_profiles.terminal_state_method``
+    (polylogue-vhjs).
     """
     pending_block_count = _pending_tool_blocks(session)
     if pending_block_count:
@@ -299,6 +323,7 @@ def _terminal_state(
             "tool_left",
             0.9,
             {"pending_tool_count": pending_block_count, "evidence_class": "raw_evidence"},
+            "pending_tool_blocks",
         )
     tool_results = _session_tool_results(session)
     latest_error_action_id: str | None = None
@@ -354,6 +379,7 @@ def _terminal_state(
             "tool_left",
             0.9,
             {"pending_tool_count": len(pending) + pending_without_id, "evidence_class": "raw_evidence"},
+            "pending_tool_events",
         )
 
     meaningful = [
@@ -366,17 +392,33 @@ def _terminal_state(
                 "error_left",
                 0.78,
                 {"action_id": latest_error_action_id, "evidence_class": latest_error_action_evidence_class},
+                "action_outcome",
             )
         if latest_error_event_id is not None:
-            return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
-        return "unknown", 0.1, {}
+            return (
+                "error_left",
+                0.78,
+                {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"},
+                "event_status",
+            )
+        return "unknown", 0.1, {}, "no_signal"
     if last.is_candidate_human_authored:
-        return "question_left", 0.72, {"message_id": last.message_id, "evidence_class": "raw_evidence"}
+        return (
+            "question_left",
+            0.72,
+            {"message_id": last.message_id, "evidence_class": "raw_evidence"},
+            "last_message_role",
+        )
     if last.is_assistant:
         if final_event_is_error and latest_error_event_id is not None:
             # The runtime's own event stream ENDED on a typed error output:
             # structurally terminal, regardless of what the assistant said.
-            return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
+            return (
+                "error_left",
+                0.78,
+                {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"},
+                "event_status",
+            )
         if final_action_outcome_is_error and latest_error_action_id is not None:
             # The session's final tool outcome (e.g. a Codex nonzero
             # exit_code lowered into tool_result_is_error) is a structural
@@ -386,6 +428,7 @@ def _terminal_state(
                 "error_left",
                 0.78,
                 {"action_id": latest_error_action_id, "evidence_class": latest_error_action_evidence_class},
+                "action_outcome",
             )
         # The prose _ERROR_MARKERS scan and its clean_finish complement were
         # deleted per the polylogue-ve9z ladder decision (measured at 50.5%
@@ -394,8 +437,8 @@ def _terminal_state(
         # been recovered), and without a structural terminal signal the
         # honest state is unknown -- never clean_finish, never a keyword
         # guess.
-        return "unknown", 0.2, {"message_id": last.message_id, "evidence_class": "raw_evidence"}
-    return "unknown", 0.2, {"message_id": last.message_id}
+        return "unknown", 0.2, {"message_id": last.message_id, "evidence_class": "raw_evidence"}, "no_signal"
+    return "unknown", 0.2, {"message_id": last.message_id}, "no_signal"
 
 
 def build_session_analysis(
@@ -489,7 +532,7 @@ def build_session_profile(
     )
     add_timing("profile.workflow_shape", t0)
     t0 = time.perf_counter()
-    terminal_state, terminal_state_confidence, terminal_state_evidence = _terminal_state(
+    terminal_state, terminal_state_confidence, terminal_state_evidence, terminal_state_method = _terminal_state(
         session,
         session_analysis,
     )
@@ -554,6 +597,7 @@ def build_session_profile(
         terminal_state=terminal_state,
         terminal_state_confidence=terminal_state_confidence,
         terminal_state_evidence=terminal_state_evidence,
+        terminal_state_method=terminal_state_method,
         cost_is_estimated=cost_is_estimated,
         total_input_tokens=cost_summary.total_input_tokens,
         total_output_tokens=cost_summary.total_output_tokens,

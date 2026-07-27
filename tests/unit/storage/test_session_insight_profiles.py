@@ -461,6 +461,7 @@ def test_session_profile_record_exposes_shape_and_terminal_state() -> None:
             "terminal_state": "clean_finish",
             "terminal_state_confidence": 0.68,
             "terminal_state_evidence": {"message_id": "a2"},
+            "terminal_state_method": "last_message_role",
         }
     )
 
@@ -468,12 +469,16 @@ def test_session_profile_record_exposes_shape_and_terminal_state() -> None:
 
     assert record.workflow_shape == "agentic_loop"
     assert record.terminal_state == "clean_finish"
+    # polylogue-vhjs: the native terminal_state_method column, not just the
+    # evidence dict, must survive the profile -> record build.
+    assert record.terminal_state_method == "last_message_role"
     assert record.evidence_payload.workflow_shape_features == {"edit_count": 1, "tool_ratio": 0.4}
     assert record.evidence_payload.terminal_state_evidence == {"message_id": "a2"}
     assert "workflow_shape" not in record.evidence_payload.model_dump()
     assert "terminal_state" not in record.evidence_payload.model_dump()
     assert record.inference_payload.workflow_shape == "agentic_loop"
     assert record.inference_payload.terminal_state == "clean_finish"
+    assert record.inference_payload.terminal_state_method == "last_message_role"
     assert "agentic_loop" not in record.evidence_search_text
     assert "clean_finish" not in record.evidence_search_text
     assert "agentic_loop" in record.inference_search_text
@@ -529,6 +534,7 @@ def test_session_profile_insight_reads_native_columns_over_payload() -> None:
             "workflow_shape_confidence": 0.86,
             "terminal_state": "clean_finish",
             "terminal_state_confidence": 0.68,
+            "terminal_state_method": "last_message_role",
         }
     )
     record = build_session_profile_record(profile)
@@ -542,6 +548,7 @@ def test_session_profile_insight_reads_native_columns_over_payload() -> None:
                     "workflow_shape_confidence": 0.0,
                     "terminal_state": "unknown",
                     "terminal_state_confidence": 0.0,
+                    "terminal_state_method": "unknown",
                 }
             )
         }
@@ -553,6 +560,10 @@ def test_session_profile_insight_reads_native_columns_over_payload() -> None:
     assert insight.inference.workflow_shape_confidence == 0.86
     assert insight.inference.terminal_state == "clean_finish"
     assert insight.inference.terminal_state_confidence == 0.68
+    # polylogue-vhjs: terminal_state_method is reconciled onto the native
+    # column too, the exact fix this bead is about -- the JSON-derived
+    # payload alone (here reset to "unknown") must not win.
+    assert insight.inference.terminal_state_method == "last_message_role"
 
 
 def test_session_profile_uses_session_timestamp_when_messages_are_untimestamped() -> None:

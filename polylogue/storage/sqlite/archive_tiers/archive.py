@@ -5205,6 +5205,7 @@ class ArchiveStore:
             SELECT s.session_id, s.origin, s.root_session_id, s.title, s.created_at_ms, s.updated_at_ms,
                    s.message_count, s.word_count, s.tool_use_count, s.thinking_count,
                    sp.workflow_shape, sp.workflow_shape_confidence, sp.terminal_state,
+                   sp.terminal_state_method,
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count, sp.work_event_count, sp.phase_count,
                    sp.tool_calls_per_minute, sp.cost_usd, sp.cost_is_estimated,
@@ -5304,6 +5305,7 @@ class ArchiveStore:
             SELECT s.session_id, s.origin, s.root_session_id, s.title, s.created_at_ms, s.updated_at_ms,
                    s.message_count, s.word_count, s.tool_use_count, s.thinking_count,
                    sp.workflow_shape, sp.workflow_shape_confidence, sp.terminal_state,
+                   sp.terminal_state_method,
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count, sp.work_event_count, sp.phase_count,
                    sp.tool_calls_per_minute, sp.cost_usd, sp.cost_is_estimated,
@@ -10538,6 +10540,7 @@ def _session_profile_components_from_archive_row(
     workflow_shape = str(row["workflow_shape"] or "unknown")
     workflow_confidence = float(row["workflow_shape_confidence"] or 0.0)
     terminal_state = str(row["terminal_state"] or "unknown")
+    terminal_method = str(row["terminal_state_method"] or "unknown")
     terminal_confidence = float(row["terminal_state_confidence"] or 0.0)
 
     evidence = parse_payload_model(row, "evidence_payload_json", record_id=session_id, model=SessionEvidencePayload)
@@ -10578,6 +10581,7 @@ def _session_profile_components_from_archive_row(
                 "workflow_shape": workflow_shape,
                 "workflow_shape_confidence": workflow_confidence,
                 "terminal_state": terminal_state,
+                "terminal_state_method": terminal_method,
                 "terminal_state_confidence": terminal_confidence,
                 "support_level": confidence_from_score(max(workflow_confidence, terminal_confidence)),
             }
@@ -10592,6 +10596,7 @@ def _session_profile_components_from_archive_row(
                 "workflow_shape": workflow_shape,
                 "workflow_shape_confidence": workflow_confidence,
                 "terminal_state": terminal_state,
+                "terminal_state_method": terminal_method,
                 "terminal_state_confidence": terminal_confidence,
             }
         )
@@ -10723,6 +10728,7 @@ def _session_profile_record_from_archive_row(
         workflow_shape=workflow_shape,
         workflow_shape_confidence=float(row["workflow_shape_confidence"] or 0.0),
         terminal_state=str(row["terminal_state"] or "unknown"),
+        terminal_state_method=str(row["terminal_state_method"] or "unknown"),
         terminal_state_confidence=float(row["terminal_state_confidence"] or 0.0),
         cost_is_estimated=bool(row["cost_is_estimated"]),
         thinking_duration_ms=evidence.thinking_duration_ms,

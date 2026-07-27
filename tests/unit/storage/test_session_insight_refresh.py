@@ -311,7 +311,8 @@ async def test_apply_session_insight_session_updates_async_uses_session_events_f
 
     with open_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT terminal_state, evidence_payload_json FROM session_profiles WHERE session_id = ?",
+            "SELECT terminal_state, terminal_state_method, evidence_payload_json"
+            " FROM session_profiles WHERE session_id = ?",
             ("codex-session:conv-provider-terminal",),
         ).fetchone()
         latency_row = conn.execute(
@@ -321,9 +322,86 @@ async def test_apply_session_insight_session_updates_async_uses_session_events_f
 
     assert row is not None
     assert row["terminal_state"] == "tool_left"
+    # polylogue-vhjs: the persisted native column, not just the in-memory
+    # SessionProfile, must carry the structural-detection-rule provenance --
+    # this is the exact regression the bead was filed against (8,507 labeled
+    # rows with terminal_state set and terminal_state_method NULL).
+    assert row["terminal_state_method"] == "pending_tool_blocks"
     assert "terminal_state" not in json.loads(row["evidence_payload_json"])
     assert latency_row is not None
     assert latency_row["stuck_tool_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_session_insight_session_updates_async_persists_terminal_state_method_for_action_outcome(
+    tmp_path: Path,
+) -> None:
+    """polylogue-vhjs regression: a session whose final tool outcome is a
+    structural failure (``tool_result_is_error=1``, no later success) must
+    materialize with a non-null ``terminal_state_method`` of
+    ``"action_outcome"`` -- distinct from the ``"pending_tool_blocks"``/
+    ``"pending_tool_events"`` methods covered above."""
+    db_path = _current_index_db(tmp_path, "refresh-action-outcome-terminal")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(
+                "conv-action-outcome",
+                source_name="claude-code",
+                title="Action outcome terminal",
+                updated_at="2026-04-01T10:05:30+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-action-outcome:msg-1",
+                    "conv-action-outcome",
+                    role="assistant",
+                    text="Running the build.",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "bash",
+                            "tool_id": "call-1",
+                            "tool_input": {"command": "./build.sh"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "call-1",
+                            "text": "exit 2",
+                            "tool_result_is_error": 1,
+                        },
+                    ],
+                ),
+                make_message(
+                    "conv-action-outcome:msg-2",
+                    "conv-action-outcome",
+                    role="assistant",
+                    text="All done.",
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        await _apply_session_insight_session_updates_async(
+            conn,
+            ["claude-code-session:conv-action-outcome"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        await conn.commit()
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT terminal_state, terminal_state_method FROM session_profiles WHERE session_id = ?",
+            ("claude-code-session:conv-action-outcome",),
+        ).fetchone()
+
+    assert row is not None
+    assert row["terminal_state"] == "error_left"
+    assert row["terminal_state_method"] == "action_outcome"
 
 
 def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roots(

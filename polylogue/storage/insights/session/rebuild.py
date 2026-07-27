@@ -904,6 +904,7 @@ def _large_session_profile_record_from_row(
         workflow_shape_confidence=0.35,
         terminal_state="unknown",
         terminal_state_confidence=0.0,
+        terminal_state_method="bounded_materialization",
         auto_tags=(f"origin:{origin}", "degraded:large-session"),
         fallback_reasons=(
             FallbackReason.LARGE_SESSION_BOUNDED,
@@ -958,6 +959,7 @@ def _large_session_profile_record_from_row(
         workflow_shape_features_json=_json.dumps(workflow_features, sort_keys=True),
         terminal_state="unknown",
         terminal_state_confidence=0.0,
+        terminal_state_method="bounded_materialization",
         terminal_state_evidence_json=_json.dumps(
             {"bounded_materialization": FallbackReason.LARGE_SESSION_BOUNDED.value},
             sort_keys=True,
