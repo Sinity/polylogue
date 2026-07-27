@@ -61,6 +61,14 @@ class LiveBatchMetrics:
     stale_cursor_write_count: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     failed_paths: list[str] = field(default_factory=list)
+    # Identity-scoped session touches for this batch (polylogue-20d.13):
+    # ``new_sessions`` are session ids materialized for the first time via
+    # the full-ingest route; ``updated_sessions`` are session ids that grew
+    # via the append route (a cursor-tracked file that already had a
+    # session). Both are (source_name, session_id) pairs, bounded by the
+    # batch's own file-count caps -- never a proxy for the full archive.
+    new_sessions: tuple[tuple[str, str], ...] = ()
+    updated_sessions: tuple[tuple[str, str], ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         read_amplification = (
@@ -112,6 +120,10 @@ class LiveBatchMetrics:
             "stale_cursor_write_count": self.stale_cursor_write_count,
             "stage_timings_s": self.stage_timings_s,
             "failed_paths": self.failed_paths,
+            "new_sessions": [{"source_name": source_name, "session_id": sid} for source_name, sid in self.new_sessions],
+            "updated_sessions": [
+                {"source_name": source_name, "session_id": sid} for source_name, sid in self.updated_sessions
+            ],
         }
 
 

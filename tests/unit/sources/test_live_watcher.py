@@ -1855,6 +1855,71 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
 
 
 @pytest.mark.asyncio
+async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: dict[str, Path]) -> None:
+    """polylogue-20d.13: full/append batches must name the real touched session.
+
+    A regression that drops session-id threading (e.g. reverting
+    ``_ArchiveFullWriteResult``/``_AppendResult`` identity fields back to an
+    unscoped aggregate) makes this fail even though ``full_file_count`` /
+    ``append_file_count`` still look correct -- the counts alone cannot
+    prove the daemon can tell session A apart from session B.
+    """
+    root = workspace_env["data_root"] / "claude-projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
+    db_path = workspace_env["data_root"] / "session-identity.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _claude_code_message(
+                    session_id="session-identity",
+                    uuid="msg-1",
+                    role="user",
+                    text="first live message",
+                    timestamp="2026-05-01T00:00:00Z",
+                ),
+            ],
+        )
+        full_metrics = await processor.ingest_files([source_path], emit_event=False)
+        assert full_metrics.new_sessions == (("claude-code", "claude-code-session:session-identity"),)
+        assert full_metrics.updated_sessions == ()
+
+        with source_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _claude_code_message(
+                        session_id="session-identity",
+                        uuid="msg-2",
+                        parent_uuid="msg-1",
+                        role="assistant",
+                        text="second appended reply",
+                        timestamp="2026-05-01T00:00:01Z",
+                    )
+                )
+                + "\n"
+            )
+        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+        # The append route only ever grows an already-tracked file: this is
+        # an EXISTING session growing, never a fresh one -- exactly the
+        # session.updated semantics this bead introduces.
+        assert append_metrics.new_sessions == ()
+        assert append_metrics.updated_sessions == (("claude-code", "claude-code-session:session-identity"),)
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_live_full_ingest_expands_inbox_zip_members(
     workspace_env: dict[str, Path],
 ) -> None:

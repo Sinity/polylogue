@@ -12,8 +12,7 @@ Two shapes share the ``/api/events`` route:
 
 Granular topics (#1204): callers may filter by ``?kinds=`` (comma-list).
 The reader subscribes by view — list view filters to ``session.*``;
-the session view filters to ``message.appended`` plus
-``insight.updated``.
+the session view filters to ``message.appended``.
 
 Backpressure coalescing (#1204): when the ledger has produced more than
 ``coalesce_threshold`` events since ``since`` (default 100, override via

@@ -10,13 +10,19 @@ Topic vocabulary and selective-subscription policy:
 * Legacy opaque kinds (``ingestion_batch`` / ``ingest`` / ``reset`` /
   ``operation``) stay on the wire so older consumers keep working.
 * Granular kinds (``session.appended`` / ``session.updated`` /
-  ``message.appended`` / ``insight.updated`` / ``progress.update`` /
-  ``progress.complete``) split the channel by topic.
-* The list view subscribes to legacy + ``session.*`` + ``progress.*``.
-  The session view additionally subscribes to ``message.appended``
-  and ``insight.updated`` so it can live-tail without polling.
+  ``message.appended``) split the channel by topic. Each carries a real
+  ``session_id`` (polylogue-20d.13) when the producer resolved one, so a
+  reader with session A open ignores an event scoped to session B instead
+  of refreshing unconditionally.
+* The list view subscribes to legacy + ``session.*``. The session view
+  additionally subscribes to ``message.appended`` so it can live-tail
+  without polling.
 * ``snapshot`` is the coalesced backpressure frame; clients react by
   refetching the materialised view and skipping row-level animations.
+* ``insight.updated`` / ``progress.update`` / ``progress.complete`` were
+  retired (polylogue-20d.13): no production code ever emitted them, so
+  advertising subscriptions for them was itself an identity/completeness
+  defect. Reintroduce only alongside a real producer.
 """
 
 from __future__ import annotations
@@ -25,9 +31,7 @@ REALTIME_JS = r"""
 // --- Realtime channel (#1204) -------------------------------------------
 // Subscribe to /api/events (SSE) when available, scoped by current view:
 //   * list view subscribes to session.* and the legacy batch kinds
-//   * session view also subscribes to message.appended + insight.updated
-//   * progress.update / progress.complete are always streamed so the
-//     status chip and #1218 watch-mode consumer can advance their UIs
+//   * session view also subscribes to message.appended for live tail
 // EventSource handles reconnects automatically; on persistent failure we
 // fall back to polling. New-row animations decorate just-appended rows
 // without rerendering the full list.
@@ -49,26 +53,20 @@ var REALTIME_GRANULAR_KINDS = [
   'session.appended',
   'session.updated',
   'message.appended',
-  'insight.updated',
-  'progress.update',
-  'progress.complete',
   'snapshot'
 ];
 
 function realtimeKindsForView() {
   // Always include legacy kinds so existing consumers keep working;
   // granular kinds are scoped by current view to reduce wakeups on a
-  // slow link. The session view subscribes to message.appended
-  // and insight.updated for live tail.
+  // slow link. The session view subscribes to message.appended for
+  // live tail.
   var kinds = REALTIME_LEGACY_KINDS.slice();
   kinds.push('session.appended');
   kinds.push('session.updated');
-  kinds.push('progress.update');
-  kinds.push('progress.complete');
   kinds.push('snapshot');
   if (currentSelectedSessionId()) {
     kinds.push('message.appended');
-    kinds.push('insight.updated');
   }
   return kinds;
 }
@@ -163,23 +161,6 @@ function handleRealtimeEvent(payload) {
       }
       scheduleRefresh();
       return;
-    case 'insight.updated':
-      if (typeof renderInspector === 'function') renderInspector();
-      return;
-    case 'progress.update':
-    case 'progress.complete':
-      // Surface progress in the chip — operator can see live %.
-      var opKind = (data && data.operation_kind) || 'op';
-      var label = 'live';
-      if (kind === 'progress.complete') {
-        label = 'done: ' + opKind;
-      } else if (typeof data.fraction === 'number') {
-        label = opKind + ' ' + Math.round(data.fraction * 100) + '%';
-      } else if (typeof data.completed === 'number') {
-        label = opKind + ' ' + data.completed;
-      }
-      setLiveChip(label, realtime.lastEventId);
-      return;
     case 'snapshot':
       // Coalesced burst — refetch the materialised view, skip animations.
       scheduleRefresh();
@@ -270,8 +251,8 @@ function startRealtimeChannel() {
 function restartRealtimeForView() {
   // Reopen the SSE channel with an updated ?kinds= subscription when the
   // user switches between list and session views. The session
-  // view adds message.appended + insight.updated; switching back removes
-  // them so we don't fire live-tail handlers for a dormant view.
+  // view adds message.appended; switching back removes it so we don't
+  // fire live-tail handlers for a dormant view.
   if (!realtime.source) return;
   var currentKinds = (realtime.subscribedKinds || []).join(',');
   var nextKinds = realtimeKindsForView().join(',');

@@ -377,6 +377,12 @@ class LiveBatchProcessor:
         pending_append_plans: list[_AppendPlan] = []
         full_paths: list[Path] = []
         deferred_paths: list[Path] = []
+        # Identity-scoped session touches for this batch (polylogue-20d.13):
+        # collected as (source_name, session_id) pairs so the daemon can emit
+        # session.appended/session.updated/message.appended events carrying
+        # real refs instead of an unscoped aggregate.
+        new_session_touches: list[tuple[str, str]] = []
+        updated_session_touches: list[tuple[str, str]] = []
 
         async def flush_append_plans() -> None:
             nonlocal convergence_time_s
@@ -456,6 +462,9 @@ class LiveBatchProcessor:
                 if not self._record_append_cursor(plan):
                     stale_cursor_write_count += 1
                 self._record_convergence_outcome(plan.path, debt_by_source_path.get(plan.path, ()))
+                session_id = append_result.session_ids_by_path.get(plan.path)
+                if session_id:
+                    updated_session_touches.append((plan.source_name, session_id))
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
@@ -543,6 +552,8 @@ class LiveBatchProcessor:
                     )
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
                     full_ingest_aggregate.add(full_result)
+                    for session_id in full_result.changed_session_ids:
+                        new_session_touches.append((source_name, session_id))
                 except SchemaVersionMismatchError as exc:
                     handle_schema_version_mismatch(source_name, exc)
                     # Account for every queued path in this source group, not
@@ -719,6 +730,8 @@ class LiveBatchProcessor:
             stale_cursor_write_count=stale_cursor_write_count,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=retry_paths,
+            new_sessions=tuple(new_session_touches),
+            updated_sessions=tuple(updated_session_touches),
         )
         if emit_event and self._event_emitter is not None:
             self._event_emitter("ingestion_batch", metrics.to_payload())

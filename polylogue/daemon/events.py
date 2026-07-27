@@ -277,22 +277,28 @@ def emit_catch_up_cycle(
 # (status views, polling fallback). The granular kinds below split the
 # realtime channel so the reader can subscribe selectively by view and
 # animate just-appended rows without rerendering the full list.
+#
+# ``insight.updated`` / ``progress.update`` / ``progress.complete`` were
+# retired here (polylogue-20d.13): grepping the whole codebase found no
+# production caller for ``emit_insight_updated``/``emit_progress_update``/
+# ``emit_progress_complete`` -- the only callers were their own unit tests,
+# and the docstring's claimed consumer (``status --convergence --watch``)
+# does not exist in the CLI. Per this bead's AC ("every advertised topic has
+# a declared spec and production emitter, or is removed"), an advertised
+# topic with no real producer is a completeness defect, not a feature to
+# preserve. Wiring real embedding-catchup/insight-rebuild progress into SSE
+# remains a legitimate future bead; it should introduce these kinds fresh
+# from a real call site rather than resurrect the unwired scaffolding.
 
 EVENT_SESSION_APPENDED = "session.appended"
 EVENT_SESSION_UPDATED = "session.updated"
 EVENT_MESSAGE_APPENDED = "message.appended"
-EVENT_INSIGHT_UPDATED = "insight.updated"
-EVENT_PROGRESS_UPDATE = "progress.update"
-EVENT_PROGRESS_COMPLETE = "progress.complete"
 
 GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(
     {
         EVENT_SESSION_APPENDED,
         EVENT_SESSION_UPDATED,
         EVENT_MESSAGE_APPENDED,
-        EVENT_INSIGHT_UPDATED,
-        EVENT_PROGRESS_UPDATE,
-        EVENT_PROGRESS_COMPLETE,
     }
 )
 
@@ -303,22 +309,49 @@ def emit_session_appended(
     succeeded_file_count: int,
     failed_file_count: int = 0,
     source_paths: Sequence[str] | None = None,
+    session_id: str | None = None,
 ) -> None:
-    """Emit a ``session.appended`` event for newly-arrived sessions.
+    """Emit a ``session.appended`` event for a newly-materialized session.
 
-    Fired once per live-ingest batch summarising the touched source group.
-    Carries enough for the reader to animate new rows without rerendering
-    the whole list; the reader still calls ``/api/sessions`` to
-    materialise the rows.
+    ``session_id`` is the real archive identity of the session this event
+    describes (polylogue-20d.13) -- when known, callers should always pass
+    it so consumers can scope refresh/animation to the exact session rather
+    than treating every event as "refresh whatever is open". ``None`` is
+    reserved for legacy/aggregate callers that genuinely cannot attribute a
+    single session (e.g. pre-#1204 opaque batch summaries).
     """
     payload: dict[str, object] = {
         "source_name": source_name,
         "succeeded_file_count": int(succeeded_file_count),
         "failed_file_count": int(failed_file_count),
+        "session_id": session_id,
     }
     if source_paths is not None:
         payload["source_paths"] = list(source_paths)
-    emit_daemon_event(EVENT_SESSION_APPENDED, payload=payload)
+    emit_daemon_event(EVENT_SESSION_APPENDED, operation_id=session_id, payload=payload)
+
+
+def emit_session_updated(
+    *,
+    session_id: str,
+    source_name: str | None = None,
+    appended_count: int = 0,
+) -> None:
+    """Emit a ``session.updated`` event when an existing session grows.
+
+    Distinct from :func:`emit_session_appended`: the live-ingest append
+    route only ever grows a file whose session already exists (a
+    cursor-tracked prior observation), so every real producer of this event
+    is describing a mutation of a session the reader may already have open
+    -- exactly the identity the description this bead started from called
+    unscoped (polylogue-20d.13).
+    """
+    payload: dict[str, object] = {
+        "session_id": session_id,
+        "source_name": source_name,
+        "appended_count": int(appended_count),
+    }
+    emit_daemon_event(EVENT_SESSION_UPDATED, operation_id=session_id, payload=payload)
 
 
 def emit_message_appended(
@@ -344,65 +377,6 @@ def emit_message_appended(
     emit_daemon_event(EVENT_MESSAGE_APPENDED, payload=payload)
 
 
-def emit_insight_updated(
-    *,
-    insight_kind: str,
-    session_id: str | None = None,
-) -> None:
-    """Emit an ``insight.updated`` event when a derived insight rebuilds."""
-    payload: dict[str, object] = {
-        "insight_kind": insight_kind,
-        "session_id": session_id,
-    }
-    emit_daemon_event(EVENT_INSIGHT_UPDATED, payload=payload)
-
-
-def emit_progress_update(
-    *,
-    operation_id: str,
-    operation_kind: str,
-    completed: int,
-    total: int | None = None,
-    detail: str | None = None,
-    eta_seconds: float | None = None,
-) -> None:
-    """Emit a ``progress.update`` event for long-running maintenance ops (#996).
-
-    Consumers: web reader status chip; ``status --convergence --watch`` (#1218).
-    Coalescing-friendly — the snapshot path collapses bursts into one
-    summary frame, so emitters do not need to throttle themselves.
-    """
-    payload: dict[str, object] = {
-        "operation_kind": operation_kind,
-        "completed": int(completed),
-    }
-    if total is not None:
-        payload["total"] = int(total)
-        payload["fraction"] = round(completed / total, 6) if total > 0 else None
-    if detail is not None:
-        payload["detail"] = detail
-    if eta_seconds is not None:
-        payload["eta_seconds"] = round(float(eta_seconds), 3)
-    emit_daemon_event(EVENT_PROGRESS_UPDATE, operation_id=operation_id, payload=payload)
-
-
-def emit_progress_complete(
-    *,
-    operation_id: str,
-    operation_kind: str,
-    status: str = "completed",
-    detail: str | None = None,
-) -> None:
-    """Emit a terminal ``progress.complete`` event for a long-running op."""
-    payload: dict[str, object] = {
-        "operation_kind": operation_kind,
-        "status": status,
-    }
-    if detail is not None:
-        payload["detail"] = detail
-    emit_daemon_event(EVENT_PROGRESS_COMPLETE, operation_id=operation_id, payload=payload)
-
-
 def get_daemon_event_counts() -> dict[str, int]:
     """Return event counts by kind."""
     conn = _open_events_reader()
@@ -418,18 +392,13 @@ def get_daemon_event_counts() -> dict[str, int]:
 __all__ = [
     "EVENT_SESSION_APPENDED",
     "EVENT_SESSION_UPDATED",
-    "EVENT_INSIGHT_UPDATED",
     "EVENT_MESSAGE_APPENDED",
-    "EVENT_PROGRESS_COMPLETE",
-    "EVENT_PROGRESS_UPDATE",
     "GRANULAR_EVENT_KINDS",
     "emit_catch_up_cycle",
     "emit_session_appended",
+    "emit_session_updated",
     "emit_daemon_event",
-    "emit_insight_updated",
     "emit_message_appended",
-    "emit_progress_complete",
-    "emit_progress_update",
     "get_daemon_event_counts",
     "get_last_ingestion_batch",
     "get_latest_event_id",

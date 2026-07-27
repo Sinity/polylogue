@@ -136,6 +136,11 @@ class _AppendResult:
     deferred: list[_AppendPlan] = field(default_factory=list)
     worker_count: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
+    # Real session identity for each succeeded append plan (polylogue-20d.13):
+    # the append route only ever grows a file whose session already exists
+    # (a cursor-tracked prior observation), so every entry here is an
+    # existing-session touch, never a newly created session.
+    session_ids_by_path: dict[Path, str] = field(default_factory=dict)
 
 
 class _DeferredAppend:
@@ -168,6 +173,10 @@ class _FullIngestResult:
     wal_checkpoint_mode: str = "none"
     wal_checkpoint_error: str | None = None
     stage_timings_s: dict[str, float] = field(default_factory=dict)
+    # Real session ids materialized by this full-ingest group (polylogue-20d.13),
+    # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can
+    # emit identity-scoped SSE events instead of an unscoped aggregate.
+    changed_session_ids: tuple[str, ...] = ()
 
 
 def _full_ingest_result_from_summary(
@@ -198,6 +207,7 @@ def _full_ingest_result_from_summary(
         ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
         changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
+        changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         wal_bytes_before_checkpoint=int(getattr(summary, "wal_bytes_before_checkpoint", 0))
         if summary is not None
         else 0,
