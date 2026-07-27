@@ -1580,6 +1580,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar --days 14",
         ),
     ),
+    CommandSpec(
+        "workspace mandate-continuity-replay",
+        "workspace",
+        "Wire t8t continuity scenarios + work-evidence effects + discovery into one mandate artifact.",
+        "devtools.mandate_continuity_replay",
+        use_when=(
+            "Run the polylogue-z9gh.7 terminal mandate gate: replay the polylogue-t8t continuity scenario "
+            "catalog over real MCP stdio JSON-RPC, reconcile this repository's own real git+Beads history "
+            "through the polylogue-1vpm.6.2 effect adapters, cross-check every query-tool route step against "
+            "the polylogue-z9gh.3 query-discovery catalog, and emit one JSON artifact with a mandate "
+            "acceptance-criteria matrix. Defaults to a fresh, privacy-safe synthetic archive; pass "
+            "--archive-root for an authorized live-scale replay."
+        ),
+        examples=(
+            "devtools workspace mandate-continuity-replay",
+            "devtools workspace mandate-continuity-replay --output .cache/mandate-continuity-replay.json",
+            "devtools workspace mandate-continuity-replay --archive-root /path/to/authorized/archive --keep-archive",
+        ),
+    ),
 )
 
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
