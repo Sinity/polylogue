@@ -494,7 +494,7 @@ async def test_api_query_units_routes_through_execution_control(
         await archive.close()
 
     assert isinstance(envelope, QueryUnitEnvelope)
-    assert seen == ["api.query_units"]
+    assert seen == ["query_units"]
 
 
 async def test_api_multi_aggregate_receipt_reports_real_work_selection_and_delivery(
@@ -545,7 +545,7 @@ async def test_api_multi_aggregate_receipt_reports_real_work_selection_and_deliv
     assert [(row.count, row.group_key) for row in envelope.items]
     assert len(seen) == 1
     ctx = seen[0]
-    assert ctx.owner_ref == "api.query_units"
+    assert ctx.owner_ref == "query_units"
     assert ctx.workload_class == "scan"
     assert ctx.receipt.state == "completed"
     assert ctx.receipt.selected_rows_exact == 3
