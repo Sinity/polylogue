@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import gc
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import time
 import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
@@ -259,21 +261,70 @@ def _archive_files(root: Path) -> tuple[dict[str, object], ...]:
     return tuple(entries)
 
 
+def _journal_mode_delete_with_retry(conn: sqlite3.Connection, *, name: str) -> None:
+    """Flip WAL to a DELETE-journal snapshot, tolerant of a same-process zombie closer.
+
+    CPython's ``sqlite3`` module closes connections via ``sqlite3_close_v2``
+    (not the older non-``_v2`` API): a connection whose last statement/cursor
+    hasn't been finalized yet becomes a "zombie" that keeps SQLite's
+    per-process shared pager-cache entry for that file alive until the
+    lingering ``Cursor``/``Connection`` object is actually garbage-collected.
+    While a zombie is pending, ``PRAGMA journal_mode=DELETE`` on a *different*
+    (fully legitimate, single) connection to the same file raises
+    ``sqlite3.OperationalError: database is locked`` -- SQLite reports this
+    specific condition as ``SQLITE_LOCKED`` (a same-process/shared-cache
+    conflict), which, unlike plain ``SQLITE_BUSY``, is **not** retried by
+    ``sqlite3``'s own busy-timeout/busy-handler mechanism, so a plain
+    ``timeout=`` connect argument cannot absorb it (polylogue-lbgc).
+
+    Confirmed empirically: two genuinely separate OS processes building the
+    same corpus key concurrently (an isolated ``cache_root``, no pytest)
+    serialize cleanly through the ``build_seeded_archive`` file lock with no
+    error. The failure reproduces only under real system load (pytest-xdist
+    workers plus a busy machine), which is exactly when CPython's cyclic GC
+    is more likely to have deferred collecting a zombie connection/cursor
+    from earlier in this same worker process's own write pipeline. Forcing a
+    ``gc.collect()`` finalizes any such zombie so its shared-cache slot is
+    actually released, then a short bounded retry absorbs the remaining
+    scheduling jitter.
+    """
+    deadline = time.monotonic() + 5.0
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            gc.collect()
+            time.sleep(min(0.05 * attempt, 0.5))
+            continue
+        if mode != ("delete",):
+            raise RuntimeError(f"could not close seeded archive tier {name} into a snapshot")
+        return
+
+
 def _sqlite_integrity(root: Path) -> None:
+    """Validate + collapse each tier's journal to a snapshot, one connection at a time.
+
+    Uses ``contextlib.closing`` (the idiom already used for this same
+    connection-lifecycle footgun in ``polylogue/storage/raw_reconciler.py``)
+    so each connection is actually closed, not merely committed/rolled back
+    the way a bare ``with sqlite3.connect(...) as conn:`` would leave it.
+    """
     checked: list[str] = []
     for name in _ARCHIVE_DB_NAMES:
         path = root / name
         if not path.exists():
             continue
-        with sqlite3.connect(path) as conn:
+        with contextlib.closing(sqlite3.connect(path)) as conn, conn:
             quick = conn.execute("PRAGMA quick_check").fetchone()
             foreign = conn.execute("PRAGMA foreign_key_check").fetchall()
             if quick != ("ok",) or foreign:
                 raise RuntimeError(f"invalid seeded archive tier {name}")
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
-            if mode != ("delete",):
-                raise RuntimeError(f"could not close seeded archive tier {name} into a snapshot")
+            _journal_mode_delete_with_retry(conn, name=name)
         checked.append(name)
     for name in checked:
         for suffix in ("-wal", "-shm"):
@@ -293,7 +344,7 @@ def _remove_tree(path: Path) -> None:
 
 
 def _validate_facts(root: Path, facts: tuple[SyntheticArtifactFacts, ...]) -> None:
-    with sqlite3.connect(root / "index.db") as conn:
+    with contextlib.closing(sqlite3.connect(root / "index.db")) as conn:
         session_ids = {str(row[0]) for row in conn.execute("SELECT session_id FROM sessions")}
         tool_ids = {
             str(row[0]) for row in conn.execute("SELECT DISTINCT tool_id FROM blocks WHERE tool_id IS NOT NULL")
