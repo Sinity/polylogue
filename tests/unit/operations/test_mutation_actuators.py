@@ -29,6 +29,7 @@ from typing import cast
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.insights.feedback import LearningCorrection
 from polylogue.operations.mutation_actuators import (
     AnnotationDeleteActuator,
     AnnotationDeleteArgs,
@@ -38,6 +39,12 @@ from polylogue.operations.mutation_actuators import (
     BlockerResolveArgs,
     BulkTagActuator,
     BulkTagArgs,
+    CorrectionDeleteActuator,
+    CorrectionDeleteArgs,
+    CorrectionRecordActuator,
+    CorrectionRecordArgs,
+    CorrectionsClearActuator,
+    CorrectionsClearArgs,
     IdentityResetActuator,
     IdentityResetArgs,
     MarkAddActuator,
@@ -1341,3 +1348,230 @@ class TestWorkspaceActuators:
                 )
             assert statuses[assertion_id_for_workspace("ws-old")] == "deleted"
             assert statuses[assertion_id_for_workspace("ws-new")] != "deleted"
+
+
+class TestCorrectionActuators:
+    """Phase 5 (t46.9/kwsb.2): learning-corrections family.
+
+    Anti-vacuity: ``test_record_then_delete_round_trips_through_user_db``
+    fails if ``CorrectionRecordActuator``/``CorrectionDeleteActuator`` stop
+    calling ``ArchiveStore.record_correction``/``delete_correction``.
+    ``test_concurrent_record_between_authorize_and_execute_makes_clear_plan_stale``
+    fails if ``CorrectionsClearActuator.prepare`` stops re-resolving the
+    exact live set of correction kinds (i.e. regresses to trusting a
+    stale caller-supplied target set, the excision-bypass regression
+    class).
+    """
+
+    def test_record_then_delete_round_trips_through_user_db(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="correction")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+
+            record_actuator = CorrectionRecordActuator()
+            record_args = CorrectionRecordArgs(
+                archive=archive,
+                session_id=session_id,
+                kind="tag_reject",
+                payload={"tag": "todo"},
+            )
+            record_plan = executor.prepare(record_actuator, record_args)
+            record_authorization = executor.authorize(
+                record_actuator,
+                record_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            record_receipt = executor.execute(record_actuator, record_plan, record_authorization, record_args)
+            assert record_receipt.status == "applied"
+            correction = cast("LearningCorrection", record_receipt.domain_receipt["correction"])
+            assert correction.kind.value == "tag_reject"
+            assert correction.payload == {"tag": "todo"}
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                row = conn.execute("SELECT status, key FROM assertions WHERE kind = 'correction'").fetchone()
+            assert row[0] != "deleted"
+            assert row[1] == "tag_reject"
+
+            delete_actuator = CorrectionDeleteActuator()
+            delete_args = CorrectionDeleteArgs(archive=archive, session_id=session_id, kind="tag_reject")
+            delete_plan = executor.prepare(delete_actuator, delete_args)
+            delete_authorization = executor.authorize(
+                delete_actuator,
+                delete_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            delete_receipt = executor.execute(delete_actuator, delete_plan, delete_authorization, delete_args)
+            assert delete_receipt.status == "applied"
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                status = conn.execute("SELECT status FROM assertions WHERE kind = 'correction'").fetchone()[0]
+            assert status == "deleted"
+
+    def test_delete_missing_correction_is_already_satisfied(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="correction-missing")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = CorrectionDeleteActuator()
+            args = CorrectionDeleteArgs(archive=archive, session_id=session_id, kind="tag_accept")
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        assert receipt.status == "already_satisfied"
+        assert receipt.detail == "correction_not_found"
+
+    def test_role_only_authorize_succeeds(self, tmp_path: Path) -> None:
+        """AC4: the correction family is reversible class -- role_only, not confirm_flag."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="correction-ac4")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = CorrectionRecordActuator()
+            args = CorrectionRecordArgs(
+                archive=archive, session_id=session_id, kind="summary_override", payload={"summary": "x"}
+            )
+            plan = executor.prepare(actuator, args)
+            # Does not raise ConfirmationRequiredError.
+            executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+
+    def test_clear_removes_every_correction_for_the_session_only(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="correction-clear")
+        other_session_id = _seed_archive_session(archive_root, native_id="correction-clear-other")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            record_actuator = CorrectionRecordActuator()
+            for kind, payload in (("tag_reject", {"tag": "a"}), ("tag_accept", {"tag": "b"})):
+                args = CorrectionRecordArgs(archive=archive, session_id=session_id, kind=kind, payload=payload)
+                plan = executor.prepare(record_actuator, args)
+                authorization = executor.authorize(
+                    record_actuator,
+                    plan,
+                    actor="test",
+                    role="write",
+                    capability="test",
+                    confirmation_strength="role_only",
+                )
+                executor.execute(record_actuator, plan, authorization, args)
+            other_args = CorrectionRecordArgs(
+                archive=archive, session_id=other_session_id, kind="tag_reject", payload={"tag": "c"}
+            )
+            other_plan = executor.prepare(record_actuator, other_args)
+            other_authorization = executor.authorize(
+                record_actuator,
+                other_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            executor.execute(record_actuator, other_plan, other_authorization, other_args)
+
+            clear_actuator = CorrectionsClearActuator()
+            clear_args = CorrectionsClearArgs(archive=archive, session_id=session_id)
+            clear_plan = executor.prepare(clear_actuator, clear_args)
+            assert set(clear_plan.target_refs) == {
+                f"correction:{session_id}:tag_accept",
+                f"correction:{session_id}:tag_reject",
+            }
+            clear_authorization = executor.authorize(
+                clear_actuator,
+                clear_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            clear_receipt = executor.execute(clear_actuator, clear_plan, clear_authorization, clear_args)
+            assert clear_receipt.status == "applied"
+            assert clear_receipt.affected_count == 2
+
+            remaining = archive.list_corrections(session_id=session_id)
+            assert remaining == []
+            other_remaining = archive.list_corrections(session_id=other_session_id)
+            assert len(other_remaining) == 1
+
+    def test_concurrent_record_between_authorize_and_execute_makes_clear_plan_stale(self, tmp_path: Path) -> None:
+        """The "excision bypass" regression class applied to bulk clear.
+
+        A plan/authorization prepared against one live set of correction
+        kinds must not silently apply to a *different* live set after a
+        concurrent ``record_correction`` adds a new kind in the meantime --
+        clearing a kind the caller never previewed would be exactly the
+        TOCTOU gap AC3/AC5 exist to close.
+        """
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="correction-stale")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            record_actuator = CorrectionRecordActuator()
+            executor = OperationExecutor()
+            seed_args = CorrectionRecordArgs(
+                archive=archive, session_id=session_id, kind="tag_reject", payload={"tag": "a"}
+            )
+            seed_plan = executor.prepare(record_actuator, seed_args)
+            seed_authorization = executor.authorize(
+                record_actuator,
+                seed_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            executor.execute(record_actuator, seed_plan, seed_authorization, seed_args)
+
+            clear_actuator = CorrectionsClearActuator()
+            clear_args = CorrectionsClearArgs(archive=archive, session_id=session_id)
+            clear_plan = executor.prepare(clear_actuator, clear_args)
+            assert clear_plan.target_refs == (f"correction:{session_id}:tag_reject",)
+            clear_authorization = executor.authorize(
+                clear_actuator,
+                clear_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+
+            # Concurrent addition out from under the held authorization.
+            concurrent_args = CorrectionRecordArgs(
+                archive=archive, session_id=session_id, kind="tag_accept", payload={"tag": "b"}
+            )
+            concurrent_plan = executor.prepare(record_actuator, concurrent_args)
+            concurrent_authorization = executor.authorize(
+                record_actuator,
+                concurrent_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            executor.execute(record_actuator, concurrent_plan, concurrent_authorization, concurrent_args)
+
+            with pytest.raises(PlanStaleError):
+                executor.execute(clear_actuator, clear_plan, clear_authorization, clear_args)
+
+            # Refused before mutation: both corrections are still present.
+            remaining = archive.list_corrections(session_id=session_id)
+            assert {correction.kind.value for correction in remaining} == {"tag_reject", "tag_accept"}

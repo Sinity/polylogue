@@ -1336,6 +1336,189 @@ class WorkspaceDeleteActuator:
         )
 
 
+# ---------------------------------------------------------------------------
+# Learning corrections (mutate-record-correction / mutate-delete-correction /
+# mutate-clear-corrections) -- t46.9/kwsb.2 phase 5: the remaining named
+# census family after saved-view/recall-pack/workspace (#3262) landed.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionRecordArgs:
+    """Shared prepare/apply argument shape for recording a learning correction."""
+
+    archive: ArchiveStore
+    session_id: str
+    kind: str
+    payload: dict[str, str]
+    note: str | None = None
+    author_ref: str | None = None
+    author_kind: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionRecordActuator:
+    """Actuator for ``mutate-record-correction``: reversible user.db correction upsert.
+
+    Real production mutation: ``ArchiveStore.record_correction``, the same
+    primitive ``PolylogueArchiveMixin.record_correction`` already calls.
+    Every apply writes (insert-or-replace on the ``(session, kind)`` unique
+    key); undo is ``mutate-delete-correction``.
+    """
+
+    operation: str = "mutate-record-correction"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: CorrectionRecordArgs) -> MutationPlan:
+        resolved = args.archive.resolve_session_id(args.session_id)
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"correction:{resolved}:{args.kind}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "session_id": resolved,
+                "kind": args.kind,
+                "payload": dict(args.payload),
+                "note": args.note,
+                "author_ref": args.author_ref,
+                "author_kind": args.author_kind,
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: CorrectionRecordArgs) -> MutationReceipt:
+        session_id = str(plan.context["session_id"])
+        kind = str(plan.context["kind"])
+        payload = cast("dict[str, str]", plan.context["payload"])
+        note = cast("str | None", plan.context["note"])
+        author_ref = cast("str | None", plan.context["author_ref"])
+        author_kind = cast("str | None", plan.context["author_kind"])
+        correction = args.archive.record_correction(
+            session_id, kind, payload, note=note, author_ref=author_ref, author_kind=author_kind
+        )
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"correction": correction},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionDeleteArgs:
+    """Shared prepare/apply argument shape for deleting one learning correction."""
+
+    archive: ArchiveStore
+    session_id: str
+    kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionDeleteActuator:
+    """Actuator for ``mutate-delete-correction``: reversible user.db correction retraction.
+
+    Real production mutation: ``ArchiveStore.delete_correction``, which
+    marks one correction's assertion row deleted (undo =
+    ``mutate-record-correction``).
+    """
+
+    operation: str = "mutate-delete-correction"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: CorrectionDeleteArgs) -> MutationPlan:
+        resolved = args.archive.resolve_session_id(args.session_id)
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"correction:{resolved}:{args.kind}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"session_id": resolved, "kind": args.kind},
+        )
+
+    def apply(self, plan: MutationPlan, args: CorrectionDeleteArgs) -> MutationReceipt:
+        session_id = str(plan.context["session_id"])
+        kind = str(plan.context["kind"])
+        deleted = args.archive.delete_correction(session_id, kind)
+        status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=1 if deleted else 0,
+            detail=None if deleted else "correction_not_found",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"deleted": deleted},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionsClearArgs:
+    """Shared prepare/apply argument shape for clearing every correction on a session."""
+
+    archive: ArchiveStore
+    session_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionsClearActuator:
+    """Actuator for ``mutate-clear-corrections``: reversible bulk user.db retraction.
+
+    Real production mutation: ``ArchiveStore.clear_corrections``. Unlike
+    ``CorrectionDeleteActuator``, ``prepare`` re-resolves the *exact
+    currently live set* of correction kinds for the session (mirroring
+    ``SessionDeleteActuator``'s "re-resolve existence against live state"
+    pattern), so a concurrent ``mutate-record-correction`` that adds a new
+    kind between AUTHORIZE and EXECUTE changes the plan hash and forces a
+    replan (``PlanStaleError``) instead of silently clearing a kind the
+    caller never previewed.
+    """
+
+    operation: str = "mutate-clear-corrections"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: CorrectionsClearArgs) -> MutationPlan:
+        resolved = args.archive.resolve_session_id(args.session_id)
+        existing_kinds = tuple(
+            sorted({correction.kind.value for correction in args.archive.list_corrections(session_id=resolved)})
+        )
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=tuple(f"correction:{resolved}:{kind}" for kind in existing_kinds),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"session_id": resolved, "kinds": list(existing_kinds)},
+        )
+
+    def apply(self, plan: MutationPlan, args: CorrectionsClearArgs) -> MutationReceipt:
+        session_id = str(plan.context["session_id"])
+        cleared = args.archive.clear_corrections(session_id)
+        status: MutationTargetStatus = "applied" if cleared else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=cleared,
+            detail=None if cleared else "no_corrections",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"cleared_count": cleared},
+        )
+
+
 __all__ = [
     "AnnotationDeleteActuator",
     "AnnotationDeleteArgs",
@@ -1345,6 +1528,12 @@ __all__ = [
     "BlockerResolveArgs",
     "BulkTagActuator",
     "BulkTagArgs",
+    "CorrectionDeleteActuator",
+    "CorrectionDeleteArgs",
+    "CorrectionRecordActuator",
+    "CorrectionRecordArgs",
+    "CorrectionsClearActuator",
+    "CorrectionsClearArgs",
     "IdentityResetActuator",
     "IdentityResetArgs",
     "MarkAddActuator",
