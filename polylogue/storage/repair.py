@@ -55,6 +55,7 @@ from polylogue.storage.message_type_backfill import (
     count_unclassified_message_type_sync,
 )
 from polylogue.storage.raw_authority import (
+    RAW_REPLAY_NO_PROGRESS_REASON,
     RawAuthorityCensusReceipt,
     RawReplayPlan,
     RawReplayPlanOutcome,
@@ -65,6 +66,7 @@ from polylogue.storage.raw_authority import (
     raw_replay_application_receipt,
     raw_replay_plan_deferred_for_envelope,
     raw_replay_plan_last_attempts,
+    raw_replay_plan_no_progress_plan_ids,
     record_raw_authority_census,
     record_raw_replay_outcome,
     recover_interrupted_raw_authority_censuses,
@@ -4211,6 +4213,7 @@ def _raw_authority_residual(
     *,
     census_pending_raw_ids: tuple[str, ...] = (),
     resource_blocked_plan_ids: tuple[str, ...] = (),
+    no_progress_plan_ids: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Return identity-sensitive residual debt for fixed-point comparison."""
     census_pending_digest = hashlib.sha256(
@@ -4229,6 +4232,11 @@ def _raw_authority_residual(
         "census_pending_raw_count": len(census_pending_raw_ids),
         "census_pending_raw_digest": census_pending_digest,
         "resource_blocked_plan_ids": list(resource_blocked_plan_ids),
+        # hjpx AC1/AC5: plans that executed and made zero typed progress are
+        # durable non-executable debt, distinct from a resource-envelope
+        # defer -- they must appear in residual so two quiescent passes
+        # cannot silently claim fixed point while one sits unresolved.
+        "no_progress_plan_ids": list(no_progress_plan_ids),
     }
 
 
@@ -4249,7 +4257,14 @@ def _raw_authority_postflight_snapshot(
             > max_payload_bytes
         )
     )
-    return plans, _raw_authority_residual(candidates, resource_blocked_plan_ids=blocked_plan_ids)
+    no_progress_plan_ids = tuple(
+        sorted(raw_replay_plan_no_progress_plan_ids(archive_root).intersection(plan.plan_id for plan in plans))
+    )
+    return plans, _raw_authority_residual(
+        candidates,
+        resource_blocked_plan_ids=blocked_plan_ids,
+        no_progress_plan_ids=no_progress_plan_ids,
+    )
 
 
 def _raw_authority_candidates_for_scope(
@@ -4295,12 +4310,37 @@ def _raw_replay_plan_outcome(
     plan: RawReplayPlan,
     *,
     remaining: RawMaterializationCandidates,
+    no_progress: bool = False,
 ) -> RawReplayPlanOutcome:
-    """Conserve one selected component into an explicit post-pass state."""
+    """Conserve one selected component into an explicit post-pass state.
+
+    ``no_progress`` (hjpx AC1) is set by the caller only after an actual
+    execution attempt (``backfill_historical_revision_evidence`` returned
+    without raising) whose own ``RevisionBackfillResult`` reported zero
+    replayed, quarantined, AND adoption-deferred outcomes for this exact
+    component.  Ordinarily a component still present in ``remaining`` is
+    ``RETRYABLE`` -- plausibly transient (lock contention, a sibling
+    component's turn) and worth another pass.  But an executed plan that
+    produced literally no typed side effect and still remains a candidate is
+    the "accepted plan never executes" defect this bead targets: retrying it
+    automatically forever is indistinguishable from silent limbo.  Type it
+    ``TERMINAL`` instead so it surfaces as durable debt requiring
+    investigation and stops being silently reselected (see
+    ``raw_replay_plan_no_progress_plan_ids``).
+    """
     plan_id = plan.plan_id
     component = plan.input_raw_ids
     remaining_ids = set(remaining.expanded_raw_ids) | set(remaining.raw_ids)
     if remaining_ids.intersection(component):
+        if no_progress:
+            return RawReplayPlanOutcome(
+                plan_id,
+                component,
+                RawReplayPlanStatus.TERMINAL,
+                RAW_REPLAY_NO_PROGRESS_REASON,
+                "durable debt: inspect authority/membership state directly; "
+                "do not retry automatically until source or index preconditions change",
+            )
         return RawReplayPlanOutcome(
             plan_id,
             component,
@@ -4392,13 +4432,16 @@ def _raw_replay_plan_outcomes(
     plans: Sequence[RawReplayPlan],
     *,
     remaining: RawMaterializationCandidates,
+    no_progress: bool = False,
 ) -> tuple[RawReplayPlanOutcome, ...]:
     if not plans:
         return ()
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
-        return tuple(_raw_replay_plan_outcome(conn, plan, remaining=remaining) for plan in plans)
+        return tuple(
+            _raw_replay_plan_outcome(conn, plan, remaining=remaining, no_progress=no_progress) for plan in plans
+        )
 
 
 def _raw_replay_conservation_metrics(
@@ -6109,8 +6152,12 @@ def repair_raw_materialization(
     all_blocked_component_raw_ids = {raw_id for component in all_blocked_components for raw_id in component}
     resource_blocked_candidate_raw_ids = set(candidate_raw_ids).intersection(all_blocked_component_raw_ids)
     deferred_plan_ids = raw_replay_plan_deferred_for_envelope(archive_root, max_payload_bytes=max_payload_bytes)
+    no_progress_plan_ids = raw_replay_plan_no_progress_plan_ids(archive_root)
     admissible_components = [
-        component for component in ordered_components if plan_by_component[component].plan_id not in deferred_plan_ids
+        component
+        for component in ordered_components
+        if plan_by_component[component].plan_id not in deferred_plan_ids
+        and plan_by_component[component].plan_id not in no_progress_plan_ids
     ]
     selected_components = (
         admissible_components[:raw_artifact_limit] if raw_artifact_limit is not None else admissible_components
@@ -6194,6 +6241,8 @@ def repair_raw_materialization(
         metrics["raw_materialization_non_stream_safe_oversized_count"] = float(len(oversized_non_stream_safe_raw_ids))
     if deferred_plan_ids:
         metrics["raw_materialization_deferred_plan_count"] = float(len(deferred_plan_ids))
+    if no_progress_plan_ids:
+        metrics["raw_materialization_no_progress_plan_count"] = float(len(no_progress_plan_ids))
     scope = _raw_authority_scope(
         raw_artifact_id=raw_artifact_id,
         provider=provider,
@@ -6202,7 +6251,7 @@ def repair_raw_materialization(
         raw_artifact_limit=raw_artifact_limit,
         max_payload_bytes=max_payload_bytes,
     )
-    if not dry_run and not selected_components and deferred_plan_ids:
+    if not dry_run and not selected_components and (deferred_plan_ids or no_progress_plan_ids):
         retained_census_receipt = latest_raw_authority_census_receipt(archive_root, scope=scope)
         if retained_census_receipt is None:
             # v1 receipts predate envelope identity.  They are safe to reuse
@@ -6213,15 +6262,26 @@ def repair_raw_materialization(
             retained_census_receipt = latest_raw_authority_census_receipt(archive_root, scope=legacy_scope)
         if retained_census_receipt is None:
             raise RuntimeError("resource-deferred raw replay lacks a completed durable census receipt")
+        detail = "Raw materialization has no newly admissible authority components"
+        if deferred_plan_ids:
+            detail += (
+                f"; {len(deferred_plan_ids):,} unchanged plan(s) remain deferred for "
+                f"the {_format_bytes(max_payload_bytes)} envelope"
+            )
+        if no_progress_plan_ids:
+            detail += (
+                f"; {len(no_progress_plan_ids):,} unchanged plan(s) remain terminal after making zero "
+                "typed progress and require investigation before retry"
+            )
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
-            success=True,
-            detail=(
-                "Raw materialization has no newly admissible authority components; "
-                f"{len(deferred_plan_ids):,} unchanged plan(s) remain deferred for "
-                f"the {_format_bytes(max_payload_bytes)} envelope"
-            ),
+            # A no-progress plan is durable, investigation-requiring debt --
+            # unlike a resource-envelope defer, it is never expected to
+            # self-resolve without evidence changing, so it must not report
+            # success while it is the sole reason nothing was selected.
+            success=not no_progress_plan_ids,
+            detail=detail,
             metrics=metrics,
             census_receipt=retained_census_receipt,
         )
@@ -6230,12 +6290,14 @@ def repair_raw_materialization(
         plan_by_component[component].plan_id
         for component in ordered_components
         if not all_blocked_component_raw_ids.intersection(component)
+        and plan_by_component[component].plan_id not in no_progress_plan_ids
     }
     residual = _raw_authority_residual(
         candidates,
         resource_blocked_plan_ids=tuple(
             sorted(plan_by_component[component].plan_id for component in all_blocked_components)
         ),
+        no_progress_plan_ids=tuple(sorted(no_progress_plan_ids.intersection(plan.plan_id for plan in plans))),
     )
     census_receipt = record_raw_authority_census(
         archive_root,
@@ -6506,7 +6568,13 @@ def repair_raw_materialization(
             source_family=source_family,
             source_root=source_root,
         )
-        component_outcomes = _raw_replay_plan_outcomes(archive_root, [plan], remaining=current)
+        # hjpx AC1: an executed plan that produced zero replayed, quarantined,
+        # AND adoption-deferred outcomes made no typed progress at all --
+        # distinct from ordinary partial progress on a multi-key component.
+        # ``_raw_replay_plan_outcome`` types this TERMINAL (not RETRYABLE) so
+        # it stops being silently reselected forever.
+        no_progress = part.replayed_logical_sources == 0 and part.quarantined == 0 and part.adoption_deferred == 0
+        component_outcomes = _raw_replay_plan_outcomes(archive_root, [plan], remaining=current, no_progress=no_progress)
         for outcome in component_outcomes:
             application_receipt = raw_replay_application_receipt(archive_root, plan)
             receipted = dataclasses.replace(outcome, application_receipt=application_receipt)
@@ -6586,6 +6654,12 @@ def repair_raw_materialization(
     metrics["raw_materialization_plan_carried_forward_count"] = float(carried_forward_count)
     metrics["raw_materialization_plan_outcome_count"] = float(plan_count)
     metrics["raw_materialization_plan_conservation_error_count"] = float(conservation_error_count)
+    no_progress_outcome_count = sum(
+        outcome.status is RawReplayPlanStatus.TERMINAL and outcome.reason == RAW_REPLAY_NO_PROGRESS_REASON
+        for outcome in plan_outcomes
+    )
+    if no_progress_outcome_count:
+        metrics["raw_materialization_no_progress_count"] = float(no_progress_outcome_count)
     success = (
         not remaining.raw_ids
         and remaining.missing_blobs == 0
@@ -6593,6 +6667,7 @@ def repair_raw_materialization(
         and remaining.adoption_deferred == 0
         and remaining.byte_authority_pending == 0
         and conservation_error_count == 0
+        and no_progress_outcome_count == 0
         and not any(outcome.status is RawReplayPlanStatus.REJECTED_STALE for outcome in plan_outcomes)
         and (
             raw_artifact_id is None
@@ -6607,6 +6682,11 @@ def repair_raw_materialization(
         f"Replayed {replay.replayed_logical_sources:,} logical source(s) through typed revision authority; "
         f"{len(remaining.raw_ids):,} replay candidate(s) remain"
     )
+    if no_progress_outcome_count:
+        detail += (
+            f"; {no_progress_outcome_count:,} authority component(s) executed with zero typed progress and "
+            "are now terminal, requiring investigation before retry"
+        )
     if replay.quarantined:
         detail += f"; {replay.quarantined:,} ambiguous/legacy revision(s) quarantined"
     if replay.adoption_deferred:

@@ -741,6 +741,58 @@ def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_byt
         }
 
 
+RAW_REPLAY_NO_PROGRESS_REASON = (
+    "authority component executed a selected plan and produced zero replayed, "
+    "quarantined, or deferred outcomes -- accepted plan made no typed progress"
+)
+
+
+def raw_replay_plan_no_progress_plan_ids(archive_root: Path) -> set[str]:
+    """Return plan ids whose most recent selected execution made zero typed progress.
+
+    hjpx's core execution-completeness gap: ``repair_raw_materialization`` can
+    classify a raw as a replayable/selected authority component, hand it to
+    ``backfill_historical_revision_evidence``, and get back
+    ``replayed_logical_sources=0`` with no quarantine or adoption-deferral
+    either -- i.e. the plan executed without raising, but nothing durable
+    happened, and the same immutable plan id would otherwise be reselected
+    forever (a bug this bead's earlier passes describe as "accepted plan
+    never executes"). ``_raw_replay_plan_outcome`` now types that exact
+    first occurrence as ``TERMINAL`` (not ``RETRYABLE``) with
+    ``RAW_REPLAY_NO_PROGRESS_REASON`` instead of silently looping; this
+    function lets the caller exclude the SAME unchanged plan id from
+    automatic reselection afterward, mirroring
+    ``raw_replay_plan_deferred_for_envelope``'s envelope-scoped exclusion. A
+    changed source/index precondition mints a new plan id (see
+    ``validate_raw_replay_plan``) and is immediately eligible again; only the
+    exact plan that already proved it cannot make progress is held out.
+    """
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        return set()
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_census_plans'"
+        ).fetchone()
+        if exists is None:
+            return set()
+        return {
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT cp.plan_id
+                FROM raw_authority_census_plans AS cp
+                JOIN raw_authority_censuses AS c ON c.census_id = cp.census_id
+                WHERE cp.selected = 1
+                  AND cp.outcome_status = 'terminal'
+                  AND cp.reason = ?
+                  AND c.lifecycle_status IN ('completed', 'interrupted')
+                """,
+                (RAW_REPLAY_NO_PROGRESS_REASON,),
+            )
+        }
+
+
 def unresolved_raw_authority_blockers(archive_root: Path) -> int:
     source_db = archive_root / "source.db"
     if not source_db.is_file():
