@@ -8,11 +8,11 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.attachment.models import Attachment
@@ -109,6 +109,7 @@ if TYPE_CHECKING:
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
     from polylogue.insights.transforms import SessionDigest
     from polylogue.operations import ArchiveStats
+    from polylogue.operations.mutation_transaction import MutationActuator, MutationPlan, MutationReceipt
     from polylogue.readiness import ReadinessReport
     from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
@@ -166,6 +167,8 @@ _FACET_DEFERRED_FAMILIES = (
 )
 
 _FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
+
+_MutationArgsT = TypeVar("_MutationArgsT")
 
 _CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
     "note": AssertionKind.NOTE,
@@ -2204,6 +2207,45 @@ class PolylogueArchiveMixin:
 
         @property
         def repository(self) -> SessionRepository: ...
+
+    def _execute_facade_mutation(
+        self,
+        actuator: MutationActuator[_MutationArgsT],
+        build_args: Callable[[ArchiveStore], _MutationArgsT],
+        *,
+        capability: str,
+    ) -> tuple[MutationReceipt, MutationPlan]:
+        """Run one PREPARE/AUTHORIZE/EXECUTE cycle against a fresh archive handle.
+
+        Collapses the ``ArchiveStore.open_existing`` + ``OperationExecutor``
+        shell shared by every facade mutation method routed through the
+        t46.9 ``OperationExecutor`` contract: every one of those sites
+        authorizes with ``actor="facade"``, ``role="write"``,
+        ``confirmation_strength="role_only"`` -- only the actuator, its
+        args, and the capability string vary from call to call.
+        ``delete_session_safe`` authorizes with a caller-supplied ``actor``
+        and ``confirmation_strength="confirm_flag"`` instead (it exposes a
+        stronger confirmation contract to its own callers), so it stays
+        outside this helper. Returns ``(receipt, plan)`` because a couple of
+        callers read ``plan.context`` back after the archive handle closes.
+        """
+        from polylogue.operations.mutation_transaction import OperationExecutor
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            args = build_args(archive)
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="facade",
+                role="write",
+                capability=capability,
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+        return receipt, plan
 
     async def import_annotation_batch(
         self,
@@ -5534,34 +5576,23 @@ class PolylogueArchiveMixin:
         receipt contract instead of calling the primitive independently.
         """
         from polylogue.operations.mutation_actuators import TagAddActuator, TagAddArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import TagMutationResult
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = TagAddActuator()
-            executor = OperationExecutor()
-            args = TagAddArgs(
-                archive=archive, session_id=session_id, tag=tag, author_ref=author_ref, author_kind=author_kind
+        try:
+            # Covers both the initial resolve (session never existed) and
+            # EXECUTE's fresh-PREPARE revalidation (session deleted by a
+            # concurrent actor between AUTHORIZE and EXECUTE) -- both
+            # collapse to the same "session not found" outcome for this
+            # reversible-class operation.
+            receipt, _plan = self._execute_facade_mutation(
+                TagAddActuator(),
+                lambda archive: TagAddArgs(
+                    archive=archive, session_id=session_id, tag=tag, author_ref=author_ref, author_kind=author_kind
+                ),
+                capability="archive.add_tag",
             )
-            try:
-                plan = executor.prepare(actuator, args)
-                authorization = executor.authorize(
-                    actuator,
-                    plan,
-                    actor="facade",
-                    role="write",
-                    capability="archive.add_tag",
-                    confirmation_strength="role_only",
-                )
-                receipt = executor.execute(actuator, plan, authorization, args)
-            except KeyError:
-                # Covers both the initial resolve (session never existed) and
-                # EXECUTE's fresh-PREPARE revalidation (session deleted by a
-                # concurrent actor between AUTHORIZE and EXECUTE) -- both
-                # collapse to the same "session not found" outcome for this
-                # reversible-class operation.
-                raise SessionNotFoundError(session_id) from None
+        except KeyError:
+            raise SessionNotFoundError(session_id) from None
         changed = receipt.affected_count
         return TagMutationResult(
             outcome="added" if changed else "no_op",
@@ -5579,27 +5610,16 @@ class PolylogueArchiveMixin:
         phase 2); see :meth:`add_tag` for the shared-contract rationale.
         """
         from polylogue.operations.mutation_actuators import TagRemoveActuator, TagRemoveArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import TagMutationResult
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = TagRemoveActuator()
-            executor = OperationExecutor()
-            args = TagRemoveArgs(archive=archive, session_id=session_id, tag=tag)
-            try:
-                plan = executor.prepare(actuator, args)
-                authorization = executor.authorize(
-                    actuator,
-                    plan,
-                    actor="facade",
-                    role="write",
-                    capability="archive.remove_tag",
-                    confirmation_strength="role_only",
-                )
-                receipt = executor.execute(actuator, plan, authorization, args)
-            except KeyError:
-                raise SessionNotFoundError(session_id) from None
+        try:
+            receipt, _plan = self._execute_facade_mutation(
+                TagRemoveActuator(),
+                lambda archive: TagRemoveArgs(archive=archive, session_id=session_id, tag=tag),
+                capability="archive.remove_tag",
+            )
+        except KeyError:
+            raise SessionNotFoundError(session_id) from None
         changed = receipt.affected_count
         return TagMutationResult(
             outcome="removed" if changed else "not_present",
@@ -5646,8 +5666,6 @@ class PolylogueArchiveMixin:
         phase 2); see :meth:`add_tag` for the shared-contract rationale.
         """
         from polylogue.operations.mutation_actuators import MetadataSetActuator, MetadataSetArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import (
             MetadataKeyValidationError,
             MetadataMutationResult,
@@ -5658,23 +5676,14 @@ class PolylogueArchiveMixin:
         if validation_error is not None:
             raise MetadataKeyValidationError(validation_error)
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = MetadataSetActuator()
-            executor = OperationExecutor()
-            args = MetadataSetArgs(archive=archive, session_id=session_id, key=key, value=value)
-            try:
-                plan = executor.prepare(actuator, args)
-                authorization = executor.authorize(
-                    actuator,
-                    plan,
-                    actor="facade",
-                    role="write",
-                    capability="archive.set_metadata",
-                    confirmation_strength="role_only",
-                )
-                receipt = executor.execute(actuator, plan, authorization, args)
-            except KeyError:
-                raise SessionNotFoundError(session_id) from None
+        try:
+            receipt, plan = self._execute_facade_mutation(
+                MetadataSetActuator(),
+                lambda archive: MetadataSetArgs(archive=archive, session_id=session_id, key=key, value=value),
+                capability="archive.set_metadata",
+            )
+        except KeyError:
+            raise SessionNotFoundError(session_id) from None
         changed = receipt.affected_count
         resolved = str(plan.context["session_id"])
         return MetadataMutationResult(
@@ -5696,8 +5705,6 @@ class PolylogueArchiveMixin:
         rationale.
         """
         from polylogue.operations.mutation_actuators import MetadataDeleteActuator, MetadataDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import (
             MetadataKeyValidationError,
             MetadataMutationResult,
@@ -5708,23 +5715,14 @@ class PolylogueArchiveMixin:
         if validation_error is not None:
             raise MetadataKeyValidationError(validation_error)
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = MetadataDeleteActuator()
-            executor = OperationExecutor()
-            args = MetadataDeleteArgs(archive=archive, session_id=session_id, key=key)
-            try:
-                plan = executor.prepare(actuator, args)
-                authorization = executor.authorize(
-                    actuator,
-                    plan,
-                    actor="facade",
-                    role="write",
-                    capability="archive.delete_metadata",
-                    confirmation_strength="role_only",
-                )
-                receipt = executor.execute(actuator, plan, authorization, args)
-            except KeyError:
-                raise SessionNotFoundError(session_id) from None
+        try:
+            receipt, plan = self._execute_facade_mutation(
+                MetadataDeleteActuator(),
+                lambda archive: MetadataDeleteArgs(archive=archive, session_id=session_id, key=key),
+                capability="archive.delete_metadata",
+            )
+        except KeyError:
+            raise SessionNotFoundError(session_id) from None
         changed = receipt.affected_count
         resolved = str(plan.context["session_id"])
         return MetadataMutationResult(
@@ -5752,8 +5750,6 @@ class PolylogueArchiveMixin:
         2); see :meth:`add_tag` for the shared-contract rationale.
         """
         from polylogue.operations.mutation_actuators import BulkTagActuator, BulkTagArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import BulkTagMutationResult
 
         if not session_ids:
@@ -5767,26 +5763,17 @@ class PolylogueArchiveMixin:
         if len(tags) > max_tags:
             raise ValueError(f"bulk_tag_sessions supports at most {max_tags} tags")
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = BulkTagActuator()
-            executor = OperationExecutor()
-            args = BulkTagArgs(
+        receipt, _plan = self._execute_facade_mutation(
+            BulkTagActuator(),
+            lambda archive: BulkTagArgs(
                 archive=archive,
                 session_ids=tuple(session_ids),
                 tags=tuple(tags),
                 author_ref=author_ref,
                 author_kind=author_kind,
-            )
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.bulk_tag_sessions",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            ),
+            capability="archive.bulk_tag_sessions",
+        )
         domain_receipt = receipt.domain_receipt
         return BulkTagMutationResult(
             session_count=int(cast("int", domain_receipt["session_count"])),
@@ -5925,7 +5912,6 @@ class PolylogueArchiveMixin:
         """
         from polylogue.core.user_state_targets import validate_mark_type
         from polylogue.operations.mutation_actuators import MarkAddActuator, MarkArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
 
         mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
@@ -5934,27 +5920,16 @@ class PolylogueArchiveMixin:
             target_id=target_id,
             message_id=message_id,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = MarkAddActuator()
-            executor = OperationExecutor()
-            args = MarkArgs(
+        receipt, _plan = self._execute_facade_mutation(
+            MarkAddActuator(),
+            lambda archive: MarkArgs(
                 archive=archive,
                 target_type=str(target["target_type"]),
                 target_id=str(target["target_id"]),
                 mark_type=mark_type,
-            )
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.add_mark",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            ),
+            capability="archive.add_mark",
+        )
         return receipt.status == "applied"
 
     async def remove_mark(
@@ -5973,7 +5948,6 @@ class PolylogueArchiveMixin:
         """
         from polylogue.core.user_state_targets import validate_mark_type
         from polylogue.operations.mutation_actuators import MarkArgs, MarkRemoveActuator
-        from polylogue.operations.mutation_transaction import OperationExecutor
 
         mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
@@ -5982,27 +5956,16 @@ class PolylogueArchiveMixin:
             target_id=target_id,
             message_id=message_id,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = MarkRemoveActuator()
-            executor = OperationExecutor()
-            args = MarkArgs(
+        receipt, _plan = self._execute_facade_mutation(
+            MarkRemoveActuator(),
+            lambda archive: MarkArgs(
                 archive=archive,
                 target_type=str(target["target_type"]),
                 target_id=str(target["target_id"]),
                 mark_type=mark_type,
-            )
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.remove_mark",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            ),
+            capability="archive.remove_mark",
+        )
         return receipt.status == "applied"
 
     async def list_marks(
@@ -6062,7 +6025,6 @@ class PolylogueArchiveMixin:
         if not note_text.strip():
             raise ValueError("note_text must not be empty")
         from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
 
         target = await self._resolve_user_state_target(
             session_id,
@@ -6070,28 +6032,17 @@ class PolylogueArchiveMixin:
             target_id=target_id,
             message_id=message_id,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = AnnotationSaveActuator()
-            executor = OperationExecutor()
-            args = AnnotationSaveArgs(
+        receipt, _plan = self._execute_facade_mutation(
+            AnnotationSaveActuator(),
+            lambda archive: AnnotationSaveArgs(
                 archive=archive,
                 annotation_id=annotation_id,
                 target_type=str(target["target_type"]),
                 target_id=str(target["target_id"]),
                 note_text=note_text,
-            )
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.save_annotation",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            ),
+            capability="archive.save_annotation",
+        )
         return bool(receipt.domain_receipt.get("created"))
 
     async def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
@@ -6149,23 +6100,12 @@ class PolylogueArchiveMixin:
         rationale.
         """
         from polylogue.operations.mutation_actuators import AnnotationDeleteActuator, AnnotationDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = AnnotationDeleteActuator()
-            executor = OperationExecutor()
-            args = AnnotationDeleteArgs(archive=archive, annotation_id=annotation_id)
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.delete_annotation",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+        receipt, _plan = self._execute_facade_mutation(
+            AnnotationDeleteActuator(),
+            lambda archive: AnnotationDeleteArgs(archive=archive, annotation_id=annotation_id),
+            capability="archive.delete_annotation",
+        )
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -6179,23 +6119,12 @@ class PolylogueArchiveMixin:
         phase 4); see :meth:`add_mark` for the shared-contract rationale.
         """
         from polylogue.operations.mutation_actuators import SavedViewSaveActuator, SavedViewSaveArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = SavedViewSaveActuator()
-            executor = OperationExecutor()
-            args = SavedViewSaveArgs(archive=archive, view_id=view_id, name=name, query_json=query_json)
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.save_view",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+        receipt, _plan = self._execute_facade_mutation(
+            SavedViewSaveActuator(),
+            lambda archive: SavedViewSaveArgs(archive=archive, view_id=view_id, name=name, query_json=query_json),
+            capability="archive.save_view",
+        )
         return bool(receipt.domain_receipt.get("created"))
 
     async def get_view(self, view_id: str) -> dict[str, str] | None:
@@ -6237,23 +6166,12 @@ class PolylogueArchiveMixin:
         rationale.
         """
         from polylogue.operations.mutation_actuators import SavedViewDeleteActuator, SavedViewDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = SavedViewDeleteActuator()
-            executor = OperationExecutor()
-            args = SavedViewDeleteArgs(archive=archive, view_id=view_id)
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.delete_view",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+        receipt, _plan = self._execute_facade_mutation(
+            SavedViewDeleteActuator(),
+            lambda archive: SavedViewDeleteArgs(archive=archive, view_id=view_id),
+            capability="archive.delete_view",
+        )
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -6514,29 +6432,18 @@ class PolylogueArchiveMixin:
         )
         session_ids_json = json.dumps(resolved_session_ids, sort_keys=True)
         from polylogue.operations.mutation_actuators import RecallPackSaveActuator, RecallPackSaveArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = RecallPackSaveActuator()
-            executor = OperationExecutor()
-            args = RecallPackSaveArgs(
+        receipt, _plan = self._execute_facade_mutation(
+            RecallPackSaveActuator(),
+            lambda archive: RecallPackSaveArgs(
                 archive=archive,
                 pack_id=pack_id,
                 label=label,
                 session_ids_json=session_ids_json,
                 payload_json=normalized_payload_json,
-            )
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.create_recall_pack",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            ),
+            capability="archive.create_recall_pack",
+        )
         return bool(receipt.domain_receipt.get("created"))
 
     async def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
@@ -6568,23 +6475,12 @@ class PolylogueArchiveMixin:
         rationale.
         """
         from polylogue.operations.mutation_actuators import RecallPackDeleteActuator, RecallPackDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = RecallPackDeleteActuator()
-            executor = OperationExecutor()
-            args = RecallPackDeleteArgs(archive=archive, pack_id=pack_id)
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.delete_recall_pack",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+        receipt, _plan = self._execute_facade_mutation(
+            RecallPackDeleteActuator(),
+            lambda archive: RecallPackDeleteArgs(archive=archive, pack_id=pack_id),
+            capability="archive.delete_recall_pack",
+        )
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -6651,13 +6547,10 @@ class PolylogueArchiveMixin:
         normalized_active_json = await self._build_workspace_active_target(active_target)
 
         from polylogue.operations.mutation_actuators import WorkspaceSaveActuator, WorkspaceSaveArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = WorkspaceSaveActuator()
-            executor = OperationExecutor()
-            args = WorkspaceSaveArgs(
+        receipt, _plan = self._execute_facade_mutation(
+            WorkspaceSaveActuator(),
+            lambda archive: WorkspaceSaveArgs(
                 archive=archive,
                 workspace_id=workspace_id,
                 name=name,
@@ -6665,17 +6558,9 @@ class PolylogueArchiveMixin:
                 open_targets_json=normalized_targets_json,
                 layout_json=normalized_layout_json,
                 active_target_json=normalized_active_json,
-            )
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.save_workspace",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            ),
+            capability="archive.save_workspace",
+        )
         return bool(receipt.domain_receipt.get("created"))
 
     async def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
@@ -6707,23 +6592,12 @@ class PolylogueArchiveMixin:
         rationale.
         """
         from polylogue.operations.mutation_actuators import WorkspaceDeleteActuator, WorkspaceDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = WorkspaceDeleteActuator()
-            executor = OperationExecutor()
-            args = WorkspaceDeleteArgs(archive=archive, workspace_id=workspace_id)
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability="archive.delete_workspace",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+        receipt, _plan = self._execute_facade_mutation(
+            WorkspaceDeleteActuator(),
+            lambda archive: WorkspaceDeleteArgs(archive=archive, workspace_id=workspace_id),
+            capability="archive.delete_workspace",
+        )
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -6764,34 +6638,23 @@ class PolylogueArchiveMixin:
         normalized_payload = {str(key): str(value) for key, value in payload.items()}
         parse_correction_kind(kind)
         from polylogue.operations.mutation_actuators import CorrectionRecordActuator, CorrectionRecordArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = CorrectionRecordActuator()
-            executor = OperationExecutor()
-            args = CorrectionRecordArgs(
-                archive=archive,
-                session_id=session_id,
-                kind=kind,
-                payload=normalized_payload,
-                note=note,
-                author_ref=author_ref,
-                author_kind=author_kind,
+        try:
+            receipt, _plan = self._execute_facade_mutation(
+                CorrectionRecordActuator(),
+                lambda archive: CorrectionRecordArgs(
+                    archive=archive,
+                    session_id=session_id,
+                    kind=kind,
+                    payload=normalized_payload,
+                    note=note,
+                    author_ref=author_ref,
+                    author_kind=author_kind,
+                ),
+                capability="archive.record_correction",
             )
-            try:
-                plan = executor.prepare(actuator, args)
-                authorization = executor.authorize(
-                    actuator,
-                    plan,
-                    actor="facade",
-                    role="write",
-                    capability="archive.record_correction",
-                    confirmation_strength="role_only",
-                )
-                receipt = executor.execute(actuator, plan, authorization, args)
-            except KeyError:
-                raise SessionNotFoundError(session_id) from None
+        except KeyError:
+            raise SessionNotFoundError(session_id) from None
         return cast("LearningCorrection", receipt.domain_receipt["correction"])
 
     async def list_corrections(
@@ -6826,26 +6689,15 @@ class PolylogueArchiveMixin:
 
         parse_correction_kind(kind)
         from polylogue.operations.mutation_actuators import CorrectionDeleteActuator, CorrectionDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = CorrectionDeleteActuator()
-            executor = OperationExecutor()
-            args = CorrectionDeleteArgs(archive=archive, session_id=session_id, kind=kind)
-            try:
-                plan = executor.prepare(actuator, args)
-                authorization = executor.authorize(
-                    actuator,
-                    plan,
-                    actor="facade",
-                    role="write",
-                    capability="archive.delete_correction",
-                    confirmation_strength="role_only",
-                )
-                receipt = executor.execute(actuator, plan, authorization, args)
-            except KeyError:
-                raise SessionNotFoundError(session_id) from None
+        try:
+            receipt, _plan = self._execute_facade_mutation(
+                CorrectionDeleteActuator(),
+                lambda archive: CorrectionDeleteArgs(archive=archive, session_id=session_id, kind=kind),
+                capability="archive.delete_correction",
+            )
+        except KeyError:
+            raise SessionNotFoundError(session_id) from None
         return receipt.status == "applied"
 
     async def clear_corrections(self, session_id: str) -> int:
@@ -6859,26 +6711,15 @@ class PolylogueArchiveMixin:
         """
 
         from polylogue.operations.mutation_actuators import CorrectionsClearActuator, CorrectionsClearArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = CorrectionsClearActuator()
-            executor = OperationExecutor()
-            args = CorrectionsClearArgs(archive=archive, session_id=session_id)
-            try:
-                plan = executor.prepare(actuator, args)
-                authorization = executor.authorize(
-                    actuator,
-                    plan,
-                    actor="facade",
-                    role="write",
-                    capability="archive.clear_corrections",
-                    confirmation_strength="role_only",
-                )
-                receipt = executor.execute(actuator, plan, authorization, args)
-            except KeyError:
-                raise SessionNotFoundError(session_id) from None
+        try:
+            receipt, _plan = self._execute_facade_mutation(
+                CorrectionsClearActuator(),
+                lambda archive: CorrectionsClearArgs(archive=archive, session_id=session_id),
+                capability="archive.clear_corrections",
+            )
+        except KeyError:
+            raise SessionNotFoundError(session_id) from None
         return int(receipt.affected_count)
 
     async def post_blackboard_note(
