@@ -1689,19 +1689,51 @@ def _release_pidfile_after_writer_drain(pidfile_fd: int | None, *, writer_draine
     return None
 
 
+def _session_id_touches(payload: dict[str, object], key: str) -> list[tuple[str | None, str]]:
+    """Extract ``(source_name, session_id)`` pairs from a batch payload list.
+
+    ``key`` is ``"new_sessions"`` or ``"updated_sessions"`` -- the identity
+    threaded from :class:`polylogue.sources.live.metrics.LiveBatchMetrics`
+    (polylogue-20d.13). Malformed/legacy payloads (missing key, non-list,
+    entries without a usable ``session_id``) yield no touches rather than
+    raising -- this is an observability fan-out, not a load-bearing write.
+    """
+    raw = payload.get(key)
+    if not isinstance(raw, list):
+        return []
+    touches: list[tuple[str | None, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        session_id = entry.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            continue
+        source_name = entry.get("source_name")
+        touches.append((source_name if isinstance(source_name, str) else None, session_id))
+    return touches
+
+
 def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     """Persist a live-ingest batch event and fan out granular #1204 topics.
 
     The legacy ``ingestion_batch`` kind is preserved verbatim for existing
     consumers (status views, polling fallback). When the batch payload
-    carries succeeded counts we additionally emit per-topic events
-    (``session.appended`` / ``message.appended``) so the reader can
-    subscribe selectively and animate just-touched rows.
+    carries real per-session identity (``new_sessions`` / ``updated_sessions``,
+    threaded from the live-ingest full/append routes) each touched session
+    gets its own identity-scoped ``session.appended`` / ``session.updated`` /
+    ``message.appended`` event, so a reader with session A open is never
+    refreshed by an event that only ever touched session B
+    (polylogue-20d.13 -- the defect the description names: "an unscoped
+    message event currently refreshes whichever session a browser has
+    open").
     """
+    from collections import Counter
+
     from polylogue.daemon.events import (
         emit_daemon_event,
         emit_message_appended,
         emit_session_appended,
+        emit_session_updated,
     )
 
     emit_daemon_event(kind, payload=payload)
@@ -1716,20 +1748,33 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     if succeeded <= 0:
         return
 
-    # ``source_group_count`` is the only per-source breakdown the batch
-    # payload carries today. Emit one aggregate granular event per batch;
-    # source-level fan-out can be added once the metrics payload exposes
-    # per-source success counts (deferred — tracked under #1204 follow-ups).
-    emit_session_appended(
-        source_name=None,
-        succeeded_file_count=succeeded,
-        failed_file_count=failed,
-    )
-    emit_message_appended(
-        session_id=None,
-        source_name=None,
-        appended_count=succeeded,
-    )
+    new_touches = _session_id_touches(payload, "new_sessions")
+    updated_touches = _session_id_touches(payload, "updated_sessions")
+
+    if not new_touches and not updated_touches:
+        # No real per-session identity was resolved for this batch (a source
+        # family or code path this bead's threading does not yet cover).
+        # Preserve the pre-#20d.13 unscoped aggregate rather than silently
+        # dropping the notification -- a coarse "something changed" signal
+        # is still better than none, and existing consumers already treat
+        # an absent session_id as "refresh regardless".
+        emit_session_appended(source_name=None, succeeded_file_count=succeeded, failed_file_count=failed)
+        emit_message_appended(session_id=None, source_name=None, appended_count=succeeded)
+        return
+
+    new_counts = Counter(new_touches)
+    for (source_name, session_id), count in new_counts.items():
+        emit_session_appended(
+            source_name=source_name,
+            succeeded_file_count=count,
+            session_id=session_id,
+        )
+        emit_message_appended(session_id=session_id, source_name=source_name, appended_count=count)
+
+    updated_counts = Counter(updated_touches)
+    for (source_name, session_id), count in updated_counts.items():
+        emit_session_updated(session_id=session_id, source_name=source_name, appended_count=count)
+        emit_message_appended(session_id=session_id, source_name=source_name, appended_count=count)
 
 
 async def _emit_daemon_lifecycle_event(

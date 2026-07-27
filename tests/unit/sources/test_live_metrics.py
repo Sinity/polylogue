@@ -35,6 +35,8 @@ def test_live_batch_metrics_payload_includes_memory_pressure_fields() -> None:
         wal_checkpoint_errors=["database is locked"],
         cgroup_path="/user.slice/test.scope",
         cgroup_memory_peak_mb=128.0,
+        new_sessions=(("codex", "codex:conv-1"),),
+        updated_sessions=(("claude-code", "claude-code:conv-2"),),
     )
 
     payload = metrics.to_payload()
@@ -51,3 +53,35 @@ def test_live_batch_metrics_payload_includes_memory_pressure_fields() -> None:
     assert payload["wal_checkpoint_elapsed_s"] == 0.04
     assert payload["wal_checkpoint_modes"] == {"passive": 1}
     assert payload["wal_checkpoint_errors"] == ["database is locked"]
+    # Identity-scoped session touches (polylogue-20d.13): real refs, not an
+    # unscoped aggregate, so consumers can tell session A from session B.
+    assert payload["new_sessions"] == [{"source_name": "codex", "session_id": "codex:conv-1"}]
+    assert payload["updated_sessions"] == [{"source_name": "claude-code", "session_id": "claude-code:conv-2"}]
+
+
+def test_live_batch_metrics_defaults_to_empty_session_touches() -> None:
+    metrics = LiveBatchMetrics(
+        queued_file_count=0,
+        needed_file_count=0,
+        skipped_file_count=0,
+        succeeded_file_count=0,
+        failed_file_count=0,
+        source_group_count=0,
+        input_bytes=0,
+        source_payload_read_bytes=0,
+        cursor_fingerprint_read_bytes=0,
+        ingest_worker_count_max=0,
+        append_file_count=0,
+        full_file_count=0,
+        archive_bytes_before=0,
+        archive_bytes_after=0,
+        archive_write_bytes_delta=0,
+        parse_time_s=0.0,
+        convergence_time_s=0.0,
+        total_time_s=0.0,
+    )
+
+    payload = metrics.to_payload()
+
+    assert payload["new_sessions"] == []
+    assert payload["updated_sessions"] == []

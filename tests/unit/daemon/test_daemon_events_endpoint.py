@@ -492,6 +492,7 @@ class TestGranularEventKinds:
             succeeded_file_count=3,
             failed_file_count=1,
             source_paths=["/tmp/a.jsonl", "/tmp/b.jsonl"],
+            session_id="claude-code-session:conv-abc",
         )
         events = query_daemon_events(limit=10)
         assert events[0]["kind"] == "session.appended"
@@ -500,6 +501,24 @@ class TestGranularEventKinds:
         assert payload["succeeded_file_count"] == 3
         assert payload["failed_file_count"] == 1
         assert payload["source_paths"] == ["/tmp/a.jsonl", "/tmp/b.jsonl"]
+        # Identity-scoped ref (polylogue-20d.13): a reader must be able to
+        # tell whether this event describes the session it has open.
+        assert payload["session_id"] == "claude-code-session:conv-abc"
+
+    def test_emit_session_updated_payload_shape(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_session_updated, query_daemon_events
+
+        emit_session_updated(
+            session_id="codex:conv-xyz",
+            source_name="codex",
+            appended_count=2,
+        )
+        events = query_daemon_events(limit=10)
+        assert events[0]["kind"] == "session.updated"
+        payload = cast("dict[str, object]", events[0]["payload"])
+        assert payload["session_id"] == "codex:conv-xyz"
+        assert payload["source_name"] == "codex"
+        assert payload["appended_count"] == 2
 
     def test_emit_message_appended_payload_shape(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import emit_message_appended, query_daemon_events
@@ -517,54 +536,119 @@ class TestGranularEventKinds:
         assert payload["appended_count"] == 4
         assert payload["source_path"] == "/tmp/session.json"
 
-    def test_emit_progress_update_includes_fraction(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_progress_update, query_daemon_events
-
-        emit_progress_update(
-            operation_id="replay-42",
-            operation_kind="replay",
-            completed=47,
-            total=100,
-            eta_seconds=180.0,
-            detail="reapplying schema validation",
-        )
-        events = query_daemon_events(limit=10)
-        assert events[0]["kind"] == "progress.update"
-        assert events[0]["operation_id"] == "replay-42"
-        payload = cast("dict[str, object]", events[0]["payload"])
-        assert payload["completed"] == 47
-        assert payload["total"] == 100
-        assert payload["fraction"] == 0.47
-        assert payload["eta_seconds"] == 180.0
-
-    def test_emit_progress_complete(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_progress_complete, query_daemon_events
-
-        emit_progress_complete(operation_id="replay-42", operation_kind="replay", status="completed")
-        events = query_daemon_events(limit=10)
-        assert events[0]["kind"] == "progress.complete"
-        assert events[0]["operation_id"] == "replay-42"
-        assert cast("dict[str, object]", events[0]["payload"])["status"] == "completed"
-
     def test_selective_subscription_via_kinds(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import (
             emit_message_appended,
-            emit_progress_update,
             emit_session_appended,
+            emit_session_updated,
         )
 
         emit_session_appended(source_name=None, succeeded_file_count=1)
         emit_message_appended(session_id="c", appended_count=1)
-        emit_progress_update(operation_id="op", operation_kind="x", completed=1)
+        emit_session_updated(session_id="c", appended_count=1)
 
         handler = _make_handler(
             "GET",
-            "/api/events?poll=1&since=0&kinds=message.appended,progress.update",
+            "/api/events?poll=1&since=0&kinds=message.appended,session.updated",
         )
         send_json = _capture_json(handler)
         handler.do_GET()
         kinds = {e["kind"] for e in send_json.call_args.args[1]["events"]}
-        assert kinds == {"message.appended", "progress.update"}
+        assert kinds == {"message.appended", "session.updated"}
+
+
+class TestLiveBatchEventFanOut:
+    """polylogue-20d.13 — live-ingest batches fan out identity-scoped events.
+
+    ``_emit_live_batch_event`` is the daemon-side translator between the
+    generic ``ingestion_batch`` metrics payload (produced deep in
+    ``polylogue.sources.live.batch``) and the granular SSE topics. These
+    tests exercise it directly against the real ``daemon.events`` emitters
+    and the real event ledger, so a regression that drops ``session_id``
+    threading (e.g. reverting to the pre-#20d.13 aggregate-only emission)
+    fails here even without a full live-ingest fixture.
+    """
+
+    def test_batch_with_new_and_updated_sessions_emits_scoped_events(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.cli import _emit_live_batch_event
+        from polylogue.daemon.events import query_daemon_events
+
+        _emit_live_batch_event(
+            "ingestion_batch",
+            {
+                "succeeded_file_count": 2,
+                "failed_file_count": 0,
+                "new_sessions": [{"source_name": "codex", "session_id": "codex:new-1"}],
+                "updated_sessions": [{"source_name": "claude-code", "session_id": "claude-code:existing-1"}],
+            },
+        )
+        events = query_daemon_events(limit=10)
+        by_kind: dict[str, list[dict[str, object]]] = {}
+        for event in events:
+            by_kind.setdefault(cast("str", event["kind"]), []).append(cast("dict[str, object]", event["payload"]))
+
+        assert len(by_kind["session.appended"]) == 1
+        assert by_kind["session.appended"][0]["session_id"] == "codex:new-1"
+        assert by_kind["session.appended"][0]["source_name"] == "codex"
+
+        assert len(by_kind["session.updated"]) == 1
+        assert by_kind["session.updated"][0]["session_id"] == "claude-code:existing-1"
+        assert by_kind["session.updated"][0]["source_name"] == "claude-code"
+
+        # message.appended fires once per distinct touched session, each
+        # scoped to that session's own id -- never the aggregate None the
+        # description names as the identity defect ("an unscoped message
+        # event currently refreshes whichever session a browser has open").
+        message_session_ids = {payload["session_id"] for payload in by_kind["message.appended"]}
+        assert message_session_ids == {"codex:new-1", "claude-code:existing-1"}
+        assert None not in message_session_ids
+
+    def test_batch_touching_only_session_b_never_names_session_a(self, empty_events_db: Path) -> None:
+        """The exact regression the bead describes: session A must be unaffected."""
+        from polylogue.daemon.cli import _emit_live_batch_event
+        from polylogue.daemon.events import query_daemon_events
+
+        _emit_live_batch_event(
+            "ingestion_batch",
+            {
+                "succeeded_file_count": 1,
+                "failed_file_count": 0,
+                "new_sessions": [],
+                "updated_sessions": [{"source_name": "codex", "session_id": "codex:session-b"}],
+            },
+        )
+        events = query_daemon_events(limit=10)
+        seen_session_ids = {
+            cast("dict[str, object]", event["payload"])["session_id"]
+            for event in events
+            if event["kind"] in ("session.updated", "message.appended")
+        }
+        assert seen_session_ids == {"codex:session-b"}
+        assert "codex:session-a" not in seen_session_ids
+
+    def test_batch_without_resolved_identity_falls_back_to_unscoped_aggregate(self, empty_events_db: Path) -> None:
+        """No source path yet threads identity through -- preserve the old signal."""
+        from polylogue.daemon.cli import _emit_live_batch_event
+        from polylogue.daemon.events import query_daemon_events
+
+        _emit_live_batch_event(
+            "ingestion_batch",
+            {"succeeded_file_count": 1, "failed_file_count": 0},
+        )
+        events = query_daemon_events(limit=10)
+        kinds = {cast("str", event["kind"]) for event in events}
+        assert kinds == {"ingestion_batch", "session.appended", "message.appended"}
+        for event in events:
+            if event["kind"] in ("session.appended", "message.appended"):
+                assert cast("dict[str, object]", event["payload"])["session_id"] is None
+
+    def test_zero_succeeded_batch_emits_no_granular_events(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.cli import _emit_live_batch_event
+        from polylogue.daemon.events import query_daemon_events
+
+        _emit_live_batch_event("ingestion_batch", {"succeeded_file_count": 0, "failed_file_count": 3})
+        events = query_daemon_events(limit=10)
+        assert {cast("str", event["kind"]) for event in events} == {"ingestion_batch"}
 
 
 class TestBackpressureCoalescing:

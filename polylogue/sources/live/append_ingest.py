@@ -86,6 +86,7 @@ def _ingest_append_plans_archive(
     succeeded: list[_AppendPlan] = []
     failed: list[_AppendPlan] = []
     deferred: list[_AppendPlan] = []
+    session_ids_by_path: dict[Path, str] = {}
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     try:
         t0 = time.perf_counter()
@@ -191,7 +192,7 @@ def _ingest_append_plans_archive(
                             raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")
                         parsed_by_raw_id[replay_raw_id] = replay_sessions[0]
                     t0 = time.perf_counter()
-                    archive.apply_raw_revision_replay(
+                    session_id, _applied_raw_ids = archive.apply_raw_revision_replay(
                         replay_plan,
                         parsed_by_raw_id,
                         acquired_at_ms=acquired_at_ms,
@@ -210,6 +211,7 @@ def _ingest_append_plans_archive(
                         skip_already_applied=True,
                     )
                     _add_timing(timings, "append.raw_and_index_write", t0)
+                    session_ids_by_path[plan.path] = session_id
                     succeeded.append(plan)
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
@@ -238,6 +240,7 @@ def _ingest_append_plans_archive(
         deferred=deferred,
         worker_count=1,
         stage_timings_s=timings,
+        session_ids_by_path=session_ids_by_path,
     )
 
 
