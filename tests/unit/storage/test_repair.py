@@ -2249,6 +2249,79 @@ def test_raw_materialization_fair_rotation_mutation_recreates_starvation(
     assert unfair_second == unfair_first
 
 
+def test_raw_materialization_ordering_is_size_agnostic_and_does_not_starve_large_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hjpx AC3: bounded scheduling must pick components by stable
+    fairness/age, not by cheapness -- a size-preferring order recreates the
+    exact starvation failure mode AC3 names ("repeatedly selecting the same
+    cheap components... starving large valid work"), even though every
+    component here is independently executable in one pass.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    def run(*, prefer_cheap: bool) -> tuple[tuple[str, ...], str]:
+        root = tmp_path / ("cheap-first" if prefer_cheap else "fair-order")
+        initialize_active_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            # The large valid component is acquired FIRST (oldest), so fair
+            # age-based ordering must select it on the very first pass.
+            large_raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=b'{"type":"session_meta","payload":{"id":"large-valid"}}\n',
+                source_path="large-valid.jsonl",
+                acquired_at_ms=1,
+            )
+            for index in range(5):
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=f'{{"type":"session_meta","payload":{{"id":"cheap-{index}"}}}}\n'.encode(),
+                    source_path=f"cheap-{index}.jsonl",
+                    acquired_at_ms=index + 2,
+                )
+        with sqlite3.connect(root / "source.db") as source_conn:
+            # blob_size is scheduling metadata only (parsing reads the tiny
+            # real payload); this makes the large component "expensive but
+            # still executable" (well under the execute limit) without
+            # generating megabytes of fixture bytes.
+            source_conn.execute(
+                "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+                (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES // 2, large_raw_id),
+            )
+            source_conn.commit()
+
+        config = _config(root)
+        _complete_bounded_raw_census(config, limit=1)
+        with monkeypatch.context() as mutation:
+            if prefer_cheap:
+
+                def cheap_first_order(candidates: Any, *, archive_root: Path) -> list[tuple[str, ...]]:
+                    candidate_ids = set(candidates.raw_ids)
+                    source_components = candidates.authority_components or tuple(
+                        (raw_id,) for raw_id in candidates.raw_ids
+                    )
+                    components = [c for c in source_components if candidate_ids.intersection(c)]
+                    return sorted(
+                        components,
+                        key=lambda component: sum(
+                            candidates.expanded_blob_bytes.get(rid, candidates.raw_blob_bytes.get(rid, 0))
+                            for rid in component
+                        ),
+                    )
+
+                mutation.setattr(repair_mod, "_raw_materialization_ordered_components", cheap_first_order)
+            result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=1)
+        return result.plan_outcomes[0].input_raw_ids, large_raw_id
+
+    fair_selected, fair_large_id = run(prefer_cheap=False)
+    cheap_selected, cheap_large_id = run(prefer_cheap=True)
+
+    assert fair_selected == (fair_large_id,)
+    assert cheap_selected != (cheap_large_id,)
+
+
 def test_raw_materialization_isolates_failed_component_and_continues_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2283,6 +2356,130 @@ def test_raw_materialization_isolates_failed_component_and_continues_batch(
     assert result.repaired_count == 2
     assert [outcome.status.value for outcome in result.plan_outcomes].count("retryable") == 1
     assert [outcome.status.value for outcome in result.plan_outcomes].count("executed") == 2
+
+
+def test_raw_materialization_transient_failure_retries_with_same_plan_id_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hjpx AC4: a transient interruption must remain retryable under the
+    *same* plan id and later succeed once -- not spawn a fresh plan id, and
+    not silently mutate anything before the retry lands.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources import revision_backfill
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"transient-target"}}\n',
+            source_path="transient-target.jsonl",
+            acquired_at_ms=1,
+        )
+
+    original = revision_backfill.backfill_historical_revision_evidence
+    should_fail = True
+
+    def fail_once(*args: Any, selected_raw_ids: list[str] | None = None, **kwargs: Any) -> Any:
+        if should_fail and selected_raw_ids == [raw_id]:
+            raise RuntimeError("OperationalError: database is locked")
+        return original(*args, selected_raw_ids=selected_raw_ids, **kwargs)
+
+    monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", fail_once)
+
+    config = _config(tmp_path)
+    first = repair_mod.repair_raw_materialization(config)
+    assert first.plan_outcomes[0].status.value == "retryable"
+    assert "database is locked" in first.plan_outcomes[0].reason
+    first_plan_id = first.plan_outcomes[0].plan_id
+
+    # Non-mutating: the injected failure must not have left any parse/apply
+    # residue behind before the retry runs.
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            None,
+        )
+
+    should_fail = False
+    second = repair_mod.repair_raw_materialization(config)
+
+    assert second.plan_outcomes[0].status.value == "executed"
+    assert second.plan_outcomes[0].plan_id == first_plan_id
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute(
+            "SELECT parsed_at_ms IS NOT NULL FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1,)
+
+
+def test_raw_materialization_cas_conflict_outcome_is_typed_durable_and_non_mutating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hjpx AC4: a CAS conflict/incomparable-authority rejection from the
+    revision-application layer must surface as a typed, durably-recorded,
+    non-mutating outcome through the reconciler -- it must not silently
+    vanish, apply partially, or lose its plan id.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources import revision_backfill
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"cas-conflict-target"}}\n',
+            source_path="cas-conflict-target.jsonl",
+            acquired_at_ms=1,
+        )
+
+    cas_message = (
+        "raw revision CAS rejected a conflicting accepted head: "
+        "logical_source_key='codex:cas-conflict-target' existing(session_id='cas-conflict-target', "
+        "accepted_raw_id='other-raw') incoming(session_id='cas-conflict-target', accepted_raw_id='" + raw_id + "')"
+    )
+
+    def raise_cas_conflict(*args: Any, selected_raw_ids: list[str] | None = None, **kwargs: Any) -> Any:
+        assert selected_raw_ids == [raw_id]
+        raise RuntimeError(cas_message)
+
+    monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", raise_cas_conflict)
+    result = repair_mod.repair_raw_materialization(_config(tmp_path))
+
+    outcome = result.plan_outcomes[0]
+    assert outcome.status.value == "retryable"
+    assert "CAS rejected a conflicting accepted head" in outcome.reason
+
+    assert result.census_receipt is not None
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        # Durable: the typed outcome is recorded against the exact plan id in
+        # the durable source-tier ledger, not only in the in-memory receipt.
+        recorded = source_conn.execute(
+            """
+            SELECT outcome_status, reason
+            FROM raw_authority_census_plans
+            WHERE census_id = ? AND plan_id = ?
+            """,
+            (result.census_receipt.census_id, outcome.plan_id),
+        ).fetchone()
+        assert recorded == ("retryable", outcome.reason)
+        # Non-mutating: no parse residue exists for the raw the CAS
+        # rejection blocked.
+        assert source_conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            None,
+        )
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        # Non-mutating: no application/head state exists in the (rebuildable
+        # but still write-through) index tier either.
+        assert (
+            index_conn.execute("SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id = ?", (raw_id,)).fetchone()[
+                0
+            ]
+            == 0
+        )
+        assert index_conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone()[0] == 0
 
 
 def test_raw_materialization_fails_closed_on_plan_conservation_mismatch(
