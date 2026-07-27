@@ -421,7 +421,12 @@ def has_chunk_container(payload: object) -> bool:
 
 
 def looks_like(payload: object) -> bool:
-    """Return True if payload looks like a Drive / Gemini chunkedPrompt export."""
+    """Return True if payload looks like a Drive / Gemini chunkedPrompt export.
+
+    Called from ``dispatch._looks_like_gemini_mapping`` -- that is this
+    detector's sole auto-detection call site (polylogue-zkmi); it is not
+    dead code despite the differently-named wrapper.
+    """
     record = json_document(payload)
     prompt = json_document(record.get("chunkedPrompt"))
     if prompt and _looks_like_chunks(prompt.get("chunks"), allow_empty=True):
