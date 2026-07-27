@@ -127,6 +127,7 @@ from polylogue.sources.sqlite_snapshot import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.archive import ActiveByteRevisionChainError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
 )
@@ -2177,14 +2178,35 @@ class LiveBatchProcessor:
                     raise RuntimeError(
                         f"full revision {revision_raw_id}:{logical_source_key} no longer parses uniquely"
                     )
-                archive.replace_raw_membership_census(
-                    revision_raw_id,
-                    retained_sessions,
-                    parser_fingerprint=self._current_parser_fingerprint(),
-                    censused_at_ms=acquired_at_ms,
-                    detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-                    retire_full_revision_governance=True,
-                )
+                try:
+                    archive.replace_raw_membership_census(
+                        revision_raw_id,
+                        retained_sessions,
+                        parser_fingerprint=self._current_parser_fingerprint(),
+                        censused_at_ms=acquired_at_ms,
+                        detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                        retire_full_revision_governance=True,
+                    )
+                except ActiveByteRevisionChainError:
+                    # polylogue-lpen: another raw's predecessor_raw_id/
+                    # baseline_raw_id still points at revision_raw_id, so it
+                    # cannot be retired out of byte-revision governance yet.
+                    # This is expected, transient sibling-discovery-ordering
+                    # contention (the same class as polylogue-52l2/hm2f, on
+                    # the retire leg instead of the accept-cohort leg), not a
+                    # failure of the raw currently being ingested
+                    # (source_raw_id). Defer this specific sibling's
+                    # retirement to a later tick -- once the dependent chain
+                    # resolves, convertible_full_revision_raw_ids will surface
+                    # it again -- instead of letting the exception propagate
+                    # up and quarantine the unrelated raw being processed.
+                    logger.warning(
+                        "live.watcher: deferring full-revision retirement of %s (%s): "
+                        "active byte-revision chain dependent still present",
+                        revision_raw_id,
+                        logical_source_key,
+                    )
+                    continue
             member_sessions: dict[str, Any] = {}
             projections: dict[str, Any] = {}
             revisions: list[MembershipRevision] = []

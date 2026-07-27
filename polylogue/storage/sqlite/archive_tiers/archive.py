@@ -271,6 +271,26 @@ from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.storage.table_existence import table_exists as _table_exists
 
 
+class ActiveByteRevisionChainError(RuntimeError):
+    """Raised when a full-revision raw still has a live byte-chain dependent.
+
+    ``replace_raw_membership_census(..., retire_full_revision_governance=True)``
+    refuses to retire a raw out of byte-revision governance while another raw's
+    ``predecessor_raw_id``/``baseline_raw_id`` still points at it -- retiring it
+    would orphan that dependent's chain. This is expected, transient
+    contention (polylogue-lpen): the dependent raw simply hasn't been
+    discovered/ingested yet, or its own membership transition is still in
+    flight. Callers should defer the retirement of *this specific* raw and
+    retry on a later tick once the dependent chain resolves, not treat it as a
+    fatal error for whatever unrelated raw happened to trigger the sibling
+    retirement sweep. A distinct exception type (rather than a bare
+    ``RuntimeError``) lets callers narrowly catch this expected-contention
+    case without also swallowing the other, genuinely-buggy
+    ``RuntimeError``s this method raises (missing census raw, non-full raw
+    misrouted into full-revision retirement).
+    """
+
+
 @dataclass(slots=True)
 class _UsageTimelineAccumulator:
     bucket: str
@@ -2650,7 +2670,9 @@ class ArchiveStore:
                     (raw_id, raw_id, raw_id),
                 ).fetchone()
                 if dependent is not None:
-                    raise RuntimeError("an active byte-revision chain cannot move to membership governance")
+                    raise ActiveByteRevisionChainError(
+                        "an active byte-revision chain cannot move to membership governance"
+                    )
                 conn.execute(
                     """
                     UPDATE raw_sessions
@@ -13035,4 +13057,10 @@ def _month_bucket_end_ms(bucket: str) -> int:
     return int(end.timestamp() * 1000)
 
 
-__all__ = ["ArchiveFileQueryRow", "ArchiveStore", "ArchiveSessionSearchHit", "ArchiveSessionSummary"]
+__all__ = [
+    "ActiveByteRevisionChainError",
+    "ArchiveFileQueryRow",
+    "ArchiveStore",
+    "ArchiveSessionSearchHit",
+    "ArchiveSessionSummary",
+]
