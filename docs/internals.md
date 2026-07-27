@@ -704,6 +704,28 @@ The production read-modify-write entry point is
 `polylogue ops reconcile-work-effects` (dry-run by default; `--yes` persists
 the reconciled graph back through `SessionRepository.replace_work_evidence_graph`).
 
+`reconcile-work-effects` reconciles an *existing* work-evidence graph against
+independent repository effects; it never builds one. `polylogue/insights/
+incident_evidence_materialization.py` is the source-to-graph half: it adapts
+real per-session `ProjectedRun`/`ObservedEvent` evidence (one run node per
+session run, `invoked`-linked parent→subagent; one session-segment node per
+run; one `claim` node per subagent's own self-reported result; one
+unresolved/inferred `effect` node per commit/PR/issue an in-session tool call
+mentioned) into a `WorkEvidenceGraph`, as opposed to
+`devtools/mandate_continuity_replay.py`'s `build_repository_claim_graph`,
+which builds claim nodes purely from the external `.beads/interactions.jsonl`
+ledger and never reads archived session/message/action content at all.
+`polylogue/operations/incident_evidence_materialization.py`'s
+`materialize_incident_work_evidence` is the production entry point — it
+loads each selected session in full and compiles it through
+`compile_session_run_projection` (deliberately not the thinner
+`query_runs`/`query_observed_events` read-model routes, which after
+polylogue-dab/itvd are CTE/source-derived only and never emit subagent
+self-reports or mentioned commit/PR/issue refs) — exposed as
+`polylogue ops materialize-incident-evidence` (select sessions by
+`--session-id` and/or `--repo`/`--since`/`--until`/`--contains`; dry-run by
+default, `--yes` persists).
+
 ## Logical Session Identity (#866)
 
 `session_profiles.logical_session_id` materializes the resolved root of a

@@ -356,7 +356,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 3489
+    loc: 3567
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -823,7 +823,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 210
+    loc: 213
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -997,6 +997,10 @@ files:
   - path: polylogue/cli/commands/manual.py
     loc: 68
     target: polylogue/cli/commands/manual.py
+    owner: stable
+  - path: polylogue/cli/commands/materialize_incident_evidence.py
+    loc: 149
+    target: polylogue/cli/commands/materialize_incident_evidence.py
     owner: stable
   - path: polylogue/cli/commands/note.py
     loc: 96
@@ -1932,6 +1936,10 @@ files:
     loc: 215
     target: polylogue/insights/improvement_loops.py
     owner: stable
+  - path: polylogue/insights/incident_evidence_materialization.py
+    loc: 267
+    target: polylogue/insights/incident_evidence_materialization.py
+    owner: stable
   - path: polylogue/insights/judgment/__init__.py
     loc: 36
     target: polylogue/insights/judgment/__init__.py
@@ -2324,6 +2332,10 @@ files:
   - path: polylogue/operations/import_operations.py
     loc: 204
     target: polylogue/operations/import_operations.py
+    owner: stable
+  - path: polylogue/operations/incident_evidence_materialization.py
+    loc: 145
+    target: polylogue/operations/incident_evidence_materialization.py
     owner: stable
   - path: polylogue/operations/mutation_actuators.py
     loc: 1566
