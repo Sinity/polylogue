@@ -11,19 +11,19 @@
 
 <!-- public-claim:category.local-evidence-system -->
 Polylogue archives AI conversations and coding-agent runs from multiple tools in
-one searchable local database. It imports supported histories from ChatGPT,
+one searchable local archive. It imports supported histories from ChatGPT,
 Claude and Claude Code, Codex, Gemini, Hermes, and other sources, then exposes
 sessions, messages, tool calls and results, branches, subagents, usage, and costs
 through a CLI, Python API, local HTTP reader, and MCP server.
 
-Source artifacts stay on your machine. Polylogue is developed against a live
-archive of more than **18,000 sessions and 4.7 million messages**.
+By default, the archive stays on your machine. The author's archive contains
+more than **18,000 sessions and 4.7 million messages**.
 
 [Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Demo](docs/demos.md) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
 
 ## Try it without importing personal data
 
-Run the deterministic tour in a throwaway archive:
+Run the tour in a throwaway archive:
 
 ```bash
 nix run github:Sinity/polylogue -- demo tour
@@ -31,8 +31,8 @@ nix run github:Sinity/polylogue -- demo tour
 
 The tour imports synthetic provider-shaped artifacts through the normal parsers,
 queries structured tool results, follows copied session lineage, and writes a
-report with the corresponding source references. It does not require a provider
-account or access to the author's archive.
+report with source references. It does not require a provider account or access
+to the author's archive.
 
 From a source checkout:
 
@@ -55,8 +55,6 @@ nix develop -c polylogue demo tour
 - Let agents read the archive through MCP.
 
 ## Install
-
-Choose a packaged release:
 
 ```bash
 # Python package: CLI, daemon, and MCP server
@@ -81,7 +79,7 @@ polylogue --help
 
 ## Build a local archive
 
-Detect the supported sources already present on the machine:
+Detect supported sources already present on the machine:
 
 ```bash
 polylogue init
@@ -123,7 +121,7 @@ is_error=1 count=1039
 is_error=unknown count=115
 ```
 
-This abbreviated output comes from the author's archive.
+Example output from July 2026; abbreviated.
 
 ## Supported sources
 
@@ -214,7 +212,8 @@ normal path that sends archive text outside the machine. Run
 
 Live site: <https://sinity.github.io/polylogue/>.
 
-Start with the task-oriented guides below; [docs/README.md](docs/README.md) separates guides, reference, internals, operations, evidence, design, and historical records. Current sequencing and active workstreams live in the Beads backlog (`bd ready`, `bd list --status open`).
+Start with the task-oriented guides below. The complete documentation map is in
+[docs/README.md](docs/README.md).
 
 | Document | Description |
 |----------|-------------|
@@ -235,14 +234,9 @@ Start with the task-oriented guides below; [docs/README.md](docs/README.md) sepa
 
 ## Status
 
-Polylogue is pre-1.0. Import, continuous ingestion, local query, the deterministic
-demo, and the CLI, MCP, HTTP, and Python interfaces are implemented. Provider
-formats and public interfaces may still change between releases.
-
-The roadmap lives in the committed
-[Beads](https://github.com/steveyegge/beads) graph. Browse the
-[web board](https://sinity.github.io/polylogue/main/beads/) or run `bd ready`
-locally.
+Polylogue is pre-1.0. Import, continuous ingestion, local query, the demo, and
+the CLI, MCP, HTTP, and Python interfaces are implemented. Provider formats and
+public interfaces may still change between releases.
 
 ## Security
 
