@@ -180,6 +180,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     bind_source_raw_revision,
     deterministic_blob_hash,
     deterministic_raw_session_id,
+    list_hook_events,
     write_source_blob_refs,
     write_source_hook_event,
     write_source_raw_session,
@@ -4091,6 +4092,48 @@ class ArchiveStore:
             }
             for row in rows
         ], total
+
+    def hook_event_summary_for_session(self, session_id: str) -> dict[str, object] | None:
+        """Return per-event-type hook counts and timestamps for one session.
+
+        Hook events (``PreToolUse``/``PostToolUse``/``UserPromptSubmit``/
+        ``SessionStart``/...) are persisted as ``raw_hook_events`` rows keyed
+        by ``(origin, session_native_id)`` -- never as a session of their own
+        (polylogue-31r1). This is the read-model that surfaces them as
+        evidence attached to the session that produced them, joining on the
+        session's own ``origin``/``native_id`` rather than its ``raw_id``
+        (hook rows have no ``raw_id`` link -- they attach to the *session*
+        identity, not to any one raw acquisition record).
+        """
+        try:
+            resolved_session_id = self.resolve_session_id(session_id)
+        except KeyError:
+            return None
+        row = self._conn.execute(
+            "SELECT origin, native_id FROM sessions WHERE session_id = ?",
+            (resolved_session_id,),
+        ).fetchone()
+        if row is None or not self.source_db_path.exists():
+            return None
+        origin = str(row["origin"])
+        native_id = str(row["native_id"])
+        source_conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
+        source_conn.row_factory = sqlite3.Row
+        try:
+            events = list_hook_events(source_conn, origin=origin, session_native_id=native_id)
+        finally:
+            source_conn.close()
+        by_event_type: dict[str, int] = {}
+        for event in events:
+            by_event_type[event.event_type] = by_event_type.get(event.event_type, 0) + 1
+        observed_ms = [event.observed_at_ms for event in events]
+        return {
+            "session_id": resolved_session_id,
+            "total": len(events),
+            "by_event_type": dict(sorted(by_event_type.items())),
+            "first_observed_at": _iso_from_ms(min(observed_ms)) if observed_ms else None,
+            "last_observed_at": _iso_from_ms(max(observed_ms)) if observed_ms else None,
+        }
 
     def get_session_work_event_insights(self, session_id: str) -> list[SessionWorkEventInsight]:
         """Read archive work-event insights for one session."""

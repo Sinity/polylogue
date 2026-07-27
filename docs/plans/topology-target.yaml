@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6918
+    loc: 6934
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -712,7 +712,7 @@ files:
     owner: archive-viewport
     reason: archive-domain semantics
   - path: polylogue/archive/viewport/profiles.py
-    loc: 351
+    loc: 365
     target: polylogue/archive/viewport/profiles.py
     owner: archive-viewport
     reason: archive-domain semantics
@@ -1036,7 +1036,7 @@ files:
     target: polylogue/cli/machine_main.py
     owner: stable
   - path: polylogue/cli/messages.py
-    loc: 180
+    loc: 219
     target: polylogue/cli/messages.py
     owner: stable
   - path: polylogue/cli/onboarding.py
@@ -1096,11 +1096,11 @@ files:
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
-    loc: 228
+    loc: 235
     target: polylogue/cli/read_view_handlers.py
     owner: stable
   - path: polylogue/cli/read_view_registry.py
-    loc: 110
+    loc: 111
     target: polylogue/cli/read_view_registry.py
     owner: stable
   - path: polylogue/cli/read_views/__init__.py
@@ -1124,7 +1124,7 @@ files:
     target: polylogue/cli/read_views/correlation.py
     owner: stable
   - path: polylogue/cli/read_views/messages.py
-    loc: 220
+    loc: 262
     target: polylogue/cli/read_views/messages.py
     owner: stable
   - path: polylogue/cli/read_views/neighbors.py
@@ -1508,7 +1508,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2760
+    loc: 2791
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1765,7 +1765,7 @@ files:
     target: polylogue/daemon/workspace_routes.py
     owner: stable
   - path: polylogue/daemon/write_coordinator.py
-    loc: 451
+    loc: 537
     target: polylogue/daemon/write_coordinator.py
     owner: stable
   - path: polylogue/declarations/__init__.py
@@ -2505,7 +2505,7 @@ files:
     target: polylogue/product/continuity_scenarios.py
     owner: stable
   - path: polylogue/product/raw_authority.py
-    loc: 181
+    loc: 195
     target: polylogue/product/raw_authority.py
     owner: stable
   - path: polylogue/product/workflows.py
@@ -3776,11 +3776,11 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_authority.py
-    loc: 2011
+    loc: 2089
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
-    loc: 1423
+    loc: 1451
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_retention.py
@@ -4013,7 +4013,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 12949
+    loc: 12992
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py

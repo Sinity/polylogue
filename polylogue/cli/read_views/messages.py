@@ -217,4 +217,46 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
     )
 
 
-__all__ = ["MESSAGE_READ_VIEW_OPTION_NAMES", "build_message_options", "run_read_messages", "run_read_raw"]
+def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Route hooks view to the per-session hook-event summary renderer."""
+
+    from polylogue.cli.messages import run_hooks
+
+    assert invocation.session_id is not None
+    output_format = invocation.output_format or "json"
+
+    if invocation.destination in ("file", "clipboard", "stdout"):
+        buf = io.StringIO()
+
+        def _captured_echo_hooks(message: object = None, **_kwargs: object) -> None:
+            buf.write(str(message or "") + "\n")
+
+        _orig_echo = click.echo
+        click.echo = _captured_echo_hooks  # type: ignore[assignment]
+        try:
+            run_hooks(
+                env,
+                request,
+                session_id=invocation.session_id,
+                output_format=output_format,
+            )
+        finally:
+            click.echo = _orig_echo
+        deliver_content(env, buf.getvalue(), destination=invocation.destination, out_path=invocation.out_path)
+        return
+
+    run_hooks(
+        env,
+        request,
+        session_id=invocation.session_id,
+        output_format=output_format,
+    )
+
+
+__all__ = [
+    "MESSAGE_READ_VIEW_OPTION_NAMES",
+    "build_message_options",
+    "run_read_hooks",
+    "run_read_messages",
+    "run_read_raw",
+]

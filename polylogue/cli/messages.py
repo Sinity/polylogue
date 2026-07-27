@@ -177,4 +177,43 @@ def run_raw(
     run_coroutine_sync(_run())
 
 
-__all__ = ["run_messages", "run_raw"]
+def run_hooks(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    output_format: str = "json",
+) -> None:
+    """Execute the hooks verb.
+
+    Renders the per-session hook-event read model (polylogue-31r1
+    fast-follow): counts by event type plus first/last observation time for
+    the ``PreToolUse``/``PostToolUse``/``UserPromptSubmit``/... hook events
+    that were recorded as evidence attached to this session.
+    """
+    from polylogue.api import Polylogue
+
+    async def _run() -> None:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            summary = await api.get_hook_event_summary_for_session(session_id)
+
+            if summary is None:
+                env.ui.error(f"Session not found: {session_id}")
+                return
+
+            if output_format == "json":
+                import json as _json
+
+                # Machine output uses raw stdout so Rich markup never rewrites
+                # JSON bytes and read-view delivery can capture file/clipboard
+                # targets consistently.
+                click.echo(_json.dumps(summary, indent=2))
+            else:
+                import yaml
+
+                click.echo(yaml.dump(summary))
+
+    run_coroutine_sync(_run())
+
+
+__all__ = ["run_hooks", "run_messages", "run_raw"]

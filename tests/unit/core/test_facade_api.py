@@ -390,6 +390,92 @@ class TestPolylogueReadSurfaces:
         assert missing_total == 0
 
     @pytest.mark.asyncio
+    async def test_get_hook_event_summary_counts_by_type_and_handles_missing(self: object, tmp_path: Path) -> None:
+        """Hook events attach as session-scoped evidence (polylogue-31r1).
+
+        ``write_hook_event`` never mints a ``raw_sessions`` row (that's the
+        original bug this bead fixed); the fast-follow read model joins hook
+        rows to their session by ``(origin, native_id)`` and must report
+        accurate per-event-type counts plus first/last observation time.
+        """
+        from polylogue.core.enums import Origin, Provider
+        from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+
+        archive = _archive(tmp_path)
+
+        parsed = ParsedSession(
+            source_name=Provider.from_string("codex"),
+            provider_session_id="provider-hooks-api",
+            title="Hooks API",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-01-01T00:00:00Z",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hello")],
+        )
+        # ``write_raw_and_parsed`` returns the full archive session id
+        # (``origin:native_id``); the sessions-table ``native_id`` column
+        # (what hook rows join against via ``session_native_id``) is the bare
+        # provider-native token.
+        bare_native_id = "provider-hooks-api"
+        with ArchiveStore(archive.archive_root) as archive_db:
+            _raw_id, native_id = archive_db.write_raw_and_parsed(
+                parsed,
+                payload=b'{"raw": "codex payload"}',
+                source_path="/tmp/raw.jsonl",
+                acquired_at_ms=1735689600000,
+            )
+
+            hook_specs = [
+                ("PreToolUse", 1_735_689_601_000),
+                ("PostToolUse", 1_735_689_602_000),
+                ("PostToolUse", 1_735_689_603_000),
+            ]
+            for index, (event_type, observed_at_ms) in enumerate(hook_specs):
+                archive_db.write_hook_event(
+                    provider=Provider.CODEX,
+                    payload=f'{{"event":"{event_type}","n":{index}}}'.encode(),
+                    source_path="/tmp/hooks/codex-session.jsonl",
+                    acquired_at_ms=observed_at_ms,
+                    hook_event=ArchiveHookEvent(
+                        hook_event_id=f"hook-{index}",
+                        origin=Origin.CODEX_SESSION,
+                        source_path="/tmp/hooks/codex-session.jsonl",
+                        event_type=event_type,
+                        payload={"event": event_type, "n": index},
+                        observed_at_ms=observed_at_ms,
+                        native_id=f"{bare_native_id}:{event_type}:{index}",
+                        session_native_id=bare_native_id,
+                    ),
+                )
+
+        summary = await archive.get_hook_event_summary_for_session(native_id)
+        assert summary is not None
+        assert summary["session_id"] == native_id
+        assert summary["total"] == 3
+        assert summary["by_event_type"] == {"PostToolUse": 2, "PreToolUse": 1}
+        assert summary["first_observed_at"] == "2025-01-01T00:00:01Z"
+        assert summary["last_observed_at"] == "2025-01-01T00:00:03Z"
+
+        # A session with no hook events at all still resolves (0 events),
+        # while a session id that doesn't exist returns None.
+        no_hooks_native_id = _seed(
+            archive,
+            "conv-no-hooks",
+            provider="claude-ai",
+            title="No Hooks",
+            provider_session_id="provider-no-hooks",
+        )
+        empty_summary = await archive.get_hook_event_summary_for_session(no_hooks_native_id)
+        assert empty_summary is not None
+        assert empty_summary["total"] == 0
+        assert empty_summary["by_event_type"] == {}
+        assert empty_summary["first_observed_at"] is None
+        assert empty_summary["last_observed_at"] is None
+
+        assert await archive.get_hook_event_summary_for_session("missing") is None
+
+    @pytest.mark.asyncio
     async def test_get_sessions_partial_match(self: object, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
 

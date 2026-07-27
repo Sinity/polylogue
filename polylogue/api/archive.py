@@ -5096,6 +5096,22 @@ class PolylogueArchiveMixin:
             stable_order="artifact_id",
         )
 
+    async def get_hook_event_summary_for_session(self, session_id: str) -> dict[str, object] | None:
+        """Return the per-event-type hook-event summary for a session.
+
+        Delegates to the archive layer rather than accessing
+        the private ``_backend`` connection directly.
+        """
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.hook_events.summary",
+            arguments={"session_id": session_id},
+            work=lambda archive: archive.hook_event_summary_for_session(session_id),
+            page_size=1,
+            projection="hook-event-summary",
+            stable_order="session_id",
+        )
+
     async def query_sessions(
         self,
         *,
