@@ -3613,6 +3613,180 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
         ).fetchone() == (None,)
 
 
+def test_full_revision_retirement_conflict_defers_without_quarantining_current_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-lpen: a stale sibling's retirement guard tripping must not quarantine the new raw.
+
+    Reproduces the live-archive incident found via ``polylogue ops debt list``:
+    73 claude-code-session raws carried
+    ``parse_error = "RuntimeError: an active byte-revision chain cannot move
+    to membership governance"`` (the guard in
+    ``ArchiveStore.replace_raw_membership_census(retire_full_revision_governance=True)``,
+    ``storage/sqlite/archive_tiers/archive.py`` ~line 2653). That guard fires
+    when ``convertible_full_revision_raw_ids`` offers a "full" sibling for
+    retirement that (per a live invariant not visible to that coarser query)
+    still has an active byte-revision-chain dependent. Before the
+    polylogue-lpen fix, ``_apply_membership_sessions`` let that RuntimeError
+    propagate out of the retire-siblings loop, where the caller's blanket
+    ``except Exception`` (``sources/live/batch.py``) called
+    ``mark_raw_parse_failed`` on the CURRENT, otherwise-healthy raw being
+    ingested -- permanently quarantining unrelated content because of a
+    stale sibling's bookkeeping conflict.
+
+    This test monkeypatches ``replace_raw_membership_census`` to raise that
+    exact RuntimeError only for the specific retire call on the stale
+    sibling (raw_a), mirroring the live guard without needing to reconstruct
+    the full byte-revision-chain dependent that trips it in production.
+    Anti-vacuity: reverting the ``try/except RuntimeError`` added around that
+    call in ``_apply_membership_sessions`` (leaving the bare
+    ``archive.replace_raw_membership_census(...)`` call) makes this test fail
+    -- the new raw's ingest fails and its ``parse_error`` column is populated
+    with the sibling's unrelated RuntimeError text instead of staying NULL.
+    """
+
+    def conversation(native_id: str, *texts: str) -> dict[str, object]:
+        mapping: dict[str, object] = {
+            "root": {"id": "root", "message": None, "parent": None, "children": [f"{native_id}-node-0"]}
+        }
+        for index, text in enumerate(texts):
+            node_id = f"{native_id}-node-{index}"
+            next_node = f"{native_id}-node-{index + 1}" if index + 1 < len(texts) else None
+            mapping[node_id] = {
+                "id": node_id,
+                "parent": "root" if index == 0 else f"{native_id}-node-{index - 1}",
+                "children": [] if next_node is None else [next_node],
+                "message": {
+                    "id": f"{native_id}-message-{index}",
+                    "author": {"role": "user"},
+                    "create_time": 1_780_000_000.0 + index,
+                    "content": {"content_type": "text", "parts": [text]},
+                    "metadata": {},
+                },
+            }
+        return {
+            "id": native_id,
+            "title": native_id,
+            "current_node": f"{native_id}-node-{len(texts) - 1}",
+            "mapping": mapping,
+        }
+
+    initialize_active_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="inbox", root=tmp_path, suffixes=(".json",)),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    original_replace = archive_tier_module.ArchiveStore.replace_raw_membership_census
+
+    def flaky_replace(
+        self: ArchiveStore,
+        raw_id: str,
+        sessions: Any,
+        *,
+        parser_fingerprint: str,
+        censused_at_ms: int,
+        detail: str = "",
+        retire_full_revision_governance: bool = False,
+        manage_transaction: bool = True,
+    ) -> None:
+        if retire_full_revision_governance:
+            # This is exactly what the live guard
+            # (ArchiveStore.replace_raw_membership_census's own dependent
+            # check, storage/sqlite/archive_tiers/archive.py ~line 2653)
+            # raises when a candidate offered by
+            # convertible_full_revision_raw_ids still has an active
+            # byte-revision-chain dependent it cannot itself see.
+            raise RuntimeError("an active byte-revision chain cannot move to membership governance")
+        return original_replace(
+            self,
+            raw_id,
+            sessions,
+            parser_fingerprint=parser_fingerprint,
+            censused_at_ms=censused_at_ms,
+            detail=detail,
+            retire_full_revision_governance=retire_full_revision_governance,
+            manage_transaction=manage_transaction,
+        )
+
+    monkeypatch.setattr(archive_tier_module.ArchiveStore, "replace_raw_membership_census", flaky_replace)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
+        raw_a = store.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps([conversation("shared", "base")]).encode(),
+            source_path="a.json",
+            acquired_at_ms=1,
+        )
+        store.bind_raw_revision(
+            raw_a,
+            RawRevisionEnvelope(
+                "chatgpt:shared", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        store.commit()
+        assert store.convertible_full_revision_raw_ids("chatgpt:shared") == (raw_a,)
+
+        source_raw_id = store.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps([conversation("shared", "base", "extra")]).encode(),
+            source_path="third.json",
+            acquired_at_ms=5,
+        )
+        sessions = LiveBatchProcessor._parse_retained_raw_sessions(store, source_raw_id)
+
+        # Mirrors the production call sequence in
+        # ``_ingest_full_paths_sync``: the current raw's own (non-retiring)
+        # census write happens before ``_apply_membership_sessions``.
+        store.replace_raw_membership_census(
+            source_raw_id,
+            sessions,
+            parser_fingerprint="test-parser",
+            censused_at_ms=5,
+        )
+
+        # Anti-vacuity: this call must not raise despite the sibling
+        # retirement above always raising RuntimeError. Before the
+        # polylogue-lpen fix (a bare call with no try/except), this line
+        # raises and propagates -- proving the fix is load-bearing, not
+        # merely present.
+        processor._apply_membership_sessions(
+            store,
+            source_raw_id,
+            sessions,
+            acquired_at_ms=5,
+            allow_current_complete_raw=True,
+        )
+        store.commit()
+
+        # The current raw's own membership write still completed normally --
+        # the deferred sibling retirement did not block or corrupt it.
+        rows = (
+            store._ensure_source_conn()
+            .execute(
+                "SELECT decision FROM raw_session_memberships WHERE raw_id = ?",
+                (source_raw_id,),
+            )
+            .fetchall()
+        )
+        assert rows, "current raw's own membership census should still be written"
+
+        # The stale sibling was left untouched (still full/quarantined,
+        # eligible for retry on a later tick) rather than partially mutated.
+        still_full = (
+            store._ensure_source_conn()
+            .execute(
+                "SELECT revision_kind FROM raw_sessions WHERE raw_id = ?",
+                (raw_a,),
+            )
+            .fetchone()
+        )
+        assert still_full == (RawRevisionKind.FULL.value,)
+
+
 def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_path: Path) -> None:
     """Pins the exact narrow scoping of the polylogue-emx2 fix (de0b2df7a regression, polylogue-lvz6 triage).
 

@@ -2177,14 +2177,44 @@ class LiveBatchProcessor:
                     raise RuntimeError(
                         f"full revision {revision_raw_id}:{logical_source_key} no longer parses uniquely"
                     )
-                archive.replace_raw_membership_census(
-                    revision_raw_id,
-                    retained_sessions,
-                    parser_fingerprint=self._current_parser_fingerprint(),
-                    censused_at_ms=acquired_at_ms,
-                    detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-                    retire_full_revision_governance=True,
-                )
+                try:
+                    archive.replace_raw_membership_census(
+                        revision_raw_id,
+                        retained_sessions,
+                        parser_fingerprint=self._current_parser_fingerprint(),
+                        censused_at_ms=acquired_at_ms,
+                        detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                        retire_full_revision_governance=True,
+                    )
+                except RuntimeError as exc:
+                    # polylogue-lpen: retiring a stale full-revision sibling
+                    # to membership governance is best-effort cleanup, not a
+                    # precondition for accepting THIS record's own content.
+                    # `replace_raw_membership_census`'s own guards (archive.py
+                    # ``retire_full_revision_governance``) can legitimately
+                    # refuse a sibling that still has an active byte-revision
+                    # chain (another raw's predecessor/baseline still points
+                    # at it) or isn't self-contained-full at this exact
+                    # instant -- the same class of incremental-discovery
+                    # ordering race documented for polylogue-52l2/hm2f, just
+                    # on the retire-sibling leg instead of the accept-cohort
+                    # leg. Before this guard, that failure propagated through
+                    # the caller's blanket ``except Exception`` and
+                    # permanently quarantined the CURRENT (unrelated) raw via
+                    # ``mark_raw_parse_failed`` even though nothing about its
+                    # own content was invalid. Leave the sibling's governance
+                    # untouched (its own transaction already rolled back) and
+                    # let a later tick -- when the dependent chain has
+                    # resolved -- retry the retirement instead.
+                    logger.warning(
+                        "live.watcher: deferring stale full-revision retirement for %s "
+                        "(logical_source_key=%s) while processing %s: %s",
+                        revision_raw_id,
+                        logical_source_key,
+                        source_raw_id,
+                        exc,
+                    )
+                    continue
             member_sessions: dict[str, Any] = {}
             projections: dict[str, Any] = {}
             revisions: list[MembershipRevision] = []
