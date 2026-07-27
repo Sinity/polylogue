@@ -68,17 +68,19 @@ def build_server(
     hooks = ServerCallbacks(
         json_payload=_json_payload,
         clamp_limit=_clamp_limit,
-        safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(): _safe_call(
+        safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(), arguments=None: _safe_call(
             fn_name,
             fn,
             session_id=session_id,
             session_ids=session_ids,
+            arguments=arguments,
         ),
-        async_safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(): _async_safe_call(
+        async_safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(), arguments=None: _async_safe_call(
             fn_name,
             fn,
             session_id=session_id,
             session_ids=session_ids,
+            arguments=arguments,
         ),
         error_json=lambda message, **extra: _error_json(message, **extra),
         get_config=lambda: _get_config(),
