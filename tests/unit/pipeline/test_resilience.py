@@ -610,10 +610,16 @@ def test_ingest_worker_quarantines_session_artifact_with_no_sessions(
     assert result.parse_error == result.error
 
 
-def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
+def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Parse-path validation should reuse one schema resolution and avoid unused drift traversal."""
+    """Parse-path validation reuses one schema resolution and now walks drift.
+
+    polylogue-da1: the format-drift sentinel classifies every validated
+    sample's drift signal (unknown fields vs. missing/changed fields), which
+    requires ``include_drift=True`` on the per-sample ``validate()`` call --
+    previously ``False`` because nothing consumed ``drift_warnings``.
+    """
     from polylogue.pipeline.services.ingest_worker import ingest_record
     from polylogue.schemas import ValidationResult
     from polylogue.schemas.packages import SchemaResolution
@@ -729,7 +735,7 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
     assert registry.calls == 1
     assert observed["validator_schema_resolution"] is resolution
     assert observed["parse_schema_resolution"] is resolution
-    assert observed["include_drift"] is False
+    assert observed["include_drift"] is True
 
 
 def _open_index_archive(tmp_path: Path) -> sqlite3.Connection:

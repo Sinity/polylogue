@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
@@ -913,6 +914,73 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     }
 
 
+# polylogue-da1: format-drift sentinel window. Windowed since a date, not
+# lifetime, so an archive with years of clean history does not permanently
+# dilute a recent provider-shape regression signal.
+_SCHEMA_DRIFT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
+_SCHEMA_DRIFT_RISKY_WARN_RATE = 0.05
+_SCHEMA_DRIFT_RISKY_ERROR_RATE = 0.20
+_SCHEMA_DRIFT_MIN_SAMPLE = 5
+
+
+def _schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = _SCHEMA_DRIFT_WINDOW_MS) -> dict[str, Any]:
+    """Derive windowed format-drift rates per origin from ops.db (read-only).
+
+    Reads ``schema_drift_samples`` (populated at ingest time -- see
+    ``polylogue.schemas.drift_sentinel``) and returns one entry per origin
+    with a sample in the window. Returns ``available: False`` when the ops
+    tier or table is absent, matching ``_ops_workload_status``'s contract
+    so a synthetic/mid-bootstrap archive degrades quietly.
+    """
+    ops_db = active_root / "ops.db"
+    if not ops_db.exists():
+        return {"available": False, "reason": "missing_ops_tier"}
+    try:
+        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": str(exc)}
+    try:
+        if not _table_exists(conn, "schema_drift_samples"):
+            return {"available": False, "reason": "missing_schema_drift_samples"}
+        from polylogue.storage.sqlite.archive_tiers.ops_write import summarize_schema_drift_since
+
+        since_ms = now_ms - window_ms
+        summaries = summarize_schema_drift_since(conn, since_ms=since_ms)
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": str(exc)}
+    finally:
+        conn.close()
+
+    origins = []
+    for summary in summaries:
+        risky_rate = summary.risky_rate
+        if summary.total < _SCHEMA_DRIFT_MIN_SAMPLE:
+            severity = "ok"
+        elif risky_rate >= _SCHEMA_DRIFT_RISKY_ERROR_RATE:
+            severity = "error"
+        elif risky_rate >= _SCHEMA_DRIFT_RISKY_WARN_RATE:
+            severity = "warning"
+        else:
+            severity = "ok"
+        origins.append(
+            {
+                "origin": summary.origin,
+                "total": summary.total,
+                "risky": summary.risky,
+                "benign": summary.benign,
+                "risky_rate": round(risky_rate, 4),
+                "severity": severity,
+                "example_native_ids": list(summary.example_native_ids),
+            }
+        )
+    return {
+        "available": True,
+        "since_ms": since_ms,
+        "window_days": window_ms // (24 * 60 * 60 * 1000),
+        "origins": origins,
+    }
+
+
 def _raw_replay_backlog_status(active_root: Path, *, limit: int = 5) -> dict[str, Any]:
     """Return the weighted raw source-to-index replay backlog for status."""
     try:
@@ -1508,6 +1576,7 @@ def _show_direct_json(
     )
     archive_tiers = _archive_tier_status(active_root)
     ingest_workload = _ops_workload_status(active_root, now_ms=int(time.time() * 1000))
+    schema_drift = _schema_drift_status(active_root, now_ms=int(time.time() * 1000))
     payload: dict[str, Any] = {
         "ok": _direct_status_ok(component_readiness),
         "daemon_liveness": False,
@@ -1521,6 +1590,7 @@ def _show_direct_json(
         "archive_tiers": archive_tiers,
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": ingest_workload,
+        "schema_drift": schema_drift,
         "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
@@ -1882,6 +1952,38 @@ def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
         env.ui.console.print(f"    convergence debt: [yellow]{debt_total}[/yellow] ({detail})")
 
 
+def _render_schema_drift_status(env: AppEnv, drift: dict[str, Any]) -> None:
+    """Render windowed format-drift rates: 'origin X: N% ... carry unseen shapes'.
+
+    Follow-up action always points at schema generate/promote (#polylogue-da1)
+    -- the sentinel only detects; it never repairs the schema package.
+    """
+    if not drift.get("available"):
+        return
+    origins = drift.get("origins") or []
+    if not isinstance(origins, list) or not origins:
+        return
+    since_ms = int(drift.get("since_ms", 0) or 0)
+    since_date = datetime.fromtimestamp(since_ms / 1000, tz=UTC).date().isoformat() if since_ms else "unknown"
+    noteworthy = [item for item in origins if isinstance(item, dict) and item.get("severity") != "ok"]
+    if not noteworthy:
+        return
+    env.ui.console.print("  Format drift sentinel:")
+    for item in sorted(noteworthy, key=lambda entry: float(entry.get("risky_rate", 0.0) or 0.0), reverse=True):
+        origin = item.get("origin") or "unknown"
+        total = int(item.get("total", 0) or 0)
+        risky_rate = float(item.get("risky_rate", 0.0) or 0.0)
+        severity = str(item.get("severity") or "ok")
+        color = "red" if severity == "error" else "yellow"
+        examples = item.get("example_native_ids") or []
+        example_text = f" e.g. {', '.join(str(x) for x in examples[:3])}" if examples else ""
+        env.ui.console.print(
+            f"    [{color}]origin {origin}: {risky_rate:.0%} of {total} records since {since_date} "
+            f"carry unseen shapes[/{color}]{example_text}"
+        )
+    env.ui.console.print("    next action: devtools lab schema generate/promote (detection only)")
+
+
 def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:
     """Render weighted raw materialization replay backlog."""
     if not backlog.get("available"):
@@ -2035,6 +2137,7 @@ def _show_direct_status(
         if active_db.name == "index.db":
             active_root = active_db.parent
             _render_ingest_workload(env, workload)
+            _render_schema_drift_status(env, _schema_drift_status(active_root, now_ms=now_ms))
             tiers = _archive_tier_status(active_root)
             present = ", ".join(tier for tier, info in tiers.items() if info["exists"])
             missing = ", ".join(tier for tier, info in tiers.items() if not info["exists"])

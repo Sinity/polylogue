@@ -509,6 +509,51 @@ def cli(
     ctx.obj = env
     if debug_timing:
         ctx.call_on_close(env.emit_debug_timings)
+    _emit_schema_drift_marker()
+
+
+def _emit_schema_drift_marker() -> None:
+    """Last-resort format-drift marker printed on every ``polylogue`` invocation.
+
+    polylogue-da1: sentinel alerting must not depend on the daemon
+    operating healthily -- ``polylogue ops status`` and the daemon health
+    check both surface the same windowed rate, but neither runs unless an
+    operator explicitly asks (`ops status`) or the daemon is up (health
+    check). This is the floor: a direct, read-only ops.db query run from
+    the root CLI callback, independent of daemon liveness. Best-effort by
+    design -- a missing/unreadable ops.db (fresh archive, synthetic test
+    fixture) is silently skipped, and any unexpected error is swallowed so
+    this can never turn an ordinary command into a failure.
+    """
+    try:
+        from datetime import UTC, datetime
+        from time import time as _now
+
+        from polylogue.cli.commands.status import _schema_drift_status
+        from polylogue.paths import db_path, index_db_path, resolve_active_index_db_path
+
+        active_db = resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+        drift = _schema_drift_status(active_db.parent, now_ms=int(_now() * 1000))
+        if not drift.get("available"):
+            return
+        origins = [item for item in (drift.get("origins") or []) if isinstance(item, dict)]
+        if not origins:
+            return
+        worst = max(origins, key=lambda item: float(item.get("risky_rate", 0.0) or 0.0))
+        if worst.get("severity") == "ok":
+            return
+        since_ms = int(drift.get("since_ms", 0) or 0)
+        since_date = datetime.fromtimestamp(since_ms / 1000, tz=UTC).date().isoformat() if since_ms else "unknown"
+        rate = float(worst.get("risky_rate", 0.0) or 0.0)
+        total = int(worst.get("total", 0) or 0)
+        origin = worst.get("origin") or "unknown"
+        click.echo(
+            f"[polylogue] format drift: origin {origin} {rate:.0%} of {total} records since {since_date} "
+            "carry unseen shapes -- devtools lab schema generate/promote",
+            err=True,
+        )
+    except Exception:
+        return
 
 
 def _render_query_help_examples(help_text: str) -> str:

@@ -27,6 +27,7 @@ from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.schemas.drift_sentinel import SchemaDriftObservation
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS, is_jsonl_source_path, is_stream_record_provider
 from polylogue.storage.blob_store import BlobStore
@@ -82,6 +83,7 @@ class IngestRecordResult:
     sessions: list[SessionWritePayload] = field(default_factory=list)
     source_name: str | None = None
     serialized_size_bytes: int | None = None
+    schema_drift: SchemaDriftObservation | None = None
 
 
 ParsePlanMode = Literal["payload", "stream"]
@@ -117,6 +119,7 @@ class _PlanValidation:
     status: ValidationStatus
     validation_error: str | None = None
     parse_error: str | None = None
+    schema_drift: SchemaDriftObservation | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +196,7 @@ def _record_result(
     error: str | None = None,
     sessions: list[SessionWritePayload] | None = None,
     include_source_name: bool = False,
+    schema_drift: SchemaDriftObservation | None = None,
 ) -> IngestRecordResult:
     return _finalize_result(
         IngestRecordResult(
@@ -204,6 +208,7 @@ def _record_result(
             error=error,
             sessions=sessions or [],
             source_name=context.source_name if include_source_name else None,
+            schema_drift=schema_drift,
         ),
         measure_serialized_size=context.measure_serialized_size,
     )
@@ -422,20 +427,65 @@ def _validate_parse_plan(
         )
 
     validation_samples = validator.validation_samples(plan.schema_payload)
+    drift: SchemaDriftObservation | None = None
     if validation_samples:
         collected_errors: list[str] = []
         for sample in validation_samples:
-            sample_result = validator.validate(sample, include_drift=False)
+            # include_drift=True is cheap (a structural walk of the already
+            # in-memory sample) and is what makes format-drift detection
+            # possible without a second, redundant validation pass
+            # (polylogue-da1). It never changes accept/reject semantics --
+            # only `errors`/`is_valid` below still gate STRICT failure.
+            sample_result = validator.validate(sample, include_drift=True)
             if not sample_result.is_valid:
                 collected_errors.extend(sample_result.errors[:2])
+            if drift is None:
+                drift = _classify_plan_drift(
+                    context,
+                    plan,
+                    is_valid=sample_result.is_valid,
+                    drift_warnings=sample_result.drift_warnings,
+                )
         if collected_errors and context.validation_mode is ValidationMode.STRICT:
             return _PlanValidation(
                 status=ValidationStatus.FAILED,
                 validation_error=f"Schema validation failed: {collected_errors[0]}",
+                schema_drift=drift,
             )
 
     return _PlanValidation(
         status=ValidationStatus.PASSED,
+        schema_drift=drift,
+    )
+
+
+def _classify_plan_drift(
+    context: _IngestContext,
+    plan: _ParsePlan,
+    *,
+    is_valid: bool,
+    drift_warnings: list[str],
+) -> SchemaDriftObservation | None:
+    """Classify one validated sample's drift signal for ``plan``, if any."""
+    if plan.schema_resolution is None:
+        return None
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.schemas.drift_sentinel import classify_schema_drift, unseen_key_signature
+
+    classification = classify_schema_drift(
+        resolution_reason=plan.schema_resolution.reason,
+        is_valid=is_valid,
+        drift_warnings=drift_warnings,
+    )
+    if classification is None:
+        return None
+    return SchemaDriftObservation(
+        origin=str(origin_from_provider(plan.provider)),
+        element_kind=plan.schema_resolution.element_kind,
+        classification=classification,
+        unseen_key_signature=unseen_key_signature(drift_warnings),
+        native_id_example=context.raw_record.source_path or context.raw_record.raw_id,
+        raw_id=context.raw_record.raw_id,
     )
 
 
@@ -562,6 +612,7 @@ def _materialize_parsed_sessions(
         validation_error=validation.validation_error,
         sessions=session_payloads,
         include_source_name=True,
+        schema_drift=validation.schema_drift,
     )
 
 
@@ -585,6 +636,7 @@ def _run_parse_plan(
             validation_error=validation.validation_error,
             parse_error=validation.parse_error,
             error=validation.validation_error,
+            schema_drift=validation.schema_drift,
         )
 
     try:

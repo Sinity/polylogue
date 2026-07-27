@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
+from polylogue.schemas.drift_sentinel import SchemaDriftObservation
 from polylogue.sinex.models import PublicationPayload
 from polylogue.storage.raw.models import RawSessionStateUpdate
 
@@ -66,6 +67,7 @@ class _IngestBatchSummary:
     publication_payloads_by_raw_id: dict[str, list[PublicationPayload]] = field(default_factory=dict)
     publication_payload_bytes: int = 0
     publication_deferred_raw_ids: set[str] = field(default_factory=set)
+    schema_drift_observations: list[SchemaDriftObservation] = field(default_factory=list)
     counts: dict[str, int] = field(
         default_factory=lambda: {
             "sessions": 0,

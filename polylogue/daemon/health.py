@@ -667,6 +667,72 @@ def _check_insight_freshness_medium() -> HealthAlert:
         )
 
 
+def _check_schema_drift_medium() -> HealthAlert:
+    """Check the windowed format-drift sentinel (polylogue-da1).
+
+    Reads the same ``schema_drift_samples`` ops.db telemetry
+    ``polylogue ops status`` reports and applies the same
+    benign/risky-rate thresholds
+    (:mod:`polylogue.cli.commands.status`), so the daemon health surface
+    and the CLI status line never disagree about severity. Follow-up
+    action always points at ``devtools lab schema generate/promote`` --
+    this check only detects drift, it never repairs a schema package.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.cli.commands.status import _schema_drift_status
+
+        drift = _schema_drift_status(_active_health_db_path().parent, now_ms=int(datetime.now(UTC).timestamp() * 1000))
+        if not drift.get("available"):
+            return HealthAlert(
+                check_name="schema_drift",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.OK,
+                message=f"format drift sentinel unavailable: {drift.get('reason', 'unknown')}",
+                checked_at=now,
+                consecutive_failures=_record_failure("schema_drift", True),
+            )
+        origins = drift.get("origins") or []
+        worst = "ok"
+        worst_detail = ""
+        for item in origins:
+            if not isinstance(item, dict):
+                continue
+            severity_token = str(item.get("severity") or "ok")
+            if severity_token == "error" or (severity_token == "warning" and worst != "error"):
+                worst = severity_token
+                origin = item.get("origin") or "unknown"
+                rate = float(item.get("risky_rate", 0.0) or 0.0)
+                total = int(item.get("total", 0) or 0)
+                worst_detail = f"{origin}: {rate:.0%} of {total} records carry unseen shapes"
+        if worst == "error":
+            severity = HealthSeverity.ERROR
+            message = f"format drift: {worst_detail} — devtools lab schema generate/promote"
+        elif worst == "warning":
+            severity = HealthSeverity.WARNING
+            message = f"format drift: {worst_detail} — devtools lab schema generate/promote"
+        else:
+            severity = HealthSeverity.OK
+            message = "no risky format drift"
+        return HealthAlert(
+            check_name="schema_drift",
+            tier=HealthTier.MEDIUM,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("schema_drift", severity == HealthSeverity.OK),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="schema_drift",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.ERROR,
+            message=f"format drift check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("schema_drift", False),
+        )
+
+
 def _check_repeated_stage_failures_medium() -> HealthAlert:
     """Check for repeated stage failures in live ingest attempts.
 
@@ -1029,6 +1095,7 @@ def _run_medium_checks() -> list[HealthAlert]:
         _check_stale_ingest_attempts_medium(),
         _check_insight_freshness_medium(),
         _check_repeated_stage_failures_medium(),
+        _check_schema_drift_medium(),
         *_check_convergence_debt_medium(),
         *_check_cursor_lag_medium(),
     ]

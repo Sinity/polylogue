@@ -280,6 +280,30 @@ CREATE TABLE IF NOT EXISTS fts_drift_samples (
 
 CREATE INDEX IF NOT EXISTS idx_fts_drift_samples_surface_time
 ON fts_drift_samples(surface, sampled_at_ms DESC);
+
+-- polylogue-da1: format-drift sentinel. Every ingested record whose shape
+-- did not exactly match a committed provider schema package records one
+-- bounded sample here, keyed by (origin, element_kind, unseen_key_signature),
+-- so "origin X: N% of records since <date> carry unseen shapes" can be
+-- read back as a windowed rate instead of discovered manually. ops.db is
+-- disposable, so this is a plain freeform-additive table (no migration),
+-- pruned by time and row count like fts_drift_samples/route_observations.
+CREATE TABLE IF NOT EXISTS schema_drift_samples (
+    sample_id             TEXT PRIMARY KEY,
+    origin                TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    element_kind          TEXT NOT NULL,
+    classification        TEXT NOT NULL CHECK(classification IN ('unseen_shape', 'new_field', 'field_changed')),
+    unseen_key_signature  TEXT NOT NULL DEFAULT '',
+    native_id_example     TEXT NOT NULL,
+    raw_id                TEXT NOT NULL,
+    observed_at_ms        INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_origin_time
+ON schema_drift_samples(origin, observed_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_time
+ON schema_drift_samples(observed_at_ms DESC);
 """
 
 __all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]
