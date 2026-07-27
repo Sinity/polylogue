@@ -344,6 +344,12 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'static-asset ETag/cache key.'
+- path: polylogue/insights/actor_context.py
+  function: '<module>._instructions_hash'
+  call: hashlib.sha256
+  occurrence: 0
+  classification: identifier
+  note: 'ExecutionContextRef known-field fingerprint of delivered instructions text (polylogue-h6r); fed into ExecutionContextRef.from_observation, never compared for drift on its own.'
 - path: polylogue/insights/claude_workflow_evidence.py
   function: '<module>.project_claude_workflow_evidence'
   call: hashlib.sha256

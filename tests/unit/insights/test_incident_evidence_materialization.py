@@ -152,6 +152,48 @@ def test_materialized_graph_derives_unresolved_effect_from_mentioned_pull_reques
     assert (f"{session.id}:segment", "#4242") in mentioned
 
 
+def test_materialized_run_nodes_carry_real_actor_and_execution_context_refs() -> None:
+    """polylogue-h6r wiring: run nodes get real, non-fabricated identity.
+
+    ``actor_ref``/``execution_context_ref`` were previously always ``None``
+    on this graph (the module's own docstring named their population
+    "deliberately out of scope"). They must now be populated from real
+    ``ProjectedRun`` evidence (harness/provider_origin/agent_ref), never a
+    fabricated value derived from ``cwd``/``git_branch``.
+    """
+
+    session, graph = _graph_for_incident_session()
+    run_nodes = {node.ref.object_id: node for node in graph.nodes if node.kind == "run"}
+
+    main_run = run_nodes[str(session.id)]
+    subagent_run = run_nodes[f"{session.id}:subagent:0:tool-2"]
+
+    assert main_run.actor_ref is not None
+    assert main_run.execution_context_ref is not None
+    assert subagent_run.actor_ref is not None
+    assert subagent_run.execution_context_ref is not None
+
+    # ProjectedRun always reports an ``agent_ref`` (main runs get
+    # "{harness}/main", subagent runs get "{harness}/{subagent_type}") --
+    # real, structural evidence reused verbatim, distinguishing the main
+    # role from the dispatched Explore persona.
+    assert subagent_run.actor_ref.identity == "codex/Explore"
+    assert main_run.actor_ref.identity == "codex/main"
+    assert main_run.actor_ref != subagent_run.actor_ref
+
+    # Both runs share the same codex harness/provider_origin, so their
+    # execution contexts are genuinely identical -- distinct actors under
+    # one shared runtime, exactly what h6r AC2 requires.
+    assert main_run.execution_context_ref.context_id == subagent_run.execution_context_ref.context_id
+    assert set(main_run.execution_context_ref.unknown_fields) == {
+        "tools_profile",
+        "mcp_profile",
+        "permissions",
+        "runtime_build",
+        "sampling_params",
+    }
+
+
 def test_summarize_incident_graph_reports_counts() -> None:
     session, graph = _graph_for_incident_session()
     summary = summarize_incident_graph(graph, session_ids=(str(session.id),))

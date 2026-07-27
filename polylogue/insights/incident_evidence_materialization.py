@@ -48,17 +48,22 @@ Node/edge shape, grounded entirely in real per-session evidence:
   exactly what an incident investigation starting from "what did the archive
   record" needs and what the ledger-only path cannot supply.
 
-Deliberately out of scope for this first slice (see ``docs`` reference in the
-module and the owning bead's notes for the honest accounting): actor/
-execution-context node population. ``node_from_projected_run`` already
-accepts optional ``actor_ref``/``execution_context_ref`` and the node/edge
-model already has dedicated ``actor``/``execution-context`` kinds, so a
-follow-on pass can attach them without touching this module's shape --
-fabricating a content-addressed :class:`~polylogue.core.refs.ExecutionContextRef`
-from a run's bare ``cwd``/``git_branch`` strings without a positive-evidence
-rule is exactly the kind of unproven authority claim OriginSpec (polylogue-2qx)
-exists to prevent, so it is left for that dedicated contract rather than
-guessed here.
+Each ``run`` node now also carries a real ``actor_ref``/``execution_context_ref``
+pair (polylogue-h6r, :mod:`polylogue.insights.actor_context`): ``harness`` and
+``provider_origin`` are provider-reported facts about how the run executed,
+and ``agent_ref`` (when a runtime structurally reports an explicit subagent
+persona) is real, provider-observed actor identity -- none of it is
+fabricated from bare ``cwd``/``git_branch`` strings, which is exactly the
+unproven-authority shortcut OriginSpec (polylogue-2qx) exists to prevent.
+Per-session model/instructions evidence lives on ``ParsedSession``, one layer
+below ``ProjectedRun``, and is not threaded through this projection today;
+:func:`~polylogue.insights.actor_context.actor_ref_from_session` /
+:func:`~polylogue.insights.actor_context.execution_context_ref_from_session`
+cover that evidence directly for callers with a ``ParsedSession`` in hand.
+Everything polylogue-7aw's configuration-artifact ingestion would add
+(tools/MCP profile, permissions, runtime build, sampling parameters) is
+declared an explicit unknown field on the execution context, never fabricated
+or silently omitted.
 """
 
 from __future__ import annotations
@@ -71,6 +76,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from polylogue.core.refs import ObjectRef, ObjectRefKind
+from polylogue.insights.actor_context import actor_ref_from_run, execution_context_ref_from_run
 from polylogue.insights.run_projection import ObservedEvent, ProjectedRun
 from polylogue.insights.work_evidence import (
     WorkEvidenceEdge,
@@ -120,7 +126,12 @@ def materialize_incident_evidence_graph(
 
     run_by_ref: dict[str, ProjectedRun] = {}
     for run in runs:
-        node = node_from_projected_run(run, corpus_snapshot_ref=corpus_snapshot_ref)
+        node = node_from_projected_run(
+            run,
+            corpus_snapshot_ref=corpus_snapshot_ref,
+            actor_ref=actor_ref_from_run(run),
+            execution_context_ref=execution_context_ref_from_run(run),
+        )
         nodes[node.ref.format()] = node
         run_by_ref[run.run_ref.format()] = run
 
