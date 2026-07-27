@@ -694,6 +694,7 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     from polylogue.archive.query.expression import parse_unit_source_expression
     from polylogue.archive.query.unit_results import query_unit_rows
     from polylogue.core.enums import BlockType, Origin
+    from polylogue.storage.sqlite.action_relation import action_relation_select_sql
     from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
 
     root = tmp_path / "archive"
@@ -764,9 +765,25 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     bounded_ctx = QueryExecutionContext.create(query_text="c03-bounded", workload_class="scan", timeout_s=10.0)
     bounded = execute(bounded_ctx)
 
+    # polylogue-1ldl: renaming the relation to the plain ``actions`` compat
+    # VIEW used to reproduce the pre-z9gh.2 "global-first" cost (a
+    # windowed-CTE recomputation over the entire archive). Since PR #3018
+    # (z9gh.2), ``actions`` is a cheap re-join over the small, indexed,
+    # pre-materialized ``action_pairs`` table (session_id leads its index),
+    # so this rename no longer forces any meaningfully different/expensive
+    # path -- the canary silently stopped discriminating anything. The
+    # actually-expensive "global-first" path this mutation means to exercise
+    # still exists in ``action_relation_select_sql``'s unbounded branch
+    # (``session_placeholders=None``), which recomputes the tool_use/
+    # tool_result window-function pairing across every block in the archive
+    # instead of reading the materialized table. Force that branch directly.
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
-        lambda **_kwargs: ("", "actions", []),
+        lambda **_kwargs: (
+            f"WITH actions_global_recompute AS ({action_relation_select_sql(session_placeholders=None)})",
+            "actions_global_recompute",
+            [],
+        ),
     )
     mutant_ctx = QueryExecutionContext.create(query_text="c03-global-first", workload_class="scan", timeout_s=10.0)
     mutant = execute(mutant_ctx)

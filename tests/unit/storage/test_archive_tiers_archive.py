@@ -25,6 +25,7 @@ from polylogue.sources.parsers.base import (
     ParsedPasteEvidence,
     ParsedSession,
 )
+from polylogue.storage.sqlite.action_relation import action_relation_select_sql
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveQueryUnitAggregateRow, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
@@ -247,9 +248,30 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
             contradictory_rows = facade.query_unit_counts("action", contradictory_source.predicate)
         finally:
             facade._conn.set_progress_handler(None, 0)
+        # polylogue-1ldl: mutating this to fall back to the plain ``actions``
+        # compatibility VIEW used to reproduce the pre-z9gh.2 "global-first"
+        # cost -- that view used to be a windowed-CTE recomputation over the
+        # *entire* archive. Since PR #3018 (z9gh.2), ``actions`` is instead a
+        # cheap re-join over the small, indexed, pre-materialized
+        # ``action_pairs`` table (session_id is the leading index column), so
+        # renaming the relation to ``actions`` no longer forces any
+        # meaningfully different/expensive path (measured: 0 VM steps at this
+        # data scale -- an anti-vacuity check that no longer discriminates
+        # anything). The genuinely expensive "global-first" path that this
+        # canary means to guard against still exists in
+        # ``action_relation_select_sql`` -- it is the branch taken when no
+        # session bound is supplied (``session_placeholders=None``), which
+        # recomputes the tool_use/tool_result window-function pairing across
+        # every block in the archive rather than reading the materialized
+        # table. Force that branch directly so the mutation again reproduces
+        # real archive-wide work.
         monkeypatch.setattr(
             "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
-            lambda **_kwargs: ("", "actions", []),
+            lambda **_kwargs: (
+                f"WITH actions_global_recompute AS ({action_relation_select_sql(session_placeholders=None)})",
+                "actions_global_recompute",
+                [],
+            ),
         )
         mutant_rows, global_first_vm_steps = measure_query()
 
