@@ -79,6 +79,7 @@ _SESSION_PROFILE_BASE_COLUMNS = (
     "workflow_shape_confidence",
     "workflow_shape_features_json",
     "terminal_state",
+    "terminal_state_method",
     "terminal_state_confidence",
     "terminal_state_evidence_json",
     "cost_is_estimated",
@@ -241,6 +242,11 @@ _INFERENCE_NATIVE_MIRRORED_FIELDS: frozenset[str] = frozenset(
         "workflow_shape_confidence",
         "terminal_state",
         "terminal_state_confidence",
+        # polylogue-vhjs: terminal_state_method is reconciled from the native
+        # session_profiles.terminal_state_method column by the same two read
+        # paths (SessionProfileInsight.from_record and
+        # _session_profile_components_from_archive_row) -- mirror it here too.
+        "terminal_state_method",
     }
 )
 
@@ -316,6 +322,7 @@ def session_profile_insert_values(
         record.workflow_shape_confidence,
         record.workflow_shape_features_json,
         record.terminal_state,
+        record.terminal_state_method,
         record.terminal_state_confidence,
         record.terminal_state_evidence_json,
         int(record.cost_is_estimated),

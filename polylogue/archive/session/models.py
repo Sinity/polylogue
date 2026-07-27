@@ -137,6 +137,11 @@ class SessionProfile:
     terminal_state: str = "unknown"
     terminal_state_confidence: float = 0.0
     terminal_state_evidence: dict[str, int | float | str | None] = field(default_factory=dict)
+    # polylogue-vhjs: which structural detection rule in
+    # archive/session/runtime.py::_terminal_state (or the rebuild.py bounded
+    # fallback) produced `terminal_state` -- see TERMINAL_STATE_METHODS there
+    # for the closed vocabulary. Never left unset by the writer.
+    terminal_state_method: str = "unknown"
     cost_is_estimated: bool = False
     logical_session_id: str | None = None
     thread_id: str | None = None
@@ -222,6 +227,7 @@ class SessionProfile:
             "terminal_state": self.terminal_state,
             "terminal_state_confidence": self.terminal_state_confidence,
             "terminal_state_evidence": dict(self.terminal_state_evidence),
+            "terminal_state_method": self.terminal_state_method,
             "cost_is_estimated": self.cost_is_estimated,
             "logical_session_id": self.logical_session_id,
             "compaction_count": self.compaction_count,
@@ -300,6 +306,7 @@ class SessionProfile:
             terminal_state=optional_string(payload.get("terminal_state")) or "unknown",
             terminal_state_confidence=coerce_float(payload.get("terminal_state_confidence"), 0.0),
             terminal_state_evidence=_scalar_mapping(payload.get("terminal_state_evidence")),
+            terminal_state_method=optional_string(payload.get("terminal_state_method")) or "unknown",
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
             logical_session_id=optional_string(payload.get("logical_session_id")),
             compaction_count=coerce_int(payload.get("compaction_count"), 0),

@@ -118,6 +118,9 @@ class SessionInferencePayload(ArchiveInsightModel):
     workflow_shape_confidence: float = 0.0
     terminal_state: str = "unknown"
     terminal_state_confidence: float = 0.0
+    # polylogue-vhjs: structural-detection-rule provenance for
+    # `terminal_state` -- see archive/session/runtime.py::TERMINAL_STATE_METHODS.
+    terminal_state_method: str = "unknown"
     support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     engaged_duration_source: str = "session_total_fallback"

@@ -80,6 +80,7 @@ class SessionProfileDocument(TypedDict):
     terminal_state: str
     terminal_state_confidence: float
     terminal_state_evidence: dict[str, object]
+    terminal_state_method: str
     cost_is_estimated: bool
     logical_session_id: str | None
     compaction_count: int

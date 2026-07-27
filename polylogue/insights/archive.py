@@ -270,6 +270,7 @@ class SessionProfileInsight(ArchiveInsightModel):
                 update={
                     "terminal_state": record.terminal_state,
                     "terminal_state_confidence": record.terminal_state_confidence,
+                    "terminal_state_method": record.terminal_state_method,
                     "workflow_shape": record.workflow_shape,
                     "workflow_shape_confidence": record.workflow_shape_confidence,
                 }
