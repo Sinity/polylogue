@@ -169,8 +169,19 @@ class ZipEntryValidator:
 
             if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
                 if self._session_only:
+                    # Classify on the bare intra-archive relative path, not
+                    # the zip-container-prefixed ``{zip_path}:{name}`` form.
+                    # Every ``OriginArtifactRule.path_pattern`` is anchored
+                    # ``(?:^|/)`` to match a relative filesystem-style path
+                    # (the same convention every non-zip caller of
+                    # ``classify_artifact_path`` already uses, e.g.
+                    # ``sources/live/batch_support.py``): the character
+                    # immediately before a rule's leading path segment must be
+                    # ``/`` or start-of-string. Prefixing with the zip path
+                    # inserts a ``:`` there instead, so no rule could ever
+                    # match and this exclusion was dead code (polylogue-dc1k).
                     path_classification = classify_artifact_path(
-                        f"{self._zip_path}:{name}",
+                        name,
                         provider=self._provider_hint,
                     )
                     if path_classification is not None and not path_classification.parse_as_session:

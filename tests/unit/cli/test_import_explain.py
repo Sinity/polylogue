@@ -181,16 +181,14 @@ def test_import_explain_zip_excludes_non_session_artifact_from_aggregate(
     The preview must apply the identical exclusion, or it can wrongly
     predict an aggregate-cap rejection a real import would never hit.
 
-    Uses a monkeypatched ``classify_artifact_path`` rather than a real
-    ``OriginArtifactRule`` path pattern: every current rule's regex requires
-    a ``/``-anchored match (``(?:^|/)workflows/...``), but zip-embedded
-    entry paths are built as ``f"{zip_path}:{name}"`` (colon-joined), which
-    no existing rule matches -- confirmed separately and filed as
-    polylogue-<followup> (session_only exclusion is effectively unreachable
-    for zip archives today, a distinct pre-existing gap in decoder_zip.py
-    itself, not something this fix can or should paper over). This test
-    isolates and proves the exclusion LOGIC in ``_zip_entry_skip_reason``
-    independent of that separate path-matching gap.
+    Uses a monkeypatched ``classify_artifact_path`` (isolating the exclusion
+    LOGIC in ``_zip_entry_skip_reason`` from real ``OriginArtifactRule``
+    matching, which is covered separately) matching on the bare intra-archive
+    relative path -- both ``_zip_entry_skip_reason`` and
+    ``ZipEntryValidator.filter_entries`` classify on that bare path, not a
+    ``{zip_path}:{name}`` prefix (polylogue-dc1k: every rule's ``(?:^|/)``-anchored
+    pattern only matches after start-of-string or ``/``, never after the ``:``
+    a container prefix would insert).
     """
     from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 
@@ -210,7 +208,7 @@ def test_import_explain_zip_excludes_non_session_artifact_from_aggregate(
     )
 
     def fake_classify(source_path: object, *, provider: object) -> ArtifactClassification | None:
-        if str(source_path).endswith(":run.json"):
+        if str(source_path) == "run.json":
             return ArtifactClassification(
                 provider=Provider.CLAUDE_CODE,
                 kind=ArtifactKind.WORKFLOW_RUN_SNAPSHOT,

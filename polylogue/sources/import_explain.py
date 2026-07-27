@@ -643,7 +643,13 @@ def _zip_entry_skip_reason(
         return f"zip entry compression ratio {info.file_size / info.compress_size:.1f} exceeds limit", aggregate_total
     if info.file_size > MAX_UNCOMPRESSED_SIZE:
         return f"zip entry file size {info.file_size} exceeds limit", aggregate_total
-    path_classification = classify_artifact_path(f"{zip_path}:{info.filename}", provider=provider_hint)
+    # Classify on the bare intra-archive relative path (matches
+    # ``ZipEntryValidator.filter_entries``'s identical fix, polylogue-dc1k):
+    # every ``OriginArtifactRule.path_pattern`` is anchored ``(?:^|/)``, so a
+    # ``{zip_path}:{name}`` prefix put a ``:`` immediately before the pattern
+    # instead of ``/``/start-of-string and no rule could ever match.
+    del zip_path
+    path_classification = classify_artifact_path(info.filename, provider=provider_hint)
     if path_classification is not None and not path_classification.parse_as_session:
         return path_classification.reason or "not a session artifact", aggregate_total
     projected_total = aggregate_total + info.file_size
