@@ -108,10 +108,8 @@ def build_readme_section(
             "",
             "Live site: <https://sinity.github.io/polylogue/>.",
             "",
-            "Start with the task-oriented guides below; [docs/README.md](docs/README.md) "
-            "separates guides, reference, internals, operations, evidence, design, and "
-            "historical records. Current sequencing and active workstreams live in the Beads "
-            "backlog (`bd ready`, `bd list --status open`).",
+            "Start with the task-oriented guides below. The complete documentation map is "
+            "in [docs/README.md](docs/README.md).",
             "",
             _render_table(featured_docs),
             "",
