@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from pytest import MonkeyPatch
 
 from polylogue.cli.click_app import cli
+from polylogue.core.enums import Provider
 from polylogue.sources import decoder_zip as decoder_zip_module
 from polylogue.sources import import_explain as import_explain_module
 from polylogue.sources.decoder_zip import ZipEntryValidator
@@ -166,6 +167,75 @@ def test_import_explain_zip_rejects_aggregate_over_cap_before_read(
     assert accepted_names == {"entry_0.json"}
     rejected_by_preview = {row.source_path.split(":", 1)[1] for row in aggregate_skips if row.source_path is not None}
     assert rejected_by_preview == set(entry_names) - accepted_names
+
+
+def test_import_explain_zip_excludes_non_session_artifact_from_aggregate(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A non-session-classified entry must not count toward the preview's
+    aggregate total (CodeRabbit finding on PR #3317): ``process_zip`` always
+    constructs ``ZipEntryValidator`` with ``session_only=True``, which
+    excludes non-session-classified entries from the running total entirely
+    (they ``continue`` before the aggregate check in ``decoder_zip.py``).
+    The preview must apply the identical exclusion, or it can wrongly
+    predict an aggregate-cap rejection a real import would never hit.
+
+    Uses a monkeypatched ``classify_artifact_path`` rather than a real
+    ``OriginArtifactRule`` path pattern: every current rule's regex requires
+    a ``/``-anchored match (``(?:^|/)workflows/...``), but zip-embedded
+    entry paths are built as ``f"{zip_path}:{name}"`` (colon-joined), which
+    no existing rule matches -- confirmed separately and filed as
+    polylogue-<followup> (session_only exclusion is effectively unreachable
+    for zip archives today, a distinct pre-existing gap in decoder_zip.py
+    itself, not something this fix can or should paper over). This test
+    isolates and proves the exclusion LOGIC in ``_zip_entry_skip_reason``
+    independent of that separate path-matching gap.
+    """
+    from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
+
+    archive = tmp_path / "workflow.zip"
+    session_bytes = b'{"a": 1}'
+    non_session_bytes = b'{"run": "snapshot"}' * 1000
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("session.json", session_bytes)
+        zf.writestr("run.json", non_session_bytes)
+    # Cap sits between the session entry alone and session+non-session
+    # combined -- if the non-session entry wrongly counted, this would
+    # falsely reject the accepted session entry too.
+    monkeypatch.setattr(
+        import_explain_module,
+        "MAX_AGGREGATE_UNCOMPRESSED_SIZE",
+        len(session_bytes) + len(non_session_bytes) // 2,
+    )
+
+    def fake_classify(source_path: object, *, provider: object) -> ArtifactClassification | None:
+        if str(source_path).endswith(":run.json"):
+            return ArtifactClassification(
+                provider=Provider.CLAUDE_CODE,
+                kind=ArtifactKind.WORKFLOW_RUN_SNAPSHOT,
+                parse_as_session=False,
+                schema_eligible=False,
+                default_priority=0,
+                reason="non-session workflow snapshot (test fixture)",
+            )
+        return None
+
+    monkeypatch.setattr(import_explain_module, "classify_artifact_path", fake_classify)
+
+    payload = explain_import_path(archive, source_name="claude-code")
+
+    assert not any("aggregate uncompressed size" in row.reason for row in payload.skipped)
+    non_session_skips = [row for row in payload.skipped if row.source_path == f"{archive}:run.json"]
+    assert len(non_session_skips) == 1
+    assert non_session_skips[0].reason == "non-session workflow snapshot (test fixture)"
+    # session.json is separately skipped as "metadata-oriented document" (its
+    # trivial fixture bytes aren't a real session shape) -- but crucially
+    # NOT for an aggregate-size reason, which is the only thing this test
+    # proves: run.json's bytes never reached the running aggregate total.
+    session_skips = [row for row in payload.skipped if row.source_path == f"{archive}:session.json"]
+    assert len(session_skips) == 1
+    assert "aggregate uncompressed size" not in session_skips[0].reason
 
 
 def test_import_explain_zip_allows_archive_comfortably_under_aggregate_cap(

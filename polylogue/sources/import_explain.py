@@ -552,7 +552,12 @@ def _explain_zip(
     try:
         with zipfile.ZipFile(path) as archive:
             for info in archive.infolist():
-                skip_reason, aggregate_total = _zip_entry_skip_reason(info, aggregate_total=aggregate_total)
+                skip_reason, aggregate_total = _zip_entry_skip_reason(
+                    info,
+                    aggregate_total=aggregate_total,
+                    zip_path=path,
+                    provider_hint=provider_hint,
+                )
                 if skip_reason is not None:
                     skipped.append(
                         ImportSkippedRowPayload(
@@ -612,17 +617,25 @@ def _explain_zip(
     )
 
 
-def _zip_entry_skip_reason(info: zipfile.ZipInfo, *, aggregate_total: int) -> tuple[str | None, int]:
+def _zip_entry_skip_reason(
+    info: zipfile.ZipInfo,
+    *,
+    aggregate_total: int,
+    zip_path: Path,
+    provider_hint: Provider,
+) -> tuple[str | None, int]:
     """Return a skip reason (if any) plus the aggregate-total that should
     carry forward to the next entry.
 
-    Mirrors ``ZipEntryValidator.filter_entries`` in ``decoder_zip.py``: an
-    entry that fails the extension/ratio/per-entry-size checks never
-    contributes to the running aggregate total (the real decode path only
-    accumulates entries that clear every earlier check), and the aggregate
-    check itself -- evaluated last, from central-directory metadata alone --
-    is what decides whether *this* entry's size gets added to the total that
-    subsequent entries are checked against.
+    Mirrors ``ZipEntryValidator.filter_entries`` in ``decoder_zip.py`` (which
+    ``process_zip`` always constructs with ``session_only=True``): an entry
+    that fails the extension/ratio/per-entry-size checks, or that classifies
+    as a non-session artifact (sidecar/metadata), never contributes to the
+    running aggregate total -- the real decode path only accumulates entries
+    that clear every earlier check AND are actually parsed as a session. The
+    aggregate check itself -- evaluated last, from central-directory metadata
+    alone -- is what decides whether *this* entry's size gets added to the
+    total that subsequent entries are checked against.
     """
     if info.is_dir() or not info.filename.lower().endswith(_SUPPORTED_ENTRY_SUFFIXES):
         return "unsupported ZIP entry", aggregate_total
@@ -630,6 +643,9 @@ def _zip_entry_skip_reason(info: zipfile.ZipInfo, *, aggregate_total: int) -> tu
         return f"zip entry compression ratio {info.file_size / info.compress_size:.1f} exceeds limit", aggregate_total
     if info.file_size > MAX_UNCOMPRESSED_SIZE:
         return f"zip entry file size {info.file_size} exceeds limit", aggregate_total
+    path_classification = classify_artifact_path(f"{zip_path}:{info.filename}", provider=provider_hint)
+    if path_classification is not None and not path_classification.parse_as_session:
+        return path_classification.reason or "not a session artifact", aggregate_total
     projected_total = aggregate_total + info.file_size
     if projected_total > MAX_AGGREGATE_UNCOMPRESSED_SIZE:
         return (
