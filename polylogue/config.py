@@ -716,6 +716,51 @@ class PolylogueConfig:
         return float(str(value))
 
     @property
+    def live_watcher_parse_stage_split(self) -> bool:
+        """Opt-in: pre-parse watcher full-ingest candidates off the writer hold.
+
+        polylogue-wf8a. Off by default. See
+        ``polylogue.sources.live.parse_prefetch.LiveParseStage``.
+        """
+        return bool(self._data.get("live_watcher_parse_stage_split"))
+
+    @property
+    def live_watcher_parse_stage_workers(self) -> int | None:
+        """Worker cap for the watcher-owned pre-parse thread pool.
+
+        ``None``/absent or <=0 falls back to the adaptive ``cpu_count - 1``
+        default. See ``polylogue.sources.live.parse_prefetch``.
+        """
+        value = self._data.get("live_watcher_parse_stage_workers")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
+    def live_watcher_parse_stage_max_inflight_bytes(self) -> int | None:
+        """Whale-memory budget (bytes) for in-flight watcher prefetch payloads.
+
+        ``None``/absent or <=0 falls back to the adaptive 1/32-physical-RAM
+        default. See ``polylogue.sources.live.parse_prefetch``.
+        """
+        value = self._data.get("live_watcher_parse_stage_max_inflight_bytes")
+        if value is None:
+            return None
+        return int(str(value))
+
+    @property
+    def live_watcher_parse_stage_warm_timeout_seconds(self) -> float | None:
+        """Bound (seconds) on how long a watcher prefetch warm() pass waits for workers.
+
+        ``None``/absent or <=0 falls back to the 60s default. See
+        ``polylogue.sources.live.parse_prefetch``.
+        """
+        value = self._data.get("live_watcher_parse_stage_warm_timeout_seconds")
+        if value is None:
+            return None
+        return float(str(value))
+
+    @property
     def mcp_write_enabled(self) -> bool:
         """Explicit opt-in for the MCP ``write``/``run`` dispatchers.
 
@@ -1552,6 +1597,58 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
+        "live_watcher_parse_stage_split",
+        toml_path="watcher.parse_stage_split",
+        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_SPLIT",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Opt-in (polylogue-wf8a): pre-parse the live watcher's "
+            "full-ingest catch-up/live-batch candidates (small JSONL files) "
+            "in a bounded thread pool BEFORE the writer hold, instead of "
+            "parsing inside the writer-held pass. Off by default; mirrors "
+            "daemon_parse_stage_split's polylogue-m6tp phase (a) seam for "
+            "the watcher route ahead of the free-threaded 3.14t deploy."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "live_watcher_parse_stage_workers",
+        toml_path="watcher.parse_stage_workers",
+        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Worker cap for the watcher-owned pre-parse thread pool "
+            "(polylogue-wf8a); default cpu_count-1. <=0 falls back to the "
+            "adaptive default."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "live_watcher_parse_stage_max_inflight_bytes",
+        toml_path="watcher.parse_stage_max_inflight_bytes",
+        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Whale-memory budget (bytes) for watcher prefetch payloads "
+            "admitted while parses are in flight; default 1/32 physical RAM "
+            "clamped [64 MiB, 512 MiB]. <=0 falls back to the adaptive "
+            "default."
+        ),
+    ),
+    ConfigInventoryEntry(
+        "live_watcher_parse_stage_warm_timeout_seconds",
+        toml_path="watcher.parse_stage_warm_timeout_seconds",
+        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description=(
+            "Bound (seconds) on how long a watcher prefetch warm() pass "
+            "waits for its dispatched workers before leaving stragglers "
+            "uncached. <=0 falls back to the 60s default."
+        ),
+    ),
+    ConfigInventoryEntry(
         "daemon_whale_raw_materialization",
         toml_path="daemon.raw_materialization.whale_convergence",
         env_var="POLYLOGUE_DAEMON_WHALE_RAW_MATERIALIZATION",
@@ -1650,6 +1747,8 @@ _INT_CONFIG_KEYS = frozenset(
         "daemon_parse_stage_workers",
         "daemon_parse_stage_max_inflight_bytes",
         "daemon_parse_stage_max_cached_tree_bytes",
+        "live_watcher_parse_stage_workers",
+        "live_watcher_parse_stage_max_inflight_bytes",
     }
 )
 _FLOAT_CONFIG_KEYS = frozenset(
@@ -1658,6 +1757,7 @@ _FLOAT_CONFIG_KEYS = frozenset(
         "slow_query_notice_seconds",
         "watch_debounce_s",
         "daemon_parse_stage_warm_timeout_seconds",
+        "live_watcher_parse_stage_warm_timeout_seconds",
     }
 )
 _BOOL_CONFIG_KEYS = frozenset(
@@ -1679,6 +1779,7 @@ _BOOL_CONFIG_KEYS = frozenset(
         "mcp_judge_enabled",
         "mcp_maintenance_enabled",
         "judgment_automation_enabled",
+        "live_watcher_parse_stage_split",
     }
 )
 
@@ -1885,6 +1986,10 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "daemon_parse_stage_max_inflight_bytes": None,
         "daemon_parse_stage_max_cached_tree_bytes": None,
         "daemon_parse_stage_warm_timeout_seconds": None,
+        "live_watcher_parse_stage_split": False,
+        "live_watcher_parse_stage_workers": None,
+        "live_watcher_parse_stage_max_inflight_bytes": None,
+        "live_watcher_parse_stage_warm_timeout_seconds": None,
         "daemon_bulk_rebuild_routing": False,
         "daemon_whale_raw_materialization": True,
         "mcp_write_enabled": False,

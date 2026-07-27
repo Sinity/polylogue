@@ -43,6 +43,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
+from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
 
 if TYPE_CHECKING:
@@ -179,6 +180,7 @@ class LiveWatcher:
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
         write_coordinator: object | None = None,
+        parse_stage: LiveParseStage | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -190,6 +192,17 @@ class LiveWatcher:
         self._max_workers = max_workers
         self._converger = converger
         self._write_coordinator = write_coordinator
+        # polylogue-wf8a: off by default (``live_watcher_parse_stage_split``).
+        # An explicit ``parse_stage`` always wins (tests / callers that want
+        # to own the stage's lifecycle themselves); otherwise one is created
+        # here, owned by this watcher, and shut down in ``stop()``.
+        self._owns_parse_stage = parse_stage is None
+        if parse_stage is not None:
+            self._parse_stage: LiveParseStage | None = parse_stage
+        elif _load_live_watcher_parse_stage_split_config():
+            self._parse_stage = LiveParseStage()
+        else:
+            self._parse_stage = None
         self._pending_paths: set[Path] = set()
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
@@ -218,6 +231,7 @@ class LiveWatcher:
             stop_requested=self._stop.is_set,
             event_emitter=event_emitter,
             sync_runner=self._run_writer_sync,
+            parse_stage=self._parse_stage,
         )
 
     async def _run_writer_sync(
@@ -300,6 +314,8 @@ class LiveWatcher:
         self._stop.set()
         self._cancel_failed_retry_task()
         self._cancel_periodic_catch_up()
+        if self._parse_stage is not None and self._owns_parse_stage:
+            self._parse_stage.shutdown()
 
     def cancel_pending(self) -> None:
         task = self._drain_task
@@ -1363,6 +1379,13 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
         WatchSource(name="hooks", root=pending_hook_spool_dir(), suffixes=(".json",)),
     )
+
+
+def _load_live_watcher_parse_stage_split_config() -> bool:
+    """Lazy config read so ``config.py`` is never imported at module load time."""
+    from polylogue.config import load_polylogue_config
+
+    return load_polylogue_config().live_watcher_parse_stage_split
 
 
 def _cursor_db_path(polylogue: Polylogue) -> Path:

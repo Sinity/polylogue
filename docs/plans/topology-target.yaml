@@ -1274,7 +1274,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 2864
+    loc: 2969
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -3216,7 +3216,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 2610
+    loc: 2721
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -3263,12 +3263,16 @@ files:
     loc: 169
     target: polylogue/sources/live/metrics.py
     owner: stable
+  - path: polylogue/sources/live/parse_prefetch.py
+    loc: 327
+    target: polylogue/sources/live/parse_prefetch.py
+    owner: stable
   - path: polylogue/sources/live/sqlite_locking.py
     loc: 42
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 1413
+    loc: 1436
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
