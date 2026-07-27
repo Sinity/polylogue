@@ -16,8 +16,47 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteEvent,
     DaemonWriteThreadBridge,
+    _actor_priority,
+    _PriorityGate,
     daemon_write_telemetry_payload,
 )
+
+
+def test_actor_priority_classifies_bulk_ingest_below_everything_else() -> None:
+    assert _actor_priority("watcher.catch_up.chunk") == 1
+    assert _actor_priority("watcher.live_batch") == 1
+    assert _actor_priority("maintenance.fts_merge") == 0
+    assert _actor_priority("maintenance.wal_checkpoint") == 0
+    assert _actor_priority("startup.fts_automerge") == 0
+    assert _actor_priority("daemon.lifecycle.heartbeat") == 0
+    # Exact "watcher" (no trailing segment) is not the bulk-ingest convention.
+    assert _actor_priority("watcher") == 0
+
+
+@pytest.mark.asyncio
+async def test_priority_gate_wake_survives_cancellation_before_resume() -> None:
+    """Reproduce the exact race a stdlib-Lock-shaped gate must survive: a
+    waiter is woken (its future gets a result) but is cancelled before it
+    resumes past ``await``. The grant must be forwarded, not dropped."""
+    gate = _PriorityGate()
+    await gate.acquire(0)  # first caller takes the gate synchronously
+
+    async def waiter() -> None:
+        await gate.acquire(0)
+
+    task = asyncio.create_task(waiter())
+    await asyncio.sleep(0)  # let it enqueue
+    assert gate.locked
+
+    gate.release()  # wakes the queued waiter's future (call_soon, not yet resumed)
+    task.cancel()  # cancel before the event loop resumes the woken task
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The grant must not be stranded: a fresh acquirer still succeeds.
+    successor = asyncio.create_task(gate.acquire(0))
+    await asyncio.wait_for(successor, timeout=1.0)
+    assert gate.locked
 
 
 @pytest.mark.asyncio
@@ -131,6 +170,102 @@ async def test_coordinator_serializes_fifo_without_writer_overlap() -> None:
     assert [event.actor for event in released] == call_order
     assert all(event.wait_seconds is not None and event.hold_seconds is not None for event in released)
     assert all(event.outcome == "success" for event in released)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_actor_jumps_ahead_of_queued_bulk_ingest_actors() -> None:
+    """polylogue-de2a: a continuously-refilling watcher backlog must not starve
+    periodic maintenance. A queued ``maintenance.*``/other actor is admitted
+    before an earlier-queued ``watcher.*`` actor, though never before an
+    already-admitted one (queue-admission fairness only, not preemption)."""
+    queued = {
+        actor: asyncio.Event()
+        for actor in ("watcher.catch_up.chunk", "watcher.catch_up.chunk.2", "maintenance.fts_merge")
+    }
+    call_order: list[str] = []
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "queued" and event.actor in queued:
+            queued[event.actor].set()
+
+    coordinator = DaemonWriteCoordinator(observer=observe)
+    release_owner = asyncio.Event()
+    owner_entered = asyncio.Event()
+
+    async def owner() -> None:
+        owner_entered.set()
+        await release_owner.wait()
+
+    async def tracked(actor: str) -> str:
+        call_order.append(actor)
+        return actor
+
+    owner_task = asyncio.create_task(coordinator.run("owner", owner))
+    await owner_entered.wait()
+
+    # Two watcher chunks queue first (as a continuously-refilling backlog
+    # would), then a maintenance actor queues last.
+    first_watcher = asyncio.create_task(
+        coordinator.run("watcher.catch_up.chunk", lambda: tracked("watcher.catch_up.chunk"))
+    )
+    await queued["watcher.catch_up.chunk"].wait()
+    second_watcher = asyncio.create_task(
+        coordinator.run("watcher.catch_up.chunk.2", lambda: tracked("watcher.catch_up.chunk.2"))
+    )
+    await queued["watcher.catch_up.chunk.2"].wait()
+    maintenance = asyncio.create_task(
+        coordinator.run("maintenance.fts_merge", lambda: tracked("maintenance.fts_merge"))
+    )
+    await queued["maintenance.fts_merge"].wait()
+
+    assert coordinator.snapshot().active_actor == "owner"
+    release_owner.set()
+    await asyncio.gather(owner_task, first_watcher, second_watcher, maintenance)
+
+    # Maintenance queued last but is admitted before either watcher waiter;
+    # among the two same-priority watcher waiters, arrival order still wins.
+    assert call_order == ["maintenance.fts_merge", "watcher.catch_up.chunk", "watcher.catch_up.chunk.2"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_priority_waiter_does_not_strand_the_grant() -> None:
+    """Cancelling a still-queued higher-priority waiter must not drop the
+    gate: the next (lower-priority) waiter still gets admitted afterward."""
+    queued_maintenance = asyncio.Event()
+    queued_watcher = asyncio.Event()
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "queued" and event.actor == "maintenance.wal_checkpoint":
+            queued_maintenance.set()
+        if event.phase == "queued" and event.actor == "watcher.catch_up.chunk":
+            queued_watcher.set()
+
+    coordinator = DaemonWriteCoordinator(observer=observe)
+    release_owner = asyncio.Event()
+    owner_entered = asyncio.Event()
+
+    async def owner() -> None:
+        owner_entered.set()
+        await release_owner.wait()
+
+    owner_task = asyncio.create_task(coordinator.run("owner", owner))
+    await owner_entered.wait()
+
+    maintenance_task = asyncio.create_task(coordinator.run("maintenance.wal_checkpoint", _unexpected_operation))
+    await queued_maintenance.wait()
+    watcher_task = asyncio.create_task(coordinator.run("watcher.catch_up.chunk", _return_ready))
+    await queued_watcher.wait()
+
+    # Cancel the higher-priority waiter while it is still queued (owner has
+    # not released yet), then release: the lower-priority watcher waiter must
+    # still be admitted, and the gate must not be left stuck.
+    maintenance_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await maintenance_task
+    release_owner.set()
+    await owner_task
+    assert await watcher_task == "ready"
+    assert await coordinator.run("next", _return_ready) == "ready"
 
 
 @pytest.mark.asyncio

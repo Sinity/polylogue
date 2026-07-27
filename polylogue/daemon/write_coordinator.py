@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import heapq
 import threading
 import time
 import weakref
@@ -28,6 +29,91 @@ P = ParamSpec("P")
 T = TypeVar("T")
 WritePhase = Literal["queued", "acquired", "released"]
 WriteOutcome = Literal["success", "error", "cancelled"]
+
+# Bulk-ingest actors (live watcher catch-up/append batches) re-queue almost
+# immediately after each release, so under sustained backlog a strict-FIFO
+# gate lets them monopolize admission indefinitely: a periodic maintenance
+# actor (FTS merge, WAL checkpoint, convergence) that only wakes every N
+# seconds could be stuck behind an ever-refilling line of ingest waiters
+# (polylogue-de2a, live incident 2026-07-26: a 14-minute single hold plus
+# continuous re-queueing starved FTS merge long enough for messages_fts_data
+# to balloon to 705K rows). Everything except "watcher.*" actors is treated
+# as maintenance/interactive and admitted ahead of any queued watcher actor,
+# bounding worst-case maintenance wait to "current hold + at most one more
+# already-queued ingest hold" instead of "current hold + unbounded backlog".
+_BULK_INGEST_PRIORITY = 1
+_DEFAULT_PRIORITY = 0
+
+
+def _actor_priority(actor: str) -> int:
+    """Classify a writer actor for queue-admission ordering, not execution order.
+
+    This only changes which *queued* request is admitted next when several are
+    waiting; it does not preempt an actor that already holds the gate.
+    """
+    if actor.startswith("watcher."):
+        return _BULK_INGEST_PRIORITY
+    return _DEFAULT_PRIORITY
+
+
+class _PriorityGate:
+    """Single-holder async gate admitting the lowest-priority queued waiter first.
+
+    Mirrors ``asyncio.Lock``'s cancellation-safety shape (a waiter removes
+    itself from the wait set in all cases; a cancelled-after-woken waiter
+    re-triggers the wake so the grant is never silently dropped) but orders
+    waiters by ``(priority, sequence)`` instead of pure FIFO.
+    """
+
+    def __init__(self) -> None:
+        self._locked = False
+        self._waiters: list[tuple[int, int, asyncio.Future[None]]] = []
+        self._sequence = 0
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    async def acquire(self, priority: int) -> None:
+        if not self._locked and not self._waiters:
+            self._locked = True
+            return
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[None] = loop.create_future()
+        self._sequence += 1
+        entry = (priority, self._sequence, fut)
+        heapq.heappush(self._waiters, entry)
+        try:
+            await fut
+        except asyncio.CancelledError:
+            self._discard(entry)
+            if not self._locked:
+                self._wake_next()
+            raise
+        self._discard(entry)
+        self._locked = True
+
+    def release(self) -> None:
+        if not self._locked:
+            raise RuntimeError("_PriorityGate.release() called while not held")
+        self._locked = False
+        self._wake_next()
+
+    def _discard(self, entry: tuple[int, int, asyncio.Future[None]]) -> None:
+        try:
+            self._waiters.remove(entry)
+        except ValueError:
+            return
+        heapq.heapify(self._waiters)
+
+    def _wake_next(self) -> None:
+        while self._waiters:
+            _, _, fut = self._waiters[0]
+            if fut.done():
+                heapq.heappop(self._waiters)
+                continue
+            fut.set_result(None)
+            return
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +183,7 @@ class DaemonWriteCoordinator:
     """
 
     def __init__(self, *, observer: WriteEventObserver | None = None) -> None:
-        self._lock = asyncio.Lock()
+        self._lock = _PriorityGate()
         self._observer = observer
         self._sequence = 0
         self._active_actor: str | None = None
@@ -164,7 +250,7 @@ class DaemonWriteCoordinator:
 
     async def _execute(self, request: _WriteRequest, operation: Callable[[], Awaitable[T]]) -> T:
         try:
-            await self._lock.acquire()
+            await self._lock.acquire(_actor_priority(request.actor))
         except BaseException:
             self._remove_queued(request.sequence)
             raise
