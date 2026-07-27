@@ -215,7 +215,7 @@ pages the badge shows grey and no data is sent.
 | Symptom | Check |
 |---------|-------|
 | Badge is grey | Navigate to a supported page (chatgpt.com, claude.ai, or Grok/X) |
-| Badge is red | Receiver is not running — start `polylogue browser-capture serve` |
+| Badge is red | Receiver is not running — start `polylogued browser-capture serve` |
 | Captures not appearing in archive | Run `polylogue check` to verify the daemon is ingesting |
 | Popup says `stale` | The receiver has a newer spool artifact than the indexed archive. Leave the daemon running and inspect the debug log request id if it does not converge. |
 | Popup says `dom` / `dom_degraded` | Reload the provider page, wait for the conversation to load fully, then capture again so the native app payload can be observed. |
@@ -234,7 +234,7 @@ Extension popup / background
     │
     │  HTTP POST to configured 127.0.0.1 receiver
     ▼
-polylogue browser-capture serve (Python)
+polylogued browser-capture serve (Python)
     │
     │  writes to archive inbox
     ▼
