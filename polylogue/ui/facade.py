@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import questionary
 from rich import box
 from rich.console import Console
 from rich.theme import Theme
@@ -113,6 +112,8 @@ class ConsoleFacade:
             if not value:
                 return default
             return value.lower() in {"y", "yes"}
+        import questionary
+
         result = questionary.confirm(prompt, default=default).ask()
         return default if result is None else result
 
@@ -138,6 +139,8 @@ class ConsoleFacade:
                     if 1 <= selected <= len(options):
                         return options[selected - 1]
                 self.console.print("Enter a number corresponding to your choice.")
+        import questionary
+
         if len(options) > 12:
             result: str | None = questionary.autocomplete(prompt, choices=options, match_middle=True).ask()
         else:
@@ -156,6 +159,8 @@ class ConsoleFacade:
             except EOFError:
                 return default
             return value or default
+        import questionary
+
         result: str | None = questionary.text(prompt, default=default or "").ask()
         return result if result else default
 
