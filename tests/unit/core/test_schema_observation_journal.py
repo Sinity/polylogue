@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import signal
 import sqlite3
 import stat
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadEnvelopeSpec,
@@ -24,11 +26,13 @@ from polylogue.scenarios import (
     WorkloadRunStatus,
 )
 from polylogue.schemas.generation import observation_journal as observation_journal_module
+from polylogue.schemas.generation.models import _ProviderBundle
 from polylogue.schemas.generation.observation_journal import (
     ObservationJournal,
     recover_stale_journals,
 )
 from polylogue.schemas.generation.replay import MembershipSessionIds
+from polylogue.schemas.generation.workflow import _build_provider_bundle
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.workload_tiers import WorkloadScaleTier
 
@@ -584,3 +588,172 @@ def test_single_jsonl_10x_replays_all_records_without_10x_python_memory(tmp_path
     assert ten_x.peak_journal_bytes > 0
     assert one_x.receipt.cleanup_complete is True
     assert ten_x.receipt.cleanup_complete is True
+
+
+def _shuffle_probe_units() -> list[SchemaUnit]:
+    """One structurally homogeneous cluster/package, small enough to hand-verify."""
+    return [
+        SchemaUnit(
+            cluster_payload={"id": str(index), "text": f"message-{index}"},
+            schema_samples=[{"id": str(index), "text": f"message-{index}"}],
+            artifact_kind="session_document",
+            session_id=f"conv-{index}",
+            raw_id=f"raw-{index}",
+            source_path=f"/private/source-{index}.json",
+            bundle_scope=f"scope-{index}",
+            observed_at=f"2026-07-01T00:{index:02d}:00+00:00",
+            exact_structure_id="structure-uniform",
+            profile_tokens=("field:id", "field:text"),
+        )
+        for index in range(6)
+    ]
+
+
+def _strip_generated_at(schema: JSONDocument) -> JSONDocument:
+    return {key: value for key, value in schema.items() if key != "x-polylogue-generated-at"}
+
+
+def _generate_from_units(units: list[SchemaUnit], db_root: Path) -> _ProviderBundle:
+    """Run the real production bundle builder over a fixed, ordered unit list.
+
+    Mirrors the monkeypatch technique already used by
+    ``test_build_provider_bundle_captures_element_windows_and_bundle_scopes``
+    in tests/unit/core/test_schema_generation.py: ``iter_schema_units`` is the
+    one production seam between DB sampling and cluster/package assembly, so
+    patching it is the standard way to feed the real
+    ``_build_provider_bundle``/``ObservationJournal`` pipeline a deterministic,
+    order-controlled corpus without touching a database.
+    """
+    import polylogue.schemas.sampling as sampling_module
+
+    original = sampling_module.iter_schema_units
+    sampling_module.iter_schema_units = lambda *args, **kwargs: iter(units)
+    try:
+        return _build_provider_bundle(
+            "chatgpt",
+            db_path=db_root / "unused.db",
+            max_samples=None,
+            privacy_config=None,
+        )
+    finally:
+        sampling_module.iter_schema_units = original
+
+
+def test_shuffled_sample_order_yields_identical_schema_and_package_assignment(tmp_path: Path) -> None:
+    """AC polylogue-1xc.14.1.1 #5: shuffled input order must not change output.
+
+    Feeds the identical unit multiset through the real production bundle
+    builder (``_build_provider_bundle``, the sole entrypoint
+    ``generate_provider_schema``/``generate_all_schemas`` use) in two
+    different orders and asserts the resulting schema content, package
+    identity, and cluster-manifest identities are the same regardless of
+    presentation order -- the design note for this bead explicitly requires
+    "deterministic ordering and identities so small-corpus outputs match the
+    in-memory reference."
+    """
+    canonical = _shuffle_probe_units()
+    shuffled = list(canonical)
+    random.Random(1234).shuffle(shuffled)
+    assert [unit.raw_id for unit in shuffled] != [unit.raw_id for unit in canonical]
+
+    canonical_bundle = _generate_from_units(canonical, tmp_path)
+    shuffled_bundle = _generate_from_units(shuffled, tmp_path)
+
+    assert canonical_bundle.catalog is not None
+    assert shuffled_bundle.catalog is not None
+    assert len(canonical_bundle.catalog.packages) == 1
+    assert len(shuffled_bundle.catalog.packages) == 1
+    canonical_package = canonical_bundle.catalog.packages[0]
+    shuffled_package = shuffled_bundle.catalog.packages[0]
+
+    assert canonical_package.anchor_profile_family_id == shuffled_package.anchor_profile_family_id
+    assert canonical_package.profile_family_ids == shuffled_package.profile_family_ids
+    assert canonical_package.sample_count == shuffled_package.sample_count == 6
+    assert canonical_package.bundle_scope_count == shuffled_package.bundle_scope_count == 6
+    assert canonical_package.first_seen == shuffled_package.first_seen
+    assert canonical_package.last_seen == shuffled_package.last_seen
+    assert canonical_bundle.catalog.default_version == shuffled_bundle.catalog.default_version
+    assert canonical_bundle.catalog.latest_version == shuffled_bundle.catalog.latest_version
+
+    canonical_schemas = {
+        version: {kind: _strip_generated_at(schema) for kind, schema in kinds.items()}
+        for version, kinds in canonical_bundle.package_schemas.items()
+    }
+    shuffled_schemas = {
+        version: {kind: _strip_generated_at(schema) for kind, schema in kinds.items()}
+        for version, kinds in shuffled_bundle.package_schemas.items()
+    }
+    assert set(canonical_schemas) == set(shuffled_schemas) == {"v1"}
+    assert canonical_schemas["v1"] == shuffled_schemas["v1"]
+
+    assert canonical_bundle.manifest is not None
+    assert shuffled_bundle.manifest is not None
+    canonical_cluster = canonical_bundle.manifest.clusters[0]
+    shuffled_cluster = shuffled_bundle.manifest.clusters[0]
+    assert sorted(canonical_cluster.exact_structure_ids) == sorted(shuffled_cluster.exact_structure_ids)
+    assert canonical_cluster.bundle_scope_count == shuffled_cluster.bundle_scope_count == 6
+
+
+def test_generation_cancellation_restarts_from_scratch_and_matches_uninterrupted_run(tmp_path: Path) -> None:
+    """AC polylogue-1xc.14.1.1 #2/#6: cancellation must be equivalent to a fresh run.
+
+    ``devtools/schema_generate.py``'s own generation receipt reports resume
+    status as ``"restart_from_acquisition"`` because "the private observation
+    journal is intentionally removed after interruption" -- there is no
+    partial-resume state that could diverge. This proves that claim
+    empirically through the real ``generate_provider_schema`` entrypoint
+    (not just the raw journal-cleanup contract already covered by
+    ``test_journal_cleanup_runs_for_real_terminated_process``): killing a run
+    mid-observation and then re-running against the same, unmodified archive
+    produces the same schema as an uninterrupted reference run.
+    """
+    probe = Path(__file__).resolve().parents[2] / "infra" / "schema_generation_cancellation_probe.py"
+    assert probe.exists()
+    archive_root = tmp_path / "archive"
+    cache_root = tmp_path / "cache"
+    env = {**os.environ, "XDG_CACHE_HOME": str(cache_root)}
+
+    def _run(*, pause: bool) -> subprocess.CompletedProcess[str] | subprocess.Popen[str]:
+        args = [sys.executable, str(probe), "--archive-root", str(archive_root)]
+        if pause:
+            args.append("--pause-after-observe")
+            return subprocess.Popen(
+                args,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        return subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+
+    reference = _run(pause=False)
+    assert isinstance(reference, subprocess.CompletedProcess)
+    assert reference.returncode == 0, reference.stderr
+    reference_payload = json.loads(reference.stdout)
+    assert reference_payload["success"] is True
+    assert reference_payload["sample_count"] > 0
+
+    process = _run(pause=True)
+    assert isinstance(process, subprocess.Popen)
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "PAUSED"
+        process.terminate()
+        assert process.wait(timeout=10) == 128 + signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    journal_root = cache_root / "polylogue" / "schema-observation-journals"
+    assert not list(journal_root.glob("run-*.sqlite3*"))
+
+    restarted = _run(pause=False)
+    assert isinstance(restarted, subprocess.CompletedProcess)
+    assert restarted.returncode == 0, restarted.stderr
+    restarted_payload = json.loads(restarted.stdout)
+    assert restarted_payload["success"] is True
+    assert restarted_payload["schema"] == reference_payload["schema"]
+    assert restarted_payload["sample_count"] == reference_payload["sample_count"]
+    assert restarted_payload["default_version"] == reference_payload["default_version"]
+    assert not list(journal_root.glob("run-*.sqlite3*"))
