@@ -58,9 +58,7 @@ def _render_table(entries: tuple[DocsEntry, ...], *, from_dir: str = "") -> str:
 
 def _render_readme_table(entries: tuple[DocsEntry, ...]) -> str:
     lines = ["| Document | Description |", "|----------|-------------|"]
-    lines.extend(
-        f"| [{entry.title}]({entry.path}) | {README_DOC_DESCRIPTIONS[entry.title]} |" for entry in entries
-    )
+    lines.extend(f"| [{entry.title}]({entry.path}) | {README_DOC_DESCRIPTIONS[entry.title]} |" for entry in entries)
     return "\n".join(lines)
 
 
