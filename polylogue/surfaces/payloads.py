@@ -950,6 +950,14 @@ class SessionListRowPayload(SurfacePayloadModel):
     repo: str | None = None
     cwd_display: str | None = None
     flags: SessionFlagsPayload | None = None
+    # Recursive-graph projection (#z9gh.3): populated only for lineage-seeded
+    # (``lineage:id:<ref>``) list pages. ``parent_refs``/``child_refs`` are the
+    # session's direct one-hop lineage edges within the current page;
+    # ``continuation`` mirrors the page-level cursor (``None`` once the
+    # lineage family's last page has been served).
+    parent_refs: tuple[str, ...] | None = None
+    child_refs: tuple[str, ...] | None = None
+    continuation: str | None = None
 
     @classmethod
     def from_session(cls, session: Session) -> SessionListRowPayload:

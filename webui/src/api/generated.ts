@@ -402,12 +402,15 @@ export type SessionListRowPayload = {
   readonly [key: string]: ReaderActionAvailabilityPayload;
 };
   readonly anchor?: string | null;
+  readonly child_refs?: ReadonlyArray<string> | null;
+  readonly continuation?: string | null;
   readonly created_at?: string | null;
   readonly cwd_display?: string | null;
   readonly flags?: SessionFlagsPayload | null;
   readonly id: string;
   readonly message_count?: number;
   readonly origin: string;
+  readonly parent_refs?: ReadonlyArray<string> | null;
   readonly repo?: string | null;
   readonly summary?: string | null;
   readonly tags?: ReadonlyArray<string>;
