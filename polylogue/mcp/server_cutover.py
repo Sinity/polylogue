@@ -680,8 +680,18 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         subject: Literal["query", "capability", "ref", "result", "recovery"],
         expression: str | None = None,
         ref: str | None = None,
+        offset: int = 0,
     ) -> str:
-        """Explain parser grammar, capabilities, refs, result semantics, or recovery."""
+        """Explain parser grammar, capabilities, refs, result semantics, or recovery.
+
+        ``offset`` skips this many entries into the ``result``/``recovery``
+        examples catalog or the ``capability`` read-view list before paging;
+        it exists so a budget-exceeded continuation can advance through the
+        full catalog instead of repeating the same oversized call
+        (polylogue-3k30). It is ignored for ``query``/``ref`` subjects, which
+        never return list-shaped bodies.
+        """
+        offset = max(0, offset)
 
         async def run() -> str:
             if subject == "query":
@@ -700,26 +710,36 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
             from polylogue.archive.query.discovery import RESULT_SEMANTICS_TEACHING, query_discovery_examples
 
-            read_views: list[object] = []
             if subject == "capability":
-                read_views = list(await hooks.get_polylogue().list_read_view_profiles())
+                all_read_views = list(await hooks.get_polylogue().list_read_view_profiles())
                 return hooks.json_payload(
-                    MCPRootPayload(root={"subject": subject, "read_views": read_views, "total": len(read_views)})
+                    MCPRootPayload(
+                        root={
+                            "subject": subject,
+                            "read_views": all_read_views[offset:],
+                            "total": len(all_read_views),
+                            "offset": offset,
+                        }
+                    )
                 )
+            all_examples = query_discovery_examples()
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
                         "subject": subject,
                         "result_semantics": RESULT_SEMANTICS_TEACHING,
-                        "examples": query_discovery_examples(),
+                        "examples": all_examples[offset:],
                         "recovery": "Use a q2 continuation alone to resume an exhaustive query page.",
-                        "read_views": read_views,
-                        "total": len(read_views),
+                        "read_views": [],
+                        "total": len(all_examples),
+                        "offset": offset,
                     }
                 )
             )
 
-        return await hooks.async_safe_call("explain", run)
+        return await hooks.async_safe_call(
+            "explain", run, arguments={"subject": subject, "expression": expression, "ref": ref, "offset": offset}
+        )
 
     async def context(
         intent: str,

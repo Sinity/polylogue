@@ -95,6 +95,7 @@ class SafeCallHook(Protocol):
         *,
         session_id: str | None = None,
         session_ids: tuple[str, ...] = (),
+        arguments: Mapping[str, object] | None = None,
     ) -> str: ...
 
 
@@ -106,6 +107,7 @@ class AsyncSafeCallHook(Protocol):
         *,
         session_id: str | None = None,
         session_ids: tuple[str, ...] = (),
+        arguments: Mapping[str, object] | None = None,
     ) -> Awaitable[str]: ...
 
 
@@ -178,8 +180,23 @@ def _compact_metadata(
     return value
 
 
-def _fallback_response_arguments(fn_name: str, session_id: str | None) -> dict[str, object]:
-    """Return replayable identifiers carried by the safe-call contract."""
+def _fallback_response_arguments(
+    fn_name: str,
+    session_id: str | None,
+    *,
+    arguments: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Return replayable arguments carried by the safe-call contract.
+
+    ``arguments``, when the tool body supplies its own bound call arguments
+    (subject, offset, expression, ...), is authoritative: it is the only way
+    a continuation can replay a non-session-scoped tool call without losing
+    the arguments that made the original call meaningful (polylogue-3k30).
+    Falling back to synthesizing from ``session_id`` alone only covers the
+    narrow set of session-scoped tools in ``_SESSION_ID_ARGUMENT_NAMES``.
+    """
+    if arguments is not None:
+        return dict(arguments)
     if session_id is None:
         return {}
     return {_SESSION_ID_ARGUMENT_NAMES.get(fn_name, "session_id"): session_id}
@@ -247,6 +264,9 @@ def _serialize_payload(payload: BaseModel, *, exclude_none: bool) -> str:
 
 def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseModel, int] | None:
     """Find the largest useful prefix that fits the transport budget."""
+    root = getattr(payload, "root", None)
+    if isinstance(root, dict):
+        return _bounded_root_dict_page(payload, root, exclude_none=exclude_none)
     item_field = "items"
     raw_items = getattr(payload, item_field, None)
     if not isinstance(raw_items, (tuple, list)):
@@ -276,6 +296,46 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
             # the retained prefix instead, so never expose a stale cursor.
             updates["next_cursor"] = None
         candidate = payload.model_copy(update=updates)
+        size = len(_serialize_payload(candidate, exclude_none=exclude_none).encode("utf-8"))
+        if size <= MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES:
+            best = (candidate, count)
+            low = count + 1
+        else:
+            high = count - 1
+    return best
+
+
+def _bounded_root_dict_page(
+    payload: BaseModel, root: Mapping[str, object], *, exclude_none: bool
+) -> tuple[BaseModel, int] | None:
+    """Bound the dominant list field of a dict-rooted MCP payload (polylogue-3k30).
+
+    A dict-rooted payload (:class:`~polylogue.mcp.payloads.MCPRootPayload`)
+    is not covered by the attribute-based search above -- ``getattr(payload,
+    "items")`` never resolves through a pydantic ``RootModel`` to its
+    ``root`` dict. Worse, such a payload can carry *multiple* list-valued
+    keys at once (e.g. ``explain(subject="result")``'s ``result_semantics``/
+    ``examples``/``read_views``), so a single hardcoded field name would not
+    generalize even if attribute lookup worked. Trimming picks the single
+    largest list field and binary-searches its prefix exactly like the
+    attribute-based path, leaving every smaller sibling list untouched --
+    in every observed shape exactly one field is responsible for exceeding
+    the budget, so bounding it alone is sufficient.
+    """
+    list_fields: dict[str, tuple[object, ...]] = {
+        key: tuple(value) for key, value in root.items() if isinstance(value, (list, tuple)) and value
+    }
+    if not list_fields:
+        return None
+    item_field = max(list_fields, key=lambda key: len(list_fields[key]))
+    items = list_fields[item_field]
+    low, high = 1, len(items)
+    best: tuple[BaseModel, int] | None = None
+    while low <= high:
+        count = (low + high) // 2
+        candidate_root = dict(root)
+        candidate_root[item_field] = items[:count]
+        candidate = payload.model_copy(update={"root": candidate_root})
         size = len(_serialize_payload(candidate, exclude_none=exclude_none).encode("utf-8"))
         if size <= MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES:
             best = (candidate, count)
@@ -498,6 +558,7 @@ def _safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> str: ...
 
 
@@ -508,6 +569,7 @@ def _safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> str | None: ...
 
 
@@ -518,6 +580,7 @@ def _safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> TResult | str: ...
 
 
@@ -527,6 +590,7 @@ def _safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> TResult | str:
     """Call ``fn()`` and return its result, or a typed error JSON on failure.
 
@@ -540,10 +604,18 @@ def _safe_call(
     Every call is first durably spooled, then idempotently delivered to the
     ``ops.db`` MCP call-log table, keyed by ``fn_name`` and the optional
     ``session_id`` the caller passes when the tool is session-scoped.
+
+    ``arguments``, when the tool body passes its own bound call arguments,
+    is what a budget-exceeded continuation replays (polylogue-3k30) --
+    without it, a non-session-scoped tool's continuation can only fall back
+    to the empty/session-id-only reconstruction in
+    :func:`_fallback_response_arguments`, silently dropping arguments such as
+    ``subject``/``offset`` and making the continuation repeat the identical
+    oversized call forever instead of progressing.
     """
     started_at_ms = _now_ms()
     try:
-        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id)):
+        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id, arguments=arguments)):
             result = fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
@@ -577,6 +649,7 @@ async def _async_safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> str: ...
 
 
@@ -587,6 +660,7 @@ async def _async_safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> str | None: ...
 
 
@@ -597,6 +671,7 @@ async def _async_safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> TResult | str: ...
 
 
@@ -606,11 +681,12 @@ async def _async_safe_call(
     *,
     session_id: str | None = None,
     session_ids: tuple[str, ...] = (),
+    arguments: Mapping[str, object] | None = None,
 ) -> TResult | str:
     """Async counterpart of :func:`_safe_call`. Same isolation and call-log contract."""
     started_at_ms = _now_ms()
     try:
-        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id)):
+        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id, arguments=arguments)):
             result = await fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
