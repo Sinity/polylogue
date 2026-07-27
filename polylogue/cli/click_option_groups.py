@@ -308,6 +308,17 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         default=False,
         help="Explain query DSL parsing and lowering instead of executing the query.",
     ),
+    click.option(
+        "--why",
+        "why",
+        is_flag=True,
+        default=False,
+        help=(
+            "On zero results, show the full miss breakdown: which predicate(s) zeroed the "
+            "result, nearest since/until relaxation, and FTS-vs-structured disagreement "
+            "(the default already names the zeroing predicate(s), just without those extras)."
+        ),
+    ),
 )
 
 STREAMING_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (

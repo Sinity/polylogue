@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.core.timestamps import parse_archive_datetime
+from polylogue.logging import get_logger
 from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
 from polylogue.surfaces.payloads import (
@@ -46,6 +47,9 @@ if TYPE_CHECKING:
         SearchEnvelope,
         SessionSearchHitPayload,
     )
+
+
+logger = get_logger(__name__)
 
 
 def _real_path(value: object) -> Path | None:
@@ -466,7 +470,11 @@ def archive_search_payload(
         **filters,
     )
     total = archive.count_search_sessions(query, **filters)
-    diagnostics = _search_term_diagnostics(archive, query=query, filters=filters, spec=spec) if total == 0 else None
+    diagnostics = (
+        _search_term_diagnostics(archive, query=query, filters=filters, spec=spec, config=config)
+        if total == 0
+        else None
+    )
     return build_search_envelope(
         tuple(archive_search_hit_payload(hit, archive=archive) for hit in hits),
         total=total,
@@ -488,18 +496,25 @@ def _search_term_diagnostics(
     query: str,
     filters: ArchiveQueryFilters,
     spec: SessionQuerySpec,
+    config: Config | None = None,
 ) -> QueryMissDiagnosticsPayload | None:
-    """Explain AND-style multi-term misses with filtered per-term counts."""
+    """Explain AND-style multi-term misses with filtered per-term counts.
+
+    Also merges the shared clause-drop/relaxation/FTS-disagreement predicate
+    probes (:mod:`polylogue.archive.query.miss_predicates`) when *config* is
+    available, so MCP callers get the same structured-filter attribution the
+    CLI ``--why`` flag surfaces (polylogue-jnj.12). MCP has no "quiet by
+    default, verbose on request" concept the way a terminal does, so the full
+    breakdown (relaxation suggestions + FTS-vs-structured disagreement) is
+    always included here, not gated behind an extra request flag.
+    """
     from polylogue.storage.search.query_support import extract_match_terms
 
     terms = extract_match_terms(query)
-    if len(terms) < 2:
-        return None
-    term_counts = {term: archive.count_search_sessions(term, **filters) for term in terms}
-    return QueryMissDiagnosticsPayload(
-        message="No session matched all search terms; per-term counts use the same filters.",
-        filters=tuple(spec.describe()),
-        reasons=tuple(
+    reasons: list[QueryMissReasonPayload] = []
+    if len(terms) >= 2:
+        term_counts = {term: archive.count_search_sessions(term, **filters) for term in terms}
+        reasons.extend(
             QueryMissReasonPayload(
                 code="search_term_matches",
                 severity="info",
@@ -508,9 +523,52 @@ def _search_term_diagnostics(
                 count=term_counts[term],
             )
             for term in terms
-        ),
+        )
+    reasons.extend(_predicate_probe_reason_payloads(spec, config))
+    if not reasons:
+        return None
+    return QueryMissDiagnosticsPayload(
+        message="No session matched all search terms; per-term counts use the same filters.",
+        filters=tuple(spec.describe()),
+        reasons=tuple(reasons),
         archive_session_count=archive.count_sessions(**filters),
     )
+
+
+def _predicate_probe_reason_payloads(
+    spec: SessionQuerySpec,
+    config: Config | None,
+) -> tuple[QueryMissReasonPayload, ...]:
+    """Bridge the shared async clause-drop/relaxation/FTS-disagreement probes.
+
+    This MCP payload builder is otherwise entirely synchronous (direct
+    ``ArchiveStore`` calls); this is the one place it steps outside that to
+    reuse the async :mod:`~polylogue.archive.query.miss_predicates` substrate
+    shared with the CLI ``--why`` path, rather than re-implementing
+    clause-drop probing a third time over ``ArchiveQueryFilters``.
+    """
+    if config is None:
+        return ()
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.archive.query.miss_predicates import (
+        probe_date_relaxation_reasons,
+        probe_fts_structured_disagreement,
+        probe_predicate_zeroing,
+    )
+
+    try:
+        probe_result = run_coroutine_sync(probe_predicate_zeroing(spec, config))
+        relaxation_reasons = run_coroutine_sync(
+            probe_date_relaxation_reasons(spec, config, culprit_fields=probe_result.culprit_fields)
+        )
+        fts_reason = run_coroutine_sync(probe_fts_structured_disagreement(spec, config))
+    except Exception:
+        logger.exception("_predicate_probe_reason_payloads: probe bridge failed")
+        return ()
+    payloads = [QueryMissReasonPayload.from_reason(reason) for reason in (*probe_result.reasons, *relaxation_reasons)]
+    if fts_reason is not None:
+        payloads.append(QueryMissReasonPayload.from_reason(fts_reason))
+    return tuple(payloads)
 
 
 def _search_affordances(include_affordances: bool) -> tuple[ActionAffordancePayload, ...]:

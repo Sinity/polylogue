@@ -4333,16 +4333,20 @@ class PolylogueArchiveMixin:
                 vector_provider = create_vector_provider(self.config, db_path=archive_root / "embeddings.db")
         return await search_hits_for_plan(spec.to_plan(vector_provider=vector_provider), self.config)
 
-    async def diagnose_query_miss(self, spec: SessionQuerySpec) -> QueryMissDiagnostics:
+    async def diagnose_query_miss(self, spec: SessionQuerySpec, *, full: bool = False) -> QueryMissDiagnostics:
         """Best-effort explanation for an empty archive query result.
 
         The diagnostic is duck-typed over this facade: it reads whatever
         archive count/stats methods are available and degrades gracefully when
-        a probe is absent.
+        a probe is absent. ``full=True`` requests the complete breakdown
+        (clause-drop attribution plus since/until relaxation and
+        FTS-vs-structured disagreement probes, polylogue-jnj.12); the default
+        still attributes which predicate(s) zeroed the result but skips those
+        extra probes.
         """
         from polylogue.archive.query.miss_diagnostics import diagnose_query_miss
 
-        return await diagnose_query_miss(self, spec, config=self.config)
+        return await diagnose_query_miss(self, spec, config=self.config, full=full)
 
     async def storage_stats(self) -> StorageArchiveStats:
         """Lightweight archive stats without recent-session hydration.

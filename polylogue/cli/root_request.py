@@ -150,6 +150,11 @@ class RootModeRequest:
     def explain_query(self) -> bool:
         return bool(self.params.get("explain_query", False))
 
+    @property
+    def why(self) -> bool:
+        """Whether the full zero-hit breakdown was requested (``--why``, #jnj.12)."""
+        return bool(self.params.get("why", False))
+
     def has_output_mode(self) -> bool:
         return any(
             self.params.get(key)

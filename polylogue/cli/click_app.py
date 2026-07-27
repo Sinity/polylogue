@@ -401,6 +401,7 @@ def cli(
     output: str | None,
     output_format: str | None,
     explain_query: bool,
+    why: bool,
     output_as_json: bool,
     # Streaming
     stream: bool,
