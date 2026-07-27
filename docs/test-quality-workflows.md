@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `18`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `110`
-- inferred corpus scenarios: `8`
+- scenario projections: `111`
+- inferred corpus scenarios: `9`
   - benchmark-campaign: `7`
-  - inferred-corpus-scenario: `8`
+  - inferred-corpus-scenario: `9`
   - mutation-campaign: `18`
   - synthetic-benchmark: `6`
   - validation-lane: `71`
@@ -294,6 +294,7 @@ These inferred corpus specs come from the live schema registry and participate i
 | Provider | Package | Variants | Targets | Tags |
 | --- | --- | ---: | --- | --- |
 | `antigravity` | `v1` | `1` | `fd950579a81649c6` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `browser-capture` | `v1` | `1` | `session_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `chatgpt` | `v1` | `1` | `session_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `claude-ai` | `v1` | `1` | `session_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `claude-code` | `v1` | `1` | `session_record_stream` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
@@ -316,6 +317,7 @@ These projections explain which executable lanes, inferred fixture scenarios, or
 | `benchmark-campaign` | `session-digest` | — | `session_digest`<br>`forensic_index`<br>`resume_bundle`<br>`session_report_markdown` | `compile-session-digest`<br>`render-session-report`<br>`benchmark.transform.session-digest`<br>`benchmark.transform.session-report` | — | `benchmark`<br>`transform`<br>`session-analysis` | Deterministic session digest transform/render benchmark domain |
 | `benchmark-campaign` | `storage` | — | `session_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | — | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
 | `inferred-corpus-scenario` | `antigravity:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for antigravity v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `browser-capture:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for browser-capture v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `chatgpt:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `claude-ai:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-ai v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `claude-code:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-code v1 across 1 corpus variant(s). |

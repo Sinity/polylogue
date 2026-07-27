@@ -838,7 +838,7 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             "provider-package:browser-capture/live-receiver@v1",
             "browser-capture-live-receiver",
             None,
-            "proposed",
+            "accepted",
             detector_paths=("polylogue/sources/parsers/browser_capture.py", "polylogue/sources/dispatch.py"),
             raw_model_paths=("polylogue/sources/parsers/browser_capture.py",),
             parser_paths=("polylogue/sources/parsers/browser_capture.py",),
@@ -847,10 +847,17 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
                 "tests/unit/sources/test_browser_capture.py",
                 "tests/data/witnesses/browser-capture-sequence.json",
             ),
-            schema_paths=(),
+            schema_paths=("polylogue/schemas/providers/browser-capture/catalog.json",),
             docs_paths=("docs/browser-capture.md",),
             privacy_paths=("docs/provider-origin-identity.md", "docs/daemon-threat-model.md"),
-            caveats=("Browser capture maps captured page sessions onto provider-specific origins at parse time.",),
+            caveats=(
+                "Browser capture maps captured page sessions onto provider-specific origins at parse time.",
+                "The schema package is generated from the first-party pydantic wire contract "
+                "(polylogue.browser_capture.models.BrowserCaptureEnvelope) that the receiver enforces "
+                "at ingestion, not from a harvested real-sample corpus -- unlike third-party export "
+                "formats, browser-capture is a Polylogue-controlled envelope, so the validation "
+                "schema itself is the authoritative shape, not an inference over observed samples.",
+            ),
         ),
     ),
 }

@@ -33,9 +33,16 @@ def test_provider_completeness_reports_representative_modes() -> None:
     assert chatgpt.origin == "chatgpt-export"
     assert chatgpt.schema_package.status == "complete"
 
-    assert browser.maturity == "proposed"
-    assert browser.status == "proposed"
-    assert browser.schema_package.status == "missing"
+    # Browser capture is a first-party, Polylogue-controlled envelope (not an
+    # inferred third-party export shape): the receiver enforces
+    # polylogue.browser_capture.models.BrowserCaptureEnvelope on every
+    # accepted capture, so the pydantic-derived catalog under
+    # polylogue/schemas/providers/browser-capture/ is the authoritative wire
+    # schema, not a harvested-sample approximation (polylogue-cfz6).
+    assert browser.maturity == "accepted"
+    assert browser.status == "complete"
+    assert browser.schema_package.owner_path == "polylogue/schemas/providers/browser-capture/catalog.json"
+    assert browser.schema_package.status == "complete"
     assert not browser.blockers
 
     assert hermes.schema_package.owner_path == ("polylogue/schemas/providers/hermes/state_db_v16.contract.json")
