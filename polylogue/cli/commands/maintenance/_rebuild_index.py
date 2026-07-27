@@ -16,6 +16,24 @@ from polylogue.logging import configure_logging
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import ArchiveLocation
 
+_BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
+
+
+def _default_daemon_url() -> str:
+    """Resolve the default daemon URL through the layered config resolver.
+
+    polylogue-ogn1: this option's default previously read
+    ``POLYLOGUE_DAEMON_URL`` directly via ``os.environ.get``, bypassing the
+    5-layer config precedence chain (site TOML -> user TOML -> env -> CLI)
+    that every other daemon-URL-consuming surface in this repo goes through
+    (see ``polylogue.cli.commands.status._default_daemon_url``). A site/user
+    TOML ``daemon.url`` override was silently ignored here even though it was
+    honoured everywhere else.
+    """
+    from polylogue.config import load_polylogue_config
+
+    return load_polylogue_config().daemon_url or _BUILTIN_DAEMON_URL
+
 
 def _run_daemon_rebuild(
     daemon_url: str,
@@ -342,8 +360,8 @@ def _rebuild_index_selection_plan(
 )
 @click.option(
     "--daemon-url",
-    default=lambda: __import__("os").environ.get("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766"),
-    show_default="POLYLOGUE_DAEMON_URL or http://127.0.0.1:8766",
+    default=_default_daemon_url,
+    show_default="resolved via load_polylogue_config().daemon_url (site/user TOML -> POLYLOGUE_DAEMON_URL -> built-in default)",
     help="Daemon HTTP base URL used with --daemon.",
 )
 def rebuild_index_command(

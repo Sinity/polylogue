@@ -176,7 +176,10 @@ class TestMaintenanceAPIRoutes:
         handler.server.write_bridge = type(
             "Bridge",
             (),
-            {"run_sync": lambda _self, _actor, function, *args: function(*args)},
+            {
+                "run_sync": lambda _self, _actor, function, *args: function(*args),
+                "run_sync_with_timeout": lambda _self, _actor, _timeout, function, *args: function(*args),
+            },
         )()
         with patch(
             "polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", return_value=receipt
@@ -187,6 +190,25 @@ class TestMaintenanceAPIRoutes:
         assert request.raw_ids == ("raw-1",)
         assert request.promote is False
         assert send.call_args.args == (HTTPStatus.OK, receipt.to_dict())
+
+    def test_rebuild_index_fails_closed_without_a_write_bridge(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """polylogue-ogn1: a missing write_bridge must reject, never execute directly.
+
+        A real ``DaemonAPIHTTPServer`` always installs ``write_bridge`` in its
+        constructor, so this can only happen for a bare stand-in server (as
+        used here). Regardless, the handler must not fall back to running the
+        rebuild outside the sole-writer coordinator -- that would bypass this
+        daemon's single-writer invariant for a destructive, authority-
+        promoting operation.
+        """
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+        handler = _make_handler("/api/maintenance/rebuild-index", body={"promote": False, "raw_ids": ["raw-1"]})
+        assert getattr(handler.server, "write_bridge", None) is None
+        with patch("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync") as rebuild:
+            with patch.object(handler, "_send_error") as send_error:
+                handler._handle_rebuild_index()
+        rebuild.assert_not_called()
+        send_error.assert_called_once_with(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
 
 
 class TestMaintenanceRegistryEndpoints:

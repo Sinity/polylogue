@@ -12,15 +12,12 @@ from polylogue.cli.commands.status import (
     _ARCHIVE_FACADE_ROUTES,
     _ARCHIVE_TIER_ENUM,
     _BUILTIN_DAEMON_URL,
-    _action_readiness_counts,
     _archive_cli_route_status,
     _archive_facade_route_status,
     _archive_one_tier_status,
     _archive_primary_tier_count,
-    _archive_readiness_counts,
     _archive_route_count_summary,
     _archive_runtime_path_status,
-    _archive_status_surfaces,
     _archive_table_counts,
     _archive_tier_files,
     _archive_tier_status,
@@ -33,6 +30,19 @@ from polylogue.cli.commands.status import (
     _parse_cmdline_api_port,
     _table_exists,
     _view_exists,
+)
+
+# polylogue-ogn1: these three moved from polylogue.cli.commands.status to the
+# substrate module polylogue.storage.archive_readiness (the layering fix for
+# CodeRabbit finding #8 -- polylogue/maintenance/rebuild_index.py, a
+# substrate module, was importing the CLI's private _archive_readiness_status
+# to gate promotion, inverting this repo's surfaces-may-not-import-substrate
+# rule). status.py now delegates to the same shared implementation instead of
+# owning a second copy.
+from polylogue.storage.archive_readiness import (
+    _action_readiness_counts,
+    _archive_readiness_counts,
+    _archive_status_surfaces,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
