@@ -9,7 +9,9 @@ from click.testing import CliRunner
 from pytest import MonkeyPatch
 
 from polylogue.cli.click_app import cli
+from polylogue.sources import decoder_zip as decoder_zip_module
 from polylogue.sources import import_explain as import_explain_module
+from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.import_explain import explain_import_path
 
 
@@ -126,3 +128,60 @@ def test_import_explain_zip_rejects_oversized_member_before_read(
     assert skipped_path is not None
     assert skipped_path.endswith("oversized.zip:big.json")
     assert "file size" in payload.skipped[0].reason
+
+
+def test_import_explain_zip_rejects_aggregate_over_cap_before_read(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A zip whose entries are each individually under the per-entry cap but
+    whose running total would exceed MAX_AGGREGATE_UNCOMPRESSED_SIZE must be
+    reported by the --explain preview the same way a real ``import`` run
+    rejects it (polylogue-it3u): before this fix, the preview only checked
+    the old per-entry ratio/size limits and would wrongly claim every entry
+    here "will import".
+    """
+    archive = tmp_path / "aggregate.zip"
+    entry_bytes = b'{"a": 1}'
+    entry_names = [f"entry_{i}.json" for i in range(3)]
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name in entry_names:
+            zf.writestr(name, entry_bytes)
+    monkeypatch.setattr(import_explain_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
+    monkeypatch.setattr(decoder_zip_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
+
+    payload = explain_import_path(archive)
+
+    aggregate_skips = [row for row in payload.skipped if "aggregate uncompressed size" in row.reason]
+    assert [row.source_path for row in aggregate_skips] == [
+        f"{archive}:entry_1.json",
+        f"{archive}:entry_2.json",
+    ]
+
+    # Cross-check against the real decode-path validator over the exact same
+    # entries: the preview's accepted/rejected split must match it exactly.
+    with zipfile.ZipFile(archive) as zf:
+        validator = ZipEntryValidator("chatgpt", cursor_state=None, zip_path=archive)
+        accepted_names = {info.filename for info in validator.filter_entries(zf.infolist())}
+    assert accepted_names == {"entry_0.json"}
+    rejected_by_preview = {row.source_path.split(":", 1)[1] for row in aggregate_skips if row.source_path is not None}
+    assert rejected_by_preview == set(entry_names) - accepted_names
+
+
+def test_import_explain_zip_allows_archive_comfortably_under_aggregate_cap(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Multiple small entries whose sum stays well under the aggregate cap
+    are all reported importable -- no regression for legitimate multi-file
+    exports."""
+    archive = tmp_path / "normal.zip"
+    entry_bytes = b'{"a": 1}'
+    with zipfile.ZipFile(archive, "w") as zf:
+        for i in range(3):
+            zf.writestr(f"entry_{i}.json", entry_bytes)
+    monkeypatch.setattr(import_explain_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes) * 10)
+
+    payload = explain_import_path(archive)
+
+    assert not any("aggregate uncompressed size" in row.reason for row in payload.skipped)

@@ -17,6 +17,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.decoder_zip import (
+    MAX_AGGREGATE_UNCOMPRESSED_SIZE,
     MAX_COMPRESSION_RATIO,
     MAX_UNCOMPRESSED_SIZE,
     ZipBombError,
@@ -547,10 +548,11 @@ def _explain_zip(
         ),
         _evidence("zip.container", matched=True, reason="ZIP container"),
     ]
+    aggregate_total = 0
     try:
         with zipfile.ZipFile(path) as archive:
             for info in archive.infolist():
-                skip_reason = _zip_entry_skip_reason(info)
+                skip_reason, aggregate_total = _zip_entry_skip_reason(info, aggregate_total=aggregate_total)
                 if skip_reason is not None:
                     skipped.append(
                         ImportSkippedRowPayload(
@@ -610,14 +612,32 @@ def _explain_zip(
     )
 
 
-def _zip_entry_skip_reason(info: zipfile.ZipInfo) -> str | None:
+def _zip_entry_skip_reason(info: zipfile.ZipInfo, *, aggregate_total: int) -> tuple[str | None, int]:
+    """Return a skip reason (if any) plus the aggregate-total that should
+    carry forward to the next entry.
+
+    Mirrors ``ZipEntryValidator.filter_entries`` in ``decoder_zip.py``: an
+    entry that fails the extension/ratio/per-entry-size checks never
+    contributes to the running aggregate total (the real decode path only
+    accumulates entries that clear every earlier check), and the aggregate
+    check itself -- evaluated last, from central-directory metadata alone --
+    is what decides whether *this* entry's size gets added to the total that
+    subsequent entries are checked against.
+    """
     if info.is_dir() or not info.filename.lower().endswith(_SUPPORTED_ENTRY_SUFFIXES):
-        return "unsupported ZIP entry"
+        return "unsupported ZIP entry", aggregate_total
     if info.compress_size > 0 and (info.file_size / info.compress_size) > MAX_COMPRESSION_RATIO:
-        return f"zip entry compression ratio {info.file_size / info.compress_size:.1f} exceeds limit"
+        return f"zip entry compression ratio {info.file_size / info.compress_size:.1f} exceeds limit", aggregate_total
     if info.file_size > MAX_UNCOMPRESSED_SIZE:
-        return f"zip entry file size {info.file_size} exceeds limit"
-    return None
+        return f"zip entry file size {info.file_size} exceeds limit", aggregate_total
+    projected_total = aggregate_total + info.file_size
+    if projected_total > MAX_AGGREGATE_UNCOMPRESSED_SIZE:
+        return (
+            f"aggregate uncompressed size {projected_total} exceeds archive-wide limit "
+            f"{MAX_AGGREGATE_UNCOMPRESSED_SIZE}",
+            aggregate_total,
+        )
+    return None, projected_total
 
 
 def _explain_bytes(
