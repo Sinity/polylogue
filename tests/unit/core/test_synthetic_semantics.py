@@ -39,6 +39,7 @@ from polylogue.schemas.synthetic.semantic_values import (
     _text_for_role,
 )
 from polylogue.sources.dispatch import parse_payload
+from tests.infra.schema_access import fail_missing_schema
 
 
 def _schema(value: object) -> SchemaRecord:
@@ -572,7 +573,7 @@ class TestCorpusSeedDeterminism:
         """Two generations with the same seed produce identical bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
-            pytest.skip("No schemas available")
+            fail_missing_schema("No schemas available")
         corpus = SyntheticCorpus.for_provider(available[0])
         a = corpus.generate(count=2, seed=99)
         b = corpus.generate(count=2, seed=99)
@@ -582,7 +583,7 @@ class TestCorpusSeedDeterminism:
         """Two generations with different seeds produce different bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
-            pytest.skip("No schemas available")
+            fail_missing_schema("No schemas available")
         corpus = SyntheticCorpus.for_provider(available[0])
         a = corpus.generate(count=2, seed=1)
         b = corpus.generate(count=2, seed=2)
@@ -600,7 +601,7 @@ class TestCorpusParseRoundtrip:
         try:
             source = synthetic_source(provider, count=2, seed=42)
         except FileNotFoundError:
-            pytest.skip(f"No schema available for {provider}")
+            fail_missing_schema(f"No schema available for {provider}")
 
         convos = list(iter_source_sessions(source))
         assert len(convos) > 0, f"No sessions parsed for {provider}"
@@ -622,7 +623,7 @@ class TestSeedDeterminism:
         try:
             corpus = SyntheticCorpus.for_provider(provider)
         except FileNotFoundError:
-            pytest.skip(f"No schema for {provider}")
+            fail_missing_schema(f"No schema for {provider}")
 
         a = corpus.generate(count=3, seed=42)
         b = corpus.generate(count=3, seed=42)
@@ -632,7 +633,7 @@ class TestSeedDeterminism:
         """Different seeds produce different output."""
         available = SyntheticCorpus.available_providers()
         if not available:
-            pytest.skip("No schemas available")
+            fail_missing_schema("No schemas available")
 
         corpus = SyntheticCorpus.for_provider(available[0])
         a = corpus.generate(count=2, seed=1)
@@ -649,7 +650,7 @@ class TestMessageCountContract:
         try:
             corpus = SyntheticCorpus.for_provider(provider)
         except FileNotFoundError:
-            pytest.skip(f"No schema for {provider}")
+            fail_missing_schema(f"No schema for {provider}")
 
         for count in (1, 3, 5):
             items = corpus.generate(count=count, seed=0)
@@ -659,7 +660,7 @@ class TestMessageCountContract:
         """generate(count=0) returns an empty list."""
         available = SyntheticCorpus.available_providers()
         if not available:
-            pytest.skip("No schemas available")
+            fail_missing_schema("No schemas available")
 
         corpus = SyntheticCorpus.for_provider(available[0])
         items = corpus.generate(count=0, seed=0)
@@ -669,7 +670,7 @@ class TestMessageCountContract:
         """generate_batch() exposes a typed report aligned with raw output."""
         available = SyntheticCorpus.available_providers()
         if not available:
-            pytest.skip("No schemas available")
+            fail_missing_schema("No schemas available")
 
         corpus = SyntheticCorpus.for_provider(available[0])
         batch = corpus.generate_batch(count=2, seed=7, messages_per_session=range(4, 5))
@@ -691,7 +692,7 @@ class TestParseRoundtrip:
         try:
             source = synthetic_source(provider, count=2, seed=42)
         except FileNotFoundError:
-            pytest.skip(f"No schema for {provider}")
+            fail_missing_schema(f"No schema for {provider}")
 
         convos = list(iter_source_sessions(source))
         assert len(convos) > 0, f"No sessions parsed for {provider}"
