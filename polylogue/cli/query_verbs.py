@@ -1693,7 +1693,13 @@ def mark_verb(
             if do_unarchive:
                 await poly.remove_mark(sid, "archive")
             if note_text is not None:
-                digest = hashlib.sha256(f"{sid}\0{note_text}".encode("utf-8", errors="surrogatepass")).hexdigest()
+                # Stable per-session identity, deliberately excluding note_text: the
+                # help text promises "add or update" a single mutable note per
+                # session (mirroring add_mark's one-row-per-target behavior), so a
+                # second `mark --note` call on the same session must update the
+                # existing annotation in place rather than fork a new content-hash
+                # row every time the text changes (polylogue-tilk).
+                digest = hashlib.sha256(sid.encode("utf-8", errors="surrogatepass")).hexdigest()
                 annotation_id = f"note-{digest}"
                 await poly.save_annotation(annotation_id, sid, note_text)
 
