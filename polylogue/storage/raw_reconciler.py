@@ -499,6 +499,30 @@ def _classify_frontier(
                 duplicate_siblings[0],
                 str(row["logical_source_key"]),
             )
+        if duplicate_item.status == "ineligible":
+            # polylogue-dmvo: a legitimate N:1 fan-out terminal state, not a
+            # proof violation. Several sessions can share one stale
+            # native-id-inclusive raw as their accepted head (forked/
+            # subagent/resumed sessions replaying the same parent JSONL,
+            # polylogue-ihc8); only ONE of them can ever fold onto the
+            # single available canonical twin. Once that fold lands, every
+            # other sibling's own re-inspection legitimately (and by
+            # design) returns "ineligible" -- e.g. "canonical raw is
+            # already an accepted head" -- from
+            # ``_inspect_duplicate_raw_identity``, which never raises
+            # itself. Treating that as fatal here previously crashed the
+            # *entire* frontier census (every other raw's classification
+            # blocked behind one RuntimeError, observed live holding the
+            # writer lock for 9+ minutes before failing all queued work).
+            # Classify it as a benign, non-executable terminal state
+            # instead so this session's own row is skipped while every
+            # other row's classification proceeds unaffected.
+            return _item(
+                state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
+                actuator=RawAuthorityActuator.NONE,
+                row=row,
+                reason=f"duplicate alias fold is not eligible for this session: {duplicate_item.reason}",
+            )
         if duplicate_item.status not in {"eligible", "already_repaired"}:
             raise RuntimeError(f"duplicate alias lacks an exact strategy proof: {duplicate_item.reason}")
         duplicate_witness = _duplicate_strategy_witness(duplicate_item)
