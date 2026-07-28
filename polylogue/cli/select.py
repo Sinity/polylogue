@@ -21,6 +21,7 @@ from polylogue.cli.query_contracts import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument, dumps
+from polylogue.storage.archive_identity import archive_file_set_root
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import QuerySpecError
@@ -172,13 +173,10 @@ async def _select_session_rows_from_store(
     *,
     limit: int,
 ) -> list[SelectSessionRow]:
-    from polylogue.paths import archive_file_set_root_for_paths
-
     spec = replace(request.query_spec(), limit=limit)
-    archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     vector_provider = None
     if _spec_needs_vector_provider(spec):
         from polylogue.cli.query import _create_query_vector_provider

@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, TypedDict
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.logging import get_logger
-from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
+from polylogue.paths import archive_file_set_index_available_for_paths
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
 from polylogue.surfaces.payloads import (
     QueryMissDiagnosticsPayload,
@@ -93,18 +94,22 @@ class ArchiveQueryFilters(TypedDict):
 
 
 def active_archive_root(config: Config) -> Path | None:
-    """Return the archive root that owns the active archive index."""
+    """Return the archive file-set root housing the currently active database.
+
+    See :func:`polylogue.storage.archive_identity.archive_file_set_root`
+    (``polylogue-yla8.1`` split-root contract).
+    """
     archive_root = _real_path(config.archive_root)
-    db_anchor = _real_path(config.db_path)
-    if archive_root is None or db_anchor is None:
+    db_path = _real_path(config.db_path)
+    if archive_root is None or db_path is None:
         return None
-    return archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
+    return archive_file_set_root(archive_root=archive_root, db_path=db_path)
 
 
 def mcp_archive_root(config: Config) -> Path:
     """Return the usable archive root for MCP read surfaces."""
     active_root = active_archive_root(config)
-    if active_root is not None and (active_root / "index.db").exists():
+    if active_root is not None and config.db_path.exists():
         return active_root
     return config.archive_root
 

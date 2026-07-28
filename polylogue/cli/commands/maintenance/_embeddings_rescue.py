@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.config import Config
-from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
+from polylogue.paths import archive_root, render_root
+from polylogue.storage.archive_identity import ArchiveLocation
 
 if TYPE_CHECKING:
     from polylogue.storage.embeddings.rescue import (
@@ -90,8 +91,10 @@ def embeddings_rescue_command(
 ) -> None:
     """Inspect (default) or apply a content-hash vector rescue from a retired embeddings tier."""
     del plan_only  # --plan is documentation-only; --yes/apply is the sole control switch.
-    root = archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path())
-    index_db = root / "index.db"
+    location = ArchiveLocation.resolve(archive_root())
+    root = location.configured_root
+    index_db = location.active_index_path
+    embeddings_db = root / "embeddings.db"
 
     if not apply:
         from polylogue.storage.embeddings.rescue import plan_embedding_rescue
@@ -115,6 +118,7 @@ def embeddings_rescue_command(
     exec_report = execute_embedding_rescue(
         index_db,
         source_path,
+        embeddings_db_path=embeddings_db,
         limit=limit,
         sample_size=sample_limit,
         sample_verify_count=sample_verify_count,

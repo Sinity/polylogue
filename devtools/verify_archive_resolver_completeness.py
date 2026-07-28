@@ -27,6 +27,11 @@ resolution instead of delegating to it:
   deleted from ``_roots.py``.
 * ``archive_file_set_root_for_paths()`` -- derives an archive root from
   ``db_anchor.parent`` when the anchor names ``index.db`` (27 call sites).
+  **Fully migrated and removed by polylogue-l2cd**: every call site now
+  resolves through ``polylogue.storage.archive_identity.ArchiveLocation``
+  directly (``configured_root`` for durable-tier siblings, ``active_index_path``
+  where the active index file itself was wanted), and the function itself is
+  deleted from ``_roots.py``.
 
 These span nearly every read-path surface (cli, mcp, api, daemon, insights),
 well beyond the storage/status/maintenance/transition boundaries
@@ -120,29 +125,6 @@ BASELINE_CALL_SITES: dict[str, frozenset[str]] = {
             "tests/unit/daemon/test_similarity_endpoint.py",
         }
     ),
-    "archive_file_set_root_for_paths": frozenset(
-        {
-            "polylogue/api/archive.py",
-            "polylogue/archive/query/plan.py",
-            "polylogue/archive/query/search_hits.py",
-            "polylogue/archive/query/spec.py",
-            "polylogue/cli/archive_query.py",
-            "polylogue/cli/click_app.py",
-            "polylogue/cli/commands/maintenance/_archive_read.py",
-            "polylogue/cli/commands/maintenance/_embeddings.py",
-            "polylogue/cli/commands/maintenance/_embeddings_rescue.py",
-            "polylogue/cli/commands/status.py",
-            "polylogue/cli/read_views/chronicle.py",
-            "polylogue/cli/read_views/standard.py",
-            "polylogue/cli/select.py",
-            "polylogue/cli/verb_cardinality.py",
-            "polylogue/maintenance/planner.py",
-            "polylogue/mcp/archive_support.py",
-            "polylogue/storage/raw_reconciler.py",
-            "polylogue/storage/repair.py",
-            "tests/unit/core/test_config.py",
-        }
-    ),
 }
 
 RESOLVER_FUNCTIONS: tuple[str, ...] = tuple(BASELINE_CALL_SITES)
@@ -233,7 +215,7 @@ def _format_report(*, hits: list[ResolverCallSite], unbaselined: list[Unbaseline
         lines.append("")
         lines.append(
             "Policy violation: a new call site of a duplicate archive-path resolver "
-            "(active_index_db_path/archive_file_set_root_for_paths) was introduced outside the recorded "
+            "(active_index_db_path) was introduced outside the recorded "
             "baseline. Route the new read through ArchiveLocation instead, or -- if "
             "the existing resolver is genuinely still the right tool -- add the file "
             "to BASELINE_CALL_SITES in devtools/verify_archive_resolver_completeness.py "

@@ -36,9 +36,9 @@ from polylogue.maintenance.targets import (
     MaintenanceTargetSpec,
     build_maintenance_target_catalog,
 )
-from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
@@ -3741,7 +3741,18 @@ def _raw_materialization_source_available(source_path: str) -> bool:
 
 
 def _raw_materialization_archive_root(config: Config) -> Path:
-    return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    """Return the archive file-set root housing the currently active database.
+
+    This deliberately follows ``config.db_path`` (not ``config.archive_root``):
+    raw materialization repair inspects the database and blob store that are
+    actually live right now, which the ``polylogue-yla8.1`` split-root
+    contract lets a caller route to an explicit ``Config(db_path=...)``
+    override, and which the ordinary case resolves via
+    ``resolve_active_index_path`` (``.index-active-pointer``-aware) inside
+    ``Config.__init__`` -- so ``config.db_path`` is already the correct
+    resolved index location either way.
+    """
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def _raw_materialization_candidate_ids(

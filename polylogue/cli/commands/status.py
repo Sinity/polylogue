@@ -23,6 +23,7 @@ from polylogue.readiness.capability import (
     status_snapshot_has_fresh_provenance,
 )
 from polylogue.readiness.claim_guard import derive_claim_guard
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.archive_readiness import archive_readiness_status as _archive_readiness_status
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -1086,15 +1087,13 @@ def status_command(
             render_source_freshness_status,
         )
         from polylogue.cli.shared.helpers import load_effective_config
-        from polylogue.paths import archive_file_set_root_for_paths
 
         if not source_path.is_absolute():
             raise click.UsageError("--source must be an absolute exact source path")
         config = load_effective_config(env)
-        archive_root = archive_file_set_root_for_paths(
-            archive_root_path=config.archive_root,
-            db_anchor=config.db_path,
-        )
+        # polylogue-yla8.1 split-root contract: config.db_path always names a
+        # concrete index.db (explicit override or resolved active generation).
+        archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
         freshness = project_named_source_freshness(archive_root, source_path)
         if output_format == "json":
             click.echo(json.dumps(freshness.to_dict(), sort_keys=True))

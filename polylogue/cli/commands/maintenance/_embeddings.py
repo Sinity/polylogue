@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import ArchiveLocation
 
 if TYPE_CHECKING:
     from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
@@ -74,9 +75,9 @@ def embedding_orphan_reconcile_command(
     """
     from polylogue.storage.embeddings.reconcile import reconcile_embedding_orphans
 
-    root = archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path())
-    index_db = root / "index.db"
-    embeddings_db = root / "embeddings.db"
+    location = ArchiveLocation.resolve(archive_root())
+    index_db = location.active_index_path
+    embeddings_db = location.configured_root / "embeddings.db"
     report = reconcile_embedding_orphans(
         index_db,
         embeddings_db,

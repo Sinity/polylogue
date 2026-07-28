@@ -58,6 +58,26 @@ def resolve_active_index_path(archive_root: Path) -> Path:
     return location.active_index_path
 
 
+def archive_file_set_root(*, archive_root: Path, db_path: Path) -> Path:
+    """Return the file-set root housing the durable tiers alongside ``db_path``.
+
+    ``db_path`` (typically ``Config.db_path``) always names a concrete
+    ``index.db`` in the ordinary case -- either an explicit
+    ``Config(db_path=...)`` split-root override (polylogue-yla8.1) or the
+    resolved active generation (``resolve_active_index_path``, already
+    ``.index-active-pointer``-aware) -- so its parent is the correct root.
+
+    Falls back to ``archive_root`` when ``db_path`` was overridden to a path
+    that is not named ``index.db`` (e.g. a "never initialized" test
+    sentinel that should resolve as if no index existed there at all).
+
+    Callers pass plain ``archive_root``/``db_path`` values (not a
+    :class:`~polylogue.config.Config` instance) so this also serves fakes
+    that only duck-type those two attributes.
+    """
+    return db_path.parent if db_path.name == "index.db" else archive_root
+
+
 @dataclass(frozen=True)
 class ArchiveLocation:
     """Resolved archive topology with the active index kept distinct from its root.

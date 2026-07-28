@@ -52,7 +52,7 @@ from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import get_logger
-from polylogue.paths import archive_file_set_root_for_paths
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveSessionSearchHit,
@@ -145,7 +145,9 @@ def execute_delete_by_session_ids(
     must be identical, #1873).
     """
     config = load_effective_config(env)
-    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
     with archive_read_context(
         archive_root,
@@ -188,8 +190,10 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     _validate_retrieval_params(params)
     config_started_at = perf_counter()
     config = load_effective_config(env)
-    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
-    index_db_path = archive_root / "index.db"
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
+    index_db_path = config.db_path
     env.record_timing("config", config_started_at)
     compile_started_at = perf_counter()
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
@@ -898,7 +902,9 @@ def _query_hits(
     session_id: str | None,
     filter_kwargs: _ArchiveFilterKwargs,
 ) -> tuple[list[ArchiveSessionSearchHit], str]:
-    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     embeddings_db = archive_root / "embeddings.db"
     if similar_session_id is not None:
         # near:id: is an explicit request to rank by a *stored* session's
