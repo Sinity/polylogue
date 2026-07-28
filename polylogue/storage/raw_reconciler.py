@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
     RawAuthorityCensusReceipt,
@@ -215,7 +216,7 @@ def _archive_root(config: Config) -> Path:
     (``.index-active-pointer``-aware, or an explicit override) inside
     ``Config.__init__``.
     """
-    return config.db_path.parent
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def _rows(cursor: sqlite3.Cursor) -> list[dict[str, object]]:

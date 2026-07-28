@@ -240,10 +240,9 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import select_session_rows
     from polylogue.cli.shared.helpers import load_effective_config
-    from polylogue.storage.archive_identity import ArchiveLocation
 
     config = load_effective_config(env)
-    if not ArchiveLocation.resolve(config.archive_root).active_index_path.exists():
+    if not config.db_path.exists():
         click.echo(render_guided_path())
         return True
 

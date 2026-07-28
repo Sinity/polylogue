@@ -20,7 +20,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import MaterialOrigin
-from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
@@ -52,7 +52,9 @@ async def _selected_summaries(config: Config, request: RootModeRequest) -> list[
     spec = request.query_spec()
     if spec.limit is None:
         spec = replace(spec, limit=5)
-    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
     return list(await spec.list_summaries(config, vector_provider=vector_provider))
 
@@ -67,7 +69,7 @@ def build_read_chronicle_payload(
 
     async def _run() -> ChronicleProjectionPayload:
         summaries = await _selected_summaries(config, request)
-        index_db_path = ArchiveLocation.resolve(config.archive_root).active_index_path
+        index_db_path = config.db_path
         backend = SQLiteBackend(db_path=index_db_path)
         session_payloads: list[ChronicleSessionPayload] = []
         try:

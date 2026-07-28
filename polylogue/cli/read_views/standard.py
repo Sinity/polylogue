@@ -26,6 +26,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.rendering.formatting import format_session
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.projection_spec import ProjectionSpec
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
@@ -256,9 +257,9 @@ def exact_read_summaries(config: Config, request: RootModeRequest) -> list[Sessi
         return None
     session_id = spec.session_id
 
-    from polylogue.storage.archive_identity import ArchiveLocation
-
-    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     try:
         return run_archive_read_sync(
             archive_root,
@@ -279,11 +280,11 @@ def _message_temporal_events_for_summaries(
     *,
     per_session_limit: int = 8,
 ) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
-    from polylogue.storage.archive_identity import ArchiveLocation
-
     if not summaries:
         return [], ()
-    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     events: list[TemporalEvidenceEvent] = []
     caveats: list[str] = []
     total_limit = max(per_session_limit * len(summaries), 0)
@@ -312,11 +313,11 @@ def _action_temporal_events_for_summaries(
     *,
     per_session_limit: int = 4,
 ) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
-    from polylogue.storage.archive_identity import ArchiveLocation
-
     if not summaries:
         return [], ()
-    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     events: list[TemporalEvidenceEvent] = []
     caveats: list[str] = []
     total_limit = max(per_session_limit * len(summaries), 0)
@@ -381,13 +382,14 @@ def build_read_temporal_window(
 
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.query import _create_query_vector_provider
-    from polylogue.storage.archive_identity import ArchiveLocation
 
     started = time.perf_counter()
     spec = request.query_spec()
     if spec.limit is None:
         spec = replace(spec, limit=50)
-    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
     _record_temporal_phase(
         phase_recorder,
@@ -454,13 +456,14 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
 
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.query import _create_query_vector_provider
-    from polylogue.storage.archive_identity import ArchiveLocation
 
     config = env.config
 
     async def _find_first() -> str | None:
         spec = replace(request.query_spec(), limit=1)
-        archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
+        # polylogue-yla8.1 split-root contract: config.db_path always names a
+        # concrete index.db (explicit override or resolved active generation).
+        archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
         vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
         filter_chain = spec.build_filter(config, vector_provider=vector_provider)
         first_id: str | None = None

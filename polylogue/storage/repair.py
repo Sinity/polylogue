@@ -38,6 +38,7 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
@@ -3751,7 +3752,7 @@ def _raw_materialization_archive_root(config: Config) -> Path:
     ``Config.__init__`` -- so ``config.db_path`` is already the correct
     resolved index location either way.
     """
-    return config.db_path.parent
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def _raw_materialization_candidate_ids(

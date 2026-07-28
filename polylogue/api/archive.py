@@ -51,7 +51,7 @@ from polylogue.insights.archive import (
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
 from polylogue.paths import archive_file_set_index_available_for_paths
-from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
@@ -405,7 +405,17 @@ def _archive_index_available(config: Config) -> bool:
 
 
 def _active_archive_root(config: Config) -> Path:
-    return ArchiveLocation.resolve(config.archive_root).configured_root
+    """Return the archive file-set root housing the currently active database.
+
+    Deliberately follows ``config.db_path`` (not ``config.archive_root``),
+    matching the ``polylogue-yla8.1`` split-root contract used by
+    :func:`polylogue.storage.repair._raw_materialization_archive_root` and
+    :func:`polylogue.storage.raw_reconciler._archive_root`: an explicit
+    ``Config(db_path=...)`` override must be honored, and the ordinary case
+    already resolves ``config.db_path`` correctly (``.index-active-pointer``
+    -aware) inside ``Config.__init__``.
+    """
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def _archive_context_message_window(

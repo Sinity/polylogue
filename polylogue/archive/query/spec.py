@@ -23,6 +23,7 @@ from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin
 from polylogue.core.errors import PolylogueError
+from polylogue.storage.archive_identity import archive_file_set_root
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
@@ -584,9 +585,10 @@ class SessionQuerySpec:
     ) -> SessionFilter:
         """Build a fluent filter facade over the canonical execution plan."""
         from polylogue.archive.filter.filters import SessionFilter
-        from polylogue.storage.archive_identity import ArchiveLocation
 
-        archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
+        # polylogue-yla8.1 split-root contract: config.db_path always names a
+        # concrete index.db (explicit override or resolved active generation).
+        archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
         return SessionFilter(
             archive_root=archive_root,
             config=config,
