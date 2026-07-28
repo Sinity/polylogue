@@ -80,18 +80,6 @@ def archive_file_set_index_available_for_paths(*, archive_root_path: Path, db_an
     return True
 
 
-def active_index_db_path() -> Path:
-    """Currently active query/index database path."""
-    root = archive_root()
-    pointer = root / ".index-active-pointer"
-    if pointer.exists():
-        target = Path(pointer.read_text(encoding="utf-8").strip())
-        if not target.is_absolute() or target.name != "index.db":
-            raise RuntimeError(f"invalid active index pointer: {target}")
-        return target
-    return root / "index.db"
-
-
 def browser_capture_spool_root() -> Path:
     """Browser-capture source artifact spool, scoped under the archive root.
 

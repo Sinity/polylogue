@@ -40,7 +40,8 @@ from polylogue.daemon.similarity import (
     _l2_to_cosine_similarity,
     build_similar_payload,
 )
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -86,7 +87,7 @@ def _capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]
 
 
 def _index_db() -> Path:
-    return active_index_db_path()
+    return resolve_active_index_path(archive_root())
 
 
 def _session_parts(session_id: str, origin: str) -> tuple[str, str]:

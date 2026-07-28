@@ -30,9 +30,10 @@ async def periodic_embedding_backlog_check(
     catch_up_complete: asyncio.Event | None = None,
 ) -> None:
     """Periodically drain one bounded pending-embedding window."""
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    db = active_index_db_path()
+    db = resolve_active_index_path(archive_root())
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
@@ -84,9 +85,10 @@ async def periodic_embedding_orphan_reconcile_check(
     embed work; manual CLI (``polylogue maintenance embedding-orphan-reconcile``)
     remains the break-glass inspect/apply path.
     """
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    db = active_index_db_path()
+    db = resolve_active_index_path(archive_root())
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
@@ -143,12 +145,12 @@ def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileR
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import active_index_db_path
-    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import ArchiveLocation, resolve_active_index_path
 
     # Build candidates: active_db, then the archive-rooted-at-db_path resolution
     candidates = []
-    active_db = active_index_db_path()
+    active_db = resolve_active_index_path(archive_root())
     if active_db.name == "index.db" and active_db.exists():
         candidates.append(active_db)
 

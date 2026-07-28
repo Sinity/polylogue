@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
@@ -31,7 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 
 def _events_db_path() -> Path:
     """Return the path to the daemon events SQLite database."""
-    dbf = active_index_db_path()
+    dbf = resolve_active_index_path(archive_root())
     return dbf.with_name("ops.db")
 
 

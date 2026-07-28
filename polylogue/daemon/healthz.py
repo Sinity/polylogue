@@ -125,9 +125,10 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
         schema_ok = schema_alert is None or schema_alert.severity == HealthSeverity.OK
         critical = [a for a in health.alerts if a.severity == HealthSeverity.CRITICAL]
         from polylogue.daemon.fts_status import fts_readiness_info
-        from polylogue.paths import active_index_db_path
+        from polylogue.paths import archive_root
+        from polylogue.storage.archive_identity import resolve_active_index_path
 
-        dbf = active_index_db_path()
+        dbf = resolve_active_index_path(archive_root())
         fts_ready = True
         fts_payload: dict[str, object] | None = None
         if dbf.exists():

@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from devtools.verify_archive_resolver_completeness import (
-    BASELINE_CALL_SITES,
     ROOT,
     ResolverCallSite,
     find_call_sites,
@@ -11,47 +10,59 @@ from devtools.verify_archive_resolver_completeness import (
     unbaselined_call_sites,
 )
 
+_FAKE_RESOLVER = "fake_duplicate_resolver"
+
 
 def test_live_repo_has_no_unbaselined_call_sites() -> None:
-    """The real repo's current call sites must all already be in the recorded baseline."""
+    """The real repo's current call sites must all already be in the recorded baseline.
+
+    All four originally named resolvers (``active_index_db_path``,
+    ``resolve_active_index_db_path``, ``sibling_index_db``,
+    ``archive_file_set_root_for_paths``) are fully migrated and removed as of
+    polylogue-l2cd, so ``BASELINE_CALL_SITES`` is empty and this should
+    trivially pass with zero call sites found.
+    """
     assert main(["--json"]) == 0
 
 
 def test_find_call_sites_detects_a_seeded_call(tmp_path: Path) -> None:
-    """A seeded call to one of the four resolvers must be detected."""
+    """A seeded call to a tracked resolver name must be detected."""
     module = tmp_path / "fake_reader.py"
-    module.write_text("db_path = active_index_db_path()\n", encoding="utf-8")
+    module.write_text(f"db_path = {_FAKE_RESOLVER}()\n", encoding="utf-8")
 
-    hits = find_call_sites(roots=(tmp_path,))
+    hits = find_call_sites(roots=(tmp_path,), functions=(_FAKE_RESOLVER,))
 
     assert len(hits) == 1
-    assert hits[0].function == "active_index_db_path"
+    assert hits[0].function == _FAKE_RESOLVER
     assert hits[0].path == module
 
 
 def test_unbaselined_call_sites_flags_a_file_outside_the_recorded_baseline(tmp_path: Path) -> None:
-    """A call site in a file NOT already recorded in BASELINE_CALL_SITES must be flagged."""
+    """A call site in a file NOT already recorded in the baseline must be flagged."""
     module = tmp_path / "fake_new_reader.py"
-    module.write_text("db_path = active_index_db_path()\n", encoding="utf-8")
+    module.write_text(f"db_path = {_FAKE_RESOLVER}()\n", encoding="utf-8")
 
-    hits = find_call_sites(roots=(tmp_path,))
-    unbaselined = unbaselined_call_sites(hits, repo_root=tmp_path)
+    hits = find_call_sites(roots=(tmp_path,), functions=(_FAKE_RESOLVER,))
+    unbaselined = unbaselined_call_sites(hits, baseline={}, repo_root=tmp_path)
 
     assert len(unbaselined) == 1
-    assert unbaselined[0].function == "active_index_db_path"
+    assert unbaselined[0].function == _FAKE_RESOLVER
     assert unbaselined[0].path == module
 
 
 def test_unbaselined_call_sites_accepts_a_baselined_file() -> None:
     """A call site in a file already recorded in the baseline must not be flagged."""
-    baselined_path, *_ = sorted(BASELINE_CALL_SITES["active_index_db_path"])
+    baselined_path = "polylogue/paths/_roots.py"
     hit = ResolverCallSite(
-        function="active_index_db_path",
+        function=_FAKE_RESOLVER,
         path=ROOT / baselined_path,
         lineno=1,
-        line="db_path = active_index_db_path()",
+        line=f"db_path = {_FAKE_RESOLVER}()",
     )
 
-    unbaselined = unbaselined_call_sites([hit])
+    unbaselined = unbaselined_call_sites(
+        [hit],
+        baseline={_FAKE_RESOLVER: frozenset({baselined_path})},
+    )
 
     assert unbaselined == []

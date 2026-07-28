@@ -195,7 +195,7 @@ def test_status_snapshot_minimal_refresh_stays_request_safe(
 ) -> None:
     db = tmp_path / "index.db"
     db.touch()
-    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr(
         "polylogue.daemon.status.daemon_status_payload",
         lambda: (_ for _ in ()).throw(AssertionError("minimal snapshot must not build rich status")),
@@ -254,7 +254,7 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
     db = tmp_path / "index.db"
     db.touch()
     spool = tmp_path / "browser-capture"
-    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda *_a, **_k: db)
 
     configure_runtime_components(
         api_enabled=True,
@@ -286,7 +286,7 @@ def test_status_snapshot_reports_disk_free_for_archive_parent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = tmp_path / "missing-archive" / "index.db"
-    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda *_a, **_k: db)
 
     snapshot = refresh_status_snapshot(rich=False)
 
@@ -299,7 +299,7 @@ def test_status_snapshot_marks_disabled_browser_capture_inactive(
 ) -> None:
     db = tmp_path / "index.db"
     db.touch()
-    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda *_a, **_k: db)
 
     configure_runtime_components(
         api_enabled=True,

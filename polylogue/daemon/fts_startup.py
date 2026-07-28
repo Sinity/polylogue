@@ -117,8 +117,9 @@ def _missing_named_triggers_sync(conn: sqlite3.Connection, trigger_names: tuple[
 
 def _active_fts_startup_db_path() -> Path:
     from polylogue import paths
+    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    return paths.active_index_db_path()
+    return resolve_active_index_path(paths.archive_root())
 
 
 _MESSAGE_FTS_STARTUP_DEBT_DETAIL = (

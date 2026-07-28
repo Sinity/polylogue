@@ -318,9 +318,10 @@ def _watch_sources_from_roots(
 
 def _active_index_db_path() -> Path:
     """Return the currently active archive database for daemon maintenance."""
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    return active_index_db_path()
+    return resolve_active_index_path(archive_root())
 
 
 def _heartbeat_counts(db: Path) -> tuple[int, int, str]:
@@ -1452,10 +1453,11 @@ def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BA
         _archive_insights_execute_ids,
         _schema_archive_session_ids_missing_profiles,
     )
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
-    db = active_index_db_path()
+    db = resolve_active_index_path(archive_root())
     if not db.exists():
         return 0
     conn = open_daemon_connection(db, timeout=30.0)

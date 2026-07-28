@@ -30,7 +30,7 @@ from polylogue.daemon.status import _check_daemon_liveness, format_daemon_status
 
 def _bind_ops_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     index_db = tmp_path / "index.db"
-    monkeypatch.setattr(lifecycle_module, "active_index_db_path", lambda: index_db)
+    monkeypatch.setattr(lifecycle_module, "resolve_active_index_path", lambda *_a, **_k: index_db)
     return tmp_path / "ops.db"
 
 

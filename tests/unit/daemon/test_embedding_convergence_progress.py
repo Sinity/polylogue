@@ -27,7 +27,9 @@ def test_periodic_embedding_backlog_waits_for_catch_up_complete(
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
-        monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
+        monkeypatch.setattr(
+            "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
+        )
         monkeypatch.setattr(
             "polylogue.daemon.write_coordinator.daemon_write_coordinator",
             lambda: SimpleNamespace(run_sync=fake_run_sync),

@@ -10,7 +10,10 @@ duplicated or bypassed
 resolution instead of delegating to it:
 
 * ``active_index_db_path()`` -- re-reads ``.index-active-pointer`` itself
-  (43 call sites at the time this lint was added).
+  (43 call sites at the time this lint was added). **Fully migrated and
+  removed by polylogue-l2cd**: every call site now uses
+  ``polylogue.storage.archive_identity.resolve_active_index_path`` directly,
+  and the function itself is deleted from ``_roots.py``.
 * ``resolve_active_index_db_path()`` -- the same duplicate pointer-read logic
   under a different name (7 call sites); included a real divergent-target
   bug found during polylogue-ovme.2 (it read its own module-level
@@ -47,7 +50,14 @@ Shrinking the baseline (migrating a call site away) is always allowed and
 encouraged; growing it is not. Once a resolver's call-site count reaches
 zero, delete both the resolver function from ``_roots.py`` and its key from
 ``BASELINE_CALL_SITES``/``RESOLVER_FUNCTIONS`` (derived from the dict's keys)
-here, as done for ``resolve_active_index_db_path`` above.
+here.
+
+As of polylogue-l2cd's fourth and final batch (``active_index_db_path``),
+all four originally named resolvers are migrated and removed, leaving
+``BASELINE_CALL_SITES`` empty. This lint continues to run (over an empty
+baseline) purely to catch any *new* duplicate-resolver-style call site
+appearing under one of these four now-retired names; it does not currently
+generalize to catching other, not-yet-named duplicate-resolution patterns.
 
 This is intentionally the same shape as
 ``devtools/verify_campaign_archive_boundaries.py`` (polylogue-ovme.3): a
@@ -92,40 +102,7 @@ SCAN_ROOTS: tuple[Path, ...] = (ROOT / "polylogue", ROOT / "devtools", ROOT / "t
 #: new growth either. Removing a path here (because a call site was migrated
 #: to ArchiveLocation) is always safe; the lint only fails on paths calling a
 #: resolver that are NOT in this set.
-BASELINE_CALL_SITES: dict[str, frozenset[str]] = {
-    "active_index_db_path": frozenset(
-        {
-            "devtools/daemon_workload_probe.py",
-            "devtools/pipeline_probe/engine.py",
-            "polylogue/cli/commands/status.py",
-            "polylogue/cli/shell_completion_values.py",
-            "polylogue/coordination/envelope.py",
-            "polylogue/daemon/cli.py",
-            "polylogue/daemon/embedding_backlog.py",
-            "polylogue/daemon/events.py",
-            "polylogue/daemon/fts_identity_convergence.py",
-            "polylogue/daemon/fts_startup.py",
-            "polylogue/daemon/healthz.py",
-            "polylogue/daemon/http.py",
-            "polylogue/daemon/lifecycle.py",
-            "polylogue/daemon/lineage_startup.py",
-            "polylogue/daemon/provenance.py",
-            "polylogue/daemon/similarity.py",
-            "polylogue/daemon/status_snapshot.py",
-            "polylogue/insights/correlation_view.py",
-            "polylogue/maintenance/preview.py",
-            "polylogue/readiness/__init__.py",
-            "polylogue/storage/message_type_backfill.py",
-            "polylogue/storage/repair.py",
-            "polylogue/storage/session_timestamp_backfill.py",
-            "tests/unit/cli/test_materialize_incident_evidence_command.py",
-            "tests/unit/cli/test_reconcile_work_effects_command.py",
-            "tests/unit/core/test_paths.py",
-            "tests/unit/daemon/test_provenance_endpoint.py",
-            "tests/unit/daemon/test_similarity_endpoint.py",
-        }
-    ),
-}
+BASELINE_CALL_SITES: dict[str, frozenset[str]] = {}
 
 RESOLVER_FUNCTIONS: tuple[str, ...] = tuple(BASELINE_CALL_SITES)
 
@@ -215,7 +192,7 @@ def _format_report(*, hits: list[ResolverCallSite], unbaselined: list[Unbaseline
         lines.append("")
         lines.append(
             "Policy violation: a new call site of a duplicate archive-path resolver "
-            "(active_index_db_path) was introduced outside the recorded "
+            f"({entry.function}) was introduced outside the recorded "
             "baseline. Route the new read through ArchiveLocation instead, or -- if "
             "the existing resolver is genuinely still the right tool -- add the file "
             "to BASELINE_CALL_SITES in devtools/verify_archive_resolver_completeness.py "

@@ -40,8 +40,9 @@ from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LAN
 from polylogue.archive.query.transaction import archive_read_context
 from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
 from polylogue.sources.origin_specs import ORIGIN_SPECS
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.surfaces.action_affordances import InputUnit
 
 if TYPE_CHECKING:
@@ -76,7 +77,7 @@ def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[Completio
 
 
 def _db_exists() -> bool:
-    return active_index_db_path().exists()
+    return resolve_active_index_path(archive_root()).exists()
 
 
 def _run_completion(action: ArchiveCompletionAction) -> list[CompletionItem]:
@@ -85,7 +86,7 @@ def _run_completion(action: ArchiveCompletionAction) -> list[CompletionItem]:
     Any failure (missing/locked database, unexpected schema) degrades to an
     empty list so completion never raises into the shell.
     """
-    index_db = active_index_db_path()
+    index_db = resolve_active_index_path(archive_root())
     if not index_db.exists():
         return []
     try:

@@ -19,7 +19,6 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.paths import active_index_db_path
 from polylogue.readiness.capability import (
     LEGACY_READINESS_SOURCE_TYPES,
     CapabilityReadinessState,
@@ -37,6 +36,7 @@ from polylogue.readiness.capability import (
     component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import raw_materialization_ready
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 from polylogue.storage.repair import ArchiveDebtStatus
@@ -968,7 +968,7 @@ def quick_readiness_summary(archive_root: Path) -> str:
     summary suitable for the non-verbose CLI status line.
     """
     try:
-        db_path_val = active_index_db_path()
+        db_path_val = resolve_active_index_path(archive_root)
         with _open_readiness_probe_connection(db_path_val) as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version != INDEX_SCHEMA_VERSION:

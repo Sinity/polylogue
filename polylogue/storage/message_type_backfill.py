@@ -199,14 +199,15 @@ def run_backfill(_config: Config, *, dry_run: bool = False) -> BackfillResult:
     """
     from contextlib import closing
 
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
     spec = build_maintenance_target_catalog().resolve_name(_TARGET_NAME)
     assert spec is not None, "message_type_backfill must be registered in the catalog"
 
     try:
-        with closing(open_connection(active_index_db_path())) as conn:
+        with closing(open_connection(resolve_active_index_path(archive_root()))) as conn:
             conn.row_factory = sqlite3.Row
             if dry_run:
                 return preview_backfill(count=count_unclassified_message_type_sync(conn))

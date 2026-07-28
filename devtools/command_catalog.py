@@ -1159,17 +1159,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Inventory call sites of paths/_roots's duplicate ArchiveLocation resolvers.",
         "devtools.verify_archive_resolver_completeness",
         use_when=(
-            "Catch growth of the archive-path anti-pattern polylogue-ovme.2.1 named but did not "
-            "fully migrate: active_index_db_path "
-            "duplicates or bypasses ArchiveLocation's pointer/tier resolution instead of "
-            "delegating to it (resolve_active_index_db_path, sibling_index_db, and "
-            "archive_file_set_root_for_paths were the other three resolvers -- all fully "
-            "migrated and deleted, by polylogue-l2cd). Full "
-            "migration of the remaining ~43 call sites is tracked resolver-by-resolver by "
-            "polylogue-l2cd; this lint fails when a NEW "
-            "call site appears outside the recorded baseline, giving completeness/visibility "
-            "without forcing the whole migration at once. Shrinking the baseline (migrating a "
-            "call site to ArchiveLocation) is always safe."
+            "Catch growth of the archive-path anti-pattern polylogue-ovme.2.1 named: "
+            "active_index_db_path, resolve_active_index_db_path, sibling_index_db, and "
+            "archive_file_set_root_for_paths duplicated or bypassed ArchiveLocation's "
+            "pointer/tier resolution instead of delegating to it. All four are now fully "
+            "migrated and deleted by polylogue-l2cd, leaving BASELINE_CALL_SITES empty; "
+            "this lint fails when a NEW call site of one of these retired names appears "
+            "outside the recorded (now empty) baseline, giving completeness/visibility "
+            "against regrowth of the same anti-pattern under the same names."
         ),
         examples=(
             "devtools lab policy archive-resolver-completeness",
