@@ -82,7 +82,7 @@ def test_prepare_and_activate_preserve_surviving_rows_without_raw_replay(
 
     assert activated["status"] == "activated"
     assert (root / "index.db").resolve() == clone.resolve()
-    retired = list(IndexGenerationStore(root).generations_root.glob("retired-*/index.db"))
+    retired = list(IndexGenerationStore.for_archive_root(root).generations_root.glob("retired-*/index.db"))
     assert retired
     with sqlite3.connect(retired[0]) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 36
@@ -129,7 +129,7 @@ def test_prepare_refuses_unexpected_v36_schema_surplus(tmp_path: Path, monkeypat
     with pytest.raises(IndexV37FastForwardError, match="unexpected_surplus"):
         prepare_forward(archive_root=root, receipt_path=tmp_path / "receipt.json")
 
-    generations = IndexGenerationStore(root).generations_root
+    generations = IndexGenerationStore.for_archive_root(root).generations_root
     assert not [path for path in generations.iterdir() if path.name != "v36"]
 
 
@@ -162,7 +162,7 @@ def test_prepare_refuses_running_daemon_before_clone(tmp_path: Path, monkeypatch
     with pytest.raises(IndexV37FastForwardError, match="1234"):
         prepare_forward(archive_root=root, receipt_path=tmp_path / "receipt.json")
 
-    generations = IndexGenerationStore(root).generations_root
+    generations = IndexGenerationStore.for_archive_root(root).generations_root
     assert list(generations.iterdir()) == [generations / "v36"]
 
 
@@ -182,7 +182,7 @@ def test_prepare_refuses_unwritable_receipt_before_checkpoint_or_clone(
     with pytest.raises(IndexV37FastForwardError, match="receipt destination is not writable"):
         prepare_forward(archive_root=root, receipt_path=blocker / "receipt.json")
 
-    generations = IndexGenerationStore(root).generations_root
+    generations = IndexGenerationStore.for_archive_root(root).generations_root
     assert list(generations.iterdir()) == [generations / "v36"]
 
 
@@ -191,7 +191,7 @@ def test_prepare_checkpoints_stopped_active_index_before_census(
 ) -> None:
     root = _archive(tmp_path)
     monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
-    active = IndexGenerationStore(root).active_pointer.resolve()
+    active = IndexGenerationStore.for_archive_root(root).active_pointer.resolve()
     Path(f"{active}-shm").write_bytes(b"stopped-writer-residue")
     observed: list[tuple[Path, str]] = []
     original = forward._checkpoint_stopped_database
@@ -204,7 +204,7 @@ def test_prepare_checkpoints_stopped_active_index_before_census(
 
     prepare_forward(archive_root=root, receipt_path=tmp_path / "receipt.json")
 
-    assert observed[0] == (IndexGenerationStore(root).active_pointer, "active index")
+    assert observed[0] == (IndexGenerationStore.for_archive_root(root).active_pointer, "active index")
     assert observed[1][1] == "prepared clone"
     assert not Path(f"{active}-shm").exists()
 
@@ -219,7 +219,7 @@ def test_activate_refuses_changed_source_snapshot(tmp_path: Path, monkeypatch: p
     with pytest.raises(IndexV37FastForwardError, match="source evidence changed"):
         activate_forward(receipt_path=receipt)
 
-    assert IndexGenerationStore(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
 
 
 def test_activate_refuses_in_place_clone_mutation_with_preserved_stat_identity(
@@ -244,7 +244,7 @@ def test_activate_refuses_in_place_clone_mutation_with_preserved_stat_identity(
 
     assert clone.stat().st_size == before.st_size
     assert clone.stat().st_mtime_ns == before.st_mtime_ns
-    assert IndexGenerationStore(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
 
 
 def test_activate_recovers_after_pointer_swap_before_final_receipt(
@@ -267,10 +267,10 @@ def test_activate_recovers_after_pointer_swap_before_final_receipt(
     with pytest.raises(RuntimeError, match="simulated crash"):
         activate_forward(receipt_path=receipt)
     assert forward._load_receipt(receipt)["status"] == "activating"
-    assert IndexGenerationStore(root).active_pointer.resolve() == clone.resolve()
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve() == clone.resolve()
 
     monkeypatch.setattr(IndexGenerationStore, "promote", original_promote)
     activated = activate_forward(receipt_path=receipt)
 
     assert activated["status"] == "activated"
-    assert IndexGenerationStore(root).active_pointer.resolve() == clone.resolve()
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve() == clone.resolve()

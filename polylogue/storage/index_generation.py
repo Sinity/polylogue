@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import TracebackType
 
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -223,18 +224,35 @@ class ActiveWriterLease:
 
 
 class IndexGenerationStore:
-    """Create, checkpoint, and atomically promote inactive generations."""
+    """Create, checkpoint, and atomically promote inactive generations.
 
-    def __init__(self, archive_root: Path) -> None:
-        self.archive_root = archive_root
-        configured_index = archive_root / "index.db"
-        anchor = archive_root / ".index-active-pointer"
-        if anchor.exists():
-            anchored = Path(anchor.read_text(encoding="utf-8").strip())
-            if not anchored.is_absolute() or anchored.name != "index.db" or ".index-generations" in anchored.parts:
+    Constructed from an already-resolved :class:`~polylogue.storage.archive_identity.ArchiveLocation`
+    rather than a bare ``archive_root: Path`` (polylogue-ovme.2.1): the two
+    boundaries have deliberately different jobs. ``ArchiveLocation.resolve()``
+    is a pure, side-effect-free *read* of whatever pointer state already
+    exists; this store additionally performs first-touch pointer
+    **bootstrap** -- writing ``.index-active-pointer`` the first time an
+    archive is opened, before any generation has ever been promoted --
+    which ``ArchiveLocation.resolve()`` intentionally never does (a read-only
+    resolver must never mutate the archive it is describing). Passing an
+    ``ArchiveLocation`` in still lets this constructor reuse its pointer-read
+    outcome instead of re-deriving it, while keeping the bootstrap-write
+    behavior (and the ``.index-generations``-anchor sanity check below, which
+    ``ArchiveLocation.resolve()`` also does not perform) here where the write
+    authority belongs.
+    """
+
+    def __init__(self, location: ArchiveLocation) -> None:
+        self.archive_root = location.configured_root
+        self.location = location
+        anchor = location.configured_root / ".index-active-pointer"
+        if location.active_pointer is not None:
+            anchored = location.active_pointer
+            if ".index-generations" in anchored.parts:
                 raise RuntimeError(f"invalid canonical index pointer anchor: {anchored}")
             self.active_pointer = anchored
         else:
+            configured_index = location.configured_tier("index").configured_path
             if configured_index.is_symlink():
                 target = Path(os.readlink(configured_index))
                 self.active_pointer = target if target.is_absolute() else configured_index.parent / target
@@ -246,6 +264,11 @@ class IndexGenerationStore:
             _fsync_directory(anchor.parent)
         self.generations_root = self.active_pointer.parent / ".index-generations"
         self.transactions_root = self.active_pointer.parent / ".index-rebuild-transactions"
+
+    @classmethod
+    def for_archive_root(cls, archive_root: Path) -> IndexGenerationStore:
+        """Convenience constructor resolving ``archive_root`` into an :class:`ArchiveLocation` first."""
+        return cls(ArchiveLocation.resolve(archive_root))
 
     def create_transaction(
         self,
