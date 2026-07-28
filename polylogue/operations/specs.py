@@ -747,6 +747,30 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-blackboard-post",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Append one note to the persistent agent blackboard. Always inserts (a fresh note id "
+            "is minted per call, so this is not idempotent). Reversible class -- there is no "
+            "destructive counterpart today -- role_only confirmation. Routed through "
+            "OperationExecutor/BlackboardPostActuator."
+        ),
+        consumes=("assertions",),
+        produces=("assertions",),
+        path_targets=("blackboard-post-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.post_blackboard_note",
+            "polylogue.mcp.server_cutover._dispatch_write",
+            "polylogue.operations.mutation_actuators.BlackboardPostActuator",
+        ),
+        surfaces=("mcp", "api"),
+        mutates_state=True,
+        idempotent=False,
+        effects=("DbWrite",),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
         name="mutate-resolve-raw-authority-blocker",
         kind=OperationKind.MAINTENANCE,
         description=(
