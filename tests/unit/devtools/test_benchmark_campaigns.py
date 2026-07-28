@@ -147,7 +147,9 @@ async def test_run_benchmark_campaigns_skips_seed_archive_for_daemon_live(
 
     async def fake_run_campaign(name: str, db_path: Path) -> CampaignResult:
         assert name == "daemon-live-convergence"
-        assert db_path == tmp_path / "archive-large" / "benchmark.db"
+        # The real generated archive's active index, not an invented
+        # "benchmark.db" sentinel (polylogue-ovme.3 phantom-database fix).
+        assert db_path == tmp_path / "archive-large" / "index.db"
         assert not stale_file.exists()
         return CampaignResult(campaign_name=name, scale_level="", metrics={"total_wall_s": 1.0}, db_stats={})
 
@@ -282,12 +284,16 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     async def fake_generate_archive(
-        _spec: object, archive_dir: Path, *, corpus_source: object = None
+        _spec: object,
+        archive_dir: Path,
+        *,
+        corpus_source: object = None,
+        location: object = None,
     ) -> ArchiveMetrics:
         from devtools.large_archive_generator import ArchiveMetrics
 
         archive_dir.mkdir(parents=True, exist_ok=True)
-        (archive_dir / "benchmark.db").write_bytes(b"")
+        (archive_dir / "index.db").write_bytes(b"")
         return ArchiveMetrics(
             wall_time_s=0.5,
             db_size_bytes=0,

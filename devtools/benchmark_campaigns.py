@@ -12,6 +12,7 @@ from polylogue.scenarios import CorpusSourceKind, RunnerInvocation, dispatch_run
 
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
+from .campaign_archive_location import CampaignArchiveLocation
 from .synthetic_benchmark_runtime import CampaignResult, resolve_synthetic_benchmark_runner
 
 SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = (
@@ -67,32 +68,41 @@ async def run_full_campaign(
 
     archive_dir = output_dir / f"archive-{scale_level}"
     source_kind = CorpusSourceKind(corpus_source)
-    print(
-        f"Generating {scale_level} archive from {source_kind.value} corpus source "
-        f"({spec.sessions} sessions, ~{spec.message_count} messages)..."
-    )
-    archive_metrics = await generate_archive(spec, archive_dir, corpus_source=source_kind)
-    print(
-        f"Archive generated in {archive_metrics.wall_time_s:.1f}s "
-        f"({archive_metrics.session_count} convs, "
-        f"{archive_metrics.message_count} msgs, "
-        f"{archive_metrics.db_size_bytes / 1024 / 1024:.1f} MB)"
-    )
 
-    db_path = archive_dir / "benchmark.db"
-    results: list[CampaignResult] = []
+    # Acquired once and held for the entire campaign run: generation and
+    # ownership must stay stable from archive generation through every
+    # subsequent benchmark reopen below (polylogue-ovme.3). A wrong/unowned
+    # archive_dir fails here, before any archive generation or measurement
+    # work starts.
+    with CampaignArchiveLocation.acquire(archive_dir) as location:
+        print(
+            f"Generating {scale_level} archive from {source_kind.value} corpus source "
+            f"({spec.sessions} sessions, ~{spec.message_count} messages)..."
+        )
+        archive_metrics = await generate_archive(spec, archive_dir, corpus_source=source_kind, location=location)
+        print(
+            f"Archive generated in {archive_metrics.wall_time_s:.1f}s "
+            f"({archive_metrics.session_count} convs, "
+            f"{archive_metrics.message_count} msgs, "
+            f"{archive_metrics.db_size_bytes / 1024 / 1024:.1f} MB)"
+        )
 
-    for campaign in SYNTHETIC_CAMPAIGNS.values():
-        if campaign.scale_targets and scale_level not in campaign.scale_targets:
-            continue
-        print(f"Running {campaign.name} campaign...")
-        result = await run_synthetic_benchmark_campaign(campaign.name, db_path)
-        result.scale_level = scale_level
-        results.append(result)
-        metric_value = result.metrics.get(campaign.summary_metric, 0)
-        print(f"  -> {metric_value:.4f}{campaign.summary_label}")
+        results: list[CampaignResult] = []
 
-    return results
+        for campaign in SYNTHETIC_CAMPAIGNS.values():
+            if campaign.scale_targets and scale_level not in campaign.scale_targets:
+                continue
+            print(f"Running {campaign.name} campaign...")
+            # Re-fetched on every reopen (not cached from generation above)
+            # so a stale/foreign generation is caught before this campaign
+            # opens a connection against it.
+            result = await run_synthetic_benchmark_campaign(campaign.name, location.active_index_path)
+            result.scale_level = scale_level
+            results.append(result)
+            metric_value = result.metrics.get(campaign.summary_metric, 0)
+            print(f"  -> {metric_value:.4f}{campaign.summary_label}")
+
+        return results
 
 
 __all__ = [

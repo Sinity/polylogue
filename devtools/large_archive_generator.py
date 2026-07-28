@@ -14,6 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from devtools.campaign_archive_location import CampaignArchiveLocation
 from polylogue.scenarios import (
     CorpusScenario,
     CorpusSourceKind,
@@ -285,6 +286,7 @@ async def generate_archive(
     output_dir: Path,
     *,
     corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+    location: CampaignArchiveLocation | None = None,
 ) -> ArchiveMetrics:
     """Generate a synthetic archive at the specified scale level.
 
@@ -295,6 +297,14 @@ async def generate_archive(
     Args:
         spec: Archive specification (scale level, provider mix, counts, etc.)
         output_dir: Directory to write the archive into. Will be created if needed.
+        location: An already-acquired :class:`CampaignArchiveLocation` for
+            ``output_dir``, held stable across a whole campaign run. When
+            omitted, one is acquired and released for the duration of this
+            call alone (standalone use) -- callers that reopen the same
+            archive afterward (e.g. subsequent benchmark runners) must pass
+            a location they hold for the entire campaign so ownership,
+            generation, and target tier stay stable through every reopen
+            (polylogue-ovme.3).
 
     Returns:
         ArchiveMetrics with timing, size, and count data.
@@ -313,77 +323,83 @@ async def generate_archive(
     t0 = time.monotonic()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    db_path = output_dir / "benchmark.db"
-    corpus_dir = output_dir / "corpus"
-    corpus_dir.mkdir(parents=True, exist_ok=True)
-
-    # Filter provider mix to only available providers
-    provider_breakdown: dict[str, int] = {}
-
-    backend = SQLiteBackend(db_path=db_path)
-    index_db = backend.db_path  # path to index.db, initialized by SQLiteBackend.__init__
-
-    session_count = 0
-    message_count = 0
-
-    def _write_session_sync(session: ParsedSession, raw_id: str) -> None:
-        """Write one session to the archive index via the sync write path."""
-        with _sqlite3.connect(str(index_db)) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            write_parsed_session_to_archive(conn, session, raw_id=raw_id)
-
+    owns_location = location is None
+    campaign_location = location or CampaignArchiveLocation.acquire(output_dir)
     try:
-        for corpus_scenario in spec.corpus_scenarios(
-            available_providers=_available_providers(),
-            corpus_source=corpus_source,
-        ):
-            provider = corpus_scenario.provider
-            provider_conv_count = 0
-            for corpus_spec in corpus_scenario.corpus_specs:
-                provider_dir = corpus_dir / provider
-                written = SyntheticCorpus.write_spec_artifacts(
-                    corpus_spec,
-                    provider_dir,
-                    prefix="synth",
-                    index_width=5,
-                )
+        db_path = campaign_location.active_index_path
+        corpus_dir = output_dir / "corpus"
+        corpus_dir.mkdir(parents=True, exist_ok=True)
 
-                for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
-                    raw_bytes = artifact.raw_bytes
-                    # Store raw record
-                    raw_id = hashlib.sha256(raw_bytes).hexdigest()
-                    raw_record = RawSessionRecord(
-                        raw_id=raw_id,
-                        source_name=provider,
-                        source_path=str(file_path),
-                        blob_size=len(raw_bytes),
-                        acquired_at=datetime.now(timezone.utc).isoformat(),
+        # Filter provider mix to only available providers
+        provider_breakdown: dict[str, int] = {}
+
+        backend = SQLiteBackend(db_path=db_path)
+        index_db = backend.db_path  # path to index.db, initialized by SQLiteBackend.__init__
+
+        session_count = 0
+        message_count = 0
+
+        def _write_session_sync(session: ParsedSession, raw_id: str) -> None:
+            """Write one session to the archive index via the sync write path."""
+            with _sqlite3.connect(str(index_db)) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA foreign_keys=ON")
+                write_parsed_session_to_archive(conn, session, raw_id=raw_id)
+
+        try:
+            for corpus_scenario in spec.corpus_scenarios(
+                available_providers=_available_providers(),
+                corpus_source=corpus_source,
+            ):
+                provider = corpus_scenario.provider
+                provider_conv_count = 0
+                for corpus_spec in corpus_scenario.corpus_specs:
+                    provider_dir = corpus_dir / provider
+                    written = SyntheticCorpus.write_spec_artifacts(
+                        corpus_spec,
+                        provider_dir,
+                        prefix="synth",
+                        index_width=5,
                     )
-                    await backend.save_raw_session(raw_record)
 
-                    # Parse and ingest via the live sync write path
-                    source = Source(name=provider, path=file_path)
-                    for convo in iter_source_sessions(source):
-                        await asyncio.to_thread(_write_session_sync, convo, raw_id)
-                        provider_conv_count += 1
-                        message_count += len(convo.messages)
+                    for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
+                        raw_bytes = artifact.raw_bytes
+                        # Store raw record
+                        raw_id = hashlib.sha256(raw_bytes).hexdigest()
+                        raw_record = RawSessionRecord(
+                            raw_id=raw_id,
+                            source_name=provider,
+                            source_path=str(file_path),
+                            blob_size=len(raw_bytes),
+                            acquired_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                        await backend.save_raw_session(raw_record)
 
-            provider_breakdown[provider] = provider_conv_count
-            session_count += provider_conv_count
+                        # Parse and ingest via the live sync write path
+                        source = Source(name=provider, path=file_path)
+                        for convo in iter_source_sessions(source):
+                            await asyncio.to_thread(_write_session_sync, convo, raw_id)
+                            provider_conv_count += 1
+                            message_count += len(convo.messages)
+
+                provider_breakdown[provider] = provider_conv_count
+                session_count += provider_conv_count
+        finally:
+            await backend.close()
+
+        wall_time = time.monotonic() - t0
+        db_size = db_path.stat().st_size if db_path.exists() else 0
+
+        return ArchiveMetrics(
+            wall_time_s=round(wall_time, 2),
+            db_size_bytes=db_size,
+            message_count=message_count,
+            session_count=session_count,
+            provider_breakdown=provider_breakdown,
+        )
     finally:
-        await backend.close()
-
-    wall_time = time.monotonic() - t0
-    db_size = db_path.stat().st_size if db_path.exists() else 0
-
-    return ArchiveMetrics(
-        wall_time_s=round(wall_time, 2),
-        db_size_bytes=db_size,
-        message_count=message_count,
-        session_count=session_count,
-        provider_breakdown=provider_breakdown,
-    )
+        if owns_location:
+            campaign_location.release()
 
 
 def get_default_spec(level: ScaleLevel) -> ArchiveSpec:
