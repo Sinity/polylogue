@@ -8,6 +8,8 @@ import os
 import re
 import sqlite3
 import sys
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -83,10 +85,39 @@ logger = get_logger(__name__)
 # ``live_ingest_attempt_progress``.
 _LIVE_INGEST_ATTEMPT_STALE_AFTER_S = STUCK_AFTER_S
 _LIVE_CURSOR_FAILURE_SAMPLE_LIMIT = 50
+# Deadline for the embedding_readiness component (polylogue-20d.17). A module
+# constant (rather than an inline literal) so tests can patch it down, the
+# same way coordination/envelope.py's _ARCHIVE_EVIDENCE_DEADLINE_S is patched
+# to exercise the timed-out/refreshing/fresh resumability sequence quickly.
+_EMBEDDING_READINESS_DEADLINE_S = 2.0
 
 
 def _active_status_db_path() -> Path:
     return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+
+
+def _daemon_status_fingerprint(active_db: Path) -> str:
+    """Cheap proxy for "has the archive/ops source changed" (polylogue-20d.17 AC #5).
+
+    Mirrors ``polylogue.coordination.envelope._coordination_fingerprint``: a
+    persistent status-component registry (see
+    :func:`periodic_status_component_registry`) must not be able to hide a
+    changed index tier or ops tier behind an unexpired ``ttl_s`` window.
+    Stat-only (no query execution), so checking it stays cheap even when the
+    cached value itself is reused.
+    """
+    parts: list[str] = []
+    for candidate in (
+        active_db,
+        active_db.with_suffix(".db-wal"),
+        active_db.with_name("ops.db"),
+        active_db.with_name("ops.db-wal"),
+    ):
+        try:
+            parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
+        except OSError:
+            parts.append(f"{candidate.name}:?")
+    return "|".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -2112,6 +2143,206 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
         }
 
 
+def _daemon_status_component_specs(
+    *,
+    checked_health: Callable[[], DaemonHealth],
+    include_raw_replay_backlog: bool,
+    include_exact_raw_materialization_readiness: bool,
+    fingerprint: Callable[[], str] | None = None,
+) -> list[StatusComponentSpec]:
+    """Component declarations shared by the ephemeral per-call path and the
+    persistent periodic-refresh registry (polylogue-20d.17).
+
+    Collectors that need the active index db re-resolve it via
+    ``_active_status_db_path()`` on every invocation rather than capturing a
+    path once, so a long-lived persistent registry observes an archive-root
+    change the same way a fresh ephemeral registry would.
+    """
+    return [
+        StatusComponentSpec(
+            name="db_size", scope="archive", collector=_db_size_info, deadline_s=0.5, fingerprint=fingerprint
+        ),
+        StatusComponentSpec(
+            name="blob_size", scope="archive", collector=_blob_size_info, deadline_s=0.5, fingerprint=fingerprint
+        ),
+        StatusComponentSpec(
+            name="archive_storage",
+            scope="archive",
+            collector=_archive_storage_info,
+            deadline_s=1.5,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="fts_readiness",
+            scope="lexical",
+            collector=_fts_readiness_info,
+            deadline_s=1.5,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="insight_freshness",
+            scope="archive",
+            collector=_insight_freshness_info,
+            deadline_s=1.5,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="raw_materialization",
+            scope="archive",
+            collector=lambda: _raw_materialization_readiness_info(
+                classify_gaps=include_exact_raw_materialization_readiness
+            ),
+            deadline_s=3.0 if include_exact_raw_materialization_readiness else 1.5,
+            cost_class="expensive" if include_exact_raw_materialization_readiness else "moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="raw_replay_backlog",
+            scope="archive",
+            collector=lambda: _raw_replay_backlog_info(include=include_raw_replay_backlog),
+            deadline_s=3.0 if include_raw_replay_backlog else 0.3,
+            cost_class="expensive" if include_raw_replay_backlog else "cheap",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="live_cursor",
+            scope="daemon",
+            collector=_live_cursor_summary_info,
+            deadline_s=0.5,
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="live_ingest_attempts",
+            scope="daemon",
+            collector=_live_ingest_attempt_summary_info,
+            deadline_s=0.5,
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="convergence",
+            scope="daemon",
+            collector=lambda: convergence_debt_summary_info(_active_status_db_path()),
+            deadline_s=0.5,
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="cursor_lag",
+            scope="daemon",
+            collector=lambda: cursor_lag_summary_info(_active_status_db_path()),
+            deadline_s=0.5,
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="raw_failures",
+            scope="archive",
+            collector=_raw_failure_info,
+            deadline_s=1.0,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="blob_publication_reservations",
+            scope="archive",
+            collector=_blob_publication_reservation_info,
+            deadline_s=1.0,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="embedding_readiness",
+            scope="semantic",
+            collector=lambda: embedding_readiness_info(_active_status_db_path()),
+            deadline_s=_EMBEDDING_READINESS_DEADLINE_S,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
+            name="health",
+            scope="daemon",
+            collector=checked_health,
+            deadline_s=1.5,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+    ]
+
+
+_PERIODIC_STATUS_REGISTRY_LOCK = threading.Lock()
+_PERIODIC_STATUS_REGISTRY: StatusComponentRegistry | None = None
+
+
+def periodic_status_component_registry() -> StatusComponentRegistry:
+    """Return the process-wide persistent registry backing the periodic status refresh.
+
+    ``_periodic_status_snapshot_refresh`` (``daemon/cli.py``) calls
+    ``refresh_status_snapshot`` every 10s for the life of the daemon process.
+    Before this, each tick built a fresh ephemeral ``StatusComponentRegistry``
+    (see ``build_daemon_status``), so a component whose collector runs longer
+    than its ``deadline_s`` was restarted from scratch on every tick and could
+    never converge — live measurement found ``embedding_readiness_info``
+    alone taking ~5s against the real archive against a declared 2.0s
+    deadline (polylogue-20d.17), so it timed out and was discarded every 10s,
+    forever, while also leaking one orphaned daemon thread per tick (the
+    unfinished attempt cannot be cancelled and keeps running past the
+    deadline on its own thread). This mirrors the resumability gap PR #3131
+    fixed for coordination's ``archive_evidence`` stage: a persistent
+    registry lets a later tick observe ``refreshing`` instead of duplicating
+    the collector, and once an attempt finishes, every subsequent tick reuses
+    the real result until its own ``ttl_s``/fingerprint expires.
+
+    Built once per process (lazily, on first call) with the same collection
+    parameters ``refresh_status_snapshot`` always passes
+    (``include_raw_replay_backlog=False``,
+    ``include_exact_raw_materialization_readiness=False``, fast-tier health
+    only) -- direct one-shot CLI/API status calls are unaffected, since they
+    never pass a ``registry`` into ``build_daemon_status``/
+    ``daemon_status_payload`` and keep their existing fresh-per-call
+    ephemeral-registry contract.
+    """
+    global _PERIODIC_STATUS_REGISTRY
+    with _PERIODIC_STATUS_REGISTRY_LOCK:
+        if _PERIODIC_STATUS_REGISTRY is None:
+            from polylogue.daemon.health import HealthTier
+
+            def _checked_health() -> DaemonHealth:
+                try:
+                    return check_health(tiers={HealthTier.FAST})
+                except Exception as exc:
+                    logger.warning("status: check_health() failed: %s", exc, exc_info=True)
+                    return DaemonHealth(
+                        overall_status=HealthSeverity.ERROR,
+                        checked_at=datetime.now(UTC).isoformat(),
+                        alerts=[
+                            HealthAlert(
+                                check_name="check_health",
+                                tier=HealthTier.FAST,
+                                severity=HealthSeverity.ERROR,
+                                message=f"health check itself failed: {exc}",
+                                checked_at=datetime.now(UTC).isoformat(),
+                            )
+                        ],
+                    )
+
+            specs = _daemon_status_component_specs(
+                checked_health=_checked_health,
+                include_raw_replay_backlog=False,
+                include_exact_raw_materialization_readiness=False,
+                fingerprint=lambda: _daemon_status_fingerprint(_active_status_db_path()),
+            )
+            _PERIODIC_STATUS_REGISTRY = StatusComponentRegistry(specs)
+        return _PERIODIC_STATUS_REGISTRY
+
+
+def reset_periodic_status_component_registry() -> None:
+    """Drop the persistent periodic-refresh registry singleton. Test-only."""
+    global _PERIODIC_STATUS_REGISTRY
+    with _PERIODIC_STATUS_REGISTRY_LOCK:
+        _PERIODIC_STATUS_REGISTRY = None
+
+
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
@@ -2120,8 +2351,27 @@ def build_daemon_status(
     include_expensive_health: bool = False,
     include_raw_replay_backlog: bool = True,
     include_exact_raw_materialization_readiness: bool = True,
+    registry: StatusComponentRegistry | None = None,
 ) -> DaemonStatus:
-    """Build a typed DaemonStatus from durable component state."""
+    """Build a typed DaemonStatus from durable component state.
+
+    ``registry``, when given, is a *persistent* :class:`StatusComponentRegistry`
+    (see :func:`periodic_status_component_registry`) reused across many calls
+    instead of the fresh, ephemeral one built per call below. Live measurement
+    found ``embedding_readiness_info`` alone taking ~5s against the real
+    archive while its declared ``deadline_s`` is 2.0 (polylogue-20d.17): the
+    10s-cadence periodic status-snapshot refresh (``refresh_status_snapshot``)
+    used to build a brand-new ephemeral registry on every tick, so that
+    component timed out and was discarded on every single tick, forever,
+    exactly the resumability gap PR #3131 fixed for coordination's
+    ``archive_evidence`` stage. Passing a persistent registry lets a
+    still-running attempt be observed as ``refreshing`` by a later tick
+    instead of restarted, and the eventual real result is reused (subject to
+    ``ttl_s``/fingerprint invalidation) once it finishes. One-shot callers
+    (direct CLI/API status, all pre-existing parameterized tests) keep the
+    default ``None`` -- a fresh per-call registry, correct for their pure
+    -recompute contract.
+    """
     watch_sources = sources if sources is not None else default_sources()
     effective_browser_capture_spool_path = (
         browser_capture_spool_path
@@ -2176,80 +2426,14 @@ def build_daemon_status(
     # stalled one reports an explicit timed_out/degraded state (with
     # whatever it last collected successfully, if anything) instead of
     # blocking the healthy facts sitting behind it in a call chain.
-    specs = [
-        StatusComponentSpec(name="db_size", scope="archive", collector=_db_size_info, deadline_s=0.5),
-        StatusComponentSpec(name="blob_size", scope="archive", collector=_blob_size_info, deadline_s=0.5),
-        StatusComponentSpec(
-            name="archive_storage",
-            scope="archive",
-            collector=_archive_storage_info,
-            deadline_s=1.5,
-            cost_class="moderate",
-        ),
-        StatusComponentSpec(
-            name="fts_readiness", scope="lexical", collector=_fts_readiness_info, deadline_s=1.5, cost_class="moderate"
-        ),
-        StatusComponentSpec(
-            name="insight_freshness",
-            scope="archive",
-            collector=_insight_freshness_info,
-            deadline_s=1.5,
-            cost_class="moderate",
-        ),
-        StatusComponentSpec(
-            name="raw_materialization",
-            scope="archive",
-            collector=lambda: _raw_materialization_readiness_info(
-                classify_gaps=include_exact_raw_materialization_readiness
-            ),
-            deadline_s=3.0 if include_exact_raw_materialization_readiness else 1.5,
-            cost_class="expensive" if include_exact_raw_materialization_readiness else "moderate",
-        ),
-        StatusComponentSpec(
-            name="raw_replay_backlog",
-            scope="archive",
-            collector=lambda: _raw_replay_backlog_info(include=include_raw_replay_backlog),
-            deadline_s=3.0 if include_raw_replay_backlog else 0.3,
-            cost_class="expensive" if include_raw_replay_backlog else "cheap",
-        ),
-        StatusComponentSpec(name="live_cursor", scope="daemon", collector=_live_cursor_summary_info, deadline_s=0.5),
-        StatusComponentSpec(
-            name="live_ingest_attempts",
-            scope="daemon",
-            collector=_live_ingest_attempt_summary_info,
-            deadline_s=0.5,
-        ),
-        StatusComponentSpec(
-            name="convergence",
-            scope="daemon",
-            collector=lambda: convergence_debt_summary_info(active_db),
-            deadline_s=0.5,
-        ),
-        StatusComponentSpec(
-            name="cursor_lag", scope="daemon", collector=lambda: cursor_lag_summary_info(active_db), deadline_s=0.5
-        ),
-        StatusComponentSpec(
-            name="raw_failures", scope="archive", collector=_raw_failure_info, deadline_s=1.0, cost_class="moderate"
-        ),
-        StatusComponentSpec(
-            name="blob_publication_reservations",
-            scope="archive",
-            collector=_blob_publication_reservation_info,
-            deadline_s=1.0,
-            cost_class="moderate",
-        ),
-        StatusComponentSpec(
-            name="embedding_readiness",
-            scope="semantic",
-            collector=lambda: embedding_readiness_info(active_db),
-            deadline_s=2.0,
-            cost_class="moderate",
-        ),
-        StatusComponentSpec(
-            name="health", scope="daemon", collector=_checked_health, deadline_s=1.5, cost_class="moderate"
-        ),
-    ]
-    snapshots = StatusComponentRegistry(specs).collect()
+    specs = _daemon_status_component_specs(
+        checked_health=_checked_health,
+        include_raw_replay_backlog=include_raw_replay_backlog,
+        include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
+    )
+    snapshots = (registry if registry is not None else StatusComponentRegistry(specs)).collect(
+        names=[spec.name for spec in specs]
+    )
 
     def _v(name: str, default: Any) -> Any:
         value = snapshots[name].value
@@ -2427,8 +2611,14 @@ def daemon_status_payload(
     include_raw_replay_backlog: bool = True,
     include_exact_raw_materialization_readiness: bool = True,
     include_archive_debt: bool = True,
+    registry: StatusComponentRegistry | None = None,
 ) -> JSONDocument:
-    """Return the local daemon component status payload (backward-compat dict)."""
+    """Return the local daemon component status payload (backward-compat dict).
+
+    ``registry``, when given, is threaded through to :func:`build_daemon_status`
+    (see its docstring for what this buys: resumable collection across many
+    calls instead of a fresh, ephemeral registry per call).
+    """
     watch_sources = sources if sources is not None else default_sources()
 
     last_ingestion = None
@@ -2453,6 +2643,7 @@ def daemon_status_payload(
         browser_capture_spool_path=browser_capture_spool_path,
         include_raw_replay_backlog=include_raw_replay_backlog,
         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
+        registry=registry,
     )
     if include_archive_debt:
         # polylogue-20d.17: this scan is a full archive-debt listing, not a

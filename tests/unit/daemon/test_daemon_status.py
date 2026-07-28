@@ -27,6 +27,7 @@ from polylogue.daemon.status_snapshot import (
     get_status_snapshot_payload,
     refresh_status_snapshot,
 )
+from polylogue.operations.status_protocol import StatusComponentRegistry
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -346,11 +347,15 @@ def test_status_snapshot_refresh_default_builds_rich_payload(monkeypatch: pytest
 
     snapshot = refresh_status_snapshot()
 
-    build.assert_called_once_with(
-        include_raw_replay_backlog=False,
-        include_exact_raw_materialization_readiness=False,
-        include_archive_debt=False,
-    )
+    assert build.call_count == 1
+    call_kwargs = build.call_args.kwargs
+    assert call_kwargs["include_raw_replay_backlog"] is False
+    assert call_kwargs["include_exact_raw_materialization_readiness"] is False
+    assert call_kwargs["include_archive_debt"] is False
+    # polylogue-20d.17: the periodic refresh threads a persistent registry
+    # through so a slower-than-deadline component (e.g. embedding_readiness)
+    # resumes across ticks instead of being restarted from scratch forever.
+    assert isinstance(call_kwargs["registry"], StatusComponentRegistry)
     assert snapshot.payload["checked_at"] == "rich"
     assert snapshot.payload["raw_materialization_readiness"] == {"total": 2}
 
@@ -2320,6 +2325,141 @@ def test_daemon_status_payload_stalled_component_does_not_block_healthy_componen
 
     archive_storage_collection = cast(dict[str, Any], cast(dict[str, Any], readiness["archive_storage"])["collection"])
     assert archive_storage_collection["state"] == "fresh"
+
+
+def test_periodic_status_component_registry_resumes_slow_embedding_readiness_across_ticks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity for polylogue-20d.17 (resumable detail-query semantics).
+
+    Live measurement against the real archive found ``embedding_readiness_info``
+    taking ~5s while its declared deadline is 2.0s. Before this fix,
+    ``refresh_status_snapshot``'s periodic (10s-cadence) call built a fresh,
+    ephemeral ``StatusComponentRegistry`` on every tick (``build_daemon_status``'s
+    own per-call registry), so a component slower than its deadline timed out
+    and was discarded on *every* tick, forever -- it could never converge on a
+    real value, mirroring the pre-#3131 coordination ``archive_evidence`` bug.
+    This fails on that pre-fix behavior: the collector would be invoked again
+    on tick 2 (a duplicated attempt) instead of the second tick observing
+    ``refreshing`` against the still-running first attempt.
+    """
+    import threading
+    from time import sleep
+
+    from polylogue.daemon import status as status_module
+    from polylogue.daemon.status import (
+        periodic_status_component_registry,
+        reset_periodic_status_component_registry,
+    )
+
+    reset_periodic_status_component_registry()
+    monkeypatch.setattr(status_module, "_EMBEDDING_READINESS_DEADLINE_S", 0.05)
+    db = tmp_path / "index.db"
+    monkeypatch.setattr("polylogue.daemon.status.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status.index_db_path", lambda: db)
+
+    calls = {"n": 0}
+    release = threading.Event()
+
+    def slow_embedding_readiness_info(_db: Path) -> dict[str, object]:
+        calls["n"] += 1
+        release.wait(timeout=5.0)
+        return {"embedding_status": "ready"}
+
+    monkeypatch.setattr(status_module, "embedding_readiness_info", slow_embedding_readiness_info)
+
+    try:
+        # Tick 1: the collector starts, blocks past the (patched, 0.05s) deadline.
+        registry = periodic_status_component_registry()
+        first = registry.collect(names=["embedding_readiness"])["embedding_readiness"]
+        assert first.state == "timed_out"
+        assert calls["n"] == 1
+
+        # Tick 2, as a later periodic refresh would trigger: the SAME process
+        # -wide registry must observe the still-running attempt instead of
+        # launching a second one.
+        second_registry = periodic_status_component_registry()
+        assert second_registry is registry
+        second = second_registry.collect(names=["embedding_readiness"])["embedding_readiness"]
+        assert second.state == "refreshing"
+        assert calls["n"] == 1  # still just the one attempt -- not duplicated
+
+        release.set()
+        for _ in range(200):
+            if registry.last_good("embedding_readiness") is not None:
+                break
+            sleep(0.01)
+
+        third = registry.collect(names=["embedding_readiness"])["embedding_readiness"]
+        assert third.state == "fresh"
+        assert calls["n"] == 1  # the one attempt that was allowed to finish
+        assert third.value == {"embedding_status": "ready"}
+    finally:
+        release.set()
+        reset_periodic_status_component_registry()
+
+
+def test_periodic_status_component_registry_fingerprint_forces_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-20d.17 AC #5: a changed archive source is not hidden by an
+    unexpired TTL.
+
+    Without a fingerprint, a component's ``ttl_s`` window (10s default) would
+    serve a stale value even after the underlying index db file changed.
+    """
+    from polylogue.daemon.status import (
+        periodic_status_component_registry,
+        reset_periodic_status_component_registry,
+    )
+
+    reset_periodic_status_component_registry()
+    db = tmp_path / "index.db"
+    db.write_bytes(b"v1")
+    monkeypatch.setattr("polylogue.daemon.status.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status.index_db_path", lambda: db)
+
+    calls = {"n": 0}
+
+    def fake_db_size_info() -> dict[str, object]:
+        calls["n"] += 1
+        return {"call": calls["n"]}
+
+    monkeypatch.setattr("polylogue.daemon.status._db_size_info", fake_db_size_info)
+
+    try:
+        registry = periodic_status_component_registry()
+        first = registry.collect(names=["db_size"])["db_size"]
+        assert first.value == {"call": 1}
+        assert first.state == "fresh"
+
+        # Immediately re-collecting inside the TTL window with no source
+        # change reuses the cached value -- the fingerprint is stable.
+        cached = registry.collect(names=["db_size"])["db_size"]
+        assert cached.value == {"call": 1}
+        assert cached.state == "fresh"
+        assert calls["n"] == 1
+
+        # A changed index db (mtime bump) must force a refresh even though
+        # ttl_s (10s) has not elapsed.
+        import os
+        import time
+
+        time.sleep(0.01)
+        os.utime(db, None)
+        db.write_bytes(b"v2")
+
+        refreshed = registry.collect(names=["db_size"])["db_size"]
+        for _ in range(200):
+            if refreshed.state == "fresh" and refreshed.value == {"call": 2}:
+                break
+            time.sleep(0.01)
+            refreshed = registry.collect(names=["db_size"])["db_size"]
+        assert refreshed.value == {"call": 2}, (
+            "fingerprint change must force a fresh recollection, not reuse the TTL cache"
+        )
+    finally:
+        reset_periodic_status_component_registry()
 
 
 def test_blob_publication_reservation_info_reports_unresolved_bucket(tmp_path: Path) -> None:
