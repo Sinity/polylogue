@@ -498,6 +498,262 @@ class TestWriteToolConfirmGates:
             assert deleted["status"] == "deleted"
 
 
+class TestWriteToolRoutesThroughOperationExecutor:
+    """polylogue-t46.8.3: prove ``write()`` cannot bypass ``OperationExecutor``.
+
+    t46.9 phases 1-6 (PRs #3249/#3253/#3258/#3262/#3294/#3376) routed every
+    reversible mutation family through ``OperationExecutor`` at the facade
+    layer (``polylogue/api/archive.py``); ``write()`` already calls those same
+    facade methods (``docs/plans/mutation-census.yaml``'s ``adapters``
+    entries name ``polylogue.mcp.server_cutover._dispatch_write`` for each
+    executor-routed operation). So t46.8.3 required no *new* MCP-layer wiring
+    -- but nothing previously proved that claim at the MCP adapter boundary
+    itself: ``test_mutation_actuators.py`` proves the facade methods use the
+    executor, and the round trips above in ``TestWriteTool``/
+    ``TestWriteToolConfirmGates`` prove the *tool* succeeds functionally, but
+    neither distinguishes "went through OperationExecutor" from "succeeded
+    via some other path that happens to produce the same outcome". This class
+    closes that gap directly: it patches ``OperationExecutor.execute`` --
+    the sole ``apply`` gate the class's own docstring declares ("No adapter
+    calls actuator.apply directly") -- to record every actuator it is
+    invoked with, then asserts each write() operation drives exactly the
+    actuator its census row names.
+
+    Anti-vacuity: ``test_operation_invokes_operation_executor_execute``
+    fails immediately if any ``write()`` branch is ever changed to call an
+    ``ArchiveStore``/storage primitive directly instead of the facade method
+    (the executor spy would simply never fire, or fire for the wrong
+    actuator). ``test_executor_failure_propagates_as_error_not_swallowed``
+    fails if a future refactor wraps the executor call in a blanket
+    try/except that would silently swallow an executor-raised failure.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("operation", "setup", "op_kwargs", "actuator_name"),
+        [
+            ("add_tag", [], {"tag": "reviewed"}, "TagAddActuator"),
+            (
+                "remove_tag",
+                [{"operation": "add_tag", "tag": "reviewed"}],
+                {"tag": "reviewed", "confirm": True},
+                "TagRemoveActuator",
+            ),
+            (
+                "bulk_tag_sessions",
+                [],
+                {"session_ids": None, "tags": ["bulk"]},
+                "BulkTagActuator",
+            ),
+            ("set_metadata", [], {"key": "note", "value": "keep"}, "MetadataSetActuator"),
+            (
+                "delete_metadata",
+                [{"operation": "set_metadata", "key": "note", "value": "keep"}],
+                {"key": "note", "confirm": True},
+                "MetadataDeleteActuator",
+            ),
+            ("add_mark", [], {"fields": {"mark_type": "star"}}, "MarkAddActuator"),
+            (
+                "remove_mark",
+                [{"operation": "add_mark", "fields": {"mark_type": "star"}}],
+                {"fields": {"mark_type": "star"}, "confirm": True},
+                "MarkRemoveActuator",
+            ),
+            (
+                "save_annotation",
+                [],
+                {"fields": {"annotation_id": "note-1", "note_text": "a durable note"}},
+                "AnnotationSaveActuator",
+            ),
+            (
+                "delete_annotation",
+                [
+                    {
+                        "operation": "save_annotation",
+                        "fields": {"annotation_id": "note-1", "note_text": "a durable note"},
+                    }
+                ],
+                {"fields": {"annotation_id": "note-1"}, "confirm": True},
+                "AnnotationDeleteActuator",
+            ),
+            (
+                "save_saved_view",
+                [],
+                {"fields": {"name": "needle sessions", "query_json": json.dumps({"query": "needle"})}},
+                "SavedViewSaveActuator",
+            ),
+            (
+                "save_recall_pack",
+                [],
+                {
+                    "fields": {
+                        "pack_id": "pack-1",
+                        "label": "Recall pack",
+                        "payload_json": json.dumps({"items": []}),
+                    }
+                },
+                "RecallPackSaveActuator",
+            ),
+            (
+                "delete_recall_pack",
+                [
+                    {
+                        "operation": "save_recall_pack",
+                        "fields": {
+                            "pack_id": "pack-1",
+                            "label": "Recall pack",
+                            "payload_json": json.dumps({"items": []}),
+                        },
+                    }
+                ],
+                {"fields": {"pack_id": "pack-1"}, "confirm": True},
+                "RecallPackDeleteActuator",
+            ),
+            (
+                "save_workspace",
+                [],
+                {"fields": {"workspace_id": "workspace-1", "name": "My workspace"}},
+                "WorkspaceSaveActuator",
+            ),
+            (
+                "delete_workspace",
+                [{"operation": "save_workspace", "fields": {"workspace_id": "workspace-1", "name": "My workspace"}}],
+                {"fields": {"workspace_id": "workspace-1"}, "confirm": True},
+                "WorkspaceDeleteActuator",
+            ),
+            (
+                "record_correction",
+                [],
+                {"fields": {"kind": "tag_reject", "payload": {"tag": "todo"}}},
+                "CorrectionRecordActuator",
+            ),
+            (
+                "clear_corrections",
+                [{"operation": "record_correction", "fields": {"kind": "tag_reject", "payload": {"tag": "todo"}}}],
+                {"fields": {"kind": "tag_reject"}, "confirm": True},
+                "CorrectionDeleteActuator",
+            ),
+            (
+                "clear_corrections",
+                [{"operation": "record_correction", "fields": {"kind": "tag_accept", "payload": {"tag": "todo"}}}],
+                {"confirm": True},
+                "CorrectionsClearActuator",
+            ),
+            (
+                "blackboard_post",
+                [],
+                {"fields": {"kind": "finding", "title": "t46.8.3 probe", "content": "evidence"}},
+                "BlackboardPostActuator",
+            ),
+            ("delete_session", [], {"confirm": True}, "SessionDeleteActuator"),
+        ],
+    )
+    async def test_operation_invokes_operation_executor_execute(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        operation: str,
+        setup: list[dict[str, object]],
+        op_kwargs: dict[str, object],
+        actuator_name: str,
+    ) -> None:
+        from polylogue.mcp.server import build_server
+        from polylogue.operations.mutation_transaction import OperationExecutor
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        # bulk_tag_sessions needs a real session_ids list resolved at test
+        # time (the fixture only knows its id after seeding).
+        if op_kwargs.get("session_ids", "__unset__") is None:
+            op_kwargs = {**op_kwargs, "session_ids": [session_id]}
+
+        with _installed_runtime_services(archive_root):
+            for setup_call in setup:
+                setup_result = json.loads(await invoke_surface_async(write_fn, session_id=session_id, **setup_call))
+                assert setup_result.get("is_error") is not True, setup_result
+
+            captured: list[str] = []
+            original_execute = OperationExecutor.execute
+
+            def spy(
+                self: OperationExecutor,
+                actuator: object,
+                plan: object,
+                authorization: object,
+                args: object,
+                _original: object = original_execute,
+            ) -> object:
+                captured.append(type(actuator).__name__)
+                return _original(self, actuator, plan, authorization, args)  # type: ignore[operator]
+
+            monkeypatch.setattr(OperationExecutor, "execute", spy)
+
+            call_kwargs: dict[str, object] = dict(op_kwargs)
+            session_less_operations = (
+                "bulk_tag_sessions",
+                "save_saved_view",
+                "delete_saved_view",
+                "save_recall_pack",
+                "delete_recall_pack",
+                "save_workspace",
+                "delete_workspace",
+                "blackboard_post",
+            )
+            if "session_id" not in call_kwargs and operation not in session_less_operations:
+                call_kwargs["session_id"] = session_id
+
+            result = json.loads(await invoke_surface_async(write_fn, operation=operation, **call_kwargs))
+
+        assert result.get("is_error") is not True, result
+        assert captured == [actuator_name], (
+            f"write(operation={operation!r}) invoked executor with actuators {captured}, expected [{actuator_name}]"
+        )
+
+    @pytest.mark.asyncio
+    async def test_executor_failure_propagates_as_error_not_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Anti-vacuity companion: if OperationExecutor.execute raises, write()
+        must surface that failure (proving the call sits on the real path)
+        instead of returning a fabricated success -- which is what would
+        happen if some parallel non-executor code path silently produced the
+        response instead.
+        """
+        from polylogue.mcp.server import build_server
+        from polylogue.operations.mutation_transaction import OperationExecutor
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        def boom(
+            self: OperationExecutor, actuator: object, plan: object, authorization: object, args: object
+        ) -> object:
+            raise RuntimeError("t46.8.3-bypass-proof: executor forcibly disabled")
+
+        monkeypatch.setattr(OperationExecutor, "execute", boom)
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
+            )
+
+        # The generic MCP exception translator (server_support._exception_to_error_json)
+        # deliberately does not echo raw exception text into client-visible
+        # payloads, only the exception type name -- so the proof here is that
+        # the raise actually reached the tool boundary (an "internal_error"
+        # envelope naming RuntimeError) rather than the call quietly reporting
+        # success, which is what a bypassing/duplicated non-executor code path
+        # would do.
+        assert result.get("is_error") is True, result
+        assert result.get("code") == "internal_error", result
+        assert result.get("detail") == "RuntimeError", result
+
+
 class TestJudgeTool:
     @pytest.mark.asyncio
     async def test_single_candidate_shorthand_builds_a_one_item_bulk_call(self, tmp_path: Path) -> None:
