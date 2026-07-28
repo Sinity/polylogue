@@ -766,10 +766,23 @@ def _inspect_quarantined_accepted_raw(
                    accepted_source_revision, accepted_content_hash, append_end_offset,
                    baseline_raw_id, predecessor_raw_id, detail, decided_at_ms
             FROM index_tier.raw_revision_applications
-            WHERE logical_source_key = ? AND (raw_id = ? OR accepted_raw_id = ?)
+            WHERE logical_source_key = ? AND raw_id = ?
             """,
-            (logical_source_key, raw_id, raw_id),
+            (logical_source_key, raw_id),
         ).fetchall()
+        # ``raw_revision_applications`` is an append-only decision history,
+        # not a single-current-state table (see the fan-out docstring
+        # above): every prior decision for this logical_source_key --
+        # including ones about OTHER raw_ids that cite this raw as their
+        # own ``accepted_raw_id`` predecessor -- keeps its own row forever
+        # (polylogue-zaiz). Matching on ``accepted_raw_id = ?`` in addition
+        # to ``raw_id = ?`` (as an earlier version of this query did)
+        # pulls in those unrelated historical "superseded" rows, making
+        # this always find more than one match for any session whose
+        # revision history has more than a single decision -- exactly the
+        # live shape observed for every quarantined fan-out sibling.
+        # Scoping strictly to ``raw_id = ?`` finds only the one receipt
+        # that actually decided THIS raw's own acceptance.
         if len(applications) != 1:
             return _quarantined_raw_item(raw_id, "competing raw-revision application authority exists")
         receipt = applications[0]

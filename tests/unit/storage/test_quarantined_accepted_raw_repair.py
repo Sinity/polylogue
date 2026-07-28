@@ -485,3 +485,59 @@ def test_quarantine_refinement_applies_for_the_matching_sibling_only(tmp_path: P
         assert index.execute(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE session_id = ?", (session_b,)
         ).fetchone() == (raw_id,)
+
+
+def test_quarantine_refinement_tolerates_prior_superseded_application_history(tmp_path: Path) -> None:
+    """polylogue-zaiz regression: an append-only decision history must not read as "competing".
+
+    Discovered live 2026-07-28 after deploying the fan-out scoping fix
+    (#3371): the 3 real stuck sessions still failed inspection, now with
+    "competing raw-revision application authority exists" instead of the
+    old scoping crash. ``raw_revision_applications`` is an append-only
+    decision log (per ``_inspect_duplicate_raw_identity``'s own docstring:
+    "an immutable row is append-only ... ordering by it to find the
+    'latest' decision ... is meaningless") -- every session with more than
+    one historical revision-authority decision accumulates multiple rows
+    for the SAME logical_source_key, including rows about OTHER raw_ids
+    that cite THIS raw as their own superseded predecessor
+    (``accepted_raw_id = this raw``). The prior query matched
+    ``raw_id = ? OR accepted_raw_id = ?``, so it always found more than one
+    row for any session with real history -- not just fan-out siblings.
+    Scoping strictly to ``raw_id = ?`` (this raw's own receipt) fixes it.
+    """
+    raw_id, heads = _seed_quarantined_raw_fanout(tmp_path)
+    (session_a, key_a), (_session_b, _key_b) = heads
+
+    # Simulate a real revision history: an EARLIER decision superseded some
+    # other (unrelated) raw in favor of THIS raw for the same logical
+    # source key -- a legitimate, already-resolved historical event that
+    # must not make this raw's own current receipt look "competing".
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    record_revision_application_sync(
+        index_conn,
+        RevisionApplicationReceipt(
+            raw_id="a" * 64,
+            session_id=session_a,
+            logical_source_key=key_a,
+            source_revision="b" * 64,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SUPERSEDED,
+            accepted_raw_id=raw_id,
+            accepted_source_revision="c" * 64,
+            accepted_content_hash=bytes(32),
+            accepted_frontier_kind="byte",
+            accepted_frontier=1,
+            baseline_raw_id=raw_id,
+            detail="historical: an earlier unrelated raw superseded in favor of this one",
+        ),
+        decided_at_ms=1,
+    )
+    index_conn.commit()
+    index_conn.close()
+
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == raw_id and item.logical_source_key == key_a)
+
+    assert selected.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert selected.actuator is RawAuthorityActuator.REFINE_QUARANTINE
+    assert selected.executable
