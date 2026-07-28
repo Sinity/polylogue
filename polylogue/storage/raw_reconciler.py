@@ -19,7 +19,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
@@ -80,6 +80,24 @@ _EXECUTABLE_STATES = {
 }
 
 _VERIFIED_BLOB_STATS: dict[str, tuple[int, int, int, int, int]] = {}
+
+_ChunkT = TypeVar("_ChunkT")
+
+_QUARANTINE_OVERRIDE_KEY_SEP = "\x00"
+
+
+def _quarantine_override_key(raw_id: str, logical_source_key: str) -> str:
+    """Session-scoped override key (polylogue-zaiz): distinct from bare raw_id keys.
+
+    Browser-origin/conflict overrides stay keyed by bare raw_id (those
+    proofs are properties of the raw itself, not per-session) -- only
+    quarantine-refinement needs per-session scoping, so this uses a
+    reserved separator no real raw_id/logical_source_key can contain
+    (raw_ids are hex digests; logical_source_keys are colon-joined
+    provider identifiers) to guarantee it never collides with a bare
+    raw_id key.
+    """
+    return f"{raw_id}{_QUARANTINE_OVERRIDE_KEY_SEP}{logical_source_key}"
 
 
 def _canonical_json(value: object) -> str:
@@ -197,7 +215,7 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict[str, object]]:
     return [{name: _json_value(value) for name, value in zip(names, row, strict=True)} for row in cursor.fetchall()]
 
 
-def _chunks(values: Sequence[str], size: int = 100) -> Iterator[list[str]]:
+def _chunks(values: Sequence[_ChunkT], size: int = 100) -> Iterator[list[_ChunkT]]:
     """Yield bounded strategy-proof requests in deterministic order."""
     for start in range(0, len(values), size):
         yield list(values[start : start + size])
@@ -644,18 +662,26 @@ def _strategy_overrides(
                 ),
                 input_raw_ids=tuple(sorted({conflict_item.raw_id, conflict_item.competing_raw_id})),
             )
-    quarantine_ids = sorted(
+    # (raw_id, logical_source_key) pairs, not bare raw_ids: a fan-out raw
+    # shared by several sessions (polylogue-zaiz, mirroring polylogue-ihc8)
+    # needs a proof scoped to each session, not one shared proof that
+    # either raises "expected one accepted head, found N" for every
+    # sibling or silently proves a witness against the wrong session's
+    # head. Override keys below therefore include the logical_source_key.
+    quarantine_pairs = sorted(
         {
-            str(row["accepted_raw_id"])
+            (str(row["accepted_raw_id"]), str(row["logical_source_key"]))
             for row in rows
-            if row.get("revision_authority") == "quarantined" and str(row["accepted_raw_id"]) not in browser_ids
+            if row.get("revision_authority") == "quarantined"
+            and str(row["accepted_raw_id"]) not in browser_ids
+            and row.get("logical_source_key") is not None
         }
     )
-    for quarantine_chunk in _chunks(quarantine_ids):
+    for quarantine_chunk in _chunks(quarantine_pairs, size=100):
         quarantine_items = inspect_quarantined_accepted_raws(config, quarantine_chunk)
-        for quarantine_item in quarantine_items:
+        for (raw_id, logical_source_key), quarantine_item in zip(quarantine_chunk, quarantine_items, strict=True):
             if quarantine_item.status in {"eligible", "already_repaired"}:
-                overrides[quarantine_item.raw_id] = _StrategyOverride(
+                overrides[_quarantine_override_key(raw_id, logical_source_key)] = _StrategyOverride(
                     state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
                     actuator=RawAuthorityActuator.REFINE_QUARANTINE,
                     reason="quarantined-raw strategy proved exact accepted-byte and semantic authority",
@@ -965,10 +991,17 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         head_rows = _frontier_rows(conn)
         overrides = _strategy_overrides(config, head_rows)
-        head_items = [
-            _classify_frontier(conn, BlobStore(root / "blob"), row, overrides.get(str(row["accepted_raw_id"])))
-            for row in head_rows
-        ]
+
+        def _override_for(row: dict[str, object]) -> _StrategyOverride | None:
+            raw_id = str(row["accepted_raw_id"])
+            logical_source_key = row.get("logical_source_key")
+            if logical_source_key is not None:
+                scoped = overrides.get(_quarantine_override_key(raw_id, str(logical_source_key)))
+                if scoped is not None:
+                    return scoped
+            return overrides.get(raw_id)
+
+        head_items = [_classify_frontier(conn, BlobStore(root / "blob"), row, _override_for(row)) for row in head_rows]
         superseded_items = _terminal_superseded_items(conn)
     all_items = _apply_judgment_dispositions(config, (*head_items, *superseded_items))
     return (
@@ -1253,6 +1286,9 @@ def _apply_strategy(
             }
         )
     if item.actuator is RawAuthorityActuator.REFINE_QUARANTINE:
+        if item.logical_source_key is None:
+            raise RuntimeError("quarantine-refinement plan is missing the logical source key it was proven against")
+        logical_source_key = item.logical_source_key
         with RebuildLease(root), closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
             source_conn.execute("PRAGMA foreign_keys = ON")
             _attach_repair_index(source_conn, index_db)
@@ -1265,17 +1301,46 @@ def _apply_strategy(
                     raise RuntimeError(
                         f"quarantine repair blob budget refused {item.raw_id}: {budget_excluded[0].reason}"
                     )
-                quarantine_locked = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
+                quarantine_locked = _inspect_quarantined_accepted_raw(
+                    root, item.raw_id, conn=source_conn, logical_source_key=logical_source_key
+                )
+                if quarantine_locked.status == "ineligible":
+                    # polylogue-zaiz: mirrors the fold_duplicate_alias
+                    # batch-race fix (polylogue-ewfp, #3369). A fan-out raw
+                    # shared by several sessions can have more than one
+                    # sibling selected together in the same apply batch
+                    # (all looked eligible at the pre-apply census
+                    # snapshot); once one sibling's refinement commits,
+                    # every other sibling's own re-inspection legitimately
+                    # finds "ineligible" -- permanently, not transiently.
+                    # The witness comparison below is skipped deliberately:
+                    # it exists to catch drift that would invalidate an
+                    # ELIGIBLE refinement between census and apply, which
+                    # does not apply once no refinement is being attempted
+                    # at all.
+                    source_conn.commit()
+                    return json_document(
+                        {
+                            "strategy": item.actuator.value,
+                            "repaired_count": 0,
+                            "already_repaired_count": 0,
+                            "ineligible_reason": quarantine_locked.reason,
+                        }
+                    )
                 if _quarantine_strategy_witness(quarantine_locked) != item.strategy_witness:
                     raise RuntimeError("quarantine strategy proof changed after plan authorization")
                 if quarantine_locked.status == "eligible" and quarantine_locked.census_stage_raw_ids:
                     _stage_quarantined_census_cohort(source_conn, quarantine_locked)
-                    quarantine_locked = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
+                    quarantine_locked = _inspect_quarantined_accepted_raw(
+                        root, item.raw_id, conn=source_conn, logical_source_key=logical_source_key
+                    )
                 if quarantine_locked.status == "eligible":
                     _cas_refine_quarantined_accepted_raw(source_conn, quarantine_locked)
                 elif quarantine_locked.status != "already_repaired":
                     raise RuntimeError(f"quarantine strategy lost its exact proof: {quarantine_locked.reason}")
-                quarantine_after = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
+                quarantine_after = _inspect_quarantined_accepted_raw(
+                    root, item.raw_id, conn=source_conn, logical_source_key=logical_source_key
+                )
                 if quarantine_after.status != "already_repaired":
                     raise RuntimeError("quarantine strategy did not reach its typed terminal postcondition")
                 source_conn.commit()
