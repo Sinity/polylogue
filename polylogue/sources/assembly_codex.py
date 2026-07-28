@@ -229,6 +229,8 @@ class CodexAssemblySpec:
                     update={
                         "title": name,
                         "title_source": TitleSource.ORIGIN,
+                        "title_ref": f"codex-thread-name:{cid}",
+                        "title_confidence": 1.0,
                     }
                 )
             return conv
@@ -247,6 +249,8 @@ class CodexAssemblySpec:
                     update={
                         "title": preview,
                         "title_source": TitleSource.ORIGIN,
+                        "title_ref": f"codex-history:{cid}",
+                        "title_confidence": 0.9,
                     }
                 )
 
@@ -263,6 +267,8 @@ class CodexAssemblySpec:
                     update={
                         "title": preview,
                         "title_source": TitleSource.ORIGIN,
+                        "title_ref": f"codex-state-db:{cid}",
+                        "title_confidence": 0.75,
                     }
                 )
 
@@ -278,6 +284,8 @@ class CodexAssemblySpec:
                     update={
                         "title": preview,
                         "title_source": TitleSource.HEURISTIC,
+                        "title_ref": f"message:{msg.provider_message_id}",
+                        "title_confidence": 0.5,
                     }
                 )
 

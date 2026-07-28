@@ -259,6 +259,13 @@ class ParsedSession(BaseModel):
     parent_session_provider_id: str | None = None
     branch_type: BranchType | None = None
     title_source: TitleSource | None = None
+    # Specific provenance beyond title_source's coarse strategy label: which
+    # exact evidence row won, and a 0..1 confidence signal for it
+    # (polylogue-ih67). Optional -- most parsers leave both None and only
+    # title_source is set; assemblies that resolve title from a specific
+    # dated row (Codex thread name / history / state db / message) set both.
+    title_ref: str | None = None
+    title_confidence: float | None = None
     instructions_text: str | None = None
     reported_duration_ms: int | None = None
     reported_cost_usd: float | None = None

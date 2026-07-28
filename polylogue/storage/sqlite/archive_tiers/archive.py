@@ -371,6 +371,8 @@ class ArchiveSessionSummary:
     assistant_word_count: int = 0
     working_directories: tuple[str, ...] = ()
     title_source: str | None = None
+    title_ref: str | None = None
+    title_confidence: float | None = None
     git_branch: str | None = None
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
@@ -5403,7 +5405,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.title_source, s.git_branch, s.git_repository_url, s.provider_project_ref,
+                   s.title_source, s.title_ref, s.title_confidence, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -7748,7 +7750,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.title_source, s.git_branch, s.git_repository_url, s.provider_project_ref,
+                   s.title_source, s.title_ref, s.title_confidence, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -10163,6 +10165,8 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         origin=origin,
         title=str(row["title"]) if row["title"] is not None else None,
         title_source=str(row["title_source"]) if row["title_source"] is not None else None,
+        title_ref=str(row["title_ref"]) if row["title_ref"] is not None else None,
+        title_confidence=(float(row["title_confidence"]) if row["title_confidence"] is not None else None),
         session_kind=str(row["session_kind"] or "standard"),
         created_at=_iso_from_ms(row["created_at_ms"]),
         updated_at=_iso_from_ms(row["updated_at_ms"]),

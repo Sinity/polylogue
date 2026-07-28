@@ -1272,6 +1272,18 @@ components:
           - type: 'null'
           default: null
           title: Title Source
+        title_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title Ref
+        title_confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Title Confidence
         message_count:
           title: Message Count
           type: integer
@@ -1523,6 +1535,18 @@ components:
           - type: 'null'
           default: null
           title: Title Source
+        title_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title Ref
+        title_confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Title Confidence
         target_ref:
           anyOf:
           - $ref: '#/components/schemas/TargetRefPayload'

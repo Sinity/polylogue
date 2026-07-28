@@ -860,6 +860,8 @@ class SessionSummaryPayload(SurfacePayloadModel):
     origin: str
     title: str
     title_source: str | None = None
+    title_ref: str | None = None
+    title_confidence: float | None = None
     message_count: int
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
@@ -875,6 +877,8 @@ class SessionSummaryPayload(SurfacePayloadModel):
             origin=session.origin,
             title=session.display_title,
             title_source=session.title_source.value if session.title_source else None,
+            title_ref=session.title_ref,
+            title_confidence=session.title_confidence,
             message_count=len(session.messages),
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
@@ -895,6 +899,8 @@ class SessionSummaryPayload(SurfacePayloadModel):
             origin=summary.origin,
             title=summary.display_title,
             title_source=summary.title_source.value if summary.title_source else None,
+            title_ref=summary.title_ref,
+            title_confidence=summary.title_confidence,
             message_count=summary.message_count or 0 if message_count is None else message_count,
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
@@ -942,6 +948,8 @@ class SessionListRowPayload(SurfacePayloadModel):
     origin: str
     title: str
     title_source: str | None = None
+    title_ref: str | None = None
+    title_confidence: float | None = None
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
     actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
@@ -974,6 +982,8 @@ class SessionListRowPayload(SurfacePayloadModel):
             origin=session.origin,
             title=session.display_title,
             title_source=session.title_source.value if session.title_source else None,
+            title_ref=session.title_ref,
+            title_confidence=session.title_confidence,
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
             created_at=created_at,
@@ -1006,6 +1016,8 @@ class SessionListRowPayload(SurfacePayloadModel):
             origin=summary.origin,
             title=summary.display_title,
             title_source=summary.title_source.value if summary.title_source else None,
+            title_ref=summary.title_ref,
+            title_confidence=summary.title_confidence,
             target_ref=TargetRefPayload.session(session_id),
             anchor=reader_anchor("session", session_id),
             created_at=created_at,

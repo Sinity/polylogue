@@ -159,6 +159,8 @@ class ArchiveSessionEnvelope:
     root_session_id: str | None = None
     branch_type: str | None = None
     title_source: str | None = None
+    title_ref: str | None = None
+    title_confidence: float | None = None
     instructions_text: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -511,14 +513,15 @@ def write_parsed_session_to_archive(
                 """
                 INSERT INTO sessions (
                     native_id, origin, raw_id, branch_type, active_leaf_message_id,
-                    title, session_kind, title_source, git_branch, git_repository_url, commit_hash,
+                    title, session_kind, title_source, title_ref, title_confidence,
+                    git_branch, git_repository_url, commit_hash,
                     instructions_text, reported_duration_ms, provider_project_ref,
                     message_count, word_count, tool_use_count, thinking_count,
                     paste_count, user_message_count, authored_user_message_count,
                     assistant_message_count, system_message_count,
                     tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                     content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
                     branch_type = excluded.branch_type,
@@ -526,6 +529,8 @@ def write_parsed_session_to_archive(
                     title = COALESCE(excluded.title, sessions.title),
                     session_kind = excluded.session_kind,
                     title_source = COALESCE(excluded.title_source, sessions.title_source),
+                    title_ref = COALESCE(excluded.title_ref, sessions.title_ref),
+                    title_confidence = COALESCE(excluded.title_confidence, sessions.title_confidence),
                     git_branch = excluded.git_branch,
                     git_repository_url = excluded.git_repository_url,
                     commit_hash = excluded.commit_hash,
@@ -548,6 +553,8 @@ def write_parsed_session_to_archive(
                     _sqlite_text(session.title),
                     _enum_value(session.session_kind) or SessionKind.STANDARD.value,
                     _enum_value(session.title_source),
+                    _sqlite_text(session.title_ref),
+                    session.title_confidence,
                     _sqlite_text(session.git_branch),
                     _sqlite_text(session.git_repository_url),
                     _sqlite_text(session.git_commit_hash),
@@ -1091,7 +1098,7 @@ def read_archive_session_envelope(
         """
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
-               title_source, instructions_text,
+               title_source, title_ref, title_confidence, instructions_text,
                created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref
         FROM sessions
         WHERE session_id = ?
@@ -1275,6 +1282,8 @@ def read_archive_session_envelope(
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],
         title_source=session["title_source"],
+        title_ref=session["title_ref"],
+        title_confidence=session["title_confidence"],
         instructions_text=session["instructions_text"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),
@@ -1465,7 +1474,7 @@ def read_archive_session_page(
         """
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
-               title_source, instructions_text,
+               title_source, title_ref, title_confidence, instructions_text,
                created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref
         FROM sessions
         WHERE session_id = ?
@@ -1531,6 +1540,8 @@ def read_archive_session_page(
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],
         title_source=session["title_source"],
+        title_ref=session["title_ref"],
+        title_confidence=session["title_confidence"],
         instructions_text=session["instructions_text"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),
