@@ -345,11 +345,11 @@ def _clamp_limit(requested: int | None) -> int:
 
 
 def _archive_index_path_for() -> str | None:
-    from polylogue.paths import sibling_index_db
-
+    # active_index_db_path() always names "index.db" (it raises otherwise),
+    # so the old sibling_index_db(path, require_exists=True) call was
+    # provably an identity-plus-existence-check on path itself.
     path = active_index_db_path()
-    index_db = sibling_index_db(path, require_exists=True)
-    return str(index_db) if index_db is not None else None
+    return str(path) if path.exists() else None
 
 
 def _build_archive_similar_payload(

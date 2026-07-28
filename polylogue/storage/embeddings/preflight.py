@@ -142,13 +142,25 @@ def read_pending_message_count(
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import archive_root, sibling_index_db
+    """Resolve the active index.db, preferring one alongside ``db_path`` itself.
 
-    index_db = sibling_index_db(db_path, require_exists=True)
-    if index_db is not None:
-        return index_db
-    configured_index_db = archive_root() / "index.db"
-    return configured_index_db if configured_index_db.exists() else None
+    ``db_path`` (an embedding preflight/backfill anchor) does not always live
+    inside the configured archive root -- callers may pass an arbitrary
+    tracking database. Try the archive rooted at ``db_path``'s own directory
+    first (mirrors the old sibling-derivation contract); fall back to the
+    globally configured archive root only when that fails, since that is a
+    genuinely different candidate location, not a redundant re-check.
+    """
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    sibling = ArchiveLocation.resolve(db_path.parent).active_index_path
+    if sibling.exists() and _is_archive_index(sibling):
+        return sibling
+    configured = ArchiveLocation.resolve(archive_root()).active_index_path
+    if configured.exists() and _is_archive_index(configured):
+        return configured
+    return None
 
 
 def _read_archive_pending_message_count(

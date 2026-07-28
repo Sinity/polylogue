@@ -270,18 +270,18 @@ def inspect_blob_publication_receipts(
     index_db_path: Path | None = None,
 ) -> tuple[BlobPublicationInspection, ...]:
     """Return every receipt with its current path/reference evidence."""
-    from polylogue.paths import sibling_index_db
+    from polylogue.storage.archive_identity import ArchiveLocation
 
     source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
-    source_conn.row_factory = sqlite3.Row
-    if index_db_path is not None:
-        resolved_index: Path = index_db_path
-    else:
-        sibling = sibling_index_db(source_db_path, require_exists=False)
-        resolved_index = sibling if sibling is not None else source_db_path.with_name("index.db")
-    index_conn = sqlite3.connect(f"file:{resolved_index}?mode=ro", uri=True) if resolved_index.exists() else None
-    store = BlobStore(blob_root)
+    index_conn: sqlite3.Connection | None = None
     try:
+        source_conn.row_factory = sqlite3.Row
+        if index_db_path is not None:
+            resolved_index: Path = index_db_path
+        else:
+            resolved_index = ArchiveLocation.resolve(source_db_path.parent).active_index_path
+        index_conn = sqlite3.connect(f"file:{resolved_index}?mode=ro", uri=True) if resolved_index.exists() else None
+        store = BlobStore(blob_root)
         if not _table_exists(source_conn, "blob_publication_reservations"):
             return ()
         rows = source_conn.execute(

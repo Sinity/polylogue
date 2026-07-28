@@ -685,17 +685,18 @@ def _fts_readiness_info() -> dict[str, object]:
 
 def _insight_freshness_info() -> dict[str, object]:
     """Check insight materialization status through bounded SQL counts."""
-    from polylogue.paths import sibling_index_db
-
+    # _active_status_db_path() always names "index.db" (resolve_active_index_path
+    # raises otherwise), so the old sibling_index_db(dbf, require_exists=False)
+    # call was provably an identity operation on dbf itself.
     dbf = _active_status_db_path()
     if not dbf.exists():
-        index_db = sibling_index_db(dbf, require_exists=False)
+        index_db: Path | None = dbf
         if index_db is not None:
             archive_info = _archive_insight_freshness_info(index_db)
             if archive_info is not None:
                 return archive_info
         return {"sessions_with_profiles": 0, "total_sessions": 0}
-    index_db = sibling_index_db(dbf, require_exists=False)
+    index_db = dbf
     if index_db is not None:
         archive_info = _archive_insight_freshness_info(index_db)
         if archive_info is not None:
@@ -1244,11 +1245,12 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
 
 def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     """Return recent durable live-ingest attempt snapshots."""
-    from polylogue.paths import sibling_index_db
-
+    # _active_status_db_path() always names "index.db", so the old
+    # sibling_index_db(dbf, require_exists=False) call was provably an
+    # identity operation on dbf itself.
     dbf = _active_status_db_path()
     ops_summary = _archive_live_ingest_attempt_summary_info(dbf.with_name("ops.db"))
-    index_db = sibling_index_db(dbf, require_exists=False)
+    index_db: Path | None = dbf
     if ((index_db is not None and index_db.exists()) or not dbf.exists()) and ops_summary is not None:
         return ops_summary
     if not dbf.exists():

@@ -198,10 +198,11 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
     "no raw artifact" state explicitly.
     """
 
-    from polylogue.paths import sibling_index_db
-
     dbp = active_index_db_path()
-    archive_db = sibling_index_db(dbp, require_exists=False)
+    # active_index_db_path() always names "index.db" (it raises otherwise),
+    # so the old sibling_index_db(dbp, require_exists=False) call was
+    # provably an identity operation on dbp itself -- no derivation needed.
+    archive_db: Path | None = dbp
     if archive_db is not None and archive_db.exists():
         return _fetch_archive_provenance_row(archive_db, session_id)
     if not dbp.exists() and archive_db is not None:

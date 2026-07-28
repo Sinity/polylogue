@@ -32,13 +32,13 @@ def test_find_call_sites_detects_a_seeded_call(tmp_path: Path) -> None:
 def test_unbaselined_call_sites_flags_a_file_outside_the_recorded_baseline(tmp_path: Path) -> None:
     """A call site in a file NOT already recorded in BASELINE_CALL_SITES must be flagged."""
     module = tmp_path / "fake_new_reader.py"
-    module.write_text("db_path = sibling_index_db(anchor)\n", encoding="utf-8")
+    module.write_text("root = archive_file_set_root_for_paths(anchor)\n", encoding="utf-8")
 
     hits = find_call_sites(roots=(tmp_path,))
     unbaselined = unbaselined_call_sites(hits, repo_root=tmp_path)
 
     assert len(unbaselined) == 1
-    assert unbaselined[0].function == "sibling_index_db"
+    assert unbaselined[0].function == "archive_file_set_root_for_paths"
     assert unbaselined[0].path == module
 
 

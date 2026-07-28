@@ -23,12 +23,15 @@ import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 import click
 
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.cli.shared.types import AppEnv
+
+if TYPE_CHECKING:
+    from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.embeddings.preflight import (
     PreflightReport,
     build_preflight_report,
@@ -69,29 +72,41 @@ def _build_preflight_report(
     )
 
 
-def _active_archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import archive_root, sibling_index_db
+def _active_archive_location(db_path: Path) -> ArchiveLocation | None:
+    """Resolve the active archive, preferring the one rooted at ``db_path`` itself.
 
-    candidates = []
-    # Try sibling_index_db first
-    sibling_db = sibling_index_db(db_path, require_exists=True)
-    if sibling_db is not None:
-        candidates.append(sibling_db)
-    # Also try archive_root as fallback
-    candidates.append(archive_root() / "index.db")
+    ``db_path`` (``env.config.db_path``) does not always live inside the
+    globally configured archive root -- callers may override it. Try the
+    archive rooted at ``db_path``'s own directory first; fall back to the
+    globally configured archive root only when that fails, since that is a
+    genuinely different candidate location, not a redundant re-check.
 
-    index_db = next((candidate for candidate in dict.fromkeys(candidates)), None)
-    if index_db is None:
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    Returns the whole :class:`ArchiveLocation`, not just the active index
+    path: an index-only external generation (an active ``.index-active-pointer``
+    naming a directory with no durable-tier siblings) has an index path whose
+    parent does NOT contain the archive's real ``embeddings.db`` -- callers
+    that need the embeddings tier must resolve it via
+    ``location.active_tier("embeddings")``, never by renaming the index path.
+    """
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    for candidate_root in dict.fromkeys((db_path.parent, archive_root())):
+        location = ArchiveLocation.resolve(candidate_root)
+        index_db = location.active_index_path
         try:
-            row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1").fetchone()
-            return index_db if row is not None else None
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
+            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1"
+                ).fetchone()
+                if row is not None:
+                    return location
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+    return None
 
 
 def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
@@ -299,10 +314,10 @@ def resolve_failure_subcommand(
 
     if not yes and not click.confirm(f"Apply {resolution} to embedding failure {failure_id}?", default=False):
         raise click.Abort()
-    index_db = _active_archive_index_path(env.config.db_path)
-    if index_db is None:
+    location = _active_archive_location(env.config.db_path)
+    if location is None:
         raise click.ClickException("index.db not found")
-    embeddings_db = index_db.with_name("embeddings.db")
+    embeddings_db = location.active_tier("embeddings").configured_path
     if not embeddings_db.exists():
         raise click.ClickException("embeddings.db not found")
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
@@ -602,20 +617,21 @@ def backfill_subcommand(
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")
         return
-    index_db = _active_archive_index_path(env.config.db_path)
-    if index_db is None:
+    location = _active_archive_location(env.config.db_path)
+    if location is None:
         click.echo(
             "Error: index.db not found. Initialize the archive tiers first.",
             err=True,
         )
         raise click.Abort()
+    index_db = location.active_index_path
 
     if rebuild:
         from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
 
         mark_all_archive_sessions_needs_reindex(index_db)
 
-    embeddings_db = index_db.with_name("embeddings.db")
+    embeddings_db = location.active_tier("embeddings").configured_path
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -633,6 +649,7 @@ def backfill_subcommand(
     payload = _run_archive_backfill(
         env,
         index_db,
+        embeddings_db,
         vec_provider,
         report,
         rebuild=rebuild,
@@ -649,6 +666,7 @@ def backfill_subcommand(
 def _run_archive_backfill(
     env: AppEnv,
     index_db: Path,
+    embeddings_db: Path,
     vec_provider: object,
     report: PreflightReport,
     *,
@@ -659,6 +677,14 @@ def _run_archive_backfill(
     min_messages: int | None = None,
     output_format: str = "text",
 ) -> BackfillResultPayload:
+    """Run the embedding backfill loop.
+
+    ``embeddings_db`` is resolved by the caller via
+    ``ArchiveLocation.active_tier("embeddings")``, not derived from
+    ``index_db`` here -- an index-only external generation's ``index_db``
+    can live outside the configured archive root, and this tier must stay
+    rooted at the configured root regardless (see ``_active_archive_location``).
+    """
     from polylogue.core.protocols import VectorProvider
     from polylogue.storage.embeddings.materialization import (
         embed_archive_session_sync,
@@ -670,7 +696,6 @@ def _run_archive_backfill(
     )
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    embeddings_db = index_db.with_name("embeddings.db")
     conn = open_readonly_connection(index_db)
     try:
         if embeddings_db.exists():
