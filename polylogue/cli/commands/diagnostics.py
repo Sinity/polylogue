@@ -903,3 +903,91 @@ def latency_command(
             f"{b.surface[:10]:10s}  {b.route[:32]:32s}  {b.sample_count:6d}  {p50:>8s}  {p95:>8s}  "
             f"{b.error_count:7d}{flag}"
         )
+
+
+@diagnostics_group.command("codex-title-census")
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@click.option(
+    "--save",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write the computed census as JSON to this path (in addition to any other output).",
+)
+@click.option(
+    "--compare",
+    nargs=2,
+    type=click.Path(path_type=Path),
+    default=None,
+    metavar="BEFORE AFTER",
+    help="Compare two saved census snapshots (from --save) and report the delta. Does not read the live archive.",
+)
+@click.pass_context
+def codex_title_census_command(
+    ctx: click.Context,
+    json_output: bool,
+    save: Path | None,
+    compare: tuple[Path, Path] | None,
+) -> None:
+    """Report Codex UUID-title coverage: resolved/unresolved counts, reasons (polylogue-ih67 AC#6).
+
+    Privacy-safe and bounded: reads only structured ``sessions`` columns
+    (title vs native_id, title_source, message counts) -- never message
+    text, never file paths. Every still-UUID-titled session is classified
+    by structural reason (no messages materialized / no human-authored
+    message / not yet reprocessed with assembly / synthesis failed) instead
+    of an undifferentiated "unresolved" count, so this never claims 100%
+    coverage without naming what remains.
+    """
+    import json as _json
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.archive.codex_title_census import (
+        CodexTitleCensus,
+        compare_censuses,
+        compute_codex_title_census,
+    )
+    from polylogue.cli.shared.helpers import fail, load_effective_config
+
+    if compare is not None:
+        before_path, after_path = compare
+        before = CodexTitleCensus.from_dict(_json.loads(before_path.read_text(encoding="utf-8")))
+        after = CodexTitleCensus.from_dict(_json.loads(after_path.read_text(encoding="utf-8")))
+        delta = compare_censuses(before, after)
+        if json_output:
+            click.echo(_json.dumps(delta.to_dict(), indent=2))
+        else:
+            env: AppEnv = ctx.obj
+            env.ui.console.print(f"Before: {before.resolved_count}/{before.total_codex_sessions} resolved")
+            env.ui.console.print(f"After:  {after.resolved_count}/{after.total_codex_sessions} resolved")
+            env.ui.console.print(f"Newly resolved: {delta.newly_resolved_count}")
+        return
+
+    env = ctx.obj
+    config = load_effective_config(env)
+    index_db = config.archive_root / "index.db"
+    if not index_db.exists():
+        fail("codex-title-census", f"no index.db found at {index_db}")
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=2.0)) as conn:
+        census = compute_codex_title_census(conn)
+
+    if save is not None:
+        save.write_text(_json.dumps(census.to_dict(), indent=2), encoding="utf-8")
+
+    if json_output:
+        click.echo(_json.dumps(census.to_dict(), indent=2))
+        return
+
+    env.ui.console.print(f"Codex sessions: {census.total_codex_sessions}")
+    env.ui.console.print(
+        f"Resolved: {census.resolved_count} ({census.resolved_fraction:.1%})  Unresolved: {census.unresolved_count}"
+    )
+    if census.resolved_by_title_source:
+        env.ui.console.print("Resolved by title_source:")
+        for source, count in sorted(census.resolved_by_title_source.items()):
+            env.ui.console.print(f"  {source}: {count}")
+    if census.unresolved_by_reason:
+        env.ui.console.print("Unresolved by reason:")
+        for reason, count in sorted(census.unresolved_by_reason.items()):
+            env.ui.console.print(f"  {reason}: {count}")
