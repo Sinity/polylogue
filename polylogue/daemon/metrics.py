@@ -982,7 +982,14 @@ def format_metrics(
 
     uptime_s = uptime_seconds(now_monotonic=now_monotonic)
     lines: list[str] = []
-    index_db = ArchiveLocation.resolve(db.parent).active_index_path
+    # ``configured_root`` stays fixed at db's original parent even though
+    # ``db`` itself gets reassigned below to the active index path -- an
+    # index-only external generation is explicitly allowed to have no
+    # sibling tiers of its own, so ops.db/source.db/embeddings.db/user.db
+    # must always resolve against the configured root, never against
+    # wherever the active index generation happens to physically live.
+    configured_root = db.parent
+    index_db = ArchiveLocation.resolve(configured_root).active_index_path
     if index_db.exists():
         db = index_db
 
@@ -1023,8 +1030,8 @@ def format_metrics(
             )
         ],
     )
-    _emit_archive_storage_metrics(lines, db)
-    _emit_hook_flow_metrics(lines, db)
+    _emit_archive_storage_metrics(lines, db, configured_root=configured_root)
+    _emit_hook_flow_metrics(lines, configured_root)
 
     from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
 
@@ -1047,7 +1054,7 @@ def format_metrics(
     )
 
     if not db.exists():
-        ops_body = _format_ops_only_metrics(lines, db.with_name("ops.db"))
+        ops_body = _format_ops_only_metrics(lines, configured_root / "ops.db")
         if ops_body is not None:
             return ops_body
         # Fresh install — emit the discovery skeleton with zeros so the
@@ -1104,7 +1111,7 @@ def format_metrics(
 
     conn = open_readonly_connection(db)
     try:
-        ops_db = db.with_name("ops.db")
+        ops_db = configured_root / "ops.db"
         attempts = _attempt_counts(conn, ops_db=ops_db)
         _emit_metric(
             lines,
@@ -1229,8 +1236,8 @@ def format_metrics(
         _emit_archive_metrics(lines, conn)
         _emit_throughput_metrics(lines, conn, ops_db=ops_db)
         _emit_db_space_metrics(lines, db)
-        _emit_raw_record_metrics(lines, conn, db_path=db)
-        _emit_archive_source_index_link_metrics(lines, conn, db_path=db)
+        _emit_raw_record_metrics(lines, conn, db_path=configured_root / "index.db")
+        _emit_archive_source_index_link_metrics(lines, conn, db_path=configured_root / "index.db")
 
     finally:
         conn.close()
@@ -1340,13 +1347,13 @@ def _emit_archive_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
         _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
 
 
-def _emit_hook_flow_metrics(lines: list[str], db: Path) -> None:
+def _emit_hook_flow_metrics(lines: list[str], configured_root: Path) -> None:
     """Emit bounded hook wiring/liveness gauges from the shared projection."""
 
     from polylogue.hooks import flow_states, hook_statuses
 
     try:
-        statuses = hook_statuses(coverage=True, archive_root_path=db.parent)
+        statuses = hook_statuses(coverage=True, archive_root_path=configured_root)
     except Exception as exc:
         # statuses=() reads identically to "no hooks configured" on the
         # emitted gauges. Log so a hook_statuses() bug doesn't masquerade as
@@ -1655,10 +1662,17 @@ def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
         logger.warning("metrics: db-space query failed for %s: %s", db, exc, exc_info=True)
 
 
-def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
-    root = db.parent
+def _emit_archive_storage_metrics(lines: list[str], db: Path, *, configured_root: Path) -> None:
+    """Emit tier-presence/schema metrics.
+
+    ``db`` is the currently active db connection path (used only to classify
+    which tier role, if any, it plays via ``active_tier_role``); the durable
+    tier siblings (ops/source/user/embeddings) always live under
+    ``configured_root``, which an index-only external generation is
+    explicitly allowed to diverge from.
+    """
     tier_paths = [
-        (tier, root / filename, expected_version, backup_required)
+        (tier, configured_root / filename, expected_version, backup_required)
         for tier, filename, expected_version, backup_required in _ARCHIVE_TIER_FILES
     ]
     present = {tier: path.exists() for tier, path, _expected_version, _backup_required in tier_paths}
@@ -1723,7 +1737,7 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
         schema_mismatches=schema_mismatches,
         missing_backup_required=missing_backup_required,
     )
-    active_rebuild_attempts = active_rebuild_index_attempts(root / "ops.db")
+    active_rebuild_attempts = active_rebuild_index_attempts(configured_root / "ops.db")
     materialization_blockers = ["active_rebuild_index"] if active_rebuild_attempts else []
     archive_ready = physical_archive_store and not blockers and not materialization_blockers
     _emit_metric(

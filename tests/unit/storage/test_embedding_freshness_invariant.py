@@ -179,7 +179,7 @@ def test_manual_backfill_mutation_restoring_stale_check_bypass_misses_changed_co
     from polylogue.cli.commands import embed as embed_command
     from polylogue.storage.embeddings import materialization
 
-    index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
+    index_db, embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
     selected: list[str] = []
 
     def _observe_embed(_index_db: Path, _provider: object, selected_session_id: str) -> EmbedSessionOutcome:
@@ -205,6 +205,7 @@ def test_manual_backfill_mutation_restoring_stale_check_bypass_misses_changed_co
     payload = embed_command._run_archive_backfill(
         env,
         index_db,
+        embeddings_db,
         object(),
         report,
         rebuild=False,

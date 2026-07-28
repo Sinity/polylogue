@@ -155,10 +155,12 @@ def _archive_index_path(db_path: Path) -> Path | None:
     from polylogue.storage.archive_identity import ArchiveLocation
 
     sibling = ArchiveLocation.resolve(db_path.parent).active_index_path
-    if sibling.exists():
+    if sibling.exists() and _is_archive_index(sibling):
         return sibling
     configured = ArchiveLocation.resolve(archive_root()).active_index_path
-    return configured if configured.exists() else None
+    if configured.exists() and _is_archive_index(configured):
+        return configured
+    return None
 
 
 def _read_archive_pending_message_count(
