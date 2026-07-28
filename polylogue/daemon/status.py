@@ -559,20 +559,36 @@ def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
 
 
 def _archive_storage_info() -> ArchiveStorageStatus:
-    from polylogue.storage.archive_identity import ArchiveIdentity, archive_identity_conflicts
+    from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, archive_identity_conflicts
 
     active_db = _active_status_db_path()
     configured_root = archive_root()
-    root = _archive_storage_root(configured_root=configured_root, active_db=active_db)
+    configured_location = ArchiveLocation.resolve(configured_root)
+    conflicts: tuple[ArchiveIdentity, ...]
+    if configured_location.active_index_path == active_db:
+        # ``active_db`` is exactly what configured_root's own resolution
+        # (a direct index.db file, or its ``.index-active-pointer`` when a
+        # b5l-style index-only generation is active) names on its own.
+        # Durable tiers must be read from ``configured_root`` itself here --
+        # never derived as siblings of wherever the active index generation
+        # happens to physically live (polylogue-ovme.2 AC1): an index-only
+        # generation carries no durable-tier siblings of its own.
+        root = configured_root
+        location = configured_location
+        conflicts = ()
+    else:
+        # ``active_db`` names a location configured_root's own resolution
+        # would never produce on its own (an explicit --db/POLYLOGUE_DB
+        # override pointing at an unrelated file set) -- treat it as its
+        # own candidate archive root and detect a genuine identity conflict
+        # against the configured archive.
+        root = active_db.parent if active_db.name == "index.db" else configured_root
+        location = ArchiveLocation.resolve(root)
+        conflicts = archive_identity_conflicts(configured_root=configured_root, active_root=root)
     tier_paths: dict[Literal["source", "index", "embeddings", "user", "ops"], Path] = {
-        "source": root / "source.db",
-        "index": root / "index.db",
-        "embeddings": root / "embeddings.db",
-        "user": root / "user.db",
-        "ops": root / "ops.db",
+        name: location.active_tier(name).configured_path for name in ("source", "index", "embeddings", "user", "ops")
     }
-    identity = ArchiveIdentity.resolve(root)
-    conflicts = archive_identity_conflicts(configured_root=configured_root, active_root=root)
+    identity = ArchiveIdentity.resolve_location(location)
     tiers = [_archive_tier_status(name, path) for name, path in tier_paths.items()]
     identity_by_name = {tier.name: tier for tier in identity.tiers}
     tiers = [
@@ -619,12 +635,6 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         identity=identity.as_dict(unit="polylogued.service"),
         identity_conflicts=[conflict.as_dict(unit="polylogued.service") for conflict in conflicts],
     )
-
-
-def _archive_storage_root(*, configured_root: Path, active_db: Path) -> Path:
-    if active_db.parent != configured_root and active_db.name == "index.db":
-        return active_db.parent
-    return configured_root
 
 
 def _archive_tier_status(
