@@ -70,28 +70,32 @@ def _build_preflight_report(
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import archive_root, sibling_index_db
+    """Resolve the active ``index.db``, preferring one alongside ``db_path`` itself.
 
-    candidates = []
-    # Try sibling_index_db first
-    sibling_db = sibling_index_db(db_path, require_exists=True)
-    if sibling_db is not None:
-        candidates.append(sibling_db)
-    # Also try archive_root as fallback
-    candidates.append(archive_root() / "index.db")
+    ``db_path`` (``env.config.db_path``) does not always live inside the
+    globally configured archive root -- callers may override it. Try the
+    archive rooted at ``db_path``'s own directory first; fall back to the
+    globally configured archive root only when that fails, since that is a
+    genuinely different candidate location, not a redundant re-check.
+    """
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import ArchiveLocation
 
-    index_db = next((candidate for candidate in dict.fromkeys(candidates)), None)
-    if index_db is None:
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    for candidate_root in dict.fromkeys((db_path.parent, archive_root())):
+        index_db = ArchiveLocation.resolve(candidate_root).active_index_path
         try:
-            row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1").fetchone()
-            return index_db if row is not None else None
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
+            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1"
+                ).fetchone()
+                if row is not None:
+                    return index_db
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+    return None
 
 
 def _render_preflight(env: AppEnv, report: PreflightReport) -> None:

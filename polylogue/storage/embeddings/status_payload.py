@@ -434,9 +434,10 @@ def _iso_from_epoch_ms(value: object) -> str | None:
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import sibling_index_db
+    from polylogue.storage.archive_identity import ArchiveLocation
 
-    return sibling_index_db(db_path, require_exists=True)
+    index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
+    return index_db if index_db.exists() else None
 
 
 def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_sessions: int) -> float:

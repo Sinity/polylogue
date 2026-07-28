@@ -205,7 +205,6 @@ class TestPathsPublicBoundary:
             "hooks_sidecar_dir",
             "index_db_path",
             "render_root",
-            "sibling_index_db",
             "archive_file_set_root_for_paths",
             "archive_file_set_index_available_for_paths",
             "source_db_path",

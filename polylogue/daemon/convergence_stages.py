@@ -1208,10 +1208,18 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection) -> bool:
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import sibling_index_db
+    """Resolve the active ``index.db`` for the archive rooted at ``db_path``'s directory.
 
-    index_db = sibling_index_db(db_path, require_exists=True)
-    if index_db is None:
+    ``db_path`` always lives directly in the archive root (whether it names
+    ``index.db``, ``source.db``, or another tier file), so ``db_path.parent``
+    is the archive root -- this mirrors ``ArchiveLocation``'s own resolution
+    instead of blindly renaming ``db_path`` to ``index.db`` in place, so an
+    active ``.index-active-pointer`` generation is still followed correctly.
+    """
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
+    if not index_db.exists():
         return None
     try:
         conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0)

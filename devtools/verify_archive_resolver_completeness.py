@@ -19,7 +19,12 @@ resolution instead of delegating to it:
   ``polylogue.storage.archive_identity.resolve_active_index_path`` directly,
   and the function itself is deleted from ``_roots.py``.
 * ``sibling_index_db()`` -- the literal sibling-derivation-from-anchor-parent
-  anti-pattern (16 call sites).
+  anti-pattern (16 call sites). **Fully migrated and removed by
+  polylogue-l2cd**: every call site now resolves through
+  ``polylogue.storage.archive_identity.ArchiveLocation`` directly (or, where
+  the anchor was provably already the resolved active index path, the
+  now-dead derivation was simply dropped), and the function itself is
+  deleted from ``_roots.py``.
 * ``archive_file_set_root_for_paths()`` -- derives an archive root from
   ``db_anchor.parent`` when the anchor names ``index.db`` (27 call sites).
 
@@ -113,24 +118,6 @@ BASELINE_CALL_SITES: dict[str, frozenset[str]] = {
             "tests/unit/core/test_paths.py",
             "tests/unit/daemon/test_provenance_endpoint.py",
             "tests/unit/daemon/test_similarity_endpoint.py",
-        }
-    ),
-    "sibling_index_db": frozenset(
-        {
-            "polylogue/cli/commands/embed.py",
-            "polylogue/cli/commands/status.py",
-            "polylogue/daemon/convergence_stages.py",
-            "polylogue/daemon/embedding_backlog.py",
-            "polylogue/daemon/embedding_readiness.py",
-            "polylogue/daemon/fts_status.py",
-            "polylogue/daemon/metrics.py",
-            "polylogue/daemon/provenance.py",
-            "polylogue/daemon/similarity.py",
-            "polylogue/daemon/status.py",
-            "polylogue/sources/live/hook_paste_enrichment.py",
-            "polylogue/storage/blob_publication.py",
-            "polylogue/storage/embeddings/preflight.py",
-            "polylogue/storage/embeddings/status_payload.py",
         }
     ),
     "archive_file_set_root_for_paths": frozenset(
@@ -246,8 +233,7 @@ def _format_report(*, hits: list[ResolverCallSite], unbaselined: list[Unbaseline
         lines.append("")
         lines.append(
             "Policy violation: a new call site of a duplicate archive-path resolver "
-            "(active_index_db_path/resolve_active_index_db_path/sibling_index_db/"
-            "archive_file_set_root_for_paths) was introduced outside the recorded "
+            "(active_index_db_path/archive_file_set_root_for_paths) was introduced outside the recorded "
             "baseline. Route the new read through ArchiveLocation instead, or -- if "
             "the existing resolver is genuinely still the right tool -- add the file "
             "to BASELINE_CALL_SITES in devtools/verify_archive_resolver_completeness.py "

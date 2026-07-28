@@ -978,12 +978,12 @@ def format_metrics(
     tables. Missing tables degrade to zero samples rather than raising.
     Caller injects ``now_monotonic`` in tests to keep uptime stable.
     """
-    from polylogue.paths import sibling_index_db
+    from polylogue.storage.archive_identity import ArchiveLocation
 
     uptime_s = uptime_seconds(now_monotonic=now_monotonic)
     lines: list[str] = []
-    index_db = sibling_index_db(db, require_exists=True)
-    if index_db is not None:
+    index_db = ArchiveLocation.resolve(db.parent).active_index_path
+    if index_db.exists():
         db = index_db
 
     _emit_metric(

@@ -210,13 +210,14 @@ def _view_exists(conn: Any, view_name: str) -> bool:
 
 
 def _archive_index_path(db: Any) -> Any | None:
-    from polylogue.paths import sibling_index_db
-
     if not isinstance(db, Path):
         # Fallback for non-Path objects (shouldn't happen in practice)
         index_db = db if getattr(db, "name", None) == "index.db" else db.with_name("index.db")
         return index_db if index_db.exists() else None
-    return sibling_index_db(db, require_exists=True)
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    index_db = ArchiveLocation.resolve(db.parent).active_index_path
+    return index_db if index_db.exists() else None
 
 
 def _active_status_db(db: Any) -> Any | None:

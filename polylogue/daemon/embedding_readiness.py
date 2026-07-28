@@ -42,15 +42,15 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
     """Query embedding tables for bounded daemon status visibility."""
 
     cfg = polylogue_config.load_polylogue_config()
-    from polylogue.paths import sibling_index_db
+    from polylogue.storage.archive_identity import ArchiveLocation
 
     config_enabled = bool(cfg.embedding_enabled)
     has_key = cfg.voyage_api_key is not None
     enabled = config_enabled and has_key
     model = cfg.embedding_model
     dimension = cfg.embedding_dimension
-    index_db = sibling_index_db(db_file, require_exists=False)
-    if not db_file.exists() and (index_db is None or not index_db.exists()):
+    index_db = ArchiveLocation.resolve(db_file.parent).active_index_path
+    if not db_file.exists() and not index_db.exists():
         return _defaults(
             enabled=enabled,
             config_enabled=config_enabled,

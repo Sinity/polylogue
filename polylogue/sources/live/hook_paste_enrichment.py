@@ -84,9 +84,10 @@ def _hook_epoch_ms(event: dict[str, object]) -> float:
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import sibling_index_db
+    from polylogue.storage.archive_identity import ArchiveLocation
 
-    return sibling_index_db(db_path, require_exists=True)
+    index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
+    return index_db if index_db.exists() else None
 
 
 def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]]) -> int:
