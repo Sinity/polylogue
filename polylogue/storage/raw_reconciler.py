@@ -1148,6 +1148,40 @@ def _apply_strategy(
                 duplicate_locked = _inspect_duplicate_raw_identity(
                     conn, root, item.raw_id, canonical_ids[0], logical_source_key
                 )
+                if duplicate_locked.status == "ineligible":
+                    # polylogue-ewfp: a legitimate N:1 duplicate-alias fan-out
+                    # terminal outcome, not a transient apply failure.
+                    # Several sessions can share one stale raw as their
+                    # accepted head; only ONE fold can ever land on the
+                    # single available canonical twin. When several fan-out
+                    # siblings are selected together from one pre-apply
+                    # census snapshot (all looked executable before any of
+                    # them committed), a sibling earlier in this same batch
+                    # can already have claimed the canonical by the time
+                    # this plan's own apply runs -- this plan is now
+                    # permanently moot, not merely blocked pending a retry.
+                    # The witness comparison below is skipped deliberately:
+                    # it exists to catch data drift that would invalidate an
+                    # ELIGIBLE fold between census and apply, which does not
+                    # apply once the fold is no longer being attempted at
+                    # all. Committing this empty transaction and returning
+                    # normally (rather than raising) matches the existing
+                    # "already_repaired" no-mutation-but-resolved path
+                    # immediately below, so the caller records EXECUTED
+                    # (permanently resolved) instead of RETRYABLE -- which
+                    # previously required the postflight check to see this
+                    # exact plan_id survive unchanged forever, crashing
+                    # every subsequent raw-materialization pass that
+                    # reached this fan-out group.
+                    conn.commit()
+                    return json_document(
+                        {
+                            "strategy": item.actuator.value,
+                            "repaired_count": 0,
+                            "already_repaired_count": 0,
+                            "ineligible_reason": duplicate_locked.reason,
+                        }
+                    )
                 if _duplicate_strategy_witness(duplicate_locked) != item.strategy_witness:
                     raise RuntimeError("duplicate strategy proof changed after plan authorization")
                 if duplicate_locked.status == "eligible":

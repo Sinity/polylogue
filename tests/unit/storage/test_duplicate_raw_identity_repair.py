@@ -658,3 +658,57 @@ def test_duplicate_alias_ineligible_proof_does_not_crash_the_whole_census(
     assert sibling_item.actuator is RawAuthorityActuator.NONE
     assert not sibling_item.executable
     assert "already an accepted head" in sibling_item.reason
+
+
+def test_duplicate_alias_batch_race_does_not_crash_postflight(tmp_path: Path) -> None:
+    """polylogue-ewfp regression: applying BOTH fan-out siblings together must not crash.
+
+    At a single pre-apply census snapshot, the canonical raw is still
+    genuinely dangling for every fan-out sibling, so a batch selection can
+    (and, live, did) select more than one sibling's fold together in the
+    SAME ``apply_raw_authority_frontier`` call. The first plan applied
+    commits and claims the canonical; the second plan's own re-inspection
+    inside ``_apply_strategy`` then legitimately finds ``status="ineligible"``
+    (not a transient failure). Before the fix, this raised, which the
+    caller's generic exception handler labeled ``RETRYABLE`` -- an outcome
+    the postflight check then required to remain byte-identical forever,
+    crashing every subsequent raw-materialization pass that reached this
+    fan-out group (observed live: a 405s writer-lock hold ending in
+    "raw authority postflight changed a retryable/carried-forward plan").
+    The second plan must instead resolve as a permanent, non-retryable
+    no-op.
+    """
+    stale_raw_id, canonical_raw_id, heads = _seed_duplicate_raw_fanout(tmp_path)
+    (session_a, key_a), (session_b, key_b) = heads
+
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    duplicate_items = {
+        item.logical_source_key: item
+        for item in preview.items
+        if item.raw_id == stale_raw_id and item.state is RawAuthorityFrontierState.DUPLICATE_ALIAS
+    }
+    assert set(duplicate_items) == {key_a, key_b}
+
+    # The regression: selecting BOTH siblings together must not raise.
+    report = apply_raw_authority_frontier(
+        _config(tmp_path),
+        preview_census_id=preview.census_id,
+        selected_plan_ids=(duplicate_items[key_a].plan_id, duplicate_items[key_b].plan_id),
+    )
+
+    assert report.selected_plan_count == 2
+    assert report.executed_plan_count == 2
+    assert report.retryable_plan_count == 0
+    assert report.success
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        heads_by_key = dict(
+            conn.execute(
+                "SELECT logical_source_key, accepted_raw_id FROM raw_revision_heads WHERE logical_source_key IN (?, ?)",
+                (key_a, key_b),
+            ).fetchall()
+        )
+    # Exactly one sibling folded onto the canonical; the other's own head is
+    # untouched, still pointing at the (now-orphaned) stale raw -- correctly
+    # recognized as permanently ineligible rather than corrupted or retried.
+    assert sorted(heads_by_key.values()) == sorted((canonical_raw_id, stale_raw_id))
