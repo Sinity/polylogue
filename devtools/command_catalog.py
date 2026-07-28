@@ -14,6 +14,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab lanes",
     "lab policy backlog-hygiene",
     "lab policy bead-graph",
+    "lab policy campaign-archive-boundaries",
     "lab policy demo-packet-registry",
     "lab policy demo-tour-freshness",
     "lab policy docs-drift",
@@ -1261,6 +1262,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "instead of showing as uncovered."
         ),
         examples=("devtools lab policy insight-honesty", "devtools lab policy insight-honesty --json"),
+    ),
+    CommandSpec(
+        "lab policy campaign-archive-boundaries",
+        "verification lab",
+        "Verify devtools synthetic benchmark/scale campaigns route through ArchiveLocation.",
+        "devtools.verify_campaign_archive_boundaries",
+        use_when=(
+            "Catch a regression of the phantom-benchmark.db bug (polylogue-ovme.3): a campaign "
+            "reintroducing a 'benchmark.db' sentinel, an ad hoc tier-path sibling derivation, or "
+            "an entry point (generate_archive/run_full_campaign/run_campaign._run) that no longer "
+            "routes through CampaignArchiveLocation. Scoped to the devtools campaign boundary only "
+            "-- the broader storage/diagnostics/daemon/maintenance/transitions boundary audit is "
+            "polylogue-ovme.2's migration surface."
+        ),
+        examples=(
+            "devtools lab policy campaign-archive-boundaries",
+            "devtools lab policy campaign-archive-boundaries --json",
+        ),
     ),
     CommandSpec(
         "verify test-clock-hygiene",

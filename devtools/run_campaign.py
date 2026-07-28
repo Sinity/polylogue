@@ -68,6 +68,7 @@ async def _run(args: argparse.Namespace) -> int:
         run_full_campaign,
         run_synthetic_benchmark_campaign,
     )
+    from devtools.campaign_archive_location import CampaignArchiveLocation
     from devtools.campaign_report import save_campaign_reports
     from devtools.large_archive_generator import (
         ScaleLevel,
@@ -96,11 +97,19 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
 
         archive_dir = args.output / f"archive-{args.scale}"
-        db_path = archive_dir / "benchmark.db"
+
+        # CampaignArchiveLocation is acquired once and held for archive
+        # generation (if any) and the benchmark reopen below -- ownership,
+        # generation, and target tier stay stable across both steps
+        # (polylogue-ovme.3). A wrong/unowned archive_dir fails here, before
+        # any work starts.
         if args.campaign == "daemon-live-convergence":
             if archive_dir.exists():
                 shutil.rmtree(archive_dir)
             archive_dir.mkdir(parents=True, exist_ok=True)
+
+            with CampaignArchiveLocation.acquire(archive_dir) as location:
+                result = await run_synthetic_benchmark_campaign(args.campaign, location.active_index_path)
         else:
             level = ScaleLevel(args.scale)
             spec = get_default_spec(level)
@@ -112,13 +121,16 @@ async def _run(args: argparse.Namespace) -> int:
                 spec = replace(spec, seed=args.seed)
 
             print(f"Generating {args.scale} archive from {args.corpus_source} corpus source...")
-            await generate_archive(
-                spec,
-                archive_dir,
-                corpus_source=CorpusSourceKind(args.corpus_source),
-            )
 
-        result = await run_synthetic_benchmark_campaign(args.campaign, db_path)
+            with CampaignArchiveLocation.acquire(archive_dir) as location:
+                await generate_archive(
+                    spec,
+                    archive_dir,
+                    corpus_source=CorpusSourceKind(args.corpus_source),
+                    location=location,
+                )
+                result = await run_synthetic_benchmark_campaign(args.campaign, location.active_index_path)
+
         result.scale_level = args.scale
         results = [result]
 

@@ -1857,6 +1857,9 @@ def build_verify_steps(
         steps.append(("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")))
         steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
         steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
+        steps.append(
+            ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
+        )
     return steps
 
 
