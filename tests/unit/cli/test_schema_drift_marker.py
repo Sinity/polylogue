@@ -19,8 +19,8 @@ from polylogue.cli.click_app import _emit_schema_drift_marker
 def _patch_active_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     active_db = tmp_path / "archive" / "index.db"
     monkeypatch.setattr(
-        "polylogue.paths.resolve_active_index_db_path",
-        lambda *, db_anchor, index_db: active_db,
+        "polylogue.storage.archive_identity.resolve_active_index_path",
+        lambda _root: active_db,
     )
 
 
@@ -89,10 +89,10 @@ def test_marker_never_raises_on_unexpected_error(
 ) -> None:
     """A broken active-db resolution must never turn an ordinary command into a failure."""
 
-    def _boom(**_kwargs: object) -> Path:
+    def _boom(_root: Path) -> Path:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("polylogue.paths.resolve_active_index_db_path", _boom)
+    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", _boom)
     _emit_schema_drift_marker()  # must not raise
     captured = capsys.readouterr()
     assert captured.err == ""

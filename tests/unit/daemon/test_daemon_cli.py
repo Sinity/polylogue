@@ -164,8 +164,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
@@ -224,8 +223,7 @@ def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) 
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
         patch("polylogue.storage.archive_readiness.time.time", return_value=now_ms / 1000),
     ):
@@ -264,8 +262,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
@@ -300,8 +297,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status"])
@@ -324,8 +320,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status"])

@@ -153,14 +153,13 @@ def _seed_archive_raw_session(
     detection_warnings_json: str = "[]",
     blob_size: int = 256,
     acquired_at_ms: int = 1_770_000_000_000,
-) -> tuple[Path, Path]:
+) -> Path:
     """Seed one archive `source.db` ``raw_sessions`` row.
 
-    Returns ``(db_anchor, index_db)`` paths to patch onto
-    ``polylogue.daemon.status`` so ``_active_status_db_path`` resolves to
-    ``tmp_path/index.db`` and reads ``tmp_path/source.db``.
+    Returns the ``index.db`` path to patch onto
+    ``polylogue.daemon.status._active_status_db_path`` so it resolves into
+    ``tmp_path`` and reads the sibling ``tmp_path/source.db``.
     """
-    db_anchor = tmp_path / "index.db"
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
@@ -188,14 +187,13 @@ def _seed_archive_raw_session(
             ),
         )
         conn.commit()
-    return db_anchor, index_db
+    return index_db
 
 
 class TestRawFailureInfoProducesTypedSamples:
     """_raw_failure_info() returns typed RawFailureSample instances."""
 
     def test_raw_failure_info_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
-        db_anchor = tmp_path / "index.db"
         index_db = tmp_path / "index.db"
         archive_db = tmp_path / "source.db"
         initialize_archive_database(archive_db, ArchiveTier.SOURCE)
@@ -240,10 +238,7 @@ class TestRawFailureInfoProducesTypedSamples:
             )
             conn.commit()
 
-        with (
-            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
-            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
-        ):
+        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
             info = _raw_failure_info()
 
         assert info["parse_failures"] == 1
@@ -257,7 +252,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert "/home/user/private.py" not in samples[1].redacted_error
 
     def test_raw_failure_info_samples_are_typed(self, tmp_path: Path) -> None:
-        db_anchor, index_db = _seed_archive_raw_session(
+        index_db = _seed_archive_raw_session(
             tmp_path,
             raw_id="raw-1",
             origin="claude-code-session",
@@ -267,10 +262,7 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=1024,
         )
 
-        with (
-            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
-            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
-        ):
+        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
             info = _raw_failure_info()
 
         samples = info["samples"]
@@ -284,7 +276,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert "JSONDecodeError" in sample.redacted_error
 
     def test_raw_failure_info_schema_violation_kind(self, tmp_path: Path) -> None:
-        db_anchor, index_db = _seed_archive_raw_session(
+        index_db = _seed_archive_raw_session(
             tmp_path,
             raw_id="raw-2",
             origin="chatgpt-export",
@@ -295,10 +287,7 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=512,
         )
 
-        with (
-            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
-            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
-        ):
+        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -309,7 +298,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert sample.provider_hint == "chatgpt-export"
 
     def test_raw_failure_info_generic_parse_error_kind(self, tmp_path: Path) -> None:
-        db_anchor, index_db = _seed_archive_raw_session(
+        index_db = _seed_archive_raw_session(
             tmp_path,
             raw_id="raw-3",
             origin="unknown-export",
@@ -319,10 +308,7 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=256,
         )
 
-        with (
-            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
-            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
-        ):
+        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -359,7 +345,7 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
             )
 
-        with patch("polylogue.daemon.status.db_path", return_value=db):
+        with patch("polylogue.daemon.status._active_status_db_path", return_value=db):
             info = _raw_failure_info()
 
         assert info["parse_failures"] == 0

@@ -73,19 +73,6 @@ def embeddings_db_path() -> Path:
     return archive_root() / "embeddings.db"
 
 
-def resolve_active_index_db_path(*, db_anchor: Path, index_db: Path) -> Path:
-    """Resolve the active query/index database path."""
-    pointer = archive_root() / ".index-active-pointer"
-    if pointer.exists():
-        target = Path(pointer.read_text(encoding="utf-8").strip())
-        if not target.is_absolute() or target.name != "index.db":
-            raise RuntimeError(f"invalid active index pointer: {target}")
-        return target
-    if db_anchor.name == "index.db":
-        return db_anchor
-    return index_db
-
-
 def sibling_index_db(anchor: Path, *, require_exists: bool = True) -> Path | None:
     """Derive the sibling index.db path from an anchor database path.
 

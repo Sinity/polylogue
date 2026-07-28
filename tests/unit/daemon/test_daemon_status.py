@@ -368,7 +368,7 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     cursor.mark_failed(failed)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -392,7 +392,7 @@ def test_build_daemon_status_uses_one_lifecycle_snapshot(tmp_path: Path) -> None
     stopped = {"state": "stopped", "running": False, "heartbeat_age_s": 1.1}
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
         patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
@@ -542,7 +542,7 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     cursor.mark_failed(failed)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -771,7 +771,7 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     db.touch()
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status.index_db_path", return_value=db),
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=True),
@@ -849,7 +849,7 @@ def test_daemon_status_prefers_archive_ops_live_cursor(tmp_path: Path) -> None:
     cursor.mark_failed(failed)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -892,7 +892,7 @@ def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
         cursor.mark_failed(failed)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -958,7 +958,7 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     )
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -1060,7 +1060,7 @@ def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None
         )
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -1138,7 +1138,7 @@ def test_daemon_status_reads_ops_tier_when_archive_db_exists(tmp_path: Path) -> 
         )
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -1172,7 +1172,7 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     )
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -1203,7 +1203,7 @@ def test_daemon_status_payload_exposes_claim_guard_block(tmp_path: Path) -> None
     `daemon_status_payload`) exposes a claim-guard block with all four
     claim states, each carrying a documented signal."""
     with (
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -1224,18 +1224,10 @@ def test_daemon_status_payload_exposes_claim_guard_block(tmp_path: Path) -> None
 
 def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> None:
     default_root = tmp_path / "default"
-    active_root = tmp_path / "active"
     default_root.mkdir()
-    active_root.mkdir()
     initialize_archive_database(default_root / "ops.db", ArchiveTier.OPS)
-    db_anchor = active_root / "custom.sqlite"
-    db_anchor.touch()
 
-    with (
-        patch("polylogue.daemon.status.archive_root", return_value=default_root),
-        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
-        patch("polylogue.daemon.status.index_db_path", return_value=default_root / "index.db"),
-    ):
+    with patch("polylogue.daemon.status.archive_root", return_value=default_root):
         storage = status_module._archive_storage_info()
 
     assert storage.archive_root == str(default_root)
@@ -1271,8 +1263,7 @@ def test_archive_storage_info_reports_split_root_identity_conflict(tmp_path: Pat
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=configured),
-        patch("polylogue.daemon.status.db_path", return_value=active / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=configured / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=active / "index.db"),
     ):
         storage = status_module._archive_storage_info()
 
@@ -1312,8 +1303,6 @@ def test_archive_storage_info_reads_durable_tiers_from_configured_root_for_index
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=configured),
-        patch("polylogue.daemon.status.db_path", return_value=configured / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=configured / "index.db"),
         patch("polylogue.daemon.status._active_status_db_path", return_value=generation_index),
     ):
         storage = status_module._archive_storage_info()
@@ -1669,7 +1658,7 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     freshness_info = Mock(return_value={"sessions_with_profiles": 3, "total_sessions": 4})
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=True),
         patch("polylogue.daemon.status._db_size_info", db_info),
         patch("polylogue.daemon.status._blob_size_info", blob_info),
@@ -1707,7 +1696,6 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
 
 
 def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "custom.sqlite"
     archive_db = tmp_path / "index.db"
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
@@ -1729,10 +1717,7 @@ def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: P
         )
         conn.commit()
 
-    with (
-        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
-        patch("polylogue.daemon.status.index_db_path", return_value=archive_db),
-    ):
+    with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
         assert _insight_freshness_info() == {
             "sessions_with_profiles": 1,
             "total_sessions": 2,
@@ -1748,7 +1733,7 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
             """
         )
 
-    with patch("polylogue.daemon.status.db_path", return_value=db):
+    with patch("polylogue.daemon.status._active_status_db_path", return_value=db):
         readiness = status_module._fts_readiness_info()
 
     assert readiness["messages_ready"] is False
@@ -1756,7 +1741,6 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
 
 
 def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
@@ -1781,7 +1765,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         )
         conn.commit()
 
-    with patch("polylogue.daemon.status.db_path", return_value=db_anchor):
+    with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
@@ -1810,10 +1794,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
         )
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
 
-    with (
-        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
-        patch("polylogue.daemon.status.index_db_path", return_value=archive_db),
-    ):
+    with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
@@ -1851,7 +1832,7 @@ def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Pa
         return cast(sqlite3.Connection, conn)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.storage.sqlite.connection_profile.sqlite3.connect", side_effect=traced_connect),
     ):
         readiness = status_module._fts_readiness_info()
@@ -2177,7 +2158,7 @@ def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path)
             """
         )
 
-    with patch("polylogue.daemon.status.db_path", return_value=db):
+    with patch("polylogue.daemon.status._active_status_db_path", return_value=db):
         freshness = status_module._insight_freshness_info()
 
     assert freshness == {"sessions_with_profiles": 1, "total_sessions": 2}
@@ -2203,7 +2184,7 @@ def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_c
         conn.commit()
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -2280,7 +2261,7 @@ def test_daemon_status_flags_slow_but_progressing_live_ingest_attempt(
         conn.commit()
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -2327,7 +2308,7 @@ def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_p
         conn.commit()
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
@@ -2405,8 +2386,7 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
     reset_periodic_status_component_registry()
     monkeypatch.setattr(status_module, "_EMBEDDING_READINESS_DEADLINE_S", 0.05)
     db = tmp_path / "index.db"
-    monkeypatch.setattr("polylogue.daemon.status.db_path", lambda: db)
-    monkeypatch.setattr("polylogue.daemon.status.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status._active_status_db_path", lambda: db)
 
     calls = {"n": 0}
     release = threading.Event()
@@ -2466,8 +2446,7 @@ def test_periodic_status_component_registry_fingerprint_forces_refresh(
     reset_periodic_status_component_registry()
     db = tmp_path / "index.db"
     db.write_bytes(b"v1")
-    monkeypatch.setattr("polylogue.daemon.status.db_path", lambda: db)
-    monkeypatch.setattr("polylogue.daemon.status.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.status._active_status_db_path", lambda: db)
 
     calls = {"n": 0}
 

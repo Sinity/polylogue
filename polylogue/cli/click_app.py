@@ -530,9 +530,10 @@ def _emit_schema_drift_marker() -> None:
         from time import time as _now
 
         from polylogue.cli.commands.status import _schema_drift_status
-        from polylogue.paths import db_path, index_db_path, resolve_active_index_db_path
+        from polylogue.paths import archive_root
+        from polylogue.storage.archive_identity import resolve_active_index_path
 
-        active_db = resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+        active_db = resolve_active_index_path(archive_root())
         drift = _schema_drift_status(active_db.parent, now_ms=int(_now() * 1000))
         if not drift.get("available"):
             return

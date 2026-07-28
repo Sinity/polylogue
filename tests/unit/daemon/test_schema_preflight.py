@@ -88,7 +88,7 @@ def test_schema_version_health_ok_when_versions_match(
 ) -> None:
     db = workspace_env["archive_root"] / "index.db"
 
-    monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: db)
 
     alert = _check_schema_version_fast()
 
@@ -104,7 +104,7 @@ def test_schema_version_health_critical_when_db_ahead(
     db = workspace_env["archive_root"] / "index.db"
     _seed_db_at_version(db, ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].version + 1)
 
-    monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: db)
 
     alert = _check_schema_version_fast()
 
@@ -116,7 +116,7 @@ def test_schema_version_health_critical_when_db_ahead(
 
 def test_schema_version_health_ok_when_no_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fresh-install case: bootstrap will create at the right version."""
-    monkeypatch.setattr("polylogue.daemon.health.db_path", lambda: tmp_path / "missing.db")
+    monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: tmp_path / "missing.db")
 
     alert = _check_schema_version_fast()
 
@@ -422,7 +422,7 @@ def test_schema_version_health_tolerates_missing_disposable_tier(
 
     root = workspace_env["archive_root"]
     initialize_active_archive_root(root)
-    monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: root / "index.db")
+    monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: root / "index.db")
 
     (root / "ops.db").unlink()
     alert = _check_schema_version_fast()

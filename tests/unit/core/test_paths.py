@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import get_config
-from polylogue.paths import active_index_db_path, resolve_active_index_db_path
+from polylogue.paths import active_index_db_path
 from polylogue.paths.sanitize import is_within_root, safe_path_component
 
 
@@ -55,8 +55,6 @@ def test_all_active_index_resolvers_reject_malformed_pointer(
 
     with pytest.raises(RuntimeError, match="invalid active index pointer"):
         active_index_db_path()
-    with pytest.raises(RuntimeError, match="invalid active index pointer"):
-        resolve_active_index_db_path(db_anchor=root / "source.db", index_db=root / "index.db")
 
 
 class TestSafePathComponent:
@@ -207,7 +205,6 @@ class TestPathsPublicBoundary:
             "hooks_sidecar_dir",
             "index_db_path",
             "render_root",
-            "resolve_active_index_db_path",
             "sibling_index_db",
             "archive_file_set_root_for_paths",
             "archive_file_set_index_available_for_paths",

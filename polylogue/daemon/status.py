@@ -61,11 +61,12 @@ from polylogue.daemon.live_ingest_attempt_workload import (
 )
 from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
-from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
+from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import (
     active_rebuild_index_attempts,
     raw_materialization_readiness_snapshot,
@@ -93,7 +94,7 @@ _EMBEDDING_READINESS_DEADLINE_S = 2.0
 
 
 def _active_status_db_path() -> Path:
-    return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+    return resolve_active_index_path(archive_root())
 
 
 def _daemon_status_fingerprint(active_db: Path) -> str:
