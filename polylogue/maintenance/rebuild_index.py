@@ -20,7 +20,7 @@ from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
-from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_REBUILD_SQL, TRIGRAM_REBUILD_DELETE_ALL_SQL
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
@@ -313,23 +313,46 @@ def select_rebuild_raw_ids(request: RebuildIndexRequest) -> tuple[int, list[str]
 
 
 async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildIndexReceipt:
-    """Replay one source snapshot into an owned generation and optionally promote it."""
+    """Replay one source snapshot into an owned generation and optionally promote it.
+
+    Acquires :class:`~polylogue.storage.archive_identity.OwnedArchiveLocation`
+    over ``request.archive_root`` before any generation directory or SQLite
+    tier is touched (polylogue-ovme.2 AC3): an offline rebuild is exactly the
+    maintenance/campaign writer ``OwnedArchiveLocation`` exists for, and this
+    is orthogonal to ``RebuildLease`` below (that lease serializes concurrent
+    *rebuild* invocations specifically; this proves the caller still owns
+    the *location* it resolved, catching e.g. a concurrent devtools campaign
+    or a foreign/rotated root before this rebuild can act on stale identity).
+    """
+    validate_rebuild_index_request(request)
+    root = request.archive_root
+    location = ArchiveLocation.resolve(root)
+    active_config = Config(
+        archive_root=root,
+        render_root=render_root(),
+        sources=[],
+        db_path=location.active_index_path,
+    )
+    if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
+        raise RuntimeError(reason)
+
+    owned = OwnedArchiveLocation.acquire(location)
+    try:
+        assert_owns_archive_location(owned, location)
+        return await _rebuild_index_from_source_owned(request, root=root, owned=owned)
+    finally:
+        owned.release()
+
+
+async def _rebuild_index_from_source_owned(
+    request: RebuildIndexRequest, *, root: Path, owned: OwnedArchiveLocation
+) -> RebuildIndexReceipt:
+    """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import verify_archive
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.storage.archive_readiness import archive_readiness_status
     from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
     from polylogue.storage.repair import repair_session_insights
-
-    validate_rebuild_index_request(request)
-    root = request.archive_root
-    active_config = Config(
-        archive_root=root,
-        render_root=render_root(),
-        sources=[],
-        db_path=ArchiveLocation.resolve(root).active_index_path,
-    )
-    if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
-        raise RuntimeError(reason)
 
     generation_store = IndexGenerationStore(root)
     with RebuildLease(root):
@@ -554,6 +577,12 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             if transaction is not None:
                 transaction = generation_store.checkpoint_transaction(transaction, status="ready")
             if request.promote:
+                # Re-prove ownership immediately before the activation swap:
+                # a long-running rebuild pass can outlast a concurrent
+                # promotion of a different generation, and this must be
+                # caught before clobbering someone else's activation rather
+                # than after (polylogue-ovme.2 AC3).
+                assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
                 terminal_started_at = time.perf_counter()
                 generation = generation_store.promote(generation)
                 logger.info(
