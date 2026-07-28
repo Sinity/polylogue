@@ -264,3 +264,53 @@ def test_mutations_cannot_collapse_task_to_session_or_claim_to_observed_truth() 
             corpus_snapshot_ref=SNAPSHOT,
             confidence=1.0,
         )
+
+
+def test_mutation_cannot_collapse_invocation_into_run() -> None:
+    """AC6: an invocation must keep its own identity, never masquerade as the run it belongs to."""
+
+    with pytest.raises(ValueError, match="invocation nodes require a work-invocation ref"):
+        WorkEvidenceNode(
+            ref=ObjectRef(kind="run", object_id="codex-session:work-evidence"),
+            kind="invocation",
+            label="incorrect invocation=run mutation",
+            evidence_refs=(EVIDENCE,),
+            corpus_snapshot_ref=SNAPSHOT,
+            confidence=1.0,
+        )
+
+
+def _naive_one_attempt_per_call(graph: WorkEvidenceGraph, call_object_id: str) -> tuple[str, ...]:
+    """The wrong shortcut AC6 names: assume a call/task has at most one attempt.
+
+    A real caller must never do this -- it is reproduced here only to prove
+    that applying it to the real fixture graph loses attempts the graph
+    honestly represents.
+    """
+
+    invoked_attempts = [
+        edge.target_ref.object_id
+        for edge in graph.edges
+        if edge.kind == "invoked"
+        and edge.source_ref.object_id == call_object_id
+        and edge.target_ref.kind == "work-attempt"
+    ]
+    return (invoked_attempts[0],) if invoked_attempts else ()
+
+
+def test_mutation_assuming_one_attempt_per_call_loses_real_attempts() -> None:
+    """AC6: a one-attempt-per-call shortcut must diverge from the real, honest graph."""
+
+    graph = _graph()
+    real_attempts = tuple(
+        edge.target_ref.object_id
+        for edge in graph.edges
+        if edge.kind == "invoked"
+        and edge.source_ref.object_id == "task:ship-work-evidence"
+        and edge.target_ref.kind == "work-attempt"
+    )
+    naive_attempts = _naive_one_attempt_per_call(graph, "task:ship-work-evidence")
+
+    assert len(real_attempts) == 3
+    assert len(naive_attempts) == 1
+    assert set(naive_attempts) != set(real_attempts)
