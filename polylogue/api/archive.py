@@ -6636,13 +6636,19 @@ class PolylogueArchiveMixin:
         fresh note id is allocated, so each call appends a distinct note. The
         optional assertion metadata fields are mirrored only into the unified
         assertion row (#1839/#1883), preserving the legacy blackboard row shape.
+
+        Routed through ``OperationExecutor``/``BlackboardPostActuator`` (t46.9
+        phase 6); see :meth:`add_mark` for the shared-contract rationale. The
+        note id is minted here (not inside the actuator) so the plan hash the
+        executor revalidates at EXECUTE time is stable across both PREPARE
+        calls.
         """
         from polylogue.archive.blackboard import (
             BLACKBOARD_KINDS,
             build_blackboard_body,
             decode_blackboard_note,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.operations.mutation_actuators import BlackboardPostActuator, BlackboardPostArgs
 
         if kind not in BLACKBOARD_KINDS:
             raise ValueError(f"kind must be one of {list(BLACKBOARD_KINDS)}, got {kind!r}")
@@ -6657,25 +6663,30 @@ class PolylogueArchiveMixin:
         )
         note_id = str(uuid.uuid4())
         target_type = "session" if scope_session else None
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            envelope = archive.post_blackboard_note(
-                body,
+        receipt, _plan = self._execute_facade_mutation(
+            BlackboardPostActuator(),
+            lambda archive: BlackboardPostArgs(
+                archive=archive,
+                note_id=note_id,
+                body=body,
                 target_type=target_type,
                 target_id=scope_session,
-                note_id=note_id,
                 author_ref=author_ref,
                 author_kind=author_kind,
                 evidence_refs=evidence_refs,
                 staleness=staleness,
                 context_policy=context_policy,
-            )
+            ),
+            capability="archive.post_blackboard_note",
+        )
+        domain_receipt = receipt.domain_receipt
         return decode_blackboard_note(
-            note_id=envelope.note_id,
-            body=envelope.body,
-            target_type=envelope.target_type,
-            target_id=envelope.target_id,
-            created_at_ms=envelope.created_at_ms,
-            updated_at_ms=envelope.updated_at_ms,
+            note_id=str(domain_receipt["note_id"]),
+            body=str(domain_receipt["body"]),
+            target_type=cast("str | None", domain_receipt["target_type"]),
+            target_id=cast("str | None", domain_receipt["target_id"]),
+            created_at_ms=int(cast("int", domain_receipt["created_at_ms"])),
+            updated_at_ms=int(cast("int", domain_receipt["updated_at_ms"])),
         )
 
     async def list_blackboard_notes(

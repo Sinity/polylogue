@@ -430,16 +430,29 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
         try:
             if payload is None:
                 if rich:
-                    from polylogue.daemon.status import daemon_status_payload
+                    from polylogue.daemon.status import daemon_status_payload, periodic_status_component_registry
 
                     # Raw replay selection expands authority cohorts and is a
                     # diagnostic operation, not a bounded health projection.
                     # Running it in the periodic snapshot can strand a
                     # default-executor worker through process shutdown.
+                    #
+                    # ``registry`` is the process-wide persistent
+                    # StatusComponentRegistry (polylogue-20d.17): without it,
+                    # this call built a fresh ephemeral registry every 10s
+                    # tick, so a component slower than its own deadline (e.g.
+                    # embedding_readiness_info, measured ~5s against the real
+                    # archive vs its 2.0s deadline) timed out and was
+                    # discarded on every tick, forever, and leaked one
+                    # orphaned collector thread per tick. The persistent
+                    # registry lets a still-running attempt be observed
+                    # (``refreshing``) instead of restarted, and reuses the
+                    # real result once it finishes.
                     payload = daemon_status_payload(
                         include_raw_replay_backlog=False,
                         include_exact_raw_materialization_readiness=False,
                         include_archive_debt=False,
+                        registry=periodic_status_component_registry(),
                     )
                 else:
                     payload = _minimal_status_payload()
@@ -468,9 +481,12 @@ def reset_status_snapshot() -> None:
     cached payload does not leak into unrelated status-surface tests in the same
     process. Exposed for test teardown; not used in production.
     """
+    from polylogue.daemon.status import reset_periodic_status_component_registry
+
     global _SNAPSHOT, _RUNTIME_COMPONENT_STATE
     with _SNAPSHOT_LOCK:
         _SNAPSHOT = None
+    reset_periodic_status_component_registry()
     with _RUNTIME_COMPONENT_LOCK:
         _RUNTIME_COMPONENT_STATE = RuntimeComponentState()
 

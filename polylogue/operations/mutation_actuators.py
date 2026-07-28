@@ -1519,11 +1519,113 @@ class CorrectionsClearActuator:
         )
 
 
+# ---------------------------------------------------------------------------
+# Blackboard post (mutate-blackboard-post) -- phase 6 (t46.9/kwsb.2): closes
+# the "blackboard_post" declared-not-routed census row. This is an additive
+# append-only write (a fresh note id is minted per call, so ``prepare`` never
+# reads live state -- there is nothing to race), but it had NO OperationSpec
+# entry at all before this phase, so it still lacked the shared capability
+# declaration and MutationReceipt audit trail every other user.db write gets.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BlackboardPostArgs:
+    """Shared prepare/apply argument shape for one blackboard note append.
+
+    ``note_id`` is minted by the caller (mirroring ``AnnotationSaveArgs``'s
+    caller-resolved ``annotation_id``) so the plan hash is stable across the
+    executor's PREPARE -> fresh-PREPARE revalidation at EXECUTE time --
+    ``prepare`` never mints its own id, or two calls would never agree on a
+    plan hash.
+    """
+
+    archive: ArchiveStore
+    note_id: str
+    body: str
+    target_type: str | None
+    target_id: str | None
+    author_ref: str | None
+    author_kind: str
+    evidence_refs: tuple[str, ...]
+    staleness: dict[str, object] | None
+    context_policy: dict[str, object] | None
+
+
+@dataclass(frozen=True, slots=True)
+class BlackboardPostActuator:
+    """Actuator for ``mutate-blackboard-post``: append-only user.db note insert.
+
+    Real production mutation: ``ArchiveStore.post_blackboard_note``, the same
+    primitive ``PolylogueArchiveMixin.post_blackboard_note`` already calls.
+    Classified ``reversible`` (least-severe class -- there is no destructive
+    counterpart today) with ``role_only`` confirmation, consistent with the
+    other additive user.db writes (annotation save, mark add).
+    """
+
+    operation: str = "mutate-blackboard-post"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: BlackboardPostArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"blackboard:{args.note_id}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "note_id": args.note_id,
+                "body": args.body,
+                "target_type": args.target_type,
+                "target_id": args.target_id,
+                "author_ref": args.author_ref,
+                "author_kind": args.author_kind,
+                "evidence_refs": list(args.evidence_refs),
+                "staleness": args.staleness,
+                "context_policy": args.context_policy,
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: BlackboardPostArgs) -> MutationReceipt:
+        envelope = args.archive.post_blackboard_note(
+            str(plan.context["body"]),
+            target_type=cast("str | None", plan.context["target_type"]),
+            target_id=cast("str | None", plan.context["target_id"]),
+            note_id=str(plan.context["note_id"]),
+            author_ref=cast("str | None", plan.context["author_ref"]),
+            author_kind=str(plan.context["author_kind"]),
+            evidence_refs=tuple(cast("list[str]", plan.context["evidence_refs"])),
+            staleness=cast("dict[str, object] | None", plan.context["staleness"]),
+            context_policy=cast("dict[str, object] | None", plan.context["context_policy"]),
+        )
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={
+                "note_id": envelope.note_id,
+                "target_type": envelope.target_type,
+                "target_id": envelope.target_id,
+                "body": envelope.body,
+                "created_at_ms": envelope.created_at_ms,
+                "updated_at_ms": envelope.updated_at_ms,
+            },
+        )
+
+
 __all__ = [
     "AnnotationDeleteActuator",
     "AnnotationDeleteArgs",
     "AnnotationSaveActuator",
     "AnnotationSaveArgs",
+    "BlackboardPostActuator",
+    "BlackboardPostArgs",
     "BlockerResolveActuator",
     "BlockerResolveArgs",
     "BulkTagActuator",

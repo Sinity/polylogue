@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6727
+    loc: 6738
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -1704,11 +1704,11 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 3005
+    loc: 3196
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
-    loc: 499
+    loc: 515
     target: polylogue/daemon/status_snapshot.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -1911,6 +1911,10 @@ files:
   - path: polylogue/insights/cost_enrichment.py
     loc: 73
     target: polylogue/insights/cost_enrichment.py
+    owner: stable
+  - path: polylogue/insights/delegation_work_evidence.py
+    loc: 180
+    target: polylogue/insights/delegation_work_evidence.py
     owner: stable
   - path: polylogue/insights/export_bundles.py
     loc: 333
@@ -2346,7 +2350,7 @@ files:
     target: polylogue/operations/incident_evidence_materialization.py
     owner: stable
   - path: polylogue/operations/mutation_actuators.py
-    loc: 1566
+    loc: 1668
     target: polylogue/operations/mutation_actuators.py
     owner: stable
   - path: polylogue/operations/mutation_transaction.py
@@ -2366,7 +2370,7 @@ files:
     target: polylogue/operations/route_observation.py
     owner: stable
   - path: polylogue/operations/specs.py
-    loc: 1326
+    loc: 1350
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/operations/status_protocol.py

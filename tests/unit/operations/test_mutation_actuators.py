@@ -35,6 +35,8 @@ from polylogue.operations.mutation_actuators import (
     AnnotationDeleteArgs,
     AnnotationSaveActuator,
     AnnotationSaveArgs,
+    BlackboardPostActuator,
+    BlackboardPostArgs,
     BlockerResolveActuator,
     BlockerResolveArgs,
     BulkTagActuator,
@@ -756,6 +758,117 @@ class TestAnnotationActuators:
             executor.authorize(
                 actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
             )
+
+
+class TestBlackboardPostActuator:
+    """Phase 6 (t46.9/kwsb.2): closes the `blackboard_post` declared-not-routed row.
+
+    ``test_full_lifecycle_writes_the_note_assertion`` fails if
+    ``BlackboardPostActuator.apply`` stops calling
+    ``ArchiveStore.post_blackboard_note``. Unlike every other actuator in
+    this module, ``prepare`` never reads live state (the note id is minted
+    by the caller before the actuator runs, mirroring
+    ``AnnotationSaveArgs.annotation_id``), so there is no live-state race to
+    revalidate -- the plan is a pure function of the caller-supplied args.
+    """
+
+    def test_full_lifecycle_writes_the_note_assertion(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="blackboard")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = BlackboardPostActuator()
+            args = BlackboardPostArgs(
+                archive=archive,
+                note_id="note-bb-1",
+                body="kind=blocker\ntitle=T\ncontent=some finding",
+                target_type="session",
+                target_id=session_id,
+                author_ref="agent:test",
+                author_kind="agent",
+                evidence_refs=(),
+                staleness=None,
+                context_policy=None,
+            )
+            plan = executor.prepare(actuator, args)
+            assert plan.target_refs == ("blackboard:note-bb-1",)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+            assert receipt.status == "applied"
+            assert receipt.domain_receipt["note_id"] == "note-bb-1"
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                row = conn.execute(
+                    "SELECT status, body_text, author_ref, author_kind FROM assertions WHERE kind = 'note'"
+                ).fetchone()
+            assert row[0] != "deleted"
+            assert row[1] == args.body
+            assert row[2] == "agent:test"
+            assert row[3] == "agent"
+
+    def test_role_only_authorize_succeeds(self, tmp_path: Path) -> None:
+        """AC4: blackboard post is reversible class -- role_only, not confirm_flag."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="blackboard-ac4")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = BlackboardPostActuator()
+            args = BlackboardPostArgs(
+                archive=archive,
+                note_id="note-bb-ac4",
+                body="x",
+                target_type=None,
+                target_id=None,
+                author_ref=None,
+                author_kind="user",
+                evidence_refs=(),
+                staleness=None,
+                context_policy=None,
+            )
+            plan = executor.prepare(actuator, args)
+            # Does not raise ConfirmationRequiredError.
+            executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+
+    def test_repeated_calls_mint_distinct_notes(self, tmp_path: Path) -> None:
+        """Append-only semantics: two posts with distinct caller-minted ids never collapse."""
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="blackboard-distinct")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = BlackboardPostActuator()
+            for note_id in ("note-a", "note-b"):
+                args = BlackboardPostArgs(
+                    archive=archive,
+                    note_id=note_id,
+                    body="same body",
+                    target_type=None,
+                    target_id=None,
+                    author_ref=None,
+                    author_kind="user",
+                    evidence_refs=(),
+                    staleness=None,
+                    context_policy=None,
+                )
+                plan = executor.prepare(actuator, args)
+                authorization = executor.authorize(
+                    actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+                )
+                executor.execute(actuator, plan, authorization, args)
+
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                count = conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'note'").fetchone()[0]
+            assert count == 2
 
 
 class TestBlockerResolveActuator:
