@@ -15,7 +15,7 @@ import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from typing_extensions import TypedDict
 
@@ -28,6 +28,7 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.schemas.drift_sentinel import SchemaDriftObservation
+from polylogue.sources.assembly import SidecarData
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS, is_jsonl_source_path, is_stream_record_provider
 from polylogue.storage.blob_store import BlobStore
@@ -540,12 +541,26 @@ def _enrich_parsed_sessions(
     off the recorded acquisition path (``raw_record.source_path``). When
     that path's runtime root is absent (foreign machine, deleted source),
     discovery yields nothing and only the parsed-content fallbacks apply.
+
+    ``ingest_record`` (this function's caller) runs inside a
+    ProcessPoolExecutor worker (AC#4: subprocess-safe parse plans). When the
+    main-process batch orchestrator has already resolved a frozen sidecar
+    snapshot (``context.raw_record.sidecar_snapshot`` -- see
+    ``_resolve_codex_sidecar_snapshots`` in ``ingest_batch/_core.py``), that
+    snapshot is authoritative and no disk read happens here at all: an empty
+    dict is a valid "nothing found" resolution, not a cue to fall back.
+    ``None`` means the resolver never ran for this record (non-Codex, or a
+    caller that bypasses the batch resolver, e.g. focused unit tests) and
+    the prior on-demand disk-discovery behavior applies unchanged.
     """
     from polylogue.sources.assembly import get_assembly_spec
 
     spec = get_assembly_spec(plan.provider)
     if spec is None:
         return parsed_sessions
+    if context.raw_record.sidecar_snapshot is not None:
+        sidecar_data = cast(SidecarData, context.raw_record.sidecar_snapshot)
+        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions]
     source_path = context.raw_record.source_path
     if not source_path:
         return parsed_sessions
