@@ -24,7 +24,8 @@ from pydantic import BaseModel, Field
 from polylogue.config import PolylogueConfig
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import get_logger
-from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 
 logger = get_logger(__name__)
 
@@ -92,7 +93,7 @@ _RAW_FAILURE_ERROR_COUNT = 50
 
 
 def _active_health_db_path() -> Path:
-    return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+    return resolve_active_index_path(archive_root())
 
 
 # ---------------------------------------------------------------------------

@@ -4,32 +4,40 @@ Background
 ----------
 
 polylogue-ovme.2.1 (AC4's remaining ask, from the polylogue-ovme.2 migration
-epic): four resolvers in ``polylogue/paths/_roots.py`` duplicate or bypass
+epic) originally found four resolvers in ``polylogue/paths/_roots.py`` that
+duplicated or bypassed
 :class:`polylogue.storage.archive_identity.ArchiveLocation`'s pointer/tier
 resolution instead of delegating to it:
 
 * ``active_index_db_path()`` -- re-reads ``.index-active-pointer`` itself
-  (~25 call sites at the time this lint was added).
+  (43 call sites at the time this lint was added).
 * ``resolve_active_index_db_path()`` -- the same duplicate pointer-read logic
-  under a different name (~6 call sites); includes a real divergent-target
-  bug found during polylogue-ovme.2 (it reads its own module-level
-  ``archive_root()`` rather than any caller-side override).
+  under a different name (7 call sites); included a real divergent-target
+  bug found during polylogue-ovme.2 (it read its own module-level
+  ``archive_root()`` rather than any caller-side override). **Fully migrated
+  and removed by polylogue-l2cd**: every call site now uses
+  ``polylogue.storage.archive_identity.resolve_active_index_path`` directly,
+  and the function itself is deleted from ``_roots.py``.
 * ``sibling_index_db()`` -- the literal sibling-derivation-from-anchor-parent
-  anti-pattern (~14 call sites).
+  anti-pattern (16 call sites).
 * ``archive_file_set_root_for_paths()`` -- derives an archive root from
-  ``db_anchor.parent`` when the anchor names ``index.db`` (~18 call sites).
+  ``db_anchor.parent`` when the anchor names ``index.db`` (27 call sites).
 
 These span nearly every read-path surface (cli, mcp, api, daemon, insights),
 well beyond the storage/status/maintenance/transition boundaries
-polylogue-ovme.2 named. A full one-pass migration of all ~60+ call sites was
+polylogue-ovme.2 named. A full one-pass migration of all 93 call sites was
 judged too large and risky for one session (polylogue-ovme.2.1's own
-scoping note). This lint gives the completeness/visibility half of AC4
-without forcing that migration: it inventories every current call site
-against a recorded baseline and fails when a call site appears somewhere
-NOT already in that baseline -- so the anti-pattern's footprint cannot grow
-silently even before it is retired file-by-file. Shrinking the baseline
-(migrating a call site away) is always allowed and encouraged; growing it
-is not.
+scoping note); polylogue-l2cd tracks migrating them resolver-by-resolver,
+smallest call-count first. This lint gives the completeness/visibility half
+of AC4 without forcing the whole migration in one pass: it inventories every
+current call site against a recorded baseline and fails when a call site
+appears somewhere NOT already in that baseline -- so the anti-pattern's
+footprint cannot grow silently even before it is retired file-by-file.
+Shrinking the baseline (migrating a call site away) is always allowed and
+encouraged; growing it is not. Once a resolver's call-site count reaches
+zero, delete both the resolver function from ``_roots.py`` and its key from
+``BASELINE_CALL_SITES``/``RESOLVER_FUNCTIONS`` (derived from the dict's keys)
+here, as done for ``resolve_active_index_db_path`` above.
 
 This is intentionally the same shape as
 ``devtools/verify_campaign_archive_boundaries.py`` (polylogue-ovme.3): a
@@ -105,15 +113,6 @@ BASELINE_CALL_SITES: dict[str, frozenset[str]] = {
             "tests/unit/core/test_paths.py",
             "tests/unit/daemon/test_provenance_endpoint.py",
             "tests/unit/daemon/test_similarity_endpoint.py",
-        }
-    ),
-    "resolve_active_index_db_path": frozenset(
-        {
-            "polylogue/cli/click_app.py",
-            "polylogue/daemon/health.py",
-            "polylogue/daemon/status.py",
-            "tests/unit/core/test_config.py",
-            "tests/unit/core/test_paths.py",
         }
     ),
     "sibling_index_db": frozenset(

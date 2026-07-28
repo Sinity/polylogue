@@ -36,8 +36,8 @@ def _seed_raw_table(db: Path, parse_error: str | None = None, validation_status:
     """Seed the archive `source.db` ``raw_sessions`` table next to *db*.
 
     Returns the archive `index.db` sibling path so callers can patch
-    ``polylogue.daemon.status.index_db_path`` for ``_active_status_db_path``
-    to resolve into this archive root.
+    ``polylogue.daemon.status._active_status_db_path`` to resolve into this
+    archive root.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -88,7 +88,7 @@ def test_raw_failure_info_surfaces_maintenance_with_no_db(tmp_path: Path) -> Non
 
     db = tmp_path / "missing.db"
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status.archive_root", return_value=archive_root),
         patch("polylogue.daemon.status._maintenance_failure_info") as mock_mf,
     ):
@@ -135,8 +135,7 @@ def test_raw_failure_info_merges_ingest_and_maintenance(tmp_path: Path) -> None:
     _route(archive_root, op_id="op-mix-2", kind="ValueError", message="x")
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
-        patch("polylogue.daemon.status.index_db_path", return_value=index_db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
         patch("polylogue.daemon.status.archive_root", return_value=archive_root),
     ):
         info = _raw_failure_info()
@@ -164,7 +163,7 @@ def test_check_raw_failures_medium_escalates_on_maintenance(tmp_path: Path) -> N
     _seed_raw_table(db)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status.archive_root", return_value=archive_root),
     ):
         alert = _check_raw_failures_medium()
@@ -185,7 +184,7 @@ def test_check_raw_failures_medium_critical_on_large_maintenance_backlog(tmp_pat
     _seed_raw_table(db)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status.archive_root", return_value=archive_root),
     ):
         alert = _check_raw_failures_medium()
