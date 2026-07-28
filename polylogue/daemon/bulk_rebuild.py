@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
     IndexRebuildTransaction,
@@ -90,8 +91,17 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuild
     the SAME well-known operation id (see ``DAEMON_BULK_REBUILD_OPERATION_ID``).
     Never touches the ACTIVE index or ``source.db`` -- a fresh generation is
     a brand-new SQLite file under ``.index-generations/``.
+
+    Acquires :class:`~polylogue.storage.archive_identity.OwnedArchiveLocation`
+    over ``root`` before any of that mutation happens (polylogue-ovme.2.1):
+    this is the online/daemon-driven counterpart to
+    ``rebuild_index_from_source``'s own offline ownership acquisition
+    (polylogue-ovme.2 AC3) -- both discard a stale candidate and mint a fresh
+    generation directory, so both must fail closed against a foreign/rotated
+    archive location before touching disk, not just the eventual write pass.
     """
-    store = IndexGenerationStore(root)
+    location = ArchiveLocation.resolve(root)
+    store = IndexGenerationStore(location)
     transaction: IndexRebuildTransaction | None
     try:
         transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
@@ -108,23 +118,28 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuild
     if transaction is not None and transaction.status not in _TERMINAL_NOT_RESUMABLE:
         return transaction
 
-    if transaction is not None:
-        # Terminal: retire the old candidate/transaction record before
-        # reusing the well-known operation id. A "promoted" generation is
-        # already the active index (nothing to discard); "stale"/"failed"
-        # candidates are still inactive and safe to discard.
-        try:
-            generation = store.load(transaction.generation_id)
-        except (FileNotFoundError, OSError, ValueError):
-            generation = None
-        if generation is not None and generation.state == "inactive":
-            store.discard_if_inactive(generation)
-        store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
+    owned = OwnedArchiveLocation.acquire(location)
+    try:
+        assert_owns_archive_location(owned, location)
+        if transaction is not None:
+            # Terminal: retire the old candidate/transaction record before
+            # reusing the well-known operation id. A "promoted" generation is
+            # already the active index (nothing to discard); "stale"/"failed"
+            # candidates are still inactive and safe to discard.
+            try:
+                generation = store.load(transaction.generation_id)
+            except (FileNotFoundError, OSError, ValueError):
+                generation = None
+            if generation is not None and generation.state == "inactive":
+                store.discard_if_inactive(generation)
+            store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
 
-    return store.create_transaction(
-        source_snapshot=source_revision_snapshot(root),
-        operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,
-    )
+        return store.create_transaction(
+            source_snapshot=source_revision_snapshot(root),
+            operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,
+        )
+    finally:
+        owned.release()
 
 
 def has_resumable_daemon_bulk_rebuild_transaction(root: Path) -> bool:
@@ -136,7 +151,7 @@ def has_resumable_daemon_bulk_rebuild_transaction(root: Path) -> bool:
     threshold -- abandoning a partially-built generation mid-flight would
     waste every page already replayed into it.
     """
-    store = IndexGenerationStore(root)
+    store = IndexGenerationStore.for_archive_root(root)
     try:
         transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
     except FileNotFoundError:
@@ -177,7 +192,7 @@ async def run_daemon_bulk_rebuild_pass(
     if transaction.status == "promoted":
         return None
 
-    store = IndexGenerationStore(root)
+    store = IndexGenerationStore.for_archive_root(root)
     page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
     raw_ids = [raw_id for raw_id, _acquired_at_ms, _blob_size in page.rows]
     if raw_ids:
