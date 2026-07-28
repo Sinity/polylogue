@@ -1412,7 +1412,24 @@ def finalize_raw_authority_census(
                 plan_inputs.isdisjoint(selected_inputs) and plan_logical_keys.isdisjoint(selected_logical_keys)
             ):
                 persistent.add(str(plan_id))
-        if not persistent.issubset(post_ids):
+        # polylogue-ewfp: this invariant assumes nothing else legitimately
+        # touched the archive between planning and finalizing a census --
+        # true for a normal, uninterrupted apply (the sole writer only did
+        # what THIS call selected). It does not hold across a genuine crash
+        # recovery gap (``interrupted=True``, the only other caller of this
+        # function): a "planned" census can sit unfinalized for an
+        # arbitrary span (a daemon restart, days of subsequent live
+        # activity), during which a retryable/carried-forward plan's own
+        # evidence can legitimately shift for reasons having nothing to do
+        # with what this specific census selected -- e.g. a raw getting
+        # quarantined by an unrelated safety mechanism. Recovery's whole
+        # purpose is to reconcile against CURRENT ground truth, not demand
+        # byte-identical continuity with a stale snapshot; enforcing it
+        # here left one crash-era "planned" census permanently unable to
+        # finalize, repeatedly re-selecting and re-failing the same already
+        # -reclassified plan_ids on every subsequent recovery attempt
+        # (observed live: a 200+s writer-lock hold on every daemon restart).
+        if not interrupted and not persistent.issubset(post_ids):
             raise RuntimeError(
                 f"raw authority postflight changed a retryable/carried-forward plan: {sorted(persistent - post_ids)}"
             )

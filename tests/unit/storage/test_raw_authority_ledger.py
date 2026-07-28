@@ -609,6 +609,81 @@ def test_postflight_rejects_carried_plan_shared_with_retryable_selection(tmp_pat
         )
 
 
+def test_interrupted_finalize_tolerates_a_reclassified_carried_plan(tmp_path: Path) -> None:
+    """polylogue-ewfp regression: crash recovery must tolerate legitimate reclassification.
+
+    A "planned" census can sit unfinalized across an arbitrary gap (a daemon
+    restart, days of subsequent live activity) before crash recovery
+    (``interrupted=True``) finalizes it. During that gap, a retryable/
+    carried-forward plan's own evidence can legitimately shift for reasons
+    unrelated to what THIS census selected -- e.g. a raw getting quarantined
+    by an unrelated safety mechanism, or (as observed live) a duplicate-alias
+    fan-out sibling's canonical getting claimed by another sibling. Before
+    the fix, ``finalize_raw_authority_census`` applied the same strict
+    "every retryable/carried-forward plan must survive unchanged" check
+    regardless of ``interrupted``, so a census stuck at this exact shape
+    could NEVER finalize -- every recovery attempt re-selected and
+    re-failed the identical stale plan_ids forever (observed live: a
+    200+ second writer-lock hold on every daemon restart). The identical
+    scenario must still raise for a normal, uninterrupted apply (see
+    ``test_postflight_rejects_carried_plan_shared_with_retryable_selection``
+    immediately above) -- only crash recovery gets the tolerance.
+    """
+    initialize_active_archive_root(tmp_path)
+    retryable = RawReplayPlan(
+        plan_id="retryable",
+        input_digest="a" * 64,
+        input_raw_ids=("retryable-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    carried = RawReplayPlan(
+        plan_id="carried",
+        input_digest="b" * 64,
+        input_raw_ids=("carried-raw",),
+        logical_keys=("chatgpt:shared",),
+        authority_witness=json_document({}),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (retryable, carried),
+        selected_plan_ids={retryable.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "interrupted-tolerates-reclassification"},
+        residual={},
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        receipt.census_id,
+        RawReplayPlanOutcome(
+            retryable.plan_id,
+            retryable.input_raw_ids,
+            RawReplayPlanStatus.RETRYABLE,
+            "selected authority remains executable",
+            "retry after the current writer pass",
+        ),
+    )
+
+    # The regression: this must not raise, even though `carried`'s plan_id
+    # (recorded in the census as retryable/carried-forward, sharing
+    # logical_keys with the selected plan) is absent from post_plans --
+    # exactly the shape the non-interrupted test above asserts DOES raise.
+    finalized = finalize_raw_authority_census(
+        tmp_path,
+        receipt.census_id,
+        post_plans=(),
+        post_residual={},
+        interrupted=True,
+    )
+
+    assert finalized.lifecycle_status == "interrupted"
+
+
 def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     first = _write_codex_raw(
