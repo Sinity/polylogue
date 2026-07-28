@@ -171,7 +171,7 @@ def test_resolve_or_start_creates_resumes_and_retires_transaction(
 ) -> None:
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path, count=2)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
 
     assert has_resumable_daemon_bulk_rebuild_transaction(tmp_path) is False
     first = resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path)
@@ -224,7 +224,9 @@ def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
     assert processed_counts == sorted(processed_counts)
     assert processed_counts[-1] <= _RAW_COUNT
 
-    final_transaction = IndexGenerationStore(tmp_path).load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
+    final_transaction = IndexGenerationStore.for_archive_root(tmp_path).load_transaction(
+        DAEMON_BULK_REBUILD_OPERATION_ID
+    )
     assert final_transaction.status == "promoted"
     assert final_transaction.processed_raw_count == _RAW_COUNT
     assert final_transaction.last_raw_id is not None
@@ -235,7 +237,7 @@ def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
 def test_daemon_bulk_rebuild_pass_next_page_excludes_already_scheduled_raws(tmp_path: Path) -> None:
     """Direct proof that a later page never reselects an earlier page's raws."""
     _seed_corpus(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path)
 
     first_page = store.next_raw_page(transaction, limit=2)

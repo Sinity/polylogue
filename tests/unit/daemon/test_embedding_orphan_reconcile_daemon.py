@@ -38,7 +38,7 @@ def _build_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     session_id = "codex-session:daemon-fixture"
     orphan_message_id = f"{session_id}:orphaned"
 
-    generation_store = IndexGenerationStore(tmp_path)
+    generation_store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = generation_store.create(owner_id="embedding-orphan-test", source_snapshot="fixture-snapshot")
     conn = sqlite3.connect(generation.index_path)
     conn.execute(

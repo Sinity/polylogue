@@ -1286,7 +1286,7 @@ class ArchiveStore:
 
                 generation_id, owner_id = owned_inactive_generation
                 configured_root = configured_archive_root()
-                generation = IndexGenerationStore(configured_root).load(generation_id)
+                generation = IndexGenerationStore.for_archive_root(configured_root).load(generation_id)
                 if (
                     generation.owner_id != owner_id
                     or generation.state != "inactive"

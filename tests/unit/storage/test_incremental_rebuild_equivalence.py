@@ -1044,7 +1044,7 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
     )
     assert "unicode61 remove_diacritics 2" in str(incremental_key.recipe_identity[1])
 
-    generation_store = IndexGenerationStore(tmp_path)
+    generation_store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = generation_store.create(
         owner_id="testdiet-03-rebuild",
         source_snapshot=final_source_snapshot,

@@ -354,7 +354,7 @@ async def _rebuild_index_from_source_owned(
     from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
     from polylogue.storage.repair import repair_session_insights
 
-    generation_store = IndexGenerationStore(root)
+    generation_store = IndexGenerationStore(owned.location)
     with RebuildLease(root):
         raw_count = count_source_raw_sessions(root)
         if raw_count == 0:

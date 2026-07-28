@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import (
     ActiveWriterLease,
     IndexGenerationStore,
@@ -113,11 +114,63 @@ def test_rebuild_lease_still_refuses_lock_held_by_live_pid(tmp_path: Path) -> No
         os.close(holder_fd)
 
 
+def test_bootstrap_writes_active_pointer_anchor_on_first_touch(tmp_path: Path) -> None:
+    """polylogue-ovme.2.1: ``ArchiveLocation.resolve()`` is a pure read and
+    deliberately never writes ``.index-active-pointer`` -- that first-touch
+    bootstrap write must still happen, now performed by
+    ``IndexGenerationStore`` itself from the resolved (but anchor-less)
+    ``ArchiveLocation`` it is constructed from, not lost in the migration
+    off a bare ``archive_root: Path``."""
+    _archive(tmp_path)
+    anchor = tmp_path / ".index-active-pointer"
+    assert not anchor.exists()
+
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    assert anchor.exists()
+    assert Path(anchor.read_text(encoding="utf-8").strip()) == (tmp_path / "index.db").absolute()
+    assert store.active_pointer == tmp_path / "index.db"
+    assert store.generations_root == tmp_path / ".index-generations"
+
+
+def test_store_trusts_the_passed_location_instead_of_rereading_disk(tmp_path: Path) -> None:
+    """polylogue-ovme.2.1 anti-regression: the retired constructor re-derived
+    ``.index-active-pointer``/generation-root logic straight from disk on
+    every construction, independently of any typed resolution a caller had
+    already performed -- the exact "duplicate derivation" bug class named in
+    this bead (mirrored by the real ``resolve_active_index_db_path`` bug
+    ovme.2 found, which read its own module-level state instead of a
+    caller-supplied override). Proves the new constructor is no longer
+    capable of that: once an ``ArchiveLocation`` is resolved, a later,
+    independent on-disk anchor mutation must NOT change what
+    ``IndexGenerationStore`` derives from that already-resolved location."""
+    _archive(tmp_path)
+    other_root = tmp_path / "other-root"
+    other_root.mkdir()
+    _archive(other_root)
+
+    # Bootstrap tmp_path's own anchor first so ArchiveLocation.resolve below
+    # observes a real (non-bootstrapping) pointer read.
+    IndexGenerationStore.for_archive_root(tmp_path)
+    location = ArchiveLocation.resolve(tmp_path)
+    assert location.active_pointer == tmp_path / "index.db"
+
+    # Simulate a raced/foreign rewrite of the anchor file on disk AFTER the
+    # location was resolved -- the old constructor re-read the anchor itself
+    # and would have picked this up; the migrated one must not.
+    (tmp_path / ".index-active-pointer").write_text(str((other_root / "index.db").absolute()), encoding="utf-8")
+
+    store = IndexGenerationStore(location)
+
+    assert store.active_pointer == tmp_path / "index.db"
+    assert store.generations_root == tmp_path / ".index-generations"
+
+
 def test_generation_is_inactive_until_atomic_promotion(tmp_path: Path) -> None:
     _archive(tmp_path)
     original = (tmp_path / "index.db").resolve()
     original_inode = original.stat().st_ino
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     assert store.load(generation.generation_id).state == "inactive"
     assert (tmp_path / "index.db").resolve() == original
@@ -133,7 +186,7 @@ def test_generation_is_inactive_until_atomic_promotion(tmp_path: Path) -> None:
 
 def test_stale_owner_cannot_checkpoint_or_promote(tmp_path: Path) -> None:
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     stale = replace(generation, owner_id="other")
     with pytest.raises(RuntimeError, match="owning inactive"):
@@ -142,7 +195,7 @@ def test_stale_owner_cannot_checkpoint_or_promote(tmp_path: Path) -> None:
 
 def test_promotion_removes_only_empty_active_sidecars(tmp_path: Path) -> None:
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     (tmp_path / "index.db-wal").touch()
     (tmp_path / "index.db-shm").touch()
@@ -153,7 +206,7 @@ def test_promotion_removes_only_empty_active_sidecars(tmp_path: Path) -> None:
 
 def test_promotion_checkpoints_candidate_and_active_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     calls: list[tuple[Path, str]] = []
     monkeypatch.setattr(
@@ -168,7 +221,7 @@ def test_promotion_checkpoints_candidate_and_active_index(tmp_path: Path, monkey
 
 def test_recover_promotion_without_active_pointer_marks_inactive(tmp_path: Path) -> None:
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     store._write(replace(generation, state="promoting"))
     (tmp_path / "index.db").unlink()
@@ -180,7 +233,7 @@ def test_recover_promotion_without_active_pointer_marks_inactive(tmp_path: Path)
 
 def test_recover_promotion_after_pointer_swap_marks_active(tmp_path: Path) -> None:
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     store._write(replace(generation, state="promoting"))
     (tmp_path / "index.db").unlink()
@@ -206,7 +259,7 @@ def test_archive_store_init_failure_releases_writer_lease(tmp_path: Path, monkey
 
 def test_failed_inactive_generation_is_discarded(tmp_path: Path) -> None:
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
 
     assert store.discard_if_inactive(generation) is True
@@ -224,7 +277,7 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
     initialize_archive_database(canonical / "index.db", ArchiveTier.INDEX)
     (configured / "index.db").symlink_to(canonical / "index.db")
 
-    store = IndexGenerationStore(configured)
+    store = IndexGenerationStore.for_archive_root(configured)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     store.promote(generation)
 
@@ -233,7 +286,7 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
     assert canonical.joinpath("index.db").resolve() == Path(generation.index_path).resolve()
     assert store.generations_root.parent == canonical
 
-    second_store = IndexGenerationStore(configured)
+    second_store = IndexGenerationStore.for_archive_root(configured)
     second = second_store.create(owner_id="operator-2", source_snapshot="snapshot-b")
     second_store.promote(second)
     assert second_store.active_pointer == canonical / "index.db"
@@ -256,7 +309,7 @@ def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archiv
                 (raw_id, raw_id, f"/{raw_id}.jsonl", acquired_at_ms),
             )
 
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = store.create_transaction(
         source_snapshot="source-v1", operation_id="resume-me", pass_byte_budget=2, pass_deadline_ms=5_000
     )
@@ -287,7 +340,7 @@ def test_rebuild_byte_budget_defers_without_excluding_an_oversized_first_raw(tmp
                    VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), ?, ?, 'passed')""",
                 (raw_id, raw_id, f"/{raw_id}", blob_size, acquired_at_ms),
             )
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = store.create_transaction(source_snapshot="source-v1", pass_byte_budget=10)
     first = store.next_raw_page(transaction, limit=10)
     assert first.rows == (("large", 1, 100),)
@@ -324,7 +377,7 @@ def test_derived_stores_cleared_defaults_false_and_round_trips_through_checkpoin
     default False for a fresh transaction, persist True once checkpointed,
     and survive a reload via ``load_transaction``."""
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = store.create_transaction(source_snapshot="source-v1", operation_id="bulk-build-op")
     assert transaction.derived_stores_cleared is False
 
@@ -342,7 +395,7 @@ def test_derived_stores_cleared_missing_from_persisted_json_defaults_false(tmp_p
     must load as ``False`` via the dataclass default, not raise or silently
     invent a different value."""
     _archive(tmp_path)
-    store = IndexGenerationStore(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = store.create_transaction(source_snapshot="source-v1", operation_id="pre-existing-op")
     path = store._transaction_path("pre-existing-op")
     payload = json.loads(path.read_text(encoding="utf-8"))

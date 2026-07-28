@@ -410,7 +410,7 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
     archive_root = archive_root.resolve(strict=True)
     _require_daemon_stopped(archive_root)
     _require_receipt_destination_writable(receipt_path)
-    store = IndexGenerationStore(archive_root)
+    store = IndexGenerationStore.for_archive_root(archive_root)
     active_pointer = store.active_pointer
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
@@ -472,7 +472,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
         return receipt
     archive_root = Path(str(receipt["archive_root"])).resolve(strict=True)
     _require_daemon_stopped(archive_root)
-    store = IndexGenerationStore(archive_root)
+    store = IndexGenerationStore.for_archive_root(archive_root)
     generation_payload = cast(dict[str, object], receipt["generation"])
     generation = store.load(str(generation_payload["generation_id"]))
     with RebuildLease(archive_root):
