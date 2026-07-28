@@ -93,7 +93,7 @@ dev = [
   "mypy>=2.3.0,<2.4",
   "types-dateparser>=1.4.1.20260617",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.15.21",
+  "ruff>=0.16.0",
   "pre-commit>=4.6.1",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
