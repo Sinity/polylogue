@@ -595,3 +595,66 @@ def test_duplicate_alias_fold_reaches_terminal_postcondition_under_fanout(tmp_pa
             assert conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (other_session,)).fetchone() == (
                 stale_raw_id,
             )
+
+
+def test_duplicate_alias_ineligible_proof_does_not_crash_the_whole_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-dmvo regression: an "ineligible" duplicate-alias proof must not crash the census.
+
+    ``_inspect_duplicate_raw_identity`` returns ``status="ineligible"`` (never
+    raises) for several legitimate, expected N:1 fan-out terminal states --
+    e.g. a sibling session sharing the same stale raw as its accepted head,
+    once the single available canonical twin has already been claimed by a
+    *different* sibling's fold (real reasons observed live: "canonical raw is
+    already an accepted head", "stale raw is not the currently accepted head
+    of this logical source key"). Before the fix, ``_classify_frontier``
+    treated ANY status outside {eligible, already_repaired} as a fatal proof
+    violation and raised -- which crashed the *entire* frontier census, not
+    just this one raw's classification. Observed live: this held the
+    daemon's sole writer lock for 9+ minutes before failing the whole pass,
+    with 10 other queued daemon actors starved behind it, repeating every
+    retry cycle. This directly exercises ``_classify_frontier``'s own
+    ineligible-status branch (monkeypatching the proof helper it calls,
+    ``_inspect_duplicate_raw_identity``) rather than trying to reproduce the
+    live census/apply ordering that produces "ineligible" naturally --
+    reconstructing that exact multi-pass state was not reliably
+    reproducible in a single-pass fixture, but the fix's own behavior is
+    fully exercised regardless of which upstream condition triggers it.
+    """
+    stale_raw_id, canonical_raw_id, heads = _seed_duplicate_raw_fanout(tmp_path)
+    (session_a, key_a), (session_b, key_b) = heads
+
+    import polylogue.storage.repair as repair_module
+    from polylogue.storage.repair import DuplicateRawIdentityRepairItem
+
+    real_inspect = repair_module._inspect_duplicate_raw_identity
+
+    def fake_inspect(
+        conn: object, archive_root: object, stale: str, canonical: str, logical_source_key: str
+    ) -> DuplicateRawIdentityRepairItem:
+        if logical_source_key == key_b:
+            return DuplicateRawIdentityRepairItem(
+                stale_raw_id=stale,
+                canonical_raw_id=canonical,
+                status="ineligible",
+                reason="canonical raw is already an accepted head; not a dangling duplicate",
+            )
+        return real_inspect(conn, archive_root, stale, canonical, logical_source_key)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(repair_module, "_inspect_duplicate_raw_identity", fake_inspect)
+
+    # The regression: this must not raise, and must still classify session A
+    # (the genuinely eligible sibling) correctly.
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    by_key = {item.logical_source_key: item for item in census.items if item.raw_id == stale_raw_id}
+    assert by_key[key_a].state is RawAuthorityFrontierState.DUPLICATE_ALIAS
+    assert by_key[key_a].actuator is RawAuthorityActuator.FOLD_DUPLICATE_ALIAS
+    assert by_key[key_a].executable
+
+    sibling_item = by_key[key_b]
+    assert sibling_item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
+    assert sibling_item.actuator is RawAuthorityActuator.NONE
+    assert not sibling_item.executable
+    assert "already an accepted head" in sibling_item.reason
