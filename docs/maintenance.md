@@ -493,6 +493,37 @@ confirm-flag-strength authorization bound to that plan's hash, refusing
 (`preview_stale`) if the blocker was concurrently resolved between preview
 and confirm.
 
+### Measuring Codex UUID-title coverage
+
+Codex sessions without a resolvable title (thread name / authored history /
+`state_5.sqlite` title / a human-authored message) fall back to their native
+UUID as `title` (polylogue-ih67). `polylogue ops diagnostics
+codex-title-census` reports corpus-wide resolved/unresolved counts without
+reading message content or file paths -- only the `sessions` table's
+`title`/`title_source`/`message_count`/`authored_user_message_count` columns:
+
+```bash
+polylogue ops diagnostics codex-title-census --json
+```
+
+Every still-UUID-titled session is classified by structural reason rather
+than an undifferentiated "unresolved" count: `no_messages_materialized` (the
+raw record produced zero messages), `no_human_authored_message` (messages
+exist but none are human-authored -- no message-text fallback is possible),
+`not_yet_reprocessed_with_assembly` (a human-authored message exists but
+`title_source` was never stamped -- an ordinary `reprocess` pass should
+resolve it), and `human_authored_present_synthesis_failed` (enrichment ran
+but title synthesis produced nothing usable, e.g. whitespace-only text).
+
+Save a snapshot before a reprocess pass and compare after:
+
+```bash
+polylogue ops diagnostics codex-title-census --save /tmp/before.json
+# ... run polylogue ops reprocess or polylogued run ...
+polylogue ops diagnostics codex-title-census --save /tmp/after.json
+polylogue ops diagnostics codex-title-census --compare /tmp/before.json /tmp/after.json
+```
+
 ### Draining the convergence-debt queue
 
 **Symptoms.** `polylogue ops diagnostics workload` reports a non-trivial
