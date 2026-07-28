@@ -18,7 +18,10 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.fts.freshness import record_fts_surface_state_sync
+from polylogue.storage.fts.freshness import (
+    record_fts_surface_stale_preserving_counts_sync,
+    record_fts_surface_state_sync,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
@@ -151,3 +154,63 @@ def test_readiness_trusts_a_healthy_freshness_record_without_recompute(tmp_path:
     assert fts["messages_ready"] is True
     assert fts["coverage_pct"] == 100.0
     assert fts["coverage_exact"] is False
+
+
+def test_single_session_defer_does_not_falsely_zero_archive_wide_coverage(tmp_path: Path) -> None:
+    """polylogue-5eyy: a single deferred session repair must not report 0% archive-wide.
+
+    ``archive.py``'s raw-revision-authoritative write path marks ``messages_fts``
+    STALE (without touching the DB rows themselves) whenever a single session's
+    FTS repair is deferred during a live write. Before the fix,
+    ``record_fts_surface_state_sync`` was called with no ``source_rows``/
+    ``indexed_rows`` -- its defaults are 0 -- which unconditionally clobbered the
+    *entire* surface's durable counts to 0/0 even though the archive-wide FTS
+    index remains fully populated and only one session's repair was deferred.
+    Downstream this made every status/readiness consumer (CLI ops status,
+    daemon status API, MCP status tool) report coverage_pct=0.0 and
+    state=missing for the whole archive.
+    """
+    db = tmp_path / "index.db"
+    _populated_index(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        indexed = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
+        assert indexed > 0
+        # Real, healthy archive-wide coverage recorded (e.g. by a prior
+        # invariant snapshot / bounded repair).
+        record_fts_surface_state_sync(
+            conn,
+            surface="messages_fts",
+            state="ready",
+            source_rows=indexed,
+            indexed_rows=indexed,
+        )
+        conn.commit()
+
+        # Simulate a single session's FTS repair being deferred during a live
+        # authoritative write (archive.py's ``defer_fts`` branch) -- the real
+        # archive-wide FTS rows are untouched, only the freshness ledger is
+        # marked stale to force a later targeted recheck.
+        record_fts_surface_stale_preserving_counts_sync(
+            conn,
+            surface="messages_fts",
+            detail="live authoritative replay deferred targeted session FTS repair",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    fts = fts_readiness_info(db, exact=False)
+
+    # The pending single-session repair legitimately means the surface isn't
+    # trusted as fully "ready", but the real, still-populated archive-wide
+    # counts must survive -- not be falsely reported as 0/missing.
+    surfaces = fts["surfaces"]
+    assert isinstance(surfaces, dict)
+    messages_fts_surface = surfaces["messages_fts"]
+    assert isinstance(messages_fts_surface, dict)
+    assert messages_fts_surface["freshness_recorded_state"] == "stale"
+    assert fts["message_indexed_count"] == indexed
+    assert fts["message_indexable_count"] == indexed
+    assert fts["coverage_pct"] == 100.0

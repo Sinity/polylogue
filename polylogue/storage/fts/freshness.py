@@ -272,6 +272,65 @@ async def record_fts_surface_state_async(
     )
 
 
+def record_fts_surface_stale_preserving_counts_sync(
+    conn: sqlite3.Connection,
+    *,
+    surface: str,
+    detail: str,
+) -> None:
+    """Mark ``surface`` STALE without clobbering its last-known row counts.
+
+    Used when a single unit's (e.g. one session's) FTS repair is deferred
+    during a live write: the surface as a whole remains populated -- only
+    that one unit's index entries are pending recomputation -- so writing
+    the ``source_rows=0, indexed_rows=0`` defaults here (polylogue-5eyy) would
+    report a false archive-wide 0% coverage / missing state to every status
+    and readiness consumer (CLI ops status, daemon status API, MCP status
+    tool) even though the archive genuinely has millions of indexed rows.
+
+    Reuses whatever counts are already durably recorded for this surface
+    (falling back to the ordinary zeroed write only when no prior row
+    exists, e.g. a brand new archive) so downstream coverage/state reporting
+    reflects the last known good measurement until the next full invariant
+    snapshot or bounded repair recomputes exact counts. The surface still
+    correctly reports ``state=stale`` -- the pending single-unit repair is a
+    real, if narrow, staleness -- only the counters are preserved rather than
+    falsely zeroed.
+    """
+    ensure_fts_freshness_table_sync(conn)
+    row = conn.execute(
+        """
+        SELECT source_rows, indexed_rows, missing_rows, excess_rows,
+               duplicate_rows, identity_mismatch_rows
+        FROM fts_freshness_state WHERE surface = ?
+        """,
+        (surface,),
+    ).fetchone()
+    if row is None:
+        record_fts_surface_state_sync(conn, surface=surface, state=STALE, detail=detail)
+        return
+    (
+        prior_source_rows,
+        prior_indexed_rows,
+        prior_missing_rows,
+        prior_excess_rows,
+        prior_duplicate_rows,
+        prior_identity_mismatch_rows,
+    ) = row
+    record_fts_surface_state_sync(
+        conn,
+        surface=surface,
+        state=STALE,
+        source_rows=_int_or_zero(prior_source_rows),
+        indexed_rows=_int_or_zero(prior_indexed_rows),
+        missing_rows=_int_or_zero(prior_missing_rows),
+        excess_rows=_int_or_zero(prior_excess_rows),
+        duplicate_rows=_int_or_zero(prior_duplicate_rows),
+        identity_mismatch_rows=_int_or_zero(prior_identity_mismatch_rows),
+        detail=detail,
+    )
+
+
 def record_fts_invariant_snapshot_sync(conn: sqlite3.Connection, snapshot: Any) -> None:
     for surface in snapshot.surfaces:
         record_fts_surface_state_sync(
@@ -530,6 +589,7 @@ __all__ = [
     "message_fts_recorded_state_async",
     "message_fts_recorded_state_sync",
     "record_fts_invariant_snapshot_sync",
+    "record_fts_surface_stale_preserving_counts_sync",
     "record_fts_surface_state_async",
     "record_fts_surface_state_sync",
 ]
