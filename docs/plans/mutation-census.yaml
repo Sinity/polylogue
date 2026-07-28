@@ -29,11 +29,15 @@
 # the exact live set of correction kinds at PREPARE time (not the caller's
 # request shape), so a concurrent `record_correction` between AUTHORIZE and
 # EXECUTE changes the plan hash and forces a replan instead of silently
-# clearing a kind the caller never previewed. Phases 1-4 landed as separate
-# PRs (#3249/#3253/#3258/#3262); phase 5 (this revision) is the next PR in
-# the same sequence. Every remaining operation below is inventoried
-# honestly as `declared-not-routed` -- visible debt for a later phase, not
-# a claim of completion.
+# clearing a kind the caller never previewed. Phase 6 adds the
+# blackboard-post family (reversible, role_only): `blackboard_post` had NO
+# OperationSpec entry at all before this phase -- an unclassified mutation,
+# not merely an un-migrated one, closed the same way
+# `mutate-resolve-raw-authority-blocker` was in phase 3. Phases 1-5 landed as
+# separate PRs (#3249/#3253/#3258/#3262/#3294); phase 6 (this revision) is
+# the next PR in the same sequence. Every remaining operation below is
+# inventoried honestly as `declared-not-routed` -- visible debt for a later
+# phase, not a claim of completion.
 
 schema_version: 1
 
@@ -257,25 +261,31 @@ rows:
       - polylogue.api.archive.PolylogueArchiveMixin.clear_corrections
       - polylogue.mcp.server_cutover._dispatch_write (operation=clear_corrections without kind, via clear_corrections)
 
+  # --- Phase 6: executor-routed (blackboard-post family) ----------------------
+
+  - operation: blackboard_post
+    spec_name: mutate-blackboard-post
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.BlackboardPostActuator
+    surfaces: [mcp, api]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.post_blackboard_note
+      - polylogue.mcp.server_cutover._dispatch_write (operation=blackboard_post, via post_blackboard_note)
+
   # --- Phase 3+ debt: declared-not-routed -------------------------------------
   # MCP-only mutation family with no OperationSpec entry yet (pre-existing
   # gap, not introduced by this PR). jn40's confirm-boolean sweep was the
   # interim mitigation for the destructive members of this family. add_mark/
   # remove_mark (phase 2), save_annotation/delete_annotation (phase 3), the
-  # saved-view/recall-pack/workspace family (phase 4), and record_correction/
-  # delete_correction/clear_corrections (phase 5, above) are all
-  # executor-routed now; the rest of this family remains debt for a later
-  # phase.
+  # saved-view/recall-pack/workspace family (phase 4), record_correction/
+  # delete_correction/clear_corrections (phase 5), and blackboard_post
+  # (phase 6, above) are all executor-routed now; the rest of this family
+  # remains debt for a later phase.
 
   - operation: capture_assertion_candidate
     status: declared-not-routed
     surfaces: [mcp]
     reason: Additive candidate capture, not destructive; tracked for completeness.
-
-  - operation: blackboard_post
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: Additive append-only write, not destructive.
 
   - operation: import_annotation_batch
     status: declared-not-routed

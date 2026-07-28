@@ -47,6 +47,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-remove-mark",
         "mutate-save-annotation",
         "mutate-delete-annotation",
+        "mutate-blackboard-post",
         "mutate-resolve-raw-authority-blocker",
         "mutate-save-saved-view",
         "mutate-delete-saved-view",
