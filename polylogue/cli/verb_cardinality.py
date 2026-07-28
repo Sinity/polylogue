@@ -114,14 +114,11 @@ def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[
 
 def _filter_chain_for_request(env: AppEnv, request: RootModeRequest) -> SessionFilter:
     from polylogue.cli.query import _create_query_vector_provider
-    from polylogue.paths._roots import archive_file_set_root_for_paths
+    from polylogue.storage.archive_identity import ArchiveLocation
 
     config = env.config
     spec = request.query_spec()
-    archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
+    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
     vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
     return spec.build_filter(config, vector_provider=vector_provider)
 

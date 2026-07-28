@@ -1086,15 +1086,12 @@ def status_command(
             render_source_freshness_status,
         )
         from polylogue.cli.shared.helpers import load_effective_config
-        from polylogue.paths import archive_file_set_root_for_paths
+        from polylogue.storage.archive_identity import ArchiveLocation
 
         if not source_path.is_absolute():
             raise click.UsageError("--source must be an absolute exact source path")
         config = load_effective_config(env)
-        archive_root = archive_file_set_root_for_paths(
-            archive_root_path=config.archive_root,
-            db_anchor=config.db_path,
-        )
+        archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
         freshness = project_named_source_freshness(archive_root, source_path)
         if output_format == "json":
             click.echo(json.dumps(freshness.to_dict(), sort_keys=True))

@@ -62,12 +62,9 @@ def plan_sql_pushdown_params(plan: SessionQueryPlan) -> SqlPushdownParams:
 
 
 def _archive_root_for_config(config: Config) -> Path:
-    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.archive_identity import ArchiveLocation
 
-    return archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
+    return ArchiveLocation.resolve(config.archive_root).configured_root
 
 
 # ---------------------------------------------------------------------------

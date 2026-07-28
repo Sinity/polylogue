@@ -50,7 +50,8 @@ from polylogue.insights.archive import (
 )
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
-from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
+from polylogue.paths import archive_file_set_index_available_for_paths
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
@@ -404,7 +405,7 @@ def _archive_index_available(config: Config) -> bool:
 
 
 def _active_archive_root(config: Config) -> Path:
-    return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    return ArchiveLocation.resolve(config.archive_root).configured_root
 
 
 def _archive_context_message_window(

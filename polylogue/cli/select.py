@@ -172,13 +172,10 @@ async def _select_session_rows_from_store(
     *,
     limit: int,
 ) -> list[SelectSessionRow]:
-    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.archive_identity import ArchiveLocation
 
     spec = replace(request.query_spec(), limit=limit)
-    archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
+    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
     vector_provider = None
     if _spec_needs_vector_provider(spec):
         from polylogue.cli.query import _create_query_vector_provider

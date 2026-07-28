@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, TypeVar, cast
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
-from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
     RawAuthorityCensusReceipt,
@@ -207,7 +206,16 @@ class RawAuthorityFrontierApplyReport:
 
 
 def _archive_root(config: Config) -> Path:
-    return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    """Return the archive file-set root housing the currently active database.
+
+    Deliberately follows ``config.db_path`` (not ``config.archive_root``),
+    matching :func:`polylogue.storage.repair._raw_materialization_archive_root`:
+    this reconciler inspects the database and blob store that are actually
+    live right now, which ``config.db_path`` already resolves correctly
+    (``.index-active-pointer``-aware, or an explicit override) inside
+    ``Config.__init__``.
+    """
+    return config.db_path.parent
 
 
 def _rows(cursor: sqlite3.Cursor) -> list[dict[str, object]]:

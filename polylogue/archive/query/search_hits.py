@@ -274,12 +274,9 @@ async def search_hits_for_plan(
 
     from polylogue.archive.query.archive_execution import archive_search_hits
     from polylogue.archive.query.transaction import run_archive_read
-    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.archive_identity import ArchiveLocation
 
-    archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
+    archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
     paired, resolved_lane = await run_archive_read(
         archive_root,
         operation="archive.query.search-hits-for-plan",

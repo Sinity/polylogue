@@ -126,7 +126,7 @@ class TestConfig:
 
     def test_archive_file_set_index_availability_is_unconditional(self, tmp_path: Path) -> None:
         """Archive file-set availability does not depend on the DB anchor."""
-        from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
+        from polylogue.paths import archive_file_set_index_available_for_paths
 
         archive_root = tmp_path / "archive"
         override_root = tmp_path / "override"
@@ -135,12 +135,10 @@ class TestConfig:
         db_anchor = override_root / "custom.sqlite"
 
         assert archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
-        assert archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor) == archive_root
 
         (override_root / "index.db").write_text("index")
 
         assert archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
-        assert archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor) == archive_root
 
     def test_config_optional_fields_default_none(self, tmp_path: Path) -> None:
         """Optional fields default to None."""

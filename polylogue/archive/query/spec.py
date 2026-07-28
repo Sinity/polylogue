@@ -584,12 +584,9 @@ class SessionQuerySpec:
     ) -> SessionFilter:
         """Build a fluent filter facade over the canonical execution plan."""
         from polylogue.archive.filter.filters import SessionFilter
-        from polylogue.paths import archive_file_set_root_for_paths
+        from polylogue.storage.archive_identity import ArchiveLocation
 
-        archive_root = archive_file_set_root_for_paths(
-            archive_root_path=config.archive_root,
-            db_anchor=config.db_path,
-        )
+        archive_root = ArchiveLocation.resolve(config.archive_root).configured_root
         return SessionFilter(
             archive_root=archive_root,
             config=config,

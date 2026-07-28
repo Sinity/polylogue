@@ -80,13 +80,6 @@ def archive_file_set_index_available_for_paths(*, archive_root_path: Path, db_an
     return True
 
 
-def archive_file_set_root_for_paths(*, archive_root_path: Path, db_anchor: Path) -> Path:
-    """Return the configured archive root."""
-    if db_anchor.name == "index.db":
-        return db_anchor.parent
-    return archive_root_path
-
-
 def active_index_db_path() -> Path:
     """Currently active query/index database path."""
     root = archive_root()

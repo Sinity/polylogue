@@ -401,13 +401,11 @@ def _collect_archive_debt_statuses(
     """
     from contextlib import closing
 
-    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.archive_identity import ArchiveLocation
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    index_db = (
-        archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path) / "index.db"
-    )
+    index_db = ArchiveLocation.resolve(config.archive_root).active_index_path
     if not index_db.exists():
         return {}
     with closing(open_readonly_connection(index_db)) as conn:

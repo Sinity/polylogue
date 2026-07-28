@@ -7,7 +7,8 @@ import json
 import click
 
 from polylogue.archive.query.transaction import archive_read_context
-from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 @click.command("archive-read")
@@ -24,8 +25,9 @@ from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_pa
 )
 def archive_read_command(query: str | None, origin: str | None, limit: int, output_format: str) -> None:
     """Read index sessions from the archive."""
-    root = archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path())
-    index_db_path = root / "index.db"
+    location = ArchiveLocation.resolve(archive_root())
+    root = location.configured_root
+    index_db_path = location.active_index_path
     if not index_db_path.exists():
         message = f"archive index.db does not exist: {index_db_path}"
         if output_format == "json":
