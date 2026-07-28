@@ -700,8 +700,26 @@ def _inspect_quarantined_accepted_raw(
     raw_id: str,
     *,
     conn: sqlite3.Connection,
+    logical_source_key: str,
 ) -> QuarantinedAcceptedRawRepairItem:
-    """Prove one accepted head against source main + attached read-only index."""
+    """Prove one accepted head against source main + attached read-only index.
+
+    ``logical_source_key`` disambiguates which accepted-head row this proof
+    is about. A single physical raw acquisition (one ``raw_id``, most
+    commonly the pre-#2729 native-id-inclusive shape) can legitimately be
+    the accepted head for *several* logical source keys/sessions at once --
+    forked/subagent/resumed sessions replay the same parent JSONL, so their
+    materialization can each independently accept the identical raw as
+    their own head (polylogue-ihc8). Scoping every lookup below to this
+    specific key mirrors the fix already applied to
+    ``_inspect_duplicate_raw_identity`` for the same fan-out shape
+    (polylogue-zaiz) -- an unscoped ``WHERE accepted_raw_id = ?`` lookup
+    here would either raise "expected one accepted head, found N" for every
+    fan-out sibling (permanently ineligible, regardless of the underlying
+    quarantine reason) or, worse, silently prove a witness against a
+    *different* session's head than the one the caller actually intends to
+    refine.
+    """
     capture_mode_available = _raw_sessions_capture_mode_available(conn)
     capture_mode_projection = "capture_mode" if capture_mode_available else "NULL AS capture_mode"
     try:
@@ -724,20 +742,21 @@ def _inspect_quarantined_accepted_raw(
                    accepted_source_revision, accepted_content_hash,
                    accepted_frontier_kind, accepted_frontier,
                    acquisition_generation, append_end_offset, decided_at_ms
-            FROM index_tier.raw_revision_heads WHERE accepted_raw_id = ?
+            FROM index_tier.raw_revision_heads WHERE accepted_raw_id = ? AND logical_source_key = ?
             """,
-            (raw_id,),
+            (raw_id, logical_source_key),
         ).fetchall()
         if len(heads) != 1:
-            return _quarantined_raw_item(raw_id, f"expected one accepted head, found {len(heads)}")
+            return _quarantined_raw_item(
+                raw_id, f"expected one accepted head for {logical_source_key}, found {len(heads)}"
+            )
         head = heads[0]
-        logical_source_key = str(head["logical_source_key"])
         session_id = str(head["session_id"])
         session_rows = conn.execute(
-            "SELECT session_id, raw_id, content_hash FROM index_tier.sessions WHERE raw_id = ?",
-            (raw_id,),
+            "SELECT session_id, raw_id, content_hash FROM index_tier.sessions WHERE raw_id = ? AND session_id = ?",
+            (raw_id, session_id),
         ).fetchall()
-        if len(session_rows) != 1 or str(session_rows[0]["session_id"]) != session_id:
+        if len(session_rows) != 1:
             return _quarantined_raw_item(raw_id, "accepted head is not the raw's unique indexed session")
         session_row = session_rows[0]
         applications = conn.execute(
@@ -747,9 +766,9 @@ def _inspect_quarantined_accepted_raw(
                    accepted_source_revision, accepted_content_hash, append_end_offset,
                    baseline_raw_id, predecessor_raw_id, detail, decided_at_ms
             FROM index_tier.raw_revision_applications
-            WHERE raw_id = ? OR accepted_raw_id = ? OR logical_source_key = ?
+            WHERE logical_source_key = ? AND (raw_id = ? OR accepted_raw_id = ?)
             """,
-            (raw_id, raw_id, logical_source_key),
+            (logical_source_key, raw_id, raw_id),
         ).fetchall()
         if len(applications) != 1:
             return _quarantined_raw_item(raw_id, "competing raw-revision application authority exists")
@@ -1179,13 +1198,21 @@ def _cas_refine_quarantined_accepted_raw(
 
 def inspect_quarantined_accepted_raws(
     config: Config,
-    raw_ids: list[str],
+    raw_ids_with_keys: list[tuple[str, str]],
 ) -> tuple[QuarantinedAcceptedRawRepairItem, ...]:
-    """Return exact typed quarantine-refinement proofs without mutation."""
-    if len(set(raw_ids)) != len(raw_ids):
-        raise ValueError("duplicate raw ids are not allowed")
-    if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
+    """Return exact typed quarantine-refinement proofs without mutation.
+
+    Each entry is ``(raw_id, logical_source_key)``: a fan-out raw shared by
+    several sessions (polylogue-zaiz, mirroring polylogue-ihc8) needs one
+    proof per session, not one per physical raw. Blob-budget partitioning
+    still dedupes by raw_id alone (blob content doesn't vary by session);
+    only the per-session identity proof runs once per pair.
+    """
+    if len(set(raw_ids_with_keys)) != len(raw_ids_with_keys):
+        raise ValueError("duplicate (raw id, logical source key) pairs are not allowed")
+    if not raw_ids_with_keys or len(raw_ids_with_keys) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
         raise ValueError(f"raw-id list must contain 1..{_QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT} entries")
+    raw_ids = sorted({raw_id for raw_id, _logical_source_key in raw_ids_with_keys})
     if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     archive_root = _raw_materialization_archive_root(config)
@@ -1196,11 +1223,19 @@ def inspect_quarantined_accepted_raws(
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         _attach_repair_index(conn, index_db)
         inspectable, excluded = _partition_quarantined_raw_repair_blob_budget(conn, raw_ids)
-        by_id = {item.raw_id: item for item in excluded}
-        by_id.update(
-            {raw_id: _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=conn) for raw_id in inspectable}
-        )
-        return tuple(by_id[raw_id] for raw_id in raw_ids)
+        inspectable_ids = set(inspectable)
+        excluded_by_id = {item.raw_id: item for item in excluded}
+        results: list[QuarantinedAcceptedRawRepairItem] = []
+        for raw_id, logical_source_key in raw_ids_with_keys:
+            if raw_id in inspectable_ids:
+                results.append(
+                    _inspect_quarantined_accepted_raw(
+                        archive_root, raw_id, conn=conn, logical_source_key=logical_source_key
+                    )
+                )
+            else:
+                results.append(excluded_by_id[raw_id])
+        return tuple(results)
 
 
 def _browser_origin_ineligible(raw_id: str, reason: str) -> BrowserCaptureOriginRepairItem:
