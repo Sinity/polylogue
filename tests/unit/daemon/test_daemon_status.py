@@ -1284,6 +1284,56 @@ def test_archive_storage_info_reports_split_root_identity_conflict(tmp_path: Pat
     assert tiers["index"].resolved_path == str(active / "index.db")
 
 
+def test_archive_storage_info_reads_durable_tiers_from_configured_root_for_index_only_generation(
+    tmp_path: Path,
+) -> None:
+    """polylogue-ovme.2 AC1 canary.
+
+    A b5l-style index-only active generation lives entirely outside
+    ``configured_root`` and carries none of the durable tiers as physical
+    siblings (unlike ``IndexGenerationStore.create``'s own generation
+    directories, which happen to populate symlinked siblings -- that
+    convention must not be load-bearing for status reporting).  Diagnostics
+    must still report ``source``/``user``/``embeddings``/``ops`` as present
+    because they exist at the *configured* archive root; deriving an
+    "archive root" from the active index's parent directory and looking for
+    siblings there is exactly the anti-pattern this test guards against.
+    """
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    for name in ("source.db", "embeddings.db", "user.db", "ops.db"):
+        (configured / name).touch()
+    generation_dir = tmp_path / "external-generation"
+    generation_dir.mkdir()
+    generation_index = generation_dir / "index.db"
+    initialize_archive_database(generation_index, ArchiveTier.INDEX)
+    pointer = configured / ".index-active-pointer"
+    pointer.write_text(str(generation_index.absolute()), encoding="utf-8")
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=configured),
+        patch("polylogue.daemon.status.db_path", return_value=configured / "index.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=configured / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=generation_index),
+    ):
+        storage = status_module._archive_storage_info()
+
+    assert storage.identity_conflicts == []
+    assert storage.active_db_path == str(generation_index)
+    assert storage.archive_root == str(configured), (
+        "archive root must stay the configured root for an index-only generation, "
+        "not the active generation's parent directory"
+    )
+    tiers = {tier.name: tier for tier in storage.tiers}
+    assert tiers["source"].resolved_path == str(configured / "source.db")
+    assert tiers["user"].resolved_path == str(configured / "user.db")
+    assert tiers["embeddings"].resolved_path == str(configured / "embeddings.db")
+    assert tiers["ops"].resolved_path == str(configured / "ops.db")
+    assert tiers["index"].resolved_path == str(generation_index)
+    assert storage.present_tiers == ["source", "index", "embeddings", "user", "ops"]
+    assert storage.missing_tiers == []
+
+
 def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_debt(tmp_path: Path) -> None:
     storage = status_module.ArchiveStorageStatus(
         active_store="archive_file_set",
