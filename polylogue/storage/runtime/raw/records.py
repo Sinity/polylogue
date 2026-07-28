@@ -32,6 +32,16 @@ class RawSessionRecord(BaseModel):
     revision: RawRevisionEnvelope | None = None
     captured_source_revision: str | None = Field(default=None, exclude=True)
     requires_complete_record_boundary: bool = Field(default=False, exclude=True)
+    # Frozen provider-assembly sidecar snapshot (polylogue-ih67 AC#3/4),
+    # resolved once by the main process before dispatch and carried across
+    # the ProcessPoolExecutor boundary so ``ingest_record`` never re-reads
+    # live home-directory sidecars (session_index.jsonl/history.jsonl/
+    # state_5.sqlite) during replay. ``None`` means "not resolved here" --
+    # either a non-Codex provider, or a caller (e.g. direct unit tests) that
+    # bypasses the batch resolver -- and falls back to on-demand disk
+    # discovery. An empty dict is a valid resolved-but-nothing-found snapshot
+    # and is distinct from None: it must NOT trigger a fallback disk read.
+    sidecar_snapshot: dict[str, dict[str, str]] | None = Field(default=None, exclude=True)
 
     @field_validator("raw_id", "blob_hash", "blob_publication_receipt_id", "source_name", "source_path")
     @classmethod

@@ -37,6 +37,10 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     origin: Origin
     title: str | None = None
     title_source: TitleSource | None = None
+    # Specific provenance beyond title_source's coarse strategy label: exact
+    # evidence reference plus a 0..1 confidence signal (polylogue-ih67).
+    title_ref: str | None = None
+    title_confidence: float | None = None
     session_kind: SessionKind = SessionKind.STANDARD
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -87,6 +91,10 @@ class Session(SessionRuntimeMixin, BaseModel):
     origin: Origin
     title: str | None = None
     title_source: TitleSource | None = None
+    # Specific provenance beyond title_source's coarse strategy label: exact
+    # evidence reference plus a 0..1 confidence signal (polylogue-ih67).
+    title_ref: str | None = None
+    title_confidence: float | None = None
     session_kind: SessionKind = SessionKind.STANDARD
     messages: MessageCollection
     created_at: datetime | None = None

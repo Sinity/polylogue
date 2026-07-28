@@ -885,6 +885,47 @@ def read_history_sidecar(conn: sqlite3.Connection, sidecar_id: str) -> ArchiveHi
     )
 
 
+def read_earliest_history_sidecar_for_path(
+    conn: sqlite3.Connection,
+    *,
+    origin: Origin | str,
+    source_path: str,
+) -> ArchiveHistorySidecar | None:
+    """Read the first-ever persisted sidecar snapshot for ``source_path``.
+
+    Provider assembly sidecars (Codex ``session_index.jsonl``/
+    ``history.jsonl``/``state_5.sqlite``) are frozen the first time a given
+    raw record's acquisition path is observed (polylogue-ih67 AC#3/4): once a
+    snapshot exists for ``(origin, source_path)``, every later ingest of that
+    same raw record replays this frozen row instead of re-reading the live
+    filesystem, so an ambient edit to the sidecar cannot silently change a
+    previously acquired replay's title. Returns ``None`` when no snapshot has
+    been captured yet -- the caller should discover from disk and persist one.
+    """
+    origin_value = _enum_value(origin)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """
+        SELECT sidecar_id, origin, source_path, payload_json, observed_at_ms, content_hash
+        FROM history_sidecars
+        WHERE origin = ? AND source_path = ?
+        ORDER BY observed_at_ms ASC, sidecar_id ASC
+        LIMIT 1
+        """,
+        (origin_value, source_path),
+    ).fetchone()
+    if row is None:
+        return None
+    return ArchiveHistorySidecar(
+        sidecar_id=row["sidecar_id"],
+        origin=row["origin"],
+        source_path=row["source_path"],
+        payload=_json_loads(row["payload_json"]),
+        observed_at_ms=row["observed_at_ms"],
+        content_hash=row["content_hash"],
+    )
+
+
 def read_raw_artifact(conn: sqlite3.Connection, artifact_id: str) -> ArchiveRawArtifactEnvelope:
     """Read one raw artifact classification row."""
     conn.row_factory = sqlite3.Row
@@ -1132,6 +1173,7 @@ __all__ = [
     "is_blob_hash_excised",
     "list_hook_events",
     "list_raw_artifacts",
+    "read_earliest_history_sidecar_for_path",
     "read_history_sidecar",
     "read_hook_event",
     "read_raw_artifact",

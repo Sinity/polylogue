@@ -32,7 +32,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # and its trigger-body writes. index.db is a rebuildable derived tier (no
 # migration chain) -- an archive still on v42 needs `polylogue ops reset
 # --index && polylogued run`, not an in-place upgrade helper.
-INDEX_SCHEMA_VERSION = 43
+INDEX_SCHEMA_VERSION = 44
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -133,6 +133,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     title                   TEXT,
     session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)}),
     title_source            TEXT CHECK(title_source IN ('origin', 'path', 'heuristic', 'user', 'unknown') OR title_source IS NULL),
+    -- Specific provenance beyond TitleSource's coarse strategy label: which
+    -- exact evidence row won (e.g. "codex-thread-name:<id>",
+    -- "codex-history:<id>", "message:<provider_message_id>") plus a 0..1
+    -- confidence signal for that resolution (polylogue-ih67 AC#5, ref/
+    -- confidence slice). Both derived/rebuildable, never hand-edited.
+    title_ref               TEXT,
+    title_confidence        REAL CHECK(title_confidence IS NULL OR (title_confidence >= 0 AND title_confidence <= 1)),
     git_branch              TEXT,
     git_repository_url      TEXT,
     provider_project_ref    TEXT,

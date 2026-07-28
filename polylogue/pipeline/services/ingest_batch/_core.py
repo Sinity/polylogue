@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
+from polylogue.core.enums import Provider
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
@@ -1233,6 +1234,74 @@ def _commit_sync_ingest_side_effects(
     )
 
 
+def _resolve_codex_sidecar_snapshots(
+    raw_artifacts: list[RawSessionRecord],
+    *,
+    archive_root: Path,
+) -> None:
+    """Attach each Codex raw record's frozen sidecar snapshot (polylogue-ih67).
+
+    ``ingest_record`` runs in a ProcessPoolExecutor worker and must stay
+    subprocess-safe (no shared DB writer, no live-filesystem replay
+    dependence -- AC#4). Sidecar discovery (Codex ``session_index.jsonl`` /
+    ``history.jsonl`` / ``state_5.sqlite``) therefore happens here, in the
+    main process, before dispatch: the first time a given ``source_path`` is
+    seen, discover from disk and persist the result in ``history_sidecars``
+    (source.db); every later ingest of a raw record sharing that acquisition
+    path replays the persisted snapshot instead of touching disk again, so an
+    ambient edit to the live sidecar file cannot silently change a
+    previously acquired replay's title (AC#3).
+
+    Non-Codex records, and records with no ``source_path``, are left with
+    ``sidecar_snapshot=None`` -- ``_enrich_parsed_sessions`` falls back to
+    on-demand disk discovery for those, matching prior behavior.
+    """
+    codex_records = [
+        record for record in raw_artifacts if record.payload_provider is Provider.CODEX and record.source_path
+    ]
+    if not codex_records:
+        return
+
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.sources.assembly_codex import CodexAssemblySpec
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        read_earliest_history_sidecar_for_path,
+        write_history_sidecar,
+    )
+
+    origin = origin_from_provider(Provider.CODEX)
+    spec = CodexAssemblySpec()
+    resolved: dict[str, dict[str, dict[str, str]]] = {}
+    source_db_path = archive_root / "source.db"
+    with closing(sqlite3.connect(str(source_db_path), timeout=DB_TIMEOUT)) as conn:
+        for record in codex_records:
+            source_path = record.source_path
+            if source_path in resolved:
+                continue
+            existing = read_earliest_history_sidecar_for_path(conn, origin=origin, source_path=source_path)
+            if existing is not None:
+                resolved[source_path] = cast("dict[str, dict[str, str]]", existing.payload)
+                continue
+            try:
+                discovered = cast("dict[str, dict[str, str]]", spec.discover_sidecars([Path(source_path)]))
+            except Exception:
+                logger.exception("codex sidecar discovery failed for %s", source_path)
+                discovered = {}
+            resolved[source_path] = discovered
+            try:
+                write_history_sidecar(
+                    conn,
+                    origin=origin,
+                    source_path=source_path,
+                    payload=dict(discovered),
+                    observed_at_ms=int(time.time() * 1000),
+                )
+            except Exception:
+                logger.exception("failed to persist codex sidecar snapshot for %s", source_path)
+    for record in codex_records:
+        record.sidecar_snapshot = resolved.get(record.source_path)
+
+
 def _process_ingest_batch_sync(
     raw_artifacts: list[RawSessionRecord],
     *,
@@ -1262,6 +1331,7 @@ def _process_ingest_batch_sync(
     )
     t_start = time.perf_counter()
     archive_root = Path(archive_root_str)
+    _resolve_codex_sidecar_snapshots(raw_artifacts, archive_root=archive_root)
     primary_publication_service = (
         PublicationService(
             archive_root / "source.db",

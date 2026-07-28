@@ -770,6 +770,30 @@
           "title": "Title",
           "type": "string"
         },
+        "title_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title Confidence"
+        },
+        "title_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title Ref"
+        },
         "title_source": {
           "anyOf": [
             {
