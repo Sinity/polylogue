@@ -51,16 +51,16 @@ class MeasureSpec(BaseModel):
     id: str
     construct: str
     operationalization: str
-    reducer: Literal["count","sum","ratio","mean","median","pXX","entropy","Gini","zstd-ratio"]
+    reducer: Literal["count", "sum", "ratio", "mean", "median", "pXX", "entropy", "Gini", "zstd-ratio"]
     column_expr: str
-    unit_frame: Literal["sessions","actions","messages","observed-events","work-events","phases","threads"]
+    unit_frame: Literal["sessions", "actions", "messages", "observed-events", "work-events", "phases", "threads"]
     denominator_expr: str | None
-    evidence_tier: Literal["structural","provider-reported","derived","heuristic","mixed"]
+    evidence_tier: Literal["structural", "provider-reported", "derived", "heuristic", "mixed"]
     required_coverage: CoverageGate
     confounds: tuple[str, ...]
     provenance_mixing_flags: tuple[str, ...]
     uncertainty: UncertaintySpec
-    null_policy: Literal["suppress","zero","exclude","separate-unknown"]
+    null_policy: Literal["suppress", "zero", "exclude", "separate-unknown"]
     formula_version: int
     output_schema: str
     footnote_template: str
@@ -187,7 +187,7 @@ MeasureSpec(
     evidence_tier="structural",
     required_coverage={"session_latency_profiles": "present", "timing_provenance": "timestamped_or_structural"},
     uncertainty={"kind": "proportion", "interval": "wilson"},
-    footnote_template="n={n}, coverage={coverage}, timing_provenance={timing_provenance}"
+    footnote_template="n={n}, coverage={coverage}, timing_provenance={timing_provenance}",
 )
 ```
 

@@ -1038,45 +1038,50 @@ Surface wiring: `compact` is a new **session-source pipeline terminal action** a
 New module `polylogue/insights/corpus_compaction.py` (insight-tier substrate; surfaces stay leaf adapters per the layering rule).
 
 ```python
-class CompactionBudget(str, Enum):        # named token budgets
-    SMALL = "60k"      # 60_000 tokens
-    LARGE = "200k"     # 200_000 tokens
+class CompactionBudget(str, Enum):  # named token budgets
+    SMALL = "60k"  # 60_000 tokens
+    LARGE = "200k"  # 200_000 tokens
     # numeric override allowed via --budget N
+
 
 class CompactionProjection(SurfacePayloadModel):
     """Fixed projection preset for corpus compaction (read-algebra Projection node)."""
+
     budget_tokens: int = 60_000
-    keep_origins: tuple[MaterialOrigin, ...] = (          # what survives scoring floor
+    keep_origins: tuple[MaterialOrigin, ...] = (  # what survives scoring floor
         MaterialOrigin.HUMAN_AUTHORED,
         MaterialOrigin.OPERATOR_COMMAND,
         MaterialOrigin.ASSISTANT_AUTHORED,
     )
-    drop_origins: tuple[MaterialOrigin, ...] = (          # hard-drop (tool-spam)
+    drop_origins: tuple[MaterialOrigin, ...] = (  # hard-drop (tool-spam)
         MaterialOrigin.TOOL_RESULT,
         MaterialOrigin.RUNTIME_PROTOCOL,
         MaterialOrigin.RUNTIME_CONTEXT,
         MaterialOrigin.GENERATED_CONTEXT_PACK,
     )
-    per_session_floor_tokens: int = 200   # every kept session guaranteed a header + 1 decision
+    per_session_floor_tokens: int = 200  # every kept session guaranteed a header + 1 decision
     include_drop_manifest: bool = True
-    lineage_grain: Literal["logical_session","physical"] = "logical_session"
+    lineage_grain: Literal["logical_session", "physical"] = "logical_session"
 
-class CompactBlock(ArchiveInsightModel):   # the scored, selectable unit
+
+class CompactBlock(ArchiveInsightModel):  # the scored, selectable unit
     session_id: str
     message_id: str
     block_index: int
     material_origin: MaterialOrigin
-    kind: Literal["human_turn","decision","error_fix","outcome","assistant_prose"]
+    kind: Literal["human_turn", "decision", "error_fix", "outcome", "assistant_prose"]
     text: str
     token_estimate: int
     score: float
-    evidence_ref: EvidenceRef              # citation anchor (reuses core/refs.py)
+    evidence_ref: EvidenceRef  # citation anchor (reuses core/refs.py)
+
 
 class CompactionDropManifest(ArchiveInsightModel):
-    dropped_by_origin: dict[str, int]      # counts by MaterialOrigin
-    dropped_by_reason: dict[str, int]      # {"budget": n, "tool_spam": n, "lineage_dup": n, "low_score": n}
+    dropped_by_origin: dict[str, int]  # counts by MaterialOrigin
+    dropped_by_reason: dict[str, int]  # {"budget": n, "tool_spam": n, "lineage_dup": n, "low_score": n}
     truncated_sessions: tuple[str, ...]
     recoverable_via: str = "polylogue read session:<id> --view transcript"
+
 
 class CorpusCompaction(ArchiveInsightModel):
     projection: CompactionProjection
@@ -1752,61 +1757,71 @@ renders per `(model,month)`: `rate [lo,hi] n=… (structural)` + candidate chang
 # --- COHORT BUILD --------------------------------------------------
 def build_drift_cohort(anchor, S, θ, c, date_range):
     # 1. intent match — reuse similarity.py, never re-embed
-    sim = find_similar_sessions(anchor, limit=MAX)        # cosine in [0,1]
+    sim = find_similar_sessions(anchor, limit=MAX)  # cosine in [0,1]
     if sim.status != "ready":
-        return CohortResult.absent(sim.status)            # honest absent-state
+        return CohortResult.absent(sim.status)  # honest absent-state
     matched = {h.session_id for h in sim.hits if h.score >= θ}
 
     # 2. shape gate + collapse to logical grain
-    cells = defaultdict(list)                              # (model, month) -> [logical]
+    cells = defaultdict(list)  # (model, month) -> [logical]
     embedded, total = 0, 0
     for sess in load_profiles(matched, date_range):
-        if sess.workflow_shape != S: continue
-        if sess.workflow_shape_confidence < c: continue
+        if sess.workflow_shape != S:
+            continue
+        if sess.workflow_shape_confidence < c:
+            continue
         total += 1
-        if embedding_status(sess).needs_reindex == 0: embedded += 1
-        lg = sess.logical_session_id or sess.session_id   # dedup lineage (#2467)
-        model = sess.normalized_model or "unknown"        # NOT raw model_name
-        month = sess.canonical_session_date[:7]           # YYYY-MM
+        if embedding_status(sess).needs_reindex == 0:
+            embedded += 1
+        lg = sess.logical_session_id or sess.session_id  # dedup lineage (#2467)
+        model = sess.normalized_model or "unknown"  # NOT raw model_name
+        month = sess.canonical_session_date[:7]  # YYYY-MM
         cells[(model, month)].append(logical_view(lg, sess))
 
     # 3. per-cell coverage gate (9l5.2 / 9l5.7 refusal, not silent partial)
     embed_cov = embedded / total if total else 0.0
     for key, rows in cells.items():
-        rows = collapse_by_logical(rows)                  # 1 row per lineage
+        rows = collapse_by_logical(rows)  # 1 row per lineage
         n = len(rows)
         priced = mean(r.cost_provenance == "priced" for r in rows)
         cells[key] = Cell(rows, n=n, priced_frac=priced)
     return CohortResult(cells, embed_coverage=embed_cov)
 
+
 # --- MEASURE + UNCERTAINTY (per cell) ------------------------------
 def measure_cell(cell, spec):
-    if cell.n < spec.n_min:                     return TieredValue.insufficient(cell.n)
+    if cell.n < spec.n_min:
+        return TieredValue.insufficient(cell.n)
     if spec.required_coverage.priced and cell.priced_frac < τ:
         return Refusal(f"{spec.name}: cell priced coverage {cell.priced_frac:.0%} < τ")
-    if spec.reducer is PROPORTION:              # Wilson
+    if spec.reducer is PROPORTION:  # Wilson
         k = sum(spec.numerator(r) for r in cell.rows)
-        lo, hi = wilson_interval(k, cell.n)     # analytics/stats.py (9l5.7)
-        return TieredValue(k/cell.n, (lo,hi), cell.n, spec.evidence_tier)
-    else:                                        # mean/median/percentile -> bootstrap
+        lo, hi = wilson_interval(k, cell.n)  # analytics/stats.py (9l5.7)
+        return TieredValue(k / cell.n, (lo, hi), cell.n, spec.evidence_tier)
+    else:  # mean/median/percentile -> bootstrap
         vals = [spec.value(r) for r in cell.rows]
         pt, lo, hi = bootstrap_ci(vals, spec.reduce, B=2000)
-        return TieredValue(pt, (lo,hi), cell.n, spec.evidence_tier)
+        return TieredValue(pt, (lo, hi), cell.n, spec.evidence_tier)
+
 
 # --- CHANGEPOINT (per model's monthly series) ----------------------
 def detect_drift_changepoints(series, known_events):
     # series: [(month, TieredValue)] for one model, one measure
     xs = [tv.point for _, tv in series if tv.usable]
-    if len(xs) < MIN_SEG*2: return []
-    cps = pelt(xs, penalty=BIC_penalty(len(xs)))     # ruptures [analytics];
-                                                     # fallback: binary_segmentation() ~60 lines
+    if len(xs) < MIN_SEG * 2:
+        return []
+    cps = pelt(xs, penalty=BIC_penalty(len(xs)))  # ruptures [analytics];
+    # fallback: binary_segmentation() ~60 lines
     out = []
     for idx in cps:
         month = series[idx].month
         # HONESTY RAIL: candidate, never causal
-        nearby = [e for e in known_events            # model-version transition
-                  if abs(months_between(e.month, month)) <= 1]  # + hook/harness events
-        delta, sig = compare_segments(series, idx)   # two-sample test on the split
+        nearby = [
+            e
+            for e in known_events  # model-version transition
+            if abs(months_between(e.month, month)) <= 1
+        ]  # + hook/harness events
+        delta, sig = compare_segments(series, idx)  # two-sample test on the split
         out.append(Changepoint(month, delta, sig, candidates=nearby, causal=False))
     return out
 ```
