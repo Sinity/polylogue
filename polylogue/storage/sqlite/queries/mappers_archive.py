@@ -130,7 +130,9 @@ def _row_to_file_edit(row: sqlite3.Row) -> FileEditRecord:
     structured_patch_raw = _parse_json(
         _row_get(row, "structured_patch_json"), field="structured_patch_json", record_id=row["tool_use_block_id"]
     )
-    structured_patch = structured_patch_raw if isinstance(structured_patch_raw, list) else None
+    structured_patch: list[dict[str, object]] | None = None
+    if isinstance(structured_patch_raw, list):
+        structured_patch = [dict(item) for item in structured_patch_raw if isinstance(item, dict)]
     return FileEditRecord(
         tool_use_block_id=row["tool_use_block_id"],
         session_id=SessionId(row["session_id"]),
