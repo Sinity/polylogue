@@ -962,7 +962,10 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
         )
 
     monkeypatch.setattr(chatgpt_parser, "parse", fake_parse)
-    payloads = [{"id": "one"}, {"id": "two"}]
+    # Each bundle item must look like a ChatGPT conversation-mapping fragment
+    # (chatgpt.looks_like_fragment) or _chatgpt_bundle_record_specs drops it
+    # as bundle-sibling noise (#3391) -- a bare {"id": ...} no longer counts.
+    payloads = [{"id": "one", "mapping": {"n1": {}}}, {"id": "two", "mapping": {"n1": {}}}]
 
     sessions = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
 
@@ -973,7 +976,12 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
 def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, str]] = []
 
-    def fake_parse_code(payload: object, fallback_id: str) -> ParsedSession:
+    def fake_parse_code(
+        payload: object,
+        fallback_id: str,
+        *,
+        tool_result_sidecars: object | None = None,
+    ) -> ParsedSession:
         calls.append((payload, fallback_id))
         return _parsed_session(
             source_name=Provider.CLAUDE_CODE,

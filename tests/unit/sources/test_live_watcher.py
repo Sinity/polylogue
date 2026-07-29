@@ -1662,34 +1662,50 @@ def _browser_capture_payload(*, provider_session_id: str, assistant_turn_id: str
 
 
 @pytest.mark.asyncio
-async def test_live_full_ingest_over_ambiguous_membership_fails_closed_with_diagnostic(
+async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt_without_retry(
     workspace_env: dict[str, Path],
 ) -> None:
-    """Regression test for polylogue-emx2 (adoption idempotency), corrected.
+    """Regression test for polylogue-emx2 (adoption idempotency), re-corrected.
 
-    The original polylogue-emx2 fix (PR #3129) shipped as
-    ``raw_membership_authority_complete()``, a boolean that collapses three
-    distinct membership-decision states: ``decision IS NULL`` (genuinely
-    async-pending, arbitrated later by the raw-materialization conveyor --
-    the true motivating production scenario, 24,626/25,324 complete-census
-    raws mid-restore), and ``decision IN ('ambiguous', 'deferred')``
-    (arbitration already ran and concluded a real, byte-level conflict that
-    needs new evidence, not time, to resolve). This test's own scenario --
-    two genuinely conflicting browser-capture snapshots of one session, where
-    identity is not preserved and the content frontier does not strictly
-    grow -- produces the latter: ``classify_membership_revisions`` returns
-    ``ambiguous``, not ``accepted``, synchronously, with no exception raised.
-    The original version of this test asserted that outcome must defer
-    (not fail); that was wrong -- an ``ambiguous`` decision is a *decided*
-    conflict, not pending state, and correctly regressed 5 other watcher
-    tests (polylogue-lvz6 triage, bisected to commit de0b2df7a) that pin the
-    opposite fail-closed invariant for the same decision value
-    (#2684/#2716/#2718/#2837). This corrected version proves: the ambiguous
-    outcome now surfaces as a failed file, with a diagnostic log line (unlike
-    the pre-#3129 silence), while the first accepted snapshot's content is
-    untouched. The genuinely-NULL-must-defer case emx2 actually motivates is
-    covered separately by
+    History of this exact scenario (two genuinely conflicting browser-capture
+    snapshots of one session, where identity is not preserved and the content
+    frontier does not strictly grow, so ``classify_membership_revisions``
+    synchronously returns ``ambiguous``, never raising):
+
+    - PR #3129 (de0b2df7a) shipped ``raw_membership_authority_complete()``, a
+      boolean collapsing three distinct membership-decision states
+      (``decision IS NULL`` / ``'ambiguous'`` / ``'deferred'``) into one,
+      which counted this scenario as SUCCEEDED.
+    - PR #3193 (f6cc1dd8e) narrowed that to only treat genuinely
+      async-pending ``decision IS NULL`` as non-failure; a decided
+      ``ambiguous``/``deferred`` outcome was made to surface as a fail-closed
+      file failure, with a diagnostic log line. This test was rewritten then
+      to assert exactly that (fail-closed).
+    - PR #3282 (4120c40c2, "defer FTS repair off the live-ingest write path")
+      deliberately superseded #3193's fail-closed-as-failure framing for this
+      injection point: a decided ``ambiguous``/``deferred`` membership
+      conflict is a durably-recorded outcome, not a transient source-file
+      failure, and retrying the identical bytes on every daemon restart
+      cannot supply the new evidence arbitration needs -- it only burns the
+      live catch-up budget. The raw's membership decision now stays
+      ``'ambiguous'`` in ``raw_session_memberships`` (still queryable,
+      still not admitted to session content), but the cursor treats the
+      *file observation* as complete (succeeded, not retried) so unchanged
+      bytes are not reparsed forever. This is the case #3193 called
+      "surfacing as failed, not deferred"; #3282 reversed that specific
+      framing on purpose (see its PR body).
+
+    This test now asserts the #3282 contract: the second, ambiguous
+    observation counts as a succeeded file (cursor idempotent, no retry
+    churn), the durable decision remains ``'ambiguous'`` for both raws, a
+    diagnostic log line is still emitted (unlike the pre-#3129 silence), and
+    the first accepted snapshot's content is untouched -- ambiguous status
+    never gains deletion/overwrite authority over previously accepted
+    content. The genuinely-NULL-must-defer case emx2 actually motivates, and
+    the terminal (never-pending) empty-byte-revision-cohort case that *is*
+    still fail-closed, are covered separately by
     ``test_raw_membership_decision_pending_distinguishes_null_from_ambiguous``
+    and ``test_rewrite_plus_growth_before_planning_fails_closed_to_full_route``
     in ``tests/unit/sources/test_live_batch_support.py``.
     """
     root = workspace_env["data_root"] / "browser-capture"
@@ -1724,8 +1740,11 @@ async def test_live_full_ingest_over_ambiguous_membership_fails_closed_with_diag
         # Second snapshot: same message count/shape but a genuinely
         # different assistant turn identity -- classify_membership_revisions
         # cannot pick a winner (identity not preserved, frontier doesn't
-        # strictly grow) and correctly returns ambiguous, not accepted. This
-        # is a decided conflict, not async-pending state, so it must fail.
+        # strictly grow) and correctly returns ambiguous, not accepted. Per
+        # #3282 this is preserved as durable membership-decision debt, not
+        # retried as a transient file failure: the observation itself
+        # succeeded (durably acquired and parsed), it just never gained
+        # session-content authority.
         source_path.write_text(
             json.dumps(
                 _browser_capture_payload(
@@ -1737,12 +1756,12 @@ async def test_live_full_ingest_over_ambiguous_membership_fails_closed_with_diag
             encoding="utf-8",
         )
         second = await processor.ingest_files([source_path], emit_event=False)
-        assert second.succeeded_file_count == 0
-        assert second.failed_file_count == 1, "a decided ambiguous membership conflict must fail closed"
+        assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
+        assert second.failed_file_count == 0
 
         record = cursor.get_record(source_path)
         assert record is not None
-        assert record.failure_count == 1
+        assert record.failure_count == 0
 
         with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
             decisions = conn.execute(
