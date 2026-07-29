@@ -666,12 +666,26 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         return await hooks.async_safe_call("read", run, session_id=session_id)
 
     async def get(ref: str, projection: str | None = None) -> str:
-        """Resolve one exact stable object or evidence identity."""
-        del projection
+        """Resolve one exact stable object or evidence identity.
+
+        ``projection="events"`` on a ``session:<id>`` ref returns the raw
+        session-timeline evidence (``Session.session_events``) instead of the
+        default session summary -- Codex ``world_state``/``agent_policy``/
+        ``turn_context`` policy facts, Claude Code sidecar events, Hermes
+        tool-availability spans, and similar provider evidence that rides the
+        timeline rather than a dialogue message.
+        """
         normalized = _object_ref(ref)
         session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
 
         async def run() -> str:
+            if projection == "events" and session_id is not None:
+                events = await hooks.get_polylogue().get_session_events(session_id)
+                if events is None:
+                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
+                return hooks.json_payload(
+                    MCPRootPayload(root={"session_id": session_id, "total": len(events), "events": events})
+                )
             return hooks.json_payload(await hooks.get_polylogue().resolve_ref(normalized))
 
         return await hooks.async_safe_call("get", run, session_id=session_id)

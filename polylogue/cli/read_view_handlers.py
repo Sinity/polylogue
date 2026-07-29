@@ -12,6 +12,7 @@ from polylogue.cli.read_view_registry import (
     CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
     CONTEXT_READ_VIEW_OPTION_NAMES,
     CORRELATION_READ_VIEW_OPTION_NAMES,
+    EVENTS_READ_VIEW_OPTION_NAMES,
     MESSAGE_READ_VIEW_OPTION_NAMES,
     NEIGHBOR_READ_VIEW_OPTION_NAMES,
     READ_VIEW_HANDLER_METADATA,
@@ -21,6 +22,7 @@ from polylogue.cli.read_views.base import (
     ReadViewContextImageOptions,
     ReadViewContextOptions,
     ReadViewCorrelationOptions,
+    ReadViewEventsOptions,
     ReadViewHandler,
     ReadViewInvocation,
     ReadViewMessageOptions,
@@ -35,6 +37,7 @@ from polylogue.cli.read_views.context import (
     run_read_context_image,
 )
 from polylogue.cli.read_views.correlation import build_correlation_options, run_read_correlation
+from polylogue.cli.read_views.events import build_events_options, run_read_events
 from polylogue.cli.read_views.messages import (
     build_message_options,
     run_read_hooks,
@@ -93,6 +96,14 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         "required",
         run_read_hooks,
         default_format="json",
+    ),
+    "events": ReadViewHandler(
+        "events",
+        "required",
+        run_read_events,
+        default_format="json",
+        accepted_options=EVENTS_READ_VIEW_OPTION_NAMES,
+        option_builder=build_events_options,
     ),
     "context": ReadViewHandler(
         "context",
@@ -221,6 +232,7 @@ __all__ = [
     "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
     "ReadViewChronicleOptions",
+    "ReadViewEventsOptions",
     "ReadViewHandler",
     "ReadViewInvocation",
     "ReadViewMessageOptions",
