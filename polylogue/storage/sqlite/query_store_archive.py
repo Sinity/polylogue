@@ -18,8 +18,10 @@ from polylogue.storage.runtime import (
     SessionRecord,
 )
 from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSearchResult
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import messages as messages_q
+from polylogue.storage.sqlite.queries import session_agent_policies as session_agent_policies_q
 from polylogue.storage.sqlite.queries import session_events as session_events_q
 from polylogue.storage.sqlite.queries import session_links as session_links_q
 from polylogue.storage.sqlite.queries import sessions as sessions_q
@@ -253,6 +255,17 @@ class SQLiteQueryStoreArchiveMixin:
     ) -> dict[str, list[SessionEventRecord]]:
         async with self._connection_factory() as conn:
             return await session_events_q.get_session_events_batch(conn, session_ids)
+
+    async def get_session_agent_policies(self, session_id: str) -> list[ArchiveAgentPolicy]:
+        async with self._connection_factory() as conn:
+            return await session_agent_policies_q.get_session_agent_policies(conn, session_id)
+
+    async def get_session_agent_policies_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[ArchiveAgentPolicy]]:
+        async with self._connection_factory() as conn:
+            return await session_agent_policies_q.get_session_agent_policies_batch(conn, session_ids)
 
     async def iter_messages(
         self,
