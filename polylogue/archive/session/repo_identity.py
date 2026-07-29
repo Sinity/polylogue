@@ -172,9 +172,36 @@ def normalize_repo_paths(values: Iterable[object]) -> tuple[str, ...]:
     return tuple(sorted(normalized))
 
 
+def repo_relative_path(path: str, root_path: str) -> str:
+    """Strip ``root_path`` from ``path`` so it is comparable across checkouts.
+
+    polylogue-cijx.4 decision 2: paths are repo-relative. The same file
+    edited from two worktree checkouts of one repository is otherwise two
+    different absolute paths and no cross-session "which files did I touch"
+    question can be answered. This is a pure read-time projection -- it does
+    not mutate any stored ``tool_path``/``root_path`` value.
+
+    Returns ``path`` unchanged when ``root_path`` is empty or is not a
+    prefix of ``path`` (e.g. the checkout root could not be resolved for
+    this session, or the path is outside any known checkout).
+    """
+    candidate = path.strip()
+    root = root_path.strip()
+    if not candidate or not root:
+        return candidate
+    normalized_root = root.rstrip("/")
+    if candidate == normalized_root:
+        return ""
+    prefix = f"{normalized_root}/"
+    if candidate.startswith(prefix):
+        return candidate[len(prefix) :]
+    return candidate
+
+
 __all__ = [
     "normalize_repo_name",
     "normalize_repo_names",
     "normalize_repo_path",
     "normalize_repo_paths",
+    "repo_relative_path",
 ]
