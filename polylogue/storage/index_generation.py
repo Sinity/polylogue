@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
 
+#: Superseded generations kept after a promotion.  One is enough to roll back
+#: to the previous index; each costs roughly the size of the index itself
+#: (~35 GB on the reference archive), so keeping more is expensive storage,
+#: not cheap insurance.
+SUPERSEDED_GENERATION_RETENTION = 1
+
 
 @dataclass(frozen=True, slots=True)
 class IndexGeneration:
@@ -495,7 +501,78 @@ class IndexGenerationStore:
         _fsync_directory(pointer.parent)
         promoted = IndexGeneration(**{**asdict(current), "state": "active"})
         self._write(promoted)
+        # Housekeeping only: a failure here must not undo a promotion that has
+        # already swapped the pointer and written active metadata.
+        try:
+            self.prune_superseded_generations()
+        except OSError:
+            logger.warning("index generation pruning failed after promotion", exc_info=True)
         return promoted
+
+    def prune_superseded_generations(self, *, keep: int = SUPERSEDED_GENERATION_RETENTION) -> list[str]:
+        """Delete superseded generations beyond the retention window.
+
+        A promoted generation is ~35 GB.  Before this existed nothing ever
+        removed one: ``promote`` retires the *pointer* into a ``retired-*``
+        marker (a hardlink of the symlink, a few KB) but left the superseded
+        ``gen-*`` directory in place forever, and ``discard_if_inactive`` only
+        disposes of candidates that were never promoted.  A live archive had
+        accumulated nine dead generations, ~290 GB (polylogue-wmft).
+
+        Retention is expressed in generations rather than bytes or age because
+        the reason to keep one is rollback: ``keep=1`` leaves exactly the
+        previous index reachable if a promotion turns out to be bad.
+
+        Fails closed in every ambiguous case -- anything that is or might be
+        the active target, anything mid-promotion, and anything whose metadata
+        cannot be read is retained, never deleted.
+        """
+        if keep < 0:
+            raise ValueError("keep must be non-negative")
+        try:
+            active_target = self.active_pointer.resolve(strict=True)
+        except OSError:
+            # No resolvable active index: refuse to delete anything, since the
+            # thing that would tell us what is live is exactly what is missing.
+            return []
+
+        candidates: list[tuple[int, str, Path]] = []
+        for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
+            try:
+                generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue  # unreadable metadata: retain
+            if generation.state == "promoting":
+                continue
+            try:
+                if Path(generation.index_path).resolve(strict=True) == active_target:
+                    continue
+            except OSError:
+                # index.db already gone; the directory is still reclaimable.
+                pass
+            candidates.append((generation.created_at_ms, generation.generation_id, metadata_path.parent))
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        removed: list[str] = []
+        for _created_at_ms, generation_id, directory in candidates[keep:]:
+            shutil.rmtree(directory)
+            removed.append(generation_id)
+
+        # The retired-* markers only point at superseded generations, so they
+        # follow the same retention -- otherwise they accumulate as dangling
+        # links to directories this method just removed.
+        markers = sorted(
+            (path for path in self.generations_root.glob("retired-*") if path.is_dir()),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+        for marker in markers[keep:]:
+            shutil.rmtree(marker)
+
+        if removed:
+            _fsync_directory(self.generations_root)
+            logger.info("pruned %d superseded index generation(s): %s", len(removed), ", ".join(removed))
+        return removed
 
     def recover_promotion(self, generation_id: str) -> IndexGeneration:
         """Reconcile a crash after the pointer swap but before active metadata."""

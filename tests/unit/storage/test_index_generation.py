@@ -292,7 +292,10 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
     assert second_store.active_pointer == canonical / "index.db"
     assert configured.joinpath("index.db").stat().st_ino == canonical.joinpath("index.db").stat().st_ino
     assert canonical.joinpath("index.db").resolve() == Path(second.index_path).resolve()
-    assert len(tuple(store.generations_root.glob("retired-*/index.db"))) == 2
+    # Both promotions retired the previous pointer; superseded-generation
+    # retention (polylogue-wmft, keep=1) then prunes all but the newest marker.
+    assert len(tuple(store.generations_root.glob("retired-*/index.db"))) == 1
+    assert tuple(store.generations_root.glob("gen-*/generation.json")) != ()
 
 
 def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archive(tmp_path: Path) -> None:
@@ -406,3 +409,57 @@ def test_derived_stores_cleared_missing_from_persisted_json_defaults_false(tmp_p
     reloaded = store.load_transaction("pre-existing-op")
     assert reloaded.derived_stores_cleared is False
     assert reloaded.operation_id == transaction.operation_id
+
+
+def test_promotion_prunes_superseded_generations(tmp_path: Path) -> None:
+    """polylogue-wmft: a promoted generation is ~35 GB and nothing ever removed
+    one. ``promote`` retired the *pointer* into a marker directory but left the
+    superseded ``gen-*`` directory forever, and ``discard_if_inactive`` only
+    disposes of candidates that were never promoted -- a live archive had
+    accumulated nine dead generations, ~290 GB."""
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    promoted_ids = []
+    for index in range(4):
+        generation = store.create(owner_id="operator", source_snapshot=f"snapshot-{index}")
+        store.promote(generation)
+        promoted_ids.append(generation.generation_id)
+
+    surviving = {path.parent.name for path in store.generations_root.glob("gen-*/generation.json")}
+    active = Path(store.active_pointer).resolve(strict=True)
+
+    # The active generation plus exactly one rollback target.
+    assert surviving == {promoted_ids[-1], promoted_ids[-2]}
+    assert active == Path(store.load(promoted_ids[-1]).index_path).resolve()
+    # Markers follow the same retention rather than dangling at the removed ones.
+    assert len(list(store.generations_root.glob("retired-*"))) == 1
+
+
+def test_pruning_never_removes_the_active_generation(tmp_path: Path) -> None:
+    """Retention of zero still must not delete what the pointer resolves to."""
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(generation)
+
+    removed = store.prune_superseded_generations(keep=0)
+
+    assert generation.generation_id not in removed
+    assert Path(generation.index_path).exists()
+    assert Path(store.active_pointer).resolve(strict=True) == Path(generation.index_path).resolve()
+
+
+def test_pruning_retains_everything_when_the_active_pointer_is_unresolvable(tmp_path: Path) -> None:
+    """Fail closed: if the thing that says what is live is missing, delete nothing."""
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    first = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(first)
+    second = store.create(owner_id="operator", source_snapshot="snapshot-b")
+    store.promote(second)
+    store.active_pointer.unlink()
+
+    assert store.prune_superseded_generations(keep=0) == []
+    assert Path(first.index_path).exists()
+    assert Path(second.index_path).exists()
