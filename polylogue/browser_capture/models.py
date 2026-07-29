@@ -43,17 +43,23 @@ class BrowserCaptureAttachment(BaseModel):
 
 
 class BrowserCaptureBlock(BaseModel):
-    """A single structured content block observed within a browser-capture turn.
+    """A single structured content block observed within a browser-captured turn.
 
-    This is the typed content channel ``BrowserCaptureTurn`` was missing
-    (polylogue-ah21): before this field existed, a turn's ``role`` could be
-    ``tool`` while the call's input, output, and outcome had nowhere to go
-    except free text, forcing every provider adapter through one rendered-
-    prose channel. Field names and semantics mirror
-    ``polylogue.sources.parsers.base_models.ParsedContentBlock`` deliberately
-    -- the browser-capture parser (`sources/parsers/browser_capture.py`)
-    projects these 1:1 into that type, so ``text`` remains a rendering
-    fallback rather than the only channel a capture can carry.
+    Deliberately modeled on ``ParsedContentBlock``
+    (``polylogue/sources/parsers/base_models.py``) so a capture adapter that
+    has observed real structure (a ChatGPT ``mapping`` node's ``recipient`` /
+    ``content_type``, a Claude API tool_use/tool_result segment, ...) can
+    carry that structure across the wire verbatim instead of flattening it
+    into ``BrowserCaptureTurn.text`` prose. The parser
+    (``polylogue/sources/parsers/browser_capture.py``) converts these 1:1 into
+    ``ParsedContentBlock`` rows.
+
+    Deliberate divergence from ``ParsedContentBlock``: no ``web_constructs``
+    field. Web-construct extraction (citations, canvases, ...) is a derived
+    enrichment computed by the archive-side parsers from raw segment
+    dictionaries (see ``sources/parsers/claude/common.py::_claude_content_blocks``);
+    it is not itself observable at the wire boundary, so there is nothing for
+    the extension to populate here.
     """
 
     type: BlockType
@@ -62,9 +68,12 @@ class BrowserCaptureBlock(BaseModel):
     tool_id: str | None = None
     tool_input: dict[str, object] | None = None
     media_type: str | None = None
+    metadata: dict[str, object] | None = None
+    # Structured tool-result outcome, mirrored from ParsedContentBlock: read
+    # from the provider's own outcome fields when the capture adapter observed
+    # them, never regex-guessed from rendered text.
     is_error: bool | None = None
     exit_code: int | None = None
-    metadata: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("type", mode="before")
     @classmethod
@@ -88,8 +97,13 @@ class BrowserCaptureTurn(BaseModel):
     timestamp: str | None = None
     ordinal: int = 0
     parent_turn_id: str | None = None
-    blocks: list[BrowserCaptureBlock] = Field(default_factory=list)
     attachments: list[BrowserCaptureAttachment] = Field(default_factory=list)
+    # Typed structured content observed for this turn (tool_use/tool_result/
+    # thinking/code/...). ``text`` remains a rendering of the turn -- kept for
+    # search/display and for capture adapters that have not been upgraded to
+    # emit structure yet -- but it is no longer the only content channel a
+    # tool-shaped turn can populate (polylogue-ah21).
+    blocks: list[BrowserCaptureBlock] = Field(default_factory=list)
     provider_meta: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("provider_meta", mode="before")
@@ -106,8 +120,7 @@ class BrowserCaptureTurn(BaseModel):
 
     @model_validator(mode="after")
     def require_content(self) -> BrowserCaptureTurn:
-        has_text = self.text is not None and self.text.strip()
-        if not has_text and not self.attachments and not self.blocks:
+        if (self.text is None or not self.text.strip()) and not self.attachments and not self.blocks:
             raise ValueError("browser capture turn must include text, blocks, or attachments")
         return self
 
@@ -696,6 +709,7 @@ __all__ = [
     "BrowserBackfillCheckpointPayload",
     "BrowserBackfillCheckpointRecord",
     "BrowserBackfillCheckpointRequest",
+    "BrowserCaptureBlock",
     "BrowserActionApprovalDecisionRequest",
     "BrowserActionApprovalReason",
     "BrowserActionAttachment",
@@ -721,7 +735,6 @@ __all__ = [
     "BrowserCaptureArchiveLifecycle",
     "BrowserCaptureArchiveStatePayload",
     "BrowserCaptureAttachment",
-    "BrowserCaptureBlock",
     "BrowserCaptureEnvelope",
     "BrowserCaptureErrorPayload",
     "BrowserCaptureInterruption",

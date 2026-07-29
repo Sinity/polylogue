@@ -932,6 +932,52 @@ describe("provider adapter contracts", () => {
     await expect(drifted.enumerate()).rejects.toThrow("provider_contract_drift:chatgpt_inventory.items_must_be_array");
   });
 
+  // polylogue-ah21: a code-interpreter call/result pair must land as a
+  // matched tool_use/tool_result block pair, not two independent prose
+  // turns. This is the exact shape (content_type "code" then
+  // "execution_output") that used to be indistinguishable from ordinary
+  // assistant text once BrowserCaptureTurn had no blocks channel.
+  it("pairs a ChatGPT code-interpreter call and its output as tool_use/tool_result blocks", async () => {
+    const native = {
+      id: "gpt-ci",
+      title: "Code interpreter run",
+      mapping: {
+        u1: { parent: null, message: { id: "u1", author: { role: "user" }, content: { parts: ["compute 6 * 7"] }, create_time: 1 } },
+        "call-1": { parent: "u1", message: { id: "call-1", author: { role: "assistant" }, content: { content_type: "code", text: "6 * 7" }, create_time: 2 } },
+        "result-1": { parent: "call-1", message: { id: "result-1", author: { role: "tool" }, content: { content_type: "execution_output", text: "42" }, create_time: 3 } },
+      },
+    };
+    const adapter = new ChatGptBackfillAdapter(vi.fn());
+    const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-ci", title: "Code interpreter run" }, {});
+
+    const byId = Object.fromEntries(capture.session.turns.map((turn) => [turn.provider_turn_id, turn]));
+    expect(byId["call-1"].blocks).toEqual([
+      { type: "tool_use", tool_name: "code_interpreter", tool_id: "call-1", tool_input: { code: "6 * 7" }, metadata: { content_type: "code" } },
+    ]);
+    expect(byId["result-1"].blocks).toEqual([
+      { type: "tool_result", tool_id: "call-1", text: "42", metadata: { content_type: "execution_output" } },
+    ]);
+    // The tool_use block's own tool_id equals the tool_result block's
+    // tool_id: constructed pairing, not reconstructed from prose.
+    expect(byId["call-1"].blocks[0].tool_id).toBe(byId["result-1"].blocks[0].tool_id);
+  });
+
+  it("classifies a recipient-addressed JSON tool call as a tool_use block", async () => {
+    const native = {
+      id: "gpt-tool",
+      title: "Web search",
+      mapping: {
+        call: { parent: null, message: { id: "call-1", author: { role: "assistant" }, recipient: "web", content: { content_type: "text", parts: [JSON.stringify({ search_query: "weather" })] }, create_time: 1 } },
+      },
+    };
+    const adapter = new ChatGptBackfillAdapter(vi.fn());
+    const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-tool", title: "Web search" }, {});
+
+    expect(capture.session.turns[0].blocks).toEqual([
+      { type: "tool_use", tool_name: "web", tool_id: "call-1", tool_input: { search_query: "weather" }, metadata: { content_type: "text" } },
+    ]);
+  });
+
   it("refuses a false-empty ChatGPT inventory without proven page auth context", async () => {
     const adapter = new ChatGptBackfillAdapter(
       vi.fn(async () => response({ items: [], total: 0 })),
