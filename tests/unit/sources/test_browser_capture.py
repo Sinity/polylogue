@@ -187,7 +187,9 @@ def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     assert [message.provider_message_id for message in session.messages] == ["native-u1", "native-a1"]
     assert [message.text for message in session.messages] == ["Native user text", "print('native')"]
     assert session.messages[1].model_name == "gpt-native"
-    assert session.messages[1].blocks[0].type.value == "code"
+    # bd polylogue-4fm3: code-interpreter calls are TOOL_USE (paired with
+    # their execution_output via tool_id), not CODE.
+    assert session.messages[1].blocks[0].type.value == "tool_use"
     assert DOM_FALLBACK_INGEST_FLAG not in session.ingest_flags
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
 
