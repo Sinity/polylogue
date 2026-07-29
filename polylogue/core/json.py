@@ -330,7 +330,18 @@ def _raw_loads(data: str | bytes | bytearray) -> object:
             raise RuntimeError("core.json backend is 'msgspec' but the msgspec module is unavailable")
         try:
             result = _msgspec_json.decode(data)
-        except _msgspec.DecodeError as exc:
+        except (_msgspec.DecodeError, UnicodeDecodeError) as exc:
+            # msgspec validates JSON *structure* through its own DecodeError,
+            # but invalid UTF-8 bytes embedded inside a string's content leak
+            # as a raw stdlib UnicodeDecodeError instead (confirmed against
+            # msgspec directly, not just through this facade) -- orjson wraps
+            # the equivalent case in its own JSONDecodeError, and stdlib
+            # json's decode-before-parse step raises the same
+            # UnicodeDecodeError already caught by the `ValueError` branch
+            # below (UnicodeDecodeError is a ValueError subclass). Without
+            # this, a payload with a merely-malformed *value* -- not a
+            # malformed document -- crashes the caller instead of raising
+            # the facade's unified decode error like every other backend.
             raise JSONDecodeError(str(exc)) from exc
         return result
     try:
