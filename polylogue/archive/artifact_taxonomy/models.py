@@ -11,7 +11,6 @@ from polylogue.core.enums import Provider
 class ArtifactKind(StrEnum):
     SESSION_DOCUMENT = "session_document"
     SESSION_RECORD_STREAM = "session_record_stream"
-    SUBAGENT_SESSION_STREAM = "subagent_session_stream"
     AGENT_SIDECAR_META = "agent_sidecar_meta"
     WORKFLOW_RUN_SNAPSHOT = "workflow_run_snapshot"
     WORKFLOW_JOURNAL = "workflow_journal"

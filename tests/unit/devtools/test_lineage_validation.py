@@ -29,6 +29,8 @@ def _make_index_db(root: Path, *, with_gap: bool = False) -> Path:
                 root_session_id TEXT,
                 branch_type TEXT,
                 title_source TEXT,
+                title_ref TEXT,
+                title_confidence REAL,
                 instructions_text TEXT,
                 created_at_ms INTEGER,
                 updated_at_ms INTEGER,

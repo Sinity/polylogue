@@ -577,7 +577,12 @@ def test_build_raw_payload_envelope_returns_provider_enum_for_known_providers() 
 
 
 def test_build_raw_payload_envelope_detects_payload_shape_without_path_hints() -> None:
-    raw = b'[{"id":"conv-1","mapping":{}}]'
+    # PR #3364 tightened whole-document ChatGPT detection
+    # (``chatgpt.looks_like``) to require a non-empty ``mapping`` plus
+    # ``current_node``/``create_time``/``conversation_id``-or-``id`` and
+    # Pydantic-valid mapping nodes, so a shape-only (no path hints) fixture
+    # must carry that minimum evidence to be recognized as ChatGPT.
+    raw = b'[{"id":"conv-1","current_node":"node-1","create_time":1700000000,"mapping":{"node-1":{"id":"node-1"}}}]'
     envelope = build_raw_payload_envelope(
         raw,
         source_path="/tmp/export.zip:takeout/opaque/sessions.json",
@@ -627,7 +632,7 @@ def test_build_raw_payload_envelope_prefers_claude_subagent_path_over_codex_like
         fallback_provider="claude-code",
     )
     assert envelope.provider is Provider.CLAUDE_CODE
-    assert envelope.artifact.kind.value == "subagent_session_stream"
+    assert envelope.artifact.kind.value == "agent_transcript"
 
 
 def test_build_raw_payload_envelope_classifies_chatgpt_user_sidecars_as_metadata() -> None:

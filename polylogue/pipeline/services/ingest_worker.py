@@ -343,7 +343,7 @@ def _build_fast_stream_parse_plan(
         return None
 
     kind = (
-        ArtifactKind.SUBAGENT_SESSION_STREAM
+        ArtifactKind.AGENT_TRANSCRIPT
         if is_subagent_path(context.raw_record.source_path)
         else ArtifactKind.SESSION_RECORD_STREAM
     )
@@ -352,7 +352,7 @@ def _build_fast_stream_parse_plan(
         kind=kind,
         parse_as_session=True,
         schema_eligible=False,
-        default_priority=90 if kind is ArtifactKind.SUBAGENT_SESSION_STREAM else 120,
+        default_priority=90 if kind is ArtifactKind.AGENT_TRANSCRIPT else 120,
         reason="known JSONL stream provider with validation off",
     )
     return _build_parse_plan(
