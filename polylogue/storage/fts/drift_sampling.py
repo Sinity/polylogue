@@ -51,7 +51,7 @@ def _index_db_path_sync(conn: sqlite3.Connection) -> Path | None:
     return None
 
 
-def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection) -> int:
+def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection, *, archive_root: Path | None = None) -> int:
     """Append one ops.db drift sample per recorded FTS surface.
 
     Reads the just-recorded ``fts_freshness_state`` rows on ``conn`` (an
@@ -59,6 +59,12 @@ def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection) -> int:
     sibling ``ops.db``. Returns the number of samples written; returns 0 on
     any failure (missing table, missing sibling file, unreachable
     connection) without raising.
+
+    ``conn``'s own connected path can itself be a resolved
+    ``.index-active-pointer`` generation target (``Config.db_path`` per
+    polylogue-yla8.1) rather than the plain archive root; callers that
+    already know the plain root should pass it explicitly via
+    ``archive_root`` instead of relying on the sibling-of-conn derivation.
     """
     try:
         from polylogue.storage.fts.freshness import ensure_fts_freshness_table_sync
@@ -71,10 +77,13 @@ def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection) -> int:
     if not rows:
         return 0
 
-    index_db_path = _index_db_path_sync(conn)
-    if index_db_path is None:
-        return 0
-    ops_db_path = index_db_path.with_name("ops.db")
+    if archive_root is not None:
+        ops_db_path = archive_root / "ops.db"
+    else:
+        index_db_path = _index_db_path_sync(conn)
+        if index_db_path is None:
+            return 0
+        ops_db_path = index_db_path.with_name("ops.db")
     if not ops_db_path.exists():
         return 0
 
