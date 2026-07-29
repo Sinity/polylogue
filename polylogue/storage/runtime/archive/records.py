@@ -51,6 +51,13 @@ class SessionRecord(BaseModel):
     git_branch: str | None = None
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
+    # polylogue-2qx.4 (v46): human-readable name behind an opaque native/slug
+    # id (e.g. a Claude Code Task-tool subagent slug), distinct from `title`.
+    display_name: str | None = None
+    # polylogue-2qx.4 (v46): per-session provider run configuration, stored
+    # verbatim (aistudio-drive runSettings). None when the read path didn't
+    # select the column or the provider carries none.
+    run_settings: JSONObject | None = None
 
     @field_validator("origin", mode="before")
     @classmethod
@@ -71,7 +78,7 @@ class SessionRecord(BaseModel):
             raise ValueError("Field cannot be empty")
         return v
 
-    @field_validator("metadata", mode="before")
+    @field_validator("metadata", "run_settings", mode="before")
     @classmethod
     def coerce_json_document(cls, value: object) -> JSONObject | None:
         return _coerce_json_object(value)
@@ -108,6 +115,10 @@ class BlockRecord(BaseModel):
     # output text. NULL means unknown — never a fabricated positive.
     tool_result_is_error: int | None = None
     tool_result_exit_code: int | None = None
+    # polylogue-2qx.4 (v46): why tool_result_is_error is NULL, when known
+    # (see core.enums.ToolResultUnknownReason). NULL means either the
+    # outcome IS known, or this read path did not select the column.
+    tool_result_outcome_unknown_reason: str | None = None
 
     @field_validator("type", mode="before")
     @classmethod
@@ -162,6 +173,10 @@ class MessageRecord(BaseModel):
     message_type: MessageType = MessageType.MESSAGE
     material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN
     paste_boundary_state: str | None = None
+    # polylogue-2qx.4 (v46): provider-reported terminal state for this turn
+    # (Claude ``stop_reason``). None means unreported/not-applicable/not
+    # selected, never a guess.
+    stop_reason: str | None = None
 
     @field_validator("role", mode="before")
     @classmethod
@@ -251,6 +266,57 @@ class AttachmentRecord(BaseModel):
             return v
         if v < 0:
             raise ValueError("size_bytes cannot be negative")
+        return v
+
+
+class FileEditRecord(BaseModel):
+    """One file-edit tool-call evidence row (polylogue-2qx.4 / polylogue-cgfy).
+
+    Keyed by the TOOL_USE block that made the edit -- structuredPatch/
+    originalFile/oldString/newString/replaceAll/filePath/userModified were
+    100% discarded before this landed.
+    """
+
+    tool_use_block_id: str
+    session_id: SessionId
+    message_id: MessageId
+    file_path: str | None = None
+    structured_patch: list[dict[str, object]] | None = None
+    original_file: str | None = None
+    old_string: str | None = None
+    new_string: str | None = None
+    replace_all: bool | None = None
+    user_modified: bool | None = None
+    observed_at_ms: int | None = None
+
+    @field_validator("tool_use_block_id", "session_id", "message_id")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
+class SessionRefRecord(BaseModel):
+    """One tracker-agnostic external reference (polylogue-2qx.4 / polylogue-cgfy).
+
+    ``kind`` is ``core.enums.SessionRefKind`` (``pull_request`` / ``issue``).
+    """
+
+    ref_id: str
+    session_id: SessionId
+    position: int
+    kind: str
+    repo: str | None = None
+    number: int | None = None
+    url: str
+    observed_at_ms: int | None = None
+
+    @field_validator("ref_id", "session_id", "kind", "url")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
         return v
 
 

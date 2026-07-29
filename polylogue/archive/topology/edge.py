@@ -59,6 +59,11 @@ class TopologyEdgeRecord(BaseModel):
     status: TopologyEdgeStatus = TopologyEdgeStatus.UNRESOLVED
     observed_at: str = Field(default_factory=_now_isoformat)
     resolved_at: str | None = None
+    # polylogue-2qx.4 (v46): the parent-session tool_use block that
+    # dispatched this child (Claude Code parentToolUseID). The real
+    # delegation join key -- see session_links.parent_tool_use_block_id.
+    # None until a resolver populates it from parsed evidence.
+    parent_tool_use_block_id: str | None = None
 
     @field_validator("src_session_id", "dst_native_id")
     @classmethod

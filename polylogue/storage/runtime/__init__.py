@@ -30,11 +30,13 @@ from polylogue.storage.runtime.archive.records import (
     LINEAGE_TRUNCATION_DEPTH_LIMIT,
     AttachmentRecord,
     BlockRecord,
+    FileEditRecord,
     LineageCompleteness,
     LineageTruncationReason,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
+    SessionRefRecord,
 )
 from polylogue.storage.runtime.raw.records import (
     ArtifactObservationRecord,
@@ -74,7 +76,9 @@ __all__ = [
     "AttachmentRecord",
     "ArtifactObservationRecord",
     "BlockRecord",
+    "FileEditRecord",
     "SessionRecord",
+    "SessionRefRecord",
     "DaySessionSummaryRecord",
     "LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT",
     "LINEAGE_TRUNCATION_DEPTH_LIMIT",

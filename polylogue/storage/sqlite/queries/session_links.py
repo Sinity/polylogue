@@ -46,12 +46,13 @@ async def upsert_session_links(
                 link_type,
                 resolved_dst_session_id,
                 status,
+                parent_tool_use_block_id,
                 method,
                 confidence,
                 evidence_json,
                 observed_at_ms,
                 resolved_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (src_session_id, dst_origin, dst_native_id, link_type) DO UPDATE SET
                 resolved_dst_session_id = COALESCE(
                     excluded.resolved_dst_session_id,
@@ -61,6 +62,10 @@ async def upsert_session_links(
                     WHEN session_links.status = 'quarantined' THEN session_links.status
                     ELSE excluded.status
                 END,
+                parent_tool_use_block_id = COALESCE(
+                    excluded.parent_tool_use_block_id,
+                    session_links.parent_tool_use_block_id
+                ),
                 method = COALESCE(excluded.method, session_links.method),
                 confidence = excluded.confidence,
                 evidence_json = COALESCE(NULLIF(excluded.evidence_json, '[]'), session_links.evidence_json),
@@ -73,7 +78,8 @@ async def upsert_session_links(
                 str(link.link_type),
                 str(link.resolved_dst_session_id) if link.resolved_dst_session_id else None,
                 _status_value(link.status),
-                "parser-parent",
+                link.parent_tool_use_block_id,
+                "parser-parent" if link.parent_tool_use_block_id is None else "parent-tool-use-id",
                 link.confidence,
                 link.evidence_json,
                 _timestamp_ms(link.observed_at) or 0,
@@ -322,7 +328,7 @@ async def list_session_links_for_session(
     cursor = await conn.execute(
         """
         SELECT src_session_id, dst_origin, dst_native_id, link_type,
-               resolved_dst_session_id, status, method, confidence,
+               resolved_dst_session_id, status, parent_tool_use_block_id, method, confidence,
                evidence_json, observed_at_ms, resolved_at_ms
           FROM session_links
          WHERE src_session_id = ?

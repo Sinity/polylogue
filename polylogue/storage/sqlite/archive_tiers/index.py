@@ -12,6 +12,9 @@ from polylogue.core.enums import (
     PasteBoundary,
     Role,
     SessionKind,
+    SessionRefKind,
+    StopReason,
+    ToolResultUnknownReason,
     WebConstructType,
 )
 from polylogue.storage.fts.sql import (
@@ -23,12 +26,39 @@ from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
     check,
+    json_array_check,
     json_object_check,
     nullable_check,
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-# polylogue-ih67: v44 adds sessions.title_ref/title_confidence.
+# polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
+# 9x22 field-landing decisions):
+#   - messages.stop_reason (StopReason) -- 608,608 Claude assistant messages
+#     carry this on the wire; three derived outcome columns guess at the same
+#     fact today and are 85-99% 'unknown'.
+#   - blocks.tool_result_outcome_unknown_reason (ToolResultUnknownReason) --
+#     distinguishes "provider emitted nothing" / "parser distrusts it" /
+#     "parser doesn't read this origin's field" instead of one flat NULL.
+#   - sessions.display_name, sessions.run_settings_json -- subagent slug
+#     display name and per-session provider run-config (aistudio-drive
+#     temperature/topP/topK/... ), landed as a JSON column since decomposing
+#     it into columns would couple the schema to one provider.
+#   - session_links.parent_tool_use_block_id -- the real join-key column
+#     replacing delegation_facts' cardinality-gated ordinal dispatch<->child
+#     pairing (parentToolUseID, 842,819 records on the wire).
+#   - file_edits (new table) -- structuredPatch/originalFile/oldString/
+#     newString/filePath/userModified/replaceAll, keyed by the tool_use
+#     block that made the edit (105,123 structured diffs, 92,313 pre-edit
+#     captures, currently 100% discarded).
+#   - session_refs (new table) -- pr-link and future issue-tracker
+#     references (20,702 occurrences), tracker-agnostic by design.
+#
+# Every one of these values depends on parser semantics to populate
+# correctly (a shape-only copy-forward would leave every row NULL, exactly
+# the v42/v44/v45 precedent) -- SEMANTIC_REPARSE is the honest
+# classification, matching those versions, and routes through
+# `polylogue ops reset --index && polylogued run` rather than a fast-forward.
 #
 # index.db is rebuildable derived state, but "rebuildable" is not the same as
 # "always rebuilt": every bump above INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR
@@ -41,7 +71,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # A bump without a declaration is a policy violation, not a free rebuild:
 # `devtools lab policy schema-versioning` fails, and the archive silently
 # falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
-INDEX_SCHEMA_VERSION = 45
+INDEX_SCHEMA_VERSION = 46
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -149,6 +179,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- confidence slice). Both derived/rebuildable, never hand-edited.
     title_ref               TEXT,
     title_confidence        REAL CHECK(title_confidence IS NULL OR (title_confidence >= 0 AND title_confidence <= 1)),
+    -- polylogue-2qx.4 (v46): the human-readable name behind an opaque
+    -- native/slug id -- e.g. Claude Code Task-tool subagent slugs
+    -- ("greedy-squishing-hamming") so subagent rows read a name instead of
+    -- "5ecdb160-...:agent-af4e". Distinct from `title` (the session's own
+    -- resolved title): this is a display label for the session's identity,
+    -- not its content.
+    display_name            TEXT,
+    -- polylogue-2qx.4 (v46): per-session provider run configuration
+    -- (aistudio-drive runSettings: temperature/topP/topK/maxOutputTokens/
+    -- thinkingLevel/safetySettings/enable* flags). A JSON column by
+    -- deliberate decision -- decomposing a provider-specific settings bag
+    -- into typed columns would couple this schema to one provider for no
+    -- query benefit; nothing here is queried across origins today.
+    run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)}),
     git_branch              TEXT,
     git_repository_url      TEXT,
     provider_project_ref    TEXT,
@@ -223,6 +267,13 @@ CREATE TABLE IF NOT EXISTS messages (
     duration_ms         INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
     content_hash        BLOB NOT NULL {CONTENT_HASH_CHECK},
     occurred_at_ms      INTEGER,
+    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): the provider's own terminal-
+    -- state signal for this assistant turn (608,608 occurrences on the
+    -- Claude wire). Feeds terminal_state/result_status readers directly
+    -- instead of the 85-99%-unknown derived guesses those columns hold
+    -- today. NULL means the provider did not report one (or this is not an
+    -- assistant turn), never a guess.
+    stop_reason         TEXT CHECK ({nullable_check("stop_reason", StopReason)}),
     PRIMARY KEY(session_id, position, variant_index)
 ) STRICT;
 
@@ -295,6 +346,16 @@ CREATE TABLE IF NOT EXISTS blocks (
     language        TEXT,
     tool_result_is_error  INTEGER CHECK (tool_result_is_error IN (0, 1)),
     tool_result_exit_code INTEGER,
+    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): why tool_result_is_error is
+    -- NULL for this block, when it is a tool_result. Collapsing "provider
+    -- emitted nothing", "parser deliberately distrusts the reported value",
+    -- and "this origin's parser does not read the field" into one flat NULL
+    -- was the defect (72% of blocks.tool_result_is_error is NULL
+    -- archive-wide) -- all three are knowable at parse time. NULL here means
+    -- the outcome IS known (tool_result_is_error is set), never "unknown of
+    -- an unknown reason".
+    tool_result_outcome_unknown_reason TEXT
+        CHECK ({nullable_check("tool_result_outcome_unknown_reason", ToolResultUnknownReason)}),
     -- svfj: the citation anchor atom. Hashes canonical block EVIDENCE only
     -- (type, text, tool_name, canonical tool_input, semantic/media/language,
     -- is_error, exit_code) -- deliberately EXCLUDING session_id/message_id/
@@ -418,6 +479,55 @@ WHERE url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_web_constructs_query
 ON web_content_constructs(query)
 WHERE query IS NOT NULL;
+
+-- polylogue-2qx.4 (v46): file-edit tool-call evidence (Claude Code Edit/
+-- Write toolUseResult): 105,123 structured unified diffs (structuredPatch),
+-- 92,313 pre-edit file captures (originalFile), and the oldString/newString/
+-- replaceAll/filePath/userModified fields around them -- entirely discarded
+-- today (polylogue-cgfy). This is a RELATION (one edit per tool call), keyed
+-- by the tool_use block that performed the edit, not a blocks.metadata bag
+-- (polylogue-9x22's rejected shape) and not folded into the block row
+-- itself. originalFile captures the pre-edit state polylogue-cijx's
+-- file-trajectory grading declares unavailable ("observed" only) --
+-- this is what raises it to "checkpointed".
+CREATE TABLE IF NOT EXISTS file_edits (
+    tool_use_block_id   TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE,
+    session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    message_id          TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+    file_path           TEXT,
+    structured_patch_json TEXT CHECK ({json_array_check("structured_patch_json", nullable=True)}),
+    original_file       TEXT,
+    old_string          TEXT,
+    new_string          TEXT,
+    replace_all         INTEGER CHECK(replace_all IN (0, 1) OR replace_all IS NULL),
+    user_modified       INTEGER CHECK(user_modified IN (0, 1) OR user_modified IS NULL),
+    observed_at_ms      INTEGER
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_file_edits_session
+ON file_edits(session_id);
+
+CREATE INDEX IF NOT EXISTS idx_file_edits_file_path
+ON file_edits(file_path)
+WHERE file_path IS NOT NULL;
+
+-- polylogue-2qx.4 (v46): tracker-agnostic external references observed in a
+-- session (Claude Code pr-link, 20,702 occurrences on the wire today;
+-- generalizes to issue refs so a second tracker never needs its own table).
+CREATE TABLE IF NOT EXISTS session_refs (
+    ref_id          TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
+    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    position        INTEGER NOT NULL CHECK(position >= 0),
+    kind            TEXT NOT NULL CHECK ({check("kind", SessionRefKind)}),
+    repo            TEXT,
+    ref_number      INTEGER,
+    url             TEXT NOT NULL,
+    observed_at_ms  INTEGER,
+    PRIMARY KEY(session_id, position)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_session_refs_kind
+ON session_refs(kind, repo, ref_number);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     block_id UNINDEXED,
@@ -644,6 +754,16 @@ CREATE TABLE IF NOT EXISTS session_links (
     branch_point_message_id TEXT,
     inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
     status                  TEXT CHECK(status IN ('repaired', 'quarantined') OR status IS NULL),
+    -- polylogue-2qx.4 (v46): the parent-session tool_use block that
+    -- dispatched this child (Claude Code parentToolUseID, 842,819 records /
+    -- 185,982 distinct dispatch ids on the wire). This IS the delegation
+    -- edge's join key; `method` records how the edge was derived (e.g.
+    -- 'parent-tool-use-id') once a resolver populates this column. Replaces
+    -- delegation_facts' cardinality-gated ordinal dispatch<->child pairing,
+    -- which only resolved 12.8% of cases. Not a FK to sessions -- it is a
+    -- block within the PARENT session, resolvable independently of whether
+    -- src/dst session identity has resolved yet.
+    parent_tool_use_block_id TEXT REFERENCES blocks(block_id) ON DELETE SET NULL,
     method                  TEXT,
     confidence              REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0 AND 1),
     evidence_json           TEXT NOT NULL DEFAULT '[]',
