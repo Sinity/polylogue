@@ -21,7 +21,8 @@ def json_object(value: object) -> dict[str, object]:
     """Convert a JSON-compatible value to a plain dict of str->object.
 
     Used by publication and run record mappers to convert manifest/plan
-    documents into dict form without retaining orjson-specific types.
+    documents into dict form without retaining the active JSON backend's
+    own specific types.
     """
     document = json_document(value)
     result: dict[str, object] = {}

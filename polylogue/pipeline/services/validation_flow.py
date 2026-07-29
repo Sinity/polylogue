@@ -173,8 +173,8 @@ async def evaluate_raw_artifacts(
     import time as _time
 
     total = progress_total or len(raw_artifacts)
-    # ProcessPoolExecutor bypasses the GIL: JSON decode (orjson C extension)
-    # + Python wrapper code run truly parallel across processes.
+    # ProcessPoolExecutor bypasses the GIL: JSON decode (native C extension
+    # accelerator) + Python wrapper code run truly parallel across processes.
     # Measured: Threads(24)=160 MB/s, Process(8)=605 MB/s (3.7x speedup).
     worker_count = min(len(raw_artifacts), os.cpu_count() or 4, 8)
     blob_root_str = str(blob_store_root())

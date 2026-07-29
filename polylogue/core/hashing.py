@@ -34,9 +34,10 @@ def hash_text_short(text: str, length: int = 16) -> str:
 def hash_payload(payload: object) -> str:
     """Hash a JSON-serializable object to full SHA-256 hex digest.
 
-    Uses stdlib json for deterministic output across environments.
-    orjson would be faster but can produce different byte output for
-    non-ASCII content between versions, breaking content-addressed storage.
+    Uses stdlib json for deterministic output across environments. A fast
+    accelerator (e.g. msgspec) would be faster but can produce different byte
+    output for non-ASCII content between versions, breaking content-addressed
+    storage.
 
     String values within the payload are NOT NFC-normalized here.
     Callers should normalize strings before including in payload if
