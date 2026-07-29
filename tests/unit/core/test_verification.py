@@ -200,7 +200,7 @@ class TestProviderArtifactCoverage:
             recognized_non_parseable_records=1,
             unknown_records=1,
             decode_errors=1,
-            artifact_counts={"agent_sidecar_meta": 1, "subagent_session_stream": 1},
+            artifact_counts={"agent_sidecar_meta": 1, "agent_transcript": 1},
             package_versions={"v1": 1},
             element_kinds={"session_record_stream": 1},
             resolution_reasons={"bundle_scope": 1},
@@ -733,7 +733,7 @@ class TestInspectRawArtifactCoverage:
         assert {row.artifact_kind for row in rows} == {
             "session_document",
             "agent_sidecar_meta",
-            "subagent_session_stream",
+            "agent_transcript",
         }
 
         supported_rows = list_artifact_observation_rows(

@@ -278,14 +278,19 @@ Acquired files are classified by `ArtifactKind` before ingestion:
 |------|-------------|
 | `session_document` | A single session (Claude Code JSONL, ChatGPT JSON) |
 | `session_record_stream` | Stream of session events |
-| `subagent_session_stream` | Sidechain sub-agent session |
+| `agent_transcript` | An individual Claude Code subagent's own attempt transcript, classified either by the precise `subagents/agent-*.jsonl` `OriginArtifactRule` path or, as a fallback for other record-stream shapes under a subagent-ish path, by structural heuristic |
 | `agent_sidecar_meta` | Session metadata (history.jsonl, sessions-index.json) |
+| `workflow_run_snapshot` | Authoritative mutable Claude Code orchestration workflow run snapshot |
+| `workflow_journal` | Append-only Claude Code orchestration workflow journal |
+| `adopt_manifest` | Claude Code workflow resume/adoption recovery manifest |
+| `coordinator_session_stream` | The coordinator's own Claude Code session stream (as opposed to a subagent's `agent_transcript`) |
 | `session_index` | Provider-level session index |
 | `bridge_pointer` | Pointer from a parent session to a sub-agent session |
 | `metadata_document` | Supplementary metadata |
+| `hook_event` | Pre/PostToolUse hook event record |
 | `unknown` | Unclassified artifact |
 
-`classify_artifact()` in `sources/artifact_taxonomy/` assigns each acquired file
+`classify_artifact()` in `archive/artifact_taxonomy/` assigns each acquired file
 a kind. The daemon uses artifact classification to route files to the correct
 ingestion path.
 
