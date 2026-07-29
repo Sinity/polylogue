@@ -261,6 +261,22 @@ def test_claude_ai_tool_use_segment_captures_web_tool_evidence() -> None:
     assert block.metadata["approval_options"] == ["allow", "deny"]
     assert block.metadata["display_content"] == {"type": "text", "text": "Searching past conversations"}
 
+    # polylogue-9x22: block.metadata is never persisted (no metadata column on
+    # the blocks table), so the evidence must also reach session_events -- the
+    # only path that survives to the archive.
+    web_tool_events = [event for event in session.session_events if event.event_type == "claude_ai_web_tool_evidence"]
+    assert len(web_tool_events) == 1
+    event = web_tool_events[0]
+    assert event.source_message_provider_id == "m1"
+    assert event.payload["block_index"] == 0
+    assert event.payload["integration_name"] == "Search Past Conversations"
+    assert event.payload["is_mcp_app"] is True
+    assert event.payload["mcp_server_url"] == "https://mcp.example.test"
+    assert event.payload["approval_key"] == "approve-once"
+    assert event.payload["approval_options"] == ["allow", "deny"]
+    assert event.payload["display_content"] == {"type": "text", "text": "Searching past conversations"}
+    assert event.timestamp == "2026-01-08T09:05:53.020754+00:00"
+
 
 def test_claude_ai_conversation_summary_persists_as_event() -> None:
     """The provider's own generated conversation summary (top-level
