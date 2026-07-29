@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,17 +78,32 @@ class SidecarJoinResult:
     debt: tuple[SidecarDebt, ...] = field(default_factory=tuple)
 
 
-def _tool_result_index(payload: Sequence[object]) -> tuple[dict[str, tuple[int, bool]], dict[str, str]]:
-    """Return (tool_use_id -> (inline_len, is_truncated), persisted_basename -> tool_use_id)."""
-    by_tool_use_id: dict[str, tuple[int, bool]] = {}
-    by_persisted_name: dict[str, str] = {}
-    for item in payload:
+class ToolResultIndexAccumulator:
+    """Incrementally builds the ``tool_use_id`` index one record at a time.
+
+    ``join_tool_result_sidecars`` needs ``tool_use_id -> (inline_len,
+    is_truncated)`` (plus the "saved to" pointer reverse-index) built from the
+    full payload. The eager/batch ingest path already holds the full payload
+    in memory, so building this in one pass over ``Sequence[object]`` is free.
+    The streaming ingest path (``parse_code_stream``, used for multi-GiB
+    Claude Code JSONL) deliberately does *not* retain the raw payload -- that
+    is the whole point of streaming it. This accumulator lets a caller observe
+    each record as it flows past (see ``observe_tool_result_stream``) and join
+    against the resulting index afterward, without ever materializing the
+    full record list.
+    """
+
+    def __init__(self) -> None:
+        self._by_tool_use_id: dict[str, tuple[int, bool]] = {}
+        self._by_persisted_name: dict[str, str] = {}
+
+    def observe(self, item: object) -> None:
         if not isinstance(item, dict):
-            continue
+            return
         message = item.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, list):
-            continue
+            return
         for seg in content:
             if not isinstance(seg, dict) or seg.get("type") != "tool_result":
                 continue
@@ -101,7 +116,7 @@ def _tool_result_index(payload: Sequence[object]) -> tuple[dict[str, tuple[int, 
                 pointer = _SAVED_TO_RE.search(raw)
                 is_truncated = pointer is not None
                 if pointer:
-                    by_persisted_name[os.path.basename(pointer.group(1))] = tool_use_id
+                    self._by_persisted_name[os.path.basename(pointer.group(1))] = tool_use_id
             elif isinstance(raw, list):
                 inline_len = sum(
                     len(part.get("text", "")) for part in raw if isinstance(part, dict) and part.get("type") == "text"
@@ -109,8 +124,53 @@ def _tool_result_index(payload: Sequence[object]) -> tuple[dict[str, tuple[int, 
                 is_truncated = False
             else:
                 inline_len, is_truncated = 0, False
-            by_tool_use_id[tool_use_id] = (inline_len, is_truncated)
-    return by_tool_use_id, by_persisted_name
+            self._by_tool_use_id[tool_use_id] = (inline_len, is_truncated)
+
+    def join(self, tool_results_dir: Path) -> SidecarJoinResult:
+        """Join the observed index against ``tool_results_dir``. See ``join_tool_result_sidecars``."""
+        return _join_from_index(self._by_tool_use_id, self._by_persisted_name, tool_results_dir)
+
+
+def observe_tool_result_stream(records: Iterable[object], accumulator: ToolResultIndexAccumulator) -> Iterator[object]:
+    """Tee a record stream through ``accumulator.observe`` without buffering it.
+
+    Yields each record unchanged so it can be interposed transparently in
+    front of the existing streaming parser (``_parse_code_records`` via
+    ``parse_code_stream``); the accumulator is complete only once the caller
+    has fully exhausted this iterator.
+    """
+    for item in records:
+        accumulator.observe(item)
+        yield item
+
+
+def _tool_result_index(payload: Sequence[object]) -> tuple[dict[str, tuple[int, bool]], dict[str, str]]:
+    """Return (tool_use_id -> (inline_len, is_truncated), persisted_basename -> tool_use_id)."""
+    accumulator = ToolResultIndexAccumulator()
+    for item in payload:
+        accumulator.observe(item)
+    return accumulator._by_tool_use_id, accumulator._by_persisted_name
+
+
+def resolve_tool_results_dir(source_path: str | Path | None) -> Path | None:
+    """Return the session-level ``tool-results/`` dir for a Claude Code JSONL path.
+
+    Claude Code persists sidecars to ``<project>/<session-uuid>/tool-results/``,
+    a directory that sits *alongside* ``<project>/<session-uuid>.jsonl`` (same
+    stem, not nested inside it). Subagent transcripts live one level deeper at
+    ``<project>/<session-uuid>/subagents/agent-*.jsonl`` -- their sidecars are
+    **not** per-subagent; they persist to the same session-level directory, so
+    a subagent source path resolves to its grandparent's ``tool-results/``, not
+    a ``subagents/tool-results/`` that Claude Code never creates. Verified
+    against a live ``~/.claude/projects`` corpus (polylogue-rujy).
+
+    Returns ``None`` when ``source_path`` is absent (no directory to derive).
+    """
+    if not source_path:
+        return None
+    path = Path(source_path)
+    session_dir = path.parent.parent if path.parent.name == "subagents" else path.parent / path.stem
+    return session_dir / "tool-results"
 
 
 def join_tool_result_sidecars(payload: Sequence[object], tool_results_dir: Path) -> SidecarJoinResult:
@@ -120,10 +180,17 @@ def join_tool_result_sidecars(payload: Sequence[object], tool_results_dir: Path)
     matches (with the full sidecar text, ready for a parser to attach to its
     owning block) and typed debt for files whose owner cannot be found.
     """
+    by_tool_use_id, by_persisted_name = _tool_result_index(payload)
+    return _join_from_index(by_tool_use_id, by_persisted_name, tool_results_dir)
+
+
+def _join_from_index(
+    by_tool_use_id: dict[str, tuple[int, bool]],
+    by_persisted_name: dict[str, str],
+    tool_results_dir: Path,
+) -> SidecarJoinResult:
     if not tool_results_dir.is_dir():
         return SidecarJoinResult()
-
-    by_tool_use_id, by_persisted_name = _tool_result_index(payload)
 
     matched: list[SidecarMatch] = []
     debt: list[SidecarDebt] = []
@@ -168,4 +235,12 @@ def join_tool_result_sidecars(payload: Sequence[object], tool_results_dir: Path)
     return SidecarJoinResult(matched=tuple(matched), debt=tuple(debt))
 
 
-__all__ = ["SidecarDebt", "SidecarJoinResult", "SidecarMatch", "join_tool_result_sidecars"]
+__all__ = [
+    "SidecarDebt",
+    "SidecarJoinResult",
+    "SidecarMatch",
+    "ToolResultIndexAccumulator",
+    "join_tool_result_sidecars",
+    "observe_tool_result_stream",
+    "resolve_tool_results_dir",
+]

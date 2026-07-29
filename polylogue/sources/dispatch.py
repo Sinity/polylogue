@@ -31,9 +31,11 @@ from .parsers import (
     local_agent,
 )
 from .parsers.base import ParsedSession, extract_messages_from_list
+from .parsers.claude.code_parser import apply_tool_result_sidecars
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
+    from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
 
 logger = get_logger(__name__)
 
@@ -435,7 +437,39 @@ def _grouped_records_spec(
     )
 
 
-def _claude_code_grouped_record_specs(payloads: PayloadSequence, fallback_id: str) -> list[LoweredPayloadSpec]:
+def _join_claude_code_sidecars(payloads: PayloadSequence, source_path: str | None) -> SidecarJoinResult | None:
+    """Join ``tool-results/`` sidecar content for a Claude Code JSONL payload, if any.
+
+    Deferred import: ``polylogue.sources.live`` (package ``__init__``) pulls in
+    ``batch.py``/``watcher.py``, which import back ``from
+    polylogue.sources.dispatch import ...`` -- a module-level import here would
+    be circular whenever ``dispatch`` is the first module imported. Calling
+    this only at parse time (long after both modules are fully loaded) avoids
+    it without restructuring either package.
+
+    Returns ``None`` (a no-op for ``parse_code``/``parse_code_stream``) when
+    there is no ``source_path`` to derive a directory from; the join itself is
+    cheap when the directory doesn't exist (a single ``is_dir()`` stat).
+    """
+    if source_path is None:
+        return None
+    from polylogue.sources.live.tool_result_sidecars import (
+        join_tool_result_sidecars,
+        resolve_tool_results_dir,
+    )
+
+    tool_results_dir = resolve_tool_results_dir(source_path)
+    if tool_results_dir is None:
+        return None
+    return join_tool_result_sidecars(payloads, tool_results_dir)
+
+
+def _claude_code_grouped_record_specs(
+    payloads: PayloadSequence,
+    fallback_id: str,
+    *,
+    source_path: str | None = None,
+) -> list[LoweredPayloadSpec]:
     """Split concatenated Claude Code JSONL aggregates into session streams."""
     current_session_id: str | None = None
     groups: dict[str, PayloadSequence] = {}
@@ -459,12 +493,13 @@ def _claude_code_grouped_record_specs(payloads: PayloadSequence, fallback_id: st
         groups.setdefault(session_id, []).append(payload)
 
     if len(groups) <= 1:
-        return [_grouped_records_spec(Provider.CLAUDE_CODE, payloads, fallback_id)]
+        return [_grouped_records_spec(Provider.CLAUDE_CODE, payloads, fallback_id, source_path=source_path)]
     return [
         _grouped_records_spec(
             Provider.CLAUDE_CODE,
             group_payloads,
             fallback_id if index == 0 else group_id,
+            source_path=source_path,
         )
         for index, (group_id, group_payloads) in enumerate(groups.items())
     ]
@@ -534,7 +569,12 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
     ]
 
 
-def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -> Iterator[ParsedSession]:
+def _claude_code_stream_sessions(
+    payloads: Iterable[object],
+    fallback_id: str,
+    *,
+    source_path: str | None = None,
+) -> Iterator[ParsedSession]:
     """Parse Claude Code JSONL records without materializing the full stream.
 
     The eager ``parse_payload`` path preserves the strongest non-contiguous
@@ -544,7 +584,22 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
     iterator. Per-session record-index and UUID continuation state retains no
     raw payload bytes; its size is proportional to unique record identifiers and
     makes an interleaved stream semantically identical to eager grouping.
+
+    Sidecar join (polylogue-wjgf): the raw payload is never materialized here,
+    so ``join_tool_result_sidecars`` (which needs the full ``tool_use_id``
+    index) can't run against it directly. Instead each group's records are
+    teed through a ``ToolResultIndexAccumulator`` as they stream past
+    (``observe_tool_result_stream``), and the join runs against the resulting
+    index only after the group's iterator is fully consumed -- no raw record
+    retention, same memory bound as the rest of this path.
     """
+    tool_results_dir = None
+    if source_path is not None:
+        from polylogue.sources.live.tool_result_sidecars import resolve_tool_results_dir
+
+        tool_results_dir = resolve_tool_results_dir(source_path)
+        if tool_results_dir is not None and not tool_results_dir.is_dir():
+            tool_results_dir = None
 
     iterator = iter(payloads)
     lookahead: object = _NO_LOOKAHEAD
@@ -561,12 +616,40 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
             return item
         return next(iterator)
 
+    def parse_group(
+        records: Iterator[object],
+        group_fallback_id: str,
+        *,
+        record_index_start: int = 0,
+        seen_record_uuids: set[str] | None = None,
+    ) -> ParsedSession:
+        if tool_results_dir is None:
+            return claude.parse_code_stream(
+                records,
+                group_fallback_id,
+                record_index_start=record_index_start,
+                seen_record_uuids=seen_record_uuids,
+            )
+        from polylogue.sources.live.tool_result_sidecars import (
+            ToolResultIndexAccumulator,
+            observe_tool_result_stream,
+        )
+
+        accumulator = ToolResultIndexAccumulator()
+        session = claude.parse_code_stream(
+            observe_tool_result_stream(records, accumulator),
+            group_fallback_id,
+            record_index_start=record_index_start,
+            seen_record_uuids=seen_record_uuids,
+        )
+        return apply_tool_result_sidecars(session, accumulator.join(tool_results_dir))
+
     while True:
         try:
             first = next_item()
         except StopIteration:
             if pending_prefix:
-                yield claude.parse_code_stream(iter(pending_prefix), fallback_id)
+                yield parse_group(iter(pending_prefix), fallback_id)
             return
 
         first_record = _payload_record(first)
@@ -605,7 +688,7 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
 
         record_index_start = record_counts_by_session.get(group_session_id, 0)
         seen_record_uuids = seen_record_uuids_by_session.setdefault(group_session_id, set())
-        session = claude.parse_code_stream(
+        session = parse_group(
             group_records(),
             group_fallback_id,
             record_index_start=record_index_start,
@@ -737,12 +820,14 @@ def _lower_grouped_payload(
     provider: Provider,
     shaped_payload: object,
     fallback_id: str,
+    *,
+    source_path: str | None = None,
 ) -> list[LoweredPayloadSpec]:
     payloads = _payload_sequence(shaped_payload)
     if payloads is not None:
         if provider is Provider.CLAUDE_CODE:
-            return _claude_code_grouped_record_specs(payloads, fallback_id)
-        return [_grouped_records_spec(provider, payloads, fallback_id)]
+            return _claude_code_grouped_record_specs(payloads, fallback_id, source_path=source_path)
+        return [_grouped_records_spec(provider, payloads, fallback_id, source_path=source_path)]
 
     record = _payload_record(shaped_payload)
     if record is None:
@@ -750,7 +835,7 @@ def _lower_grouped_payload(
 
     messages = _record_messages(record)
     grouped_payload: PayloadSequence = messages if messages is not None else [record]
-    return [_grouped_records_spec(provider, grouped_payload, fallback_id)]
+    return [_grouped_records_spec(provider, grouped_payload, fallback_id, source_path=source_path)]
 
 
 def _lower_drive_like_payload(
@@ -943,7 +1028,7 @@ def _lower_payload_specs(
     if runtime_provider in BUNDLE_PROVIDERS:
         return _lower_bundle_payload(runtime_provider, shaped_payload, fallback_id)
     if runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
-        return _lower_grouped_payload(runtime_provider, shaped_payload, fallback_id)
+        return _lower_grouped_payload(runtime_provider, shaped_payload, fallback_id, source_path=source_path)
     if runtime_provider is Provider.BEADS:
         payloads = _payload_sequence(shaped_payload)
         if payloads is not None and all(
@@ -1058,7 +1143,13 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
 
     if spec.provider is Provider.CLAUDE_CODE:
         payloads = _payload_sequence(spec.payload)
-        return [claude.parse_code(payloads, spec.fallback_id)] if payloads is not None else []
+        if payloads is None:
+            return []
+        return [
+            claude.parse_code(
+                payloads, spec.fallback_id, tool_result_sidecars=_join_claude_code_sidecars(payloads, spec.source_path)
+            )
+        ]
 
     if spec.provider is Provider.CODEX:
         payloads = _payload_sequence(spec.payload)
@@ -1162,7 +1253,7 @@ def parse_stream_payload(
     """Parse a grouped record stream."""
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.CLAUDE_CODE:
-        return merge_parsed_session_chunks(_claude_code_stream_sessions(payloads, fallback_id))
+        return merge_parsed_session_chunks(_claude_code_stream_sessions(payloads, fallback_id, source_path=source_path))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
     if runtime_provider is Provider.BEADS:

@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload, parse_stream_payload
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
@@ -231,6 +231,139 @@ def test_parse_stream_payload_splits_claude_code_aggregate_by_session_id() -> No
 
     assert [session.provider_session_id for session in sessions] == ["first-session", "second-session"]
     assert [len(session.messages) for session in sessions] == [2, 1]
+
+
+_SIDECAR_NEEDLE = "zz_only_in_acquired_sidecar_body"
+
+
+def _sidecar_tool_result_record(tool_use_id: str, inline_content: str) -> dict[str, object]:
+    return {
+        "type": "user",
+        "sessionId": "sess-sidecar",
+        "uuid": f"uuid-{tool_use_id}",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": inline_content}],
+        },
+    }
+
+
+def _truncated_inline_pointer(sidecar_path: Path) -> str:
+    return (
+        "<persisted-output>\n"
+        f"Output too large (5.0KB). Full output saved to: {sidecar_path}\n\n"
+        "Preview (first 2KB):\nshort preview, not the real payload"
+    )
+
+
+def test_parse_payload_wires_claude_code_tool_result_sidecars(tmp_path: Path) -> None:
+    """polylogue-wjgf: dispatch.py's eager CLAUDE_CODE branch must join sidecars.
+
+    Production path: dispatch._parse_lowered_spec's ``Provider.CLAUDE_CODE``
+    branch (via ``_join_claude_code_sidecars`` +
+    ``sources.live.tool_result_sidecars.{resolve_tool_results_dir,
+    join_tool_result_sidecars}``). Mutation that breaks this: dropping the
+    ``tool_result_sidecars=`` kwarg from the ``claude.parse_code(...)`` call
+    (reverting to the pre-wiring call site) makes this assertion fail because
+    the block would keep its truncated preview text instead of the acquired
+    sidecar body.
+    """
+    session_path = tmp_path / "sess-sidecar.jsonl"
+    session_path.write_text("", encoding="utf-8")
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_payload(Provider.CLAUDE_CODE, payload, "fallback", source_path=str(session_path))
+
+    assert len(sessions) == 1
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE in (block.text or "")
+
+
+def test_parse_payload_without_source_path_skips_sidecar_join(tmp_path: Path) -> None:
+    """No ``source_path`` means no directory to derive -- must stay a no-op, not error."""
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_payload(Provider.CLAUDE_CODE, payload, "fallback")
+
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE not in (block.text or "")
+
+
+def test_parse_stream_payload_wires_claude_code_tool_result_sidecars(tmp_path: Path) -> None:
+    """polylogue-wjgf: the streaming path must reach the same coverage as the batch path.
+
+    Production path: dispatch._claude_code_stream_sessions's ``parse_group``
+    closure, which tees each group's records through
+    ``ToolResultIndexAccumulator``/``observe_tool_result_stream`` (since the
+    streaming path never materializes the raw payload) and applies
+    ``apply_tool_result_sidecars`` after the group iterator is exhausted.
+    Mutation that breaks this: making ``parse_group`` always take the
+    ``tool_results_dir is None`` branch (i.e. skip sidecars for the stream
+    path) makes coverage depend on file size -- this test would then fail
+    because the block keeps its truncated preview text.
+    """
+    session_path = tmp_path / "sess-sidecar.jsonl"
+    session_path.write_text("", encoding="utf-8")
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), "fallback", source_path=str(session_path))
+
+    assert len(sessions) == 1
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE in (block.text or "")
+
+
+def test_parse_stream_payload_subagent_source_path_resolves_session_level_tool_results_dir(
+    tmp_path: Path,
+) -> None:
+    """A subagent JSONL's sidecars live at the SESSION level, not per-subagent (polylogue-rujy).
+
+    Production path: ``resolve_tool_results_dir`` in
+    ``sources/live/tool_result_sidecars.py``, called from
+    ``dispatch._claude_code_stream_sessions``. Mutation that breaks this:
+    deriving the tool-results dir as a sibling of the subagent file itself
+    (``.../subagents/tool-results/``, which Claude Code never creates) instead
+    of walking up to the session directory -- this test would then find no
+    directory and the needle would never appear.
+    """
+    subagent_path = tmp_path / "sess-sidecar" / "subagents" / "agent-a1b2c3.jsonl"
+    subagent_path.parent.mkdir(parents=True)
+    subagent_path.write_text("", encoding="utf-8")
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), "fallback", source_path=str(subagent_path))
+
+    assert len(sessions) == 1
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE in (block.text or "")
 
 
 def test_claude_acompact_classifier_matches_eager_and_memory_bounded_routes() -> None:
