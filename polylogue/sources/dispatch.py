@@ -632,6 +632,93 @@ def _bundle_record_specs(
     ]
 
 
+#: Below this many candidate records, a zero-match bundle is unremarkable --
+#: even a genuine format change might only affect a small shard, and
+#: warning on tiny/edge-case payloads would be noise the next real drift
+#: warning gets lost in.
+_CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES = 5
+
+
+def _looks_like_chatgpt_mapping_candidate(record: PayloadRecord) -> bool:
+    """True if ``record`` carries a non-empty ``mapping`` dict.
+
+    This is deliberately looser than ``chatgpt.looks_like_fragment`` (which
+    also validates every node's shape): it is the "near miss" test used to
+    decide whether a zero-match bundle is drift-worth-a-warning or routine
+    sibling-file noise. ChatGPT's real metadata siblings
+    (``message_feedback.json``, ``shared_conversations.json``,
+    ``user_settings.json``, ``user.json``) never carry a ``mapping`` key at
+    all, so they never count as candidates here regardless of list length --
+    only records that got as far as having *a* ``mapping`` dict, but whose
+    node shapes then failed validation, count. That is what an export
+    format change to the conversation-tree shape itself would look like,
+    as opposed to a large-but-irrelevant sibling array.
+    """
+    mapping = record.get("mapping")
+    return isinstance(mapping, dict) and bool(mapping)
+
+
+def _chatgpt_bundle_record_specs(
+    payloads: PayloadSequence,
+    fallback_id: str,
+) -> list[LoweredPayloadSpec]:
+    """Lower a ChatGPT bundle-shaped JSON array into per-conversation specs.
+
+    A ChatGPT GDPR/Takeout export ZIP legitimately contains sibling arrays
+    that are shaped like a bundle (a top-level JSON list) but are NOT
+    conversation records -- ``message_feedback.json``,
+    ``shared_conversations.json``, ``user_settings.json``, and (once an
+    export is large enough that OpenAI shards it) the numbered
+    ``conversations-NNN.json`` shard files sit alongside those siblings in
+    the same ZIP, indistinguishable from each other by filename alone
+    (dispatch's detection is shape-based, not filename-based -- see
+    ``sources/dispatch.py`` module docstring). Filtering every candidate
+    record through ``chatgpt.looks_like_fragment`` here, rather than
+    admitting every list item and letting ``chatgpt.parse`` silently emit
+    an empty/near-empty session for a non-conversation item, does two
+    things: it gives non-conversation siblings a distinguishable
+    "did not match the shape" reason instead of an opaque downstream
+    "produced no sessions" parse outcome, and it lets this function detect
+    the one failure mode a per-row parse-error can never distinguish from
+    routine sibling-file noise -- every real conversation record in a
+    shard failing the shape check at once, which is what an upstream
+    export-format change (e.g. OpenAI renaming the ``mapping`` key) would
+    look like. When that happens for a payload large enough to plausibly
+    BE a conversation shard rather than a small sibling array, log a
+    warning so the drop is visible in daemon logs rather than requiring an
+    operator to already suspect drift and query
+    ``raw_sessions.detection_warnings_json`` to find it (polylogue-iwv7).
+    """
+    matched: list[LoweredPayloadSpec] = []
+    candidates = 0
+    for index, item in enumerate(payloads):
+        record = _payload_record(item)
+        if record is None:
+            continue
+        if _looks_like_chatgpt_mapping_candidate(record):
+            candidates += 1
+        if not chatgpt.looks_like_fragment(record):
+            continue
+        matched.append(
+            LoweredPayloadSpec(
+                provider=Provider.CHATGPT,
+                fallback_id=f"{fallback_id}-{index}",
+                mode="bundle_record",
+                payload=record,
+            )
+        )
+    if not matched and candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES:
+        logger.warning(
+            "ChatGPT bundle payload %r: none of %d candidate records matched the "
+            "conversation-fragment shape (chatgpt.looks_like_fragment); if this array is a "
+            "conversations shard rather than a metadata sibling file, the ChatGPT export "
+            "shape may have changed and conversations are being silently dropped",
+            fallback_id,
+            candidates,
+        )
+    return matched
+
+
 def _lower_bundle_payload(
     provider: Provider,
     shaped_payload: object,
@@ -639,6 +726,8 @@ def _lower_bundle_payload(
 ) -> list[LoweredPayloadSpec]:
     payloads = _payload_sequence(shaped_payload)
     if payloads is not None:
+        if provider is Provider.CHATGPT:
+            return _chatgpt_bundle_record_specs(payloads, fallback_id)
         return _bundle_record_specs(provider, payloads, fallback_id)
     record = _payload_record(shaped_payload)
     return [_single_record_spec(provider, record, fallback_id)] if record is not None else []
