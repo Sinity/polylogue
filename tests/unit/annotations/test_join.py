@@ -96,13 +96,17 @@ def _seed_delegation(archive_root: Path) -> tuple[str, str]:
     return f"delegation:{block_id}", f"block:{block_id}"
 
 
-def _seed_ambiguous_delegation(archive_root: Path) -> tuple[str, str]:
+def _seed_unresolved_delegation(archive_root: Path) -> tuple[str, str]:
+    """Two dispatches, one resolved child, no distinguishing `tool_input`
+    content: the content-identity join has nothing to disambiguate on, so
+    both dispatches surface honestly as mapping_state='unresolved' rather
+    than the retired 'ambiguous' state (polylogue-1vpm.7)."""
     with ArchiveStore(archive_root) as archive:
         parent = archive.write_parsed(
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
-                provider_session_id="join-ambiguous-parent",
-                title="Ambiguous join parent",
+                provider_session_id="join-unresolved-parent",
+                title="Unresolved join parent",
                 created_at="2026-07-01T12:00:00Z",
                 git_repository_url="https://github.com/Sinity/polylogue",
                 messages=[
@@ -114,7 +118,7 @@ def _seed_ambiguous_delegation(archive_root: Path) -> tuple[str, str]:
                             ParsedContentBlock(
                                 type=BlockType.TOOL_USE,
                                 tool_name="Task",
-                                tool_id=f"ambiguous-{suffix}",
+                                tool_id=f"unresolved-{suffix}",
                                 tool_input={},
                             )
                         ],
@@ -126,10 +130,10 @@ def _seed_ambiguous_delegation(archive_root: Path) -> tuple[str, str]:
         archive.write_parsed(
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
-                provider_session_id="join-ambiguous-child",
-                title="Ambiguous join child",
+                provider_session_id="join-unresolved-child",
+                title="Unresolved join child",
                 messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="working")],
-                parent_session_provider_id="join-ambiguous-parent",
+                parent_session_provider_id="join-unresolved-parent",
                 branch_type=BranchType.SUBAGENT,
             )
         )
@@ -184,7 +188,7 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     """
     archive_root = workspace_env["archive_root"]
     target_ref, evidence_ref = _seed_delegation(archive_root)
-    ambiguous_ref, ambiguous_evidence = _seed_ambiguous_delegation(archive_root)
+    unresolved_ref, unresolved_evidence = _seed_unresolved_delegation(archive_root)
     registry = AnnotationSchemaRegistry()
     registry.register(DELEGATION_DISCOURSE_SCHEMA)
     with sqlite3.connect(archive_root / "user.db") as conn:
@@ -237,10 +241,10 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
             conn,
             registry=registry,
             schema=DELEGATION_DISCOURSE_SCHEMA,
-            target_ref=ambiguous_ref,
-            evidence_ref=ambiguous_evidence,
-            row_key="ambiguous",
-            author_ref="agent:ambiguous",
+            target_ref=unresolved_ref,
+            evidence_ref=unresolved_evidence,
+            row_key="unresolved",
+            author_ref="agent:unresolved",
             value=_delegation_value(),
             now_ms=4_500,
         )
@@ -289,7 +293,12 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     assert result.selection_truncated is False
     assert result.joined_count == 3
     assert result.missing_target_count == 1
-    assert result.ambiguous_target_count == 1
+    # polylogue-1vpm.7: 'ambiguous' is retired from delegation_facts.mapping_state
+    # (a dispatch without unique content-identity evidence is 'unresolved', not
+    # 'ambiguous') -- the target still resolves by its instruction_tool_use_block_id
+    # ref regardless of mapping_state, so this row still joins; it just never
+    # trips the (now-dead-against-current-data) ambiguous_target diagnostic.
+    assert result.ambiguous_target_count == 0
     assert result.invalid_value_count == 1
     assert result.schema_drift_count == 1
     assert result.multi_label_target_count == 1
@@ -299,13 +308,13 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     assert {row.labeler_ref for row in result.rows} == {
         "agent:labeler-a",
         "agent:labeler-b",
-        "agent:ambiguous",
+        "agent:unresolved",
     }
     assert {row.adjudicator_ref for row in result.rows} == {"user:local"}
     assert {row.labeler_ref for row in accepted.rows} == {
         "agent:labeler-a",
         "agent:labeler-b",
-        "agent:ambiguous",
+        "agent:unresolved",
     }
     assert {row.adjudicator_ref for row in accepted.rows} == {"user:local"}
     assert {row.judgment_decision for row in accepted.rows} == {"accept"}
@@ -321,7 +330,6 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     }
     assert {diagnostic.code for diagnostic in result.diagnostics} == {
         "missing_target",
-        "ambiguous_target",
         "schema_drift",
         "invalid_value",
     }

@@ -748,7 +748,6 @@
           "enum": [
             "resolved",
             "unresolved",
-            "ambiguous",
             "edge_only",
             "quarantined"
           ],

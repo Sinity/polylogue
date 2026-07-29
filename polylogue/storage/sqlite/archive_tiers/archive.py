@@ -462,7 +462,7 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
     )
 
 
-DelegationMappingState = Literal["resolved", "unresolved", "ambiguous", "edge_only", "quarantined"]
+DelegationMappingState = Literal["resolved", "unresolved", "edge_only", "quarantined"]
 DelegationResultStatus = Literal["ok", "error", "unknown"]
 
 
@@ -470,10 +470,12 @@ DelegationResultStatus = Literal["ok", "error", "unknown"]
 class ArchiveDelegationQueryRow:
     """Terminal query projection over one `delegations` view row
     (polylogue-y964). ``mapping_state`` is the view's own vocabulary --
-    resolved/unresolved/ambiguous/edge_only/quarantined -- never
-    reinterpreted here. Action-observed rows (resolved/unresolved/ambiguous)
-    always carry ``instruction_tool_use_block_id``; edge-only rows
-    (edge_only/quarantined) never fabricate one."""
+    resolved/unresolved/edge_only/quarantined -- never reinterpreted here
+    (polylogue-1vpm.7 retired 'ambiguous': with a provider-asserted content
+    or trivial-cohort join key, a cardinality mismatch is not a reachable
+    state). Action-observed rows (resolved/unresolved) always carry
+    ``instruction_tool_use_block_id``; edge-only rows (edge_only/quarantined)
+    never fabricate one."""
 
     parent_session_id: str
     child_session_id: str | None
@@ -9101,7 +9103,7 @@ class ArchiveStore:
     ) -> ArchiveDelegationQueryRow | None:
         """Resolve one `delegations` row (polylogue-y964) by its ref identity.
 
-        Action-observed identity (resolved/unresolved/ambiguous): pass only
+        Action-observed identity (resolved/unresolved): pass only
         ``instruction_tool_use_block_id``. Edge-only identity (edge_only/
         quarantined -- no parent-side dispatch action to key off): pass both
         ``parent_session_id`` and ``child_session_id``; only rows with no

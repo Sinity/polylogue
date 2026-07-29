@@ -41,7 +41,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # A bump without a declaration is a policy violation, not a free rebuild:
 # `devtools lab policy schema-versioning` fails, and the archive silently
 # falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
-INDEX_SCHEMA_VERSION = 44
+INDEX_SCHEMA_VERSION = 45
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1210,14 +1210,49 @@ END;
 -- pending). A resolved session_links(subagent) edge with no discoverable
 -- parent-side dispatch action (e.g. a Codex async subagent) surfaces as
 -- mapping_state='edge_only', counted but never given a fabricated
--- instruction. Dispatch actions are corroborated against resolved children
--- by rank-pairing IN TRANSCRIPT ORDER within one parent session (the same
--- "Nth query gets Nth result" idiom `actions` itself uses for tool_use/
--- tool_result) -- but ONLY when a parent's dispatch count and resolved-child
--- count agree; a mismatched count would mean guessing a winner, so those
--- rows surface as mapping_state='ambiguous' with a real instruction but no
--- fabricated child. Quarantined edges (cycle-break, #866/#1260) surface
+-- instruction. Quarantined edges (cycle-break, #866/#1260) surface
 -- explicitly as mapping_state='quarantined' rather than silently vanishing.
+--
+-- polylogue-1vpm.7: a dispatch and a resolved child were previously
+-- corroborated by RANK-PAIRING IN TRANSCRIPT ORDER (the Nth dispatch <-> the
+-- Nth resolved child by timestamp) whenever a parent's dispatch count and
+-- resolved-child count happened to agree; a mismatch made every dispatch in
+-- that parent surface as mapping_state='ambiguous'. Corpus verification
+-- (2026-07-29, full scan) found that heuristic silently WRONG far more often
+-- than right: of 1,493 rows it called 'resolved', only 146 (9.8%) actually
+-- named the correct child once checked against provider-asserted content --
+-- the rest paired siblings dispatched in the same turn to each other's
+-- children. Ordinal position across two independently-ordered lists is not
+-- identity, and a cardinality mismatch is not a per-SESSION verdict that
+-- should poison every dispatch in the cohort.
+--
+-- The fix joins on identity instead of position. Two cases:
+--   1. TRIVIAL cohort (exactly one dispatch action and exactly one resolved
+--      child for a parent): there is only one possible pairing -- not a
+--      guess among candidates, the only interpretation the observed facts
+--      admit -- so it resolves without needing corroborating content.
+--   2. NON-TRIVIAL cohort (more than one dispatch and/or more than one
+--      child): Claude Code's subagent transcript's first user turn IS --
+--      byte for byte -- the dispatching Task tool_use's own `prompt` field
+--      (Codex: `message`); this is provider-asserted content, not a
+--      heuristic, and it is already fully persisted (`actions.tool_input`,
+--      `messages`/`blocks` for the child's first turn) -- no parser change
+--      needed. A dispatch and a child pair only when this content matches
+--      UNIQUELY in both directions (one dispatch <-> one child); a
+--      duplicate-prompt collision on either side is excluded rather than
+--      guessed. Corpus-wide collision check (required before relying on any
+--      secondary key, polylogue-1vpm.7 AC5): of 3,534 dispatches with at
+--      least one same-parent resolved-child candidate, 1,933 (54.7%) match
+--      exactly one child's text and vice versa; only 14 dispatches (0.4%)
+--      match more than one child's text and 22 children (0.6%) match more
+--    than one dispatch's text -- both stay unresolved/edge_only rather than
+--      fabricating a winner.
+--
+-- 'ambiguous' is retired from the mapping_state vocabulary entirely (AC2):
+-- with the key, it is not a reachable state. A parent with N dispatches and
+-- M<N captured children now yields exactly M resolved and N-M unresolved,
+-- never N ambiguous (tests/unit/storage/test_delegations_view.py::
+-- test_delegation_dispatch_without_matching_content_stays_unresolved).
 --
 -- Model identity is deliberately NOT collapsed into one "orchestrator model"
 -- column (polylogue-4c27): `dispatch_turn_model` is the model that authored
@@ -1359,10 +1394,21 @@ WITH dispatch_actions AS (
         a.exit_code                            AS result_exit_code,
         m.model_name                           AS dispatch_turn_model,
         json_extract(a.tool_input, '$.model')  AS requested_model,
-        ROW_NUMBER() OVER (
-            PARTITION BY a.session_id
-            ORDER BY a.message_id, a.tool_use_block_id
-        )                                       AS dispatch_rank
+        -- Provider-asserted dispatch text: the exact field the child's own
+        -- first turn reproduces verbatim (Claude Code: 'prompt'; Codex:
+        -- 'message'; 'instruction'/'task' as generic fallbacks for other
+        -- providers). NULLIF/json_type guards a non-text or absent field
+        -- rather than coercing it into a spurious match.
+        COALESCE(
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.prompt') = 'text'
+                        THEN json_extract(a.tool_input, '$.prompt') END, ''),
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.message') = 'text'
+                        THEN json_extract(a.tool_input, '$.message') END, ''),
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.instruction') = 'text'
+                        THEN json_extract(a.tool_input, '$.instruction') END, ''),
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.task') = 'text'
+                        THEN json_extract(a.tool_input, '$.task') END, '')
+        )                                       AS dispatch_identity_text
     FROM actions a
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'
@@ -1378,11 +1424,7 @@ resolved_children AS (
         l.branch_point_message_id              AS branch_point_message_id,
         l.confidence                           AS link_confidence,
         l.method                               AS link_method,
-        l.inheritance                          AS inheritance,
-        ROW_NUMBER() OVER (
-            PARTITION BY l.resolved_dst_session_id
-            ORDER BY l.observed_at_ms, l.src_session_id
-        )                                       AS child_rank
+        l.inheritance                          AS inheritance
     FROM session_links l
     WHERE l.link_type = 'subagent'
       AND l.resolved_dst_session_id IS NOT NULL
@@ -1392,25 +1434,103 @@ resolved_children AS (
           WHERE scope.parent_session_id = l.resolved_dst_session_id
       )
 ),
+-- The child's own first user turn: for a subagent this literally IS the
+-- text Claude Code/Codex injected as the dispatch's prompt, not a human
+-- turn (material_origin is 'generated_context_pack', never
+-- 'human_authored' -- see polylogue-1vpm.7 corpus audit), so this
+-- deliberately does not filter on material_origin.
+child_identity_text AS (
+    SELECT
+        m.session_id AS child_session_id,
+        (
+            SELECT b.text FROM blocks b
+            WHERE b.message_id = m.message_id AND b.block_type = 'text'
+            ORDER BY b.position LIMIT 1
+        ) AS first_text
+    FROM messages m
+    WHERE m.role = 'user'
+      AND m.message_type = 'message'
+      AND m.position = (
+          SELECT MIN(m2.position) FROM messages m2
+          WHERE m2.session_id = m.session_id
+            AND m2.role = 'user'
+            AND m2.message_type = 'message'
+      )
+),
 dispatch_counts AS (
     SELECT parent_session_id, COUNT(*) AS n FROM dispatch_actions GROUP BY parent_session_id
 ),
 child_counts AS (
     SELECT parent_session_id, COUNT(*) AS n FROM resolved_children GROUP BY parent_session_id
 ),
-pairable AS (
-    SELECT dc.parent_session_id
-    FROM dispatch_counts dc
-    JOIN child_counts cc ON cc.parent_session_id = dc.parent_session_id
-    WHERE dc.n = cc.n
+-- Case 1: trivial cohort. Exactly one dispatch and exactly one resolved
+-- child for this parent -- there is no second candidate on either side, so
+-- pairing them is not a guess, it is the only interpretation the observed
+-- facts admit. No corroborating content required.
+trivial_pairs AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        c.child_session_id                     AS child_session_id
+    FROM dispatch_actions d
+    JOIN resolved_children c ON c.parent_session_id = d.parent_session_id
+    JOIN dispatch_counts dc ON dc.parent_session_id = d.parent_session_id AND dc.n = 1
+    JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id AND cc.n = 1
+),
+-- Case 2: non-trivial cohort, disambiguated by provider-asserted content
+-- identity (see the delegation_facts table comment above for the corpus
+-- verification numbers).
+content_pairs AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        c.child_session_id                     AS child_session_id
+    FROM dispatch_actions d
+    JOIN resolved_children c ON c.parent_session_id = d.parent_session_id
+    JOIN child_identity_text t ON t.child_session_id = c.child_session_id
+    WHERE d.dispatch_identity_text IS NOT NULL
+      AND d.dispatch_identity_text = t.first_text
+),
+candidate_pairs AS (
+    SELECT * FROM trivial_pairs
+    UNION
+    SELECT * FROM content_pairs
+),
+dispatch_match_counts AS (
+    SELECT parent_session_id, instruction_tool_use_block_id, COUNT(DISTINCT child_session_id) AS n
+    FROM candidate_pairs GROUP BY 1, 2
+),
+child_match_counts AS (
+    SELECT parent_session_id, child_session_id, COUNT(DISTINCT instruction_tool_use_block_id) AS n
+    FROM candidate_pairs GROUP BY 1, 2
+),
+-- A candidate pair survives only when it is the UNIQUE candidate in both
+-- directions: this dispatch matches exactly one child AND this child
+-- matches exactly one dispatch. A collision on either side (duplicate
+-- prompts, or genuinely ambiguous evidence) is excluded here and falls
+-- through to unresolved/edge_only rather than fabricating a winner.
+identity_pairs AS (
+    SELECT DISTINCT
+        cp.parent_session_id                   AS parent_session_id,
+        cp.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        cp.child_session_id                    AS child_session_id
+    FROM candidate_pairs cp
+    JOIN dispatch_match_counts dmc
+      ON dmc.parent_session_id = cp.parent_session_id
+     AND dmc.instruction_tool_use_block_id = cp.instruction_tool_use_block_id
+     AND dmc.n = 1
+    JOIN child_match_counts cmc
+      ON cmc.parent_session_id = cp.parent_session_id
+     AND cmc.child_session_id = cp.child_session_id
+     AND cmc.n = 1
 ),
 resolved_rows AS (
     SELECT
         d.parent_session_id                    AS parent_session_id,
-        c.child_session_id                     AS child_session_id,
+        ip.child_session_id                    AS child_session_id,
         'resolved'                              AS mapping_state,
         c.link_confidence                      AS link_confidence,
-        c.link_method                          AS link_method,
+        'content-identity-match'                AS link_method,
         c.inheritance                          AS inheritance,
         c.branch_point_message_id              AS branch_point_message_id,
         d.instruction_message_id               AS instruction_message_id,
@@ -1423,10 +1543,12 @@ resolved_rows AS (
         d.result_is_error                      AS result_is_error,
         d.result_exit_code                     AS result_exit_code
     FROM dispatch_actions d
-    JOIN pairable p ON p.parent_session_id = d.parent_session_id
+    JOIN identity_pairs ip
+      ON ip.parent_session_id = d.parent_session_id
+     AND ip.instruction_tool_use_block_id = d.instruction_tool_use_block_id
     JOIN resolved_children c
-      ON c.parent_session_id = d.parent_session_id
-     AND c.child_rank = d.dispatch_rank
+      ON c.parent_session_id = ip.parent_session_id
+     AND c.child_session_id = ip.child_session_id
 ),
 unresolved_rows AS (
     SELECT
@@ -1444,28 +1566,11 @@ unresolved_rows AS (
         d.result_is_error                      AS result_is_error,
         d.result_exit_code                     AS result_exit_code
     FROM dispatch_actions d
-    LEFT JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
-    WHERE cc.n IS NULL
-),
-ambiguous_rows AS (
-    SELECT
-        d.parent_session_id                    AS parent_session_id,
-        NULL                                    AS child_session_id,
-        'ambiguous'                              AS mapping_state,
-        NULL AS link_confidence, NULL AS link_method, NULL AS inheritance, NULL AS branch_point_message_id,
-        d.instruction_message_id               AS instruction_message_id,
-        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
-        d.instruction_payload                  AS instruction_payload,
-        d.dispatch_turn_model                  AS dispatch_turn_model,
-        d.requested_model                      AS requested_model,
-        d.artifact_block_id                    AS artifact_block_id,
-        d.artifact_text                        AS artifact_text,
-        d.result_is_error                      AS result_is_error,
-        d.result_exit_code                     AS result_exit_code
-    FROM dispatch_actions d
-    JOIN dispatch_counts dc ON dc.parent_session_id = d.parent_session_id
-    JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
-    WHERE dc.n != cc.n
+    WHERE NOT EXISTS (
+        SELECT 1 FROM identity_pairs ip
+        WHERE ip.parent_session_id = d.parent_session_id
+          AND ip.instruction_tool_use_block_id = d.instruction_tool_use_block_id
+    )
 ),
 edge_only_rows AS (
     SELECT
@@ -1480,8 +1585,11 @@ edge_only_rows AS (
         NULL AS dispatch_turn_model, NULL AS requested_model,
         NULL AS artifact_block_id, NULL AS artifact_text, NULL AS result_is_error, NULL AS result_exit_code
     FROM resolved_children c
-    LEFT JOIN dispatch_counts dc ON dc.parent_session_id = c.parent_session_id
-    WHERE dc.n IS NULL
+    WHERE NOT EXISTS (
+        SELECT 1 FROM identity_pairs ip
+        WHERE ip.parent_session_id = c.parent_session_id
+          AND ip.child_session_id = c.child_session_id
+    )
 ),
 quarantined_rows AS (
     SELECT
@@ -1507,7 +1615,6 @@ quarantined_rows AS (
 attempts AS (
     SELECT * FROM resolved_rows
     UNION ALL SELECT * FROM unresolved_rows
-    UNION ALL SELECT * FROM ambiguous_rows
     UNION ALL SELECT * FROM edge_only_rows
     UNION ALL SELECT * FROM quarantined_rows
 )

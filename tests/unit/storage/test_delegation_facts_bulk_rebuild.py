@@ -8,8 +8,8 @@ that scope with every session id instead of one parent at a time, turning the
 existing per-cohort insert into an archive-wide one with no new SQL shape to
 maintain. These tests prove: the bulk rebuild produces byte-identical content
 to the existing per-session ``refresh_delegation_facts_for_session`` path for
-the same underlying dispatch/link evidence, across resolved/ambiguous/edge-
-only/unresolved mapping states; and the scope-population step is load-bearing
+the same underlying dispatch/link evidence, across resolved/unresolved/edge-
+only mapping states; and the scope-population step is load-bearing
 (without it, ``delegation_facts_source``'s EXISTS-gated view produces zero
 rows for every parent, not a coincidentally-correct empty set)."""
 
@@ -115,12 +115,12 @@ def _insert_session_link(
 
 
 def _build_delegation_corpus(conn: sqlite3.Connection) -> list[str]:
-    """Three parent cohorts spanning resolved, ambiguous, and edge-only
+    """Three parent cohorts spanning resolved, unresolved, and edge-only
     mapping states -- so the comparison below is not just the trivial single-
     row case."""
     parent_ids = []
 
-    # Resolved: one dispatch, one resolved child.
+    # Resolved: one dispatch, one resolved child (trivial 1:1 cohort).
     parent_a = _insert_session(conn, native_id="parent-a")
     child_a = _insert_session(conn, native_id="child-a")
     msg_a = _insert_message(conn, session_id=parent_a, native_id="dispatch", position=0)
@@ -134,7 +134,10 @@ def _build_delegation_corpus(conn: sqlite3.Connection) -> list[str]:
     )
     parent_ids.append(parent_a)
 
-    # Ambiguous: two dispatches, one resolved child (rank-pairing can't disambiguate).
+    # Unresolved: two dispatches, one resolved child, no distinguishing
+    # content -- the content-identity join has no evidence to disambiguate
+    # (default tool_input='{}' carries no prompt), so both dispatches stay
+    # unresolved rather than a rank-pairing guess landing one as 'resolved'.
     parent_b = _insert_session(conn, native_id="parent-b")
     child_b = _insert_session(conn, native_id="child-b")
     msg_b = _insert_message(conn, session_id=parent_b, native_id="dispatch", position=0)
@@ -205,7 +208,7 @@ def test_rebuild_all_delegation_facts_matches_per_session_refresh(tmp_path: Path
     assert bulk_rows == per_session_rows
     assert bulk_rows, "corpus produced no delegation_facts rows -- comparison would be vacuous"
     mapping_states = {row[3] for row in bulk_rows}
-    assert mapping_states == {"resolved", "ambiguous", "edge_only"}, mapping_states
+    assert mapping_states == {"resolved", "unresolved", "edge_only"}, mapping_states
 
 
 def test_rebuild_all_delegation_facts_scope_population_is_load_bearing(tmp_path: Path) -> None:
