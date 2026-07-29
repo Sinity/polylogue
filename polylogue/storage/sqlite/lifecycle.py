@@ -413,6 +413,27 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # recover it once per-object declarations exist.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=46,
+        # polylogue-2qx.4: the unread-wire batch (polylogue-cgfy/cuxz.8/9x22
+        # field-landing decisions), landed as ONE bump covering every field
+        # rather than one per origin -- see index.py's v46 header comment for
+        # the full per-field list (messages.stop_reason,
+        # blocks.tool_result_outcome_unknown_reason, sessions.display_name,
+        # sessions.run_settings_json, session_links.parent_tool_use_block_id,
+        # and the new file_edits/session_refs tables).
+        #
+        # Every new column's/table's VALUES depend on parser semantics to
+        # populate honestly -- a shape-only copy-forward would leave every
+        # row/table empty, exactly the v42/v44/v45 precedent recorded above.
+        # As in those versions, DerivedDeltaClass has no category for
+        # "clone-safe shape, values via targeted reprocess"
+        # (tracked by polylogue-9rw0.1); SEMANTIC_REPARSE is the honest,
+        # conservative classification, and it keeps the existing
+        # `polylogue ops reset --index && polylogued run` full-rebuild
+        # behaviour.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

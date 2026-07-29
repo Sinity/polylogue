@@ -329,6 +329,61 @@ class TopologyEdgeStatus(PolylogueStrEnum):
     QUARANTINED = "quarantined"
 
 
+class StopReason(PolylogueStrEnum):
+    """Provider-reported terminal state for one assistant turn.
+
+    polylogue-cuxz.8: the wire carries this on 608,608 Claude assistant
+    messages while three derived columns (delegation_facts.result_status,
+    .parent_terminal_state, session_profiles.terminal_state) each guess at
+    the same fact and are 85-99% 'unknown'. Persisting the provider's own
+    value directly is what lets those consumers stop guessing. Vocabulary is
+    Anthropic's own five-value ``stop_reason`` enumeration; a provider that
+    reports something outside this set leaves the column NULL (unknown)
+    rather than widening the CHECK to a guess.
+    """
+
+    END_TURN = "end_turn"
+    TOOL_USE = "tool_use"
+    STOP_SEQUENCE = "stop_sequence"
+    MAX_TOKENS = "max_tokens"
+    REFUSAL = "refusal"
+
+
+class ToolResultUnknownReason(PolylogueStrEnum):
+    """Why ``blocks.tool_result_is_error`` is NULL for a tool_result block.
+
+    polylogue-cuxz.8: NULL alone conflates three distinct causes -- keeping
+    them distinguishable is the point (72% of blocks.tool_result_is_error is
+    NULL archive-wide, and "unknown" must not silently mean "known to be
+    fine"). NULL on this column (rather than one of these three) means the
+    outcome IS known (tool_result_is_error is set) -- this column only ever
+    describes an unknown outcome's reason.
+    """
+
+    # The provider's own record carried no outcome signal at all (no
+    # is_error/exit_code field present in the source structure).
+    NOT_REPORTED = "not_reported"
+    # The provider reported an outcome signal, but the parser has a positive
+    # reason not to trust it for this record shape (e.g. a known-unreliable
+    # sentinel value for this origin).
+    DISTRUSTED = "distrusted"
+    # This origin's parser does not yet read the field the provider carries.
+    NOT_READ = "not_read"
+
+
+class SessionRefKind(PolylogueStrEnum):
+    """Closed vocabulary for ``session_refs.kind`` (tracker-agnostic).
+
+    polylogue-cgfy: 20,702 Claude Code sessions carry a pr-link the parser
+    never reads. ``session_refs`` generalizes beyond pull requests so a
+    future issue-tracker reference lands in the same relation rather than a
+    second single-purpose table.
+    """
+
+    PULL_REQUEST = "pull_request"
+    ISSUE = "issue"
+
+
 class PasteBoundary(PolylogueStrEnum):
     """Boundary quality for detected paste spans."""
 
@@ -543,7 +598,10 @@ __all__ = [
     "Provider",
     "Role",
     "SemanticBlockType",
+    "SessionRefKind",
+    "StopReason",
     "TitleSource",
+    "ToolResultUnknownReason",
     "TopologyEdgeStatus",
     "ValidationMode",
     "ValidationStatus",

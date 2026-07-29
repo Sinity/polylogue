@@ -66,6 +66,7 @@ def _make_messages_spec() -> TableColumnSpec:
         ColumnSpec("duration_ms", "INTEGER"),
         ColumnSpec("content_hash", "BLOB"),
         ColumnSpec("occurred_at_ms", "INTEGER"),
+        ColumnSpec("stop_reason", "TEXT"),
     )
 
     writable_columns = tuple(col for col in all_columns if not col.is_generated)
@@ -103,6 +104,7 @@ def _make_blocks_spec() -> TableColumnSpec:
         ColumnSpec("language", "TEXT"),
         ColumnSpec("tool_result_is_error", "INTEGER"),
         ColumnSpec("tool_result_exit_code", "INTEGER"),
+        ColumnSpec("tool_result_outcome_unknown_reason", "TEXT"),
         ColumnSpec("content_hash", "BLOB"),
         ColumnSpec("tool_command", "TEXT", is_generated=True),
         ColumnSpec("tool_path", "TEXT", is_generated=True),

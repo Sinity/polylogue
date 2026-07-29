@@ -516,6 +516,7 @@ def write_parsed_session_to_archive(
                 INSERT INTO sessions (
                     native_id, origin, raw_id, branch_type, active_leaf_message_id,
                     title, session_kind, title_source, title_ref, title_confidence,
+                    display_name, run_settings_json,
                     git_branch, git_repository_url, commit_hash,
                     instructions_text, reported_duration_ms, provider_project_ref,
                     message_count, word_count, tool_use_count, thinking_count,
@@ -523,7 +524,7 @@ def write_parsed_session_to_archive(
                     assistant_message_count, system_message_count,
                     tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                     content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
                     branch_type = excluded.branch_type,
@@ -533,6 +534,8 @@ def write_parsed_session_to_archive(
                     title_source = COALESCE(excluded.title_source, sessions.title_source),
                     title_ref = COALESCE(excluded.title_ref, sessions.title_ref),
                     title_confidence = COALESCE(excluded.title_confidence, sessions.title_confidence),
+                    display_name = COALESCE(excluded.display_name, sessions.display_name),
+                    run_settings_json = COALESCE(excluded.run_settings_json, sessions.run_settings_json),
                     git_branch = excluded.git_branch,
                     git_repository_url = excluded.git_repository_url,
                     commit_hash = excluded.commit_hash,
@@ -557,6 +560,8 @@ def write_parsed_session_to_archive(
                     _enum_value(session.title_source),
                     _sqlite_text(session.title_ref),
                     session.title_confidence,
+                    _sqlite_text(session.display_name),
+                    _json_dumps(session.run_settings) if session.run_settings else None,
                     _sqlite_text(session.git_branch),
                     _sqlite_text(session.git_repository_url),
                     _sqlite_text(session.git_commit_hash),
@@ -649,6 +654,15 @@ def write_parsed_session_to_archive(
                 )
                 add_timing("index.blocks", t0)
                 t0 = time.perf_counter()
+                _write_file_edits(
+                    conn,
+                    session_id,
+                    messages,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                )
+                add_timing("index.file_edits", t0)
+                t0 = time.perf_counter()
                 if not bulk_build:
                     refresh_action_pairs(conn, session_id)
                 add_timing("index.action_pairs", t0)
@@ -726,6 +740,9 @@ def write_parsed_session_to_archive(
             t0 = time.perf_counter()
             _write_working_dirs(conn, session_id, session.working_directories)
             add_timing("index.working_dirs", t0)
+            t0 = time.perf_counter()
+            _write_session_refs(conn, session_id, session)
+            add_timing("index.session_refs", t0)
             t0 = time.perf_counter()
             _write_repo_edges(conn, session_id, session)
             add_timing("index.repo_edges", t0)
@@ -874,6 +891,7 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "session_repos",
         "session_commits",
         "session_model_usage",
+        "session_refs",
     ):
         conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
     # capture_gap rows are archive-generated ingest evidence, not projections
@@ -1670,6 +1688,7 @@ def _build_message_rows(
                 message.duration_ms,
                 _message_content_hash(session_id, message, position=position, variant_index=variant_index),
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
+                _enum_value(message.stop_reason),
             )
         )
     return rows
@@ -1767,6 +1786,7 @@ def _message_content_hash(
         _enum_value(message.material_origin) or "",
         _sqlite_text(message.text) or "",
         _sqlite_text(message.user_context_text) or "",
+        _enum_value(message.stop_reason) or "",
         *block_parts,
     )
 
@@ -1782,6 +1802,7 @@ def _block_content_hash(
     language: str | None,
     is_error: bool | None,
     exit_code: int | None,
+    outcome_unknown_reason: str | None = None,
 ) -> bytes:
     """Digest a block's canonical EVIDENCE, deliberately excluding identity (svfj).
 
@@ -1804,6 +1825,7 @@ def _block_content_hash(
         _sqlite_text(language) or "",
         "" if is_error is None else str(int(is_error)),
         "" if exit_code is None else str(exit_code),
+        outcome_unknown_reason or "",
     )
 
 
@@ -1836,6 +1858,7 @@ def _build_block_rows(
             language = _block_language(block)
             is_error = getattr(block, "is_error", None)
             exit_code = getattr(block, "exit_code", None)
+            outcome_unknown_reason = _enum_value(block.outcome_unknown_reason)
             # Tuple built in order defined by spec.writable_columns
             rows.append(
                 (
@@ -1852,6 +1875,7 @@ def _build_block_rows(
                     _sqlite_text(language),
                     _sqlite_bool(is_error),
                     exit_code,
+                    outcome_unknown_reason,
                     _block_content_hash(
                         block_type=block_type.value,
                         text=block.text,
@@ -1862,6 +1886,7 @@ def _build_block_rows(
                         language=language,
                         is_error=is_error,
                         exit_code=exit_code,
+                        outcome_unknown_reason=outcome_unknown_reason,
                     ),
                 )
             )
@@ -1906,6 +1931,126 @@ def _write_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
     conn.executemany(_blocks_insert_sql(), rows)
+
+
+def _build_file_edit_rows(
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
+) -> list[tuple[object, ...]]:
+    """Pure row-tuple builder for ``file_edits`` (polylogue-2qx.4).
+
+    ``ParsedFileEdit`` arrives attached to the TOOL_RESULT block that reports
+    the edit outcome (matching where the provider's own structuredPatch/
+    originalFile fields live on the wire), but ``file_edits`` is keyed by the
+    TOOL_USE block that made the call -- resolved here via the shared
+    ``tool_id``, exactly as the ``actions`` view pairs tool_use<->tool_result.
+    A TOOL_RESULT carrying ``file_edit`` with no matching TOOL_USE in this
+    same write (should not happen for a well-formed transcript) is dropped
+    rather than guessing a key.
+    """
+    tool_use_block_id_by_tool_id: dict[str, str] = {}
+    for fallback_position, message in enumerate(messages):
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        for position, block in enumerate(_message_blocks(message)):
+            if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
+                tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
+
+    rows: list[tuple[object, ...]] = []
+    for fallback_position, message in enumerate(messages):
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        for block in _message_blocks(message):
+            file_edit = getattr(block, "file_edit", None)
+            if file_edit is None or not block.tool_id:
+                continue
+            tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
+            if tool_use_block_id is None:
+                continue
+            rows.append(
+                (
+                    tool_use_block_id,
+                    session_id,
+                    message_id,
+                    _sqlite_text(file_edit.file_path),
+                    _json_dumps(file_edit.structured_patch) if file_edit.structured_patch is not None else None,
+                    _sqlite_text(file_edit.original_file),
+                    _sqlite_text(file_edit.old_string),
+                    _sqlite_text(file_edit.new_string),
+                    _sqlite_bool(file_edit.replace_all),
+                    _sqlite_bool(file_edit.user_modified),
+                    message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
+                )
+            )
+    return rows
+
+
+def _write_file_edits(
+    conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
+) -> None:
+    rows = _build_file_edit_rows(
+        session_id,
+        messages,
+        position_offset=position_offset,
+        duplicate_native_ids=duplicate_native_ids,
+    )
+    if rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO file_edits (
+                tool_use_block_id, session_id, message_id, file_path,
+                structured_patch_json, original_file, old_string, new_string,
+                replace_all, user_modified, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+
+def _write_session_refs(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
+    """Write tracker-agnostic session references (polylogue-2qx.4).
+
+    Full-replace-only (mirrors ``_write_working_dirs``/``_write_repo_edges``):
+    ``session_refs`` rows are re-derived from ``session.session_refs`` on
+    every write, not appended incrementally, since the parser always emits
+    the complete current set for a session.
+    """
+    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    for position, ref in enumerate(session.session_refs):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_refs (
+                session_id, position, kind, repo, ref_number, url, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                position,
+                _enum_value(ref.kind),
+                _sqlite_text(ref.repo),
+                ref.number,
+                ref.url,
+                observed_at_ms,
+            ),
+        )
 
 
 def _write_web_constructs(
@@ -2088,6 +2233,14 @@ def _replace_full_session_messages_and_blocks(
             rows=list(prepared.block_rows) if prepared is not None else None,
         )
         add_timing("blocks", t0)
+        t0 = time.perf_counter()
+        _write_file_edits(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        add_timing("file_edits", t0)
         t0 = time.perf_counter()
         if not bulk_build:
             refresh_action_pairs(conn, session_id)
@@ -2457,13 +2610,15 @@ def _write_session_link(
     if not session.parent_session_provider_id:
         return
     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
+    parent_tool_use_block_id = _resolve_parent_tool_use_block_id(conn, session)
+    method = "parser-parent" if parent_tool_use_block_id is None else "parent-tool-use-id"
     conn.execute(
         """
         INSERT OR REPLACE INTO session_links (
             src_session_id, dst_origin, dst_native_id, link_type,
             branch_point_message_id, inheritance,
-            status, method, confidence, evidence_json, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            status, parent_tool_use_block_id, method, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -2472,12 +2627,32 @@ def _write_session_link(
             link_type,
             branch_point_message_id,
             inheritance,
-            "parser-parent",
+            parent_tool_use_block_id,
+            method,
             1.0,
             _json_dumps({"parent_session_provider_id": session.parent_session_provider_id}),
             _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0,
         ),
     )
+
+
+def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
+    """Resolve ``parentToolUseID`` (a provider tool_id) to its block_id.
+
+    polylogue-2qx.4: ``tool_id`` values are provider-generated and globally
+    unique across a session tree, so this is a plain lookup against whatever
+    session already wrote that TOOL_USE block -- no cross-session identity
+    resolution needed. ``None`` (not found / not supplied) leaves the column
+    NULL, never a guess.
+    """
+    tool_use_provider_id = getattr(session, "parent_tool_use_provider_id", None)
+    if not tool_use_provider_id:
+        return None
+    row = conn.execute(
+        "SELECT block_id FROM blocks WHERE tool_id = ? AND block_type = 'tool_use' LIMIT 1",
+        (tool_use_provider_id,),
+    ).fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def _branch_type_from_link_type(link_type: object) -> str | None:

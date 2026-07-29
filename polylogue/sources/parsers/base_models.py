@@ -48,6 +48,29 @@ class ParsedWebConstruct(BaseModel):
         return WebConstructType(str(v).strip().lower())
 
 
+class ParsedFileEdit(BaseModel):
+    """File-edit tool-call evidence (Claude Code Edit/Write toolUseResult).
+
+    polylogue-2qx.4 / polylogue-cgfy: structuredPatch (105,123 occurrences),
+    originalFile (92,313), oldString/newString/replaceAll/filePath are
+    entirely discarded today. Attach this to the TOOL_RESULT block that
+    reports the edit outcome (where the wire carries these fields);
+    materialization resolves the paired tool_use block id via ``tool_id``
+    and writes one ``file_edits`` row keyed by that id.
+    """
+
+    file_path: str | None = None
+    # Raw structured-patch hunks as the provider emits them (list of
+    # {oldStart, oldLines, newStart, newLines, lines} dicts) -- stored
+    # verbatim as JSON, not decomposed into columns.
+    structured_patch: list[Mapping[str, object]] | None = None
+    original_file: str | None = None
+    old_string: str | None = None
+    new_string: str | None = None
+    replace_all: bool | None = None
+    user_modified: bool | None = None
+
+
 class ParsedContentBlock(BaseModel):
     """A single structured content block within a parsed message.
 
@@ -73,6 +96,14 @@ class ParsedContentBlock(BaseModel):
     # so in-session outcomes are readable instead of regex-guessed from text.
     is_error: bool | None = None
     exit_code: int | None = None
+    # polylogue-2qx.4 / polylogue-cuxz.8: why `is_error` is None for a
+    # tool_result block -- see ``core.enums.ToolResultUnknownReason``. Set
+    # this whenever `is_error` is left None on a tool_result block so the
+    # unknown has a recorded cause instead of a flat NULL.
+    outcome_unknown_reason: str | None = None
+    # polylogue-2qx.4 / polylogue-cgfy: file-edit evidence, attached to the
+    # TOOL_RESULT block carrying the provider's edit outcome fields.
+    file_edit: ParsedFileEdit | None = None
     web_constructs: list[ParsedWebConstruct] = Field(default_factory=list)
 
     @field_validator("type", mode="before")
@@ -126,6 +157,11 @@ class ParsedMessage(BaseModel):
     end_turn: bool | None = None
     user_context_text: str | None = None
     paste_spans: list[ParsedPasteEvidence] = Field(default_factory=list)
+    # polylogue-2qx.4 / polylogue-cuxz.8: the provider's own terminal-state
+    # signal for this turn (Claude ``message.stop_reason``, 608,608
+    # occurrences on the wire). None when the provider did not report one or
+    # this is not an assistant turn -- never a guess.
+    stop_reason: str | None = None
 
     @field_validator("role", mode="before")
     @classmethod
@@ -233,6 +269,20 @@ class ParsedAttachment(BaseModel):
         return v if v else None
 
 
+class ParsedSessionRef(BaseModel):
+    """Tracker-agnostic external reference observed in a session.
+
+    polylogue-2qx.4 / polylogue-cgfy: Claude Code's pr-link (20,702
+    occurrences on the wire) generalized so a future issue-tracker reference
+    lands in the same relation. ``kind`` is ``core.enums.SessionRefKind``.
+    """
+
+    kind: str
+    url: str
+    repo: str | None = None
+    number: int | None = None
+
+
 class ParsedSessionEvent(BaseModel):
     """Non-message semantic artifact in the session timeline."""
 
@@ -257,6 +307,14 @@ class ParsedSession(BaseModel):
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
+    # polylogue-2qx.4 / polylogue-cgfy: Claude Code's ``parentToolUseID``
+    # (842,819 records / 185,982 distinct dispatch ids on the wire) --  the
+    # provider-native tool_id of the PARENT session's tool_use block that
+    # dispatched this (child/subagent) session. Globally unique per provider,
+    # so storage resolves it to session_links.parent_tool_use_block_id via a
+    # plain tool_id lookup -- the real join key replacing delegation_facts'
+    # cardinality-gated ordinal dispatch<->child pairing (12.8% resolved).
+    parent_tool_use_provider_id: str | None = None
     branch_type: BranchType | None = None
     title_source: TitleSource | None = None
     # Specific provenance beyond title_source's coarse strategy label: which
@@ -291,6 +349,19 @@ class ParsedSession(BaseModel):
     # Example: ["degraded:brain-metadata-fragment"] for Antigravity brain-artifact
     # fallback sessions that fragment one work session into N single-message sessions.
     ingest_flags: list[str] = Field(default_factory=list)
+    # polylogue-2qx.4 / polylogue-cgfy: subagent/agent display name behind an
+    # opaque native id (Claude Code Task-tool slug, e.g.
+    # "greedy-squishing-hamming") -- distinct from ``title``, which is the
+    # session's own resolved content title.
+    display_name: str | None = None
+    # polylogue-2qx.4 / polylogue-cgfy: per-session provider run
+    # configuration (aistudio-drive runSettings: temperature/topP/topK/
+    # maxOutputTokens/thinkingLevel/safetySettings/enable* flags). Stored
+    # verbatim as a JSON column -- see sessions.run_settings_json.
+    run_settings: dict[str, object] | None = None
+    # polylogue-2qx.4 / polylogue-cgfy: tracker-agnostic external references
+    # (pr-link today, issue refs generalize to the same relation).
+    session_refs: list[ParsedSessionRef] = Field(default_factory=list)
 
     @field_validator("source_name", mode="before")
     @classmethod

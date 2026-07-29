@@ -25,9 +25,11 @@ from polylogue.core.types import MessageId, SessionId
 from polylogue.storage.runtime import (
     ArtifactObservationRecord,
     BlockRecord,
+    FileEditRecord,
     MessageRecord,
     RawSessionRecord,
     SessionRecord,
+    SessionRefRecord,
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
@@ -62,6 +64,10 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         git_branch=_row_text(row, "git_branch"),
         git_repository_url=_row_text(row, "git_repository_url"),
         provider_project_ref=_row_text(row, "provider_project_ref"),
+        display_name=_row_text(row, "display_name"),
+        run_settings=_json_object(
+            _parse_json(_row_get(row, "run_settings_json"), field="run_settings_json", record_id=row["session_id"])
+        ),
     )
 
 
@@ -96,6 +102,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         model_name=_row_text(row, "model_name"),
         message_type=MessageType.normalize(_row_text(row, "message_type") or "message"),
         material_origin=MaterialOrigin.normalize(_row_text(row, "material_origin")),
+        stop_reason=_row_text(row, "stop_reason"),
     )
 
 
@@ -115,6 +122,42 @@ def _row_to_content_block(row: sqlite3.Row) -> BlockRecord:
         semantic_type=SemanticBlockType.from_string(semantic_type) if semantic_type is not None else None,
         tool_result_is_error=_row_int(row, "tool_result_is_error"),
         tool_result_exit_code=_row_int(row, "tool_result_exit_code"),
+        tool_result_outcome_unknown_reason=_row_text(row, "tool_result_outcome_unknown_reason"),
+    )
+
+
+def _row_to_file_edit(row: sqlite3.Row) -> FileEditRecord:
+    structured_patch_raw = _parse_json(
+        _row_get(row, "structured_patch_json"), field="structured_patch_json", record_id=row["tool_use_block_id"]
+    )
+    structured_patch: list[dict[str, object]] | None = None
+    if isinstance(structured_patch_raw, list):
+        structured_patch = [dict(item) for item in structured_patch_raw if isinstance(item, dict)]
+    return FileEditRecord(
+        tool_use_block_id=row["tool_use_block_id"],
+        session_id=SessionId(row["session_id"]),
+        message_id=MessageId(row["message_id"]),
+        file_path=_row_text(row, "file_path"),
+        structured_patch=structured_patch,
+        original_file=_row_text(row, "original_file"),
+        old_string=_row_text(row, "old_string"),
+        new_string=_row_text(row, "new_string"),
+        replace_all=_row_optional_bool(row, "replace_all"),
+        user_modified=_row_optional_bool(row, "user_modified"),
+        observed_at_ms=_row_int(row, "observed_at_ms"),
+    )
+
+
+def _row_to_session_ref(row: sqlite3.Row) -> SessionRefRecord:
+    return SessionRefRecord(
+        ref_id=row["ref_id"],
+        session_id=SessionId(row["session_id"]),
+        position=int(row["position"]),
+        kind=row["kind"],
+        repo=_row_text(row, "repo"),
+        number=_row_int(row, "ref_number"),
+        url=row["url"],
+        observed_at_ms=_row_int(row, "observed_at_ms"),
     )
 
 
@@ -216,7 +259,9 @@ __all__ = [
     "_ms_to_iso",
     "_row_to_artifact_observation",
     "_row_to_content_block",
+    "_row_to_file_edit",
     "_row_to_session",
+    "_row_to_session_ref",
     "_row_to_message",
     "_row_to_raw_session",
 ]

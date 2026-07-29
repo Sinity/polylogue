@@ -17,7 +17,7 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.runtime import AttachmentRecord, MessageRecord, SessionRecord
+from polylogue.storage.runtime import AttachmentRecord, FileEditRecord, MessageRecord, SessionRecord, SessionRefRecord
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 
 if TYPE_CHECKING:
@@ -129,6 +129,31 @@ class RepositoryArchiveSessionMixin:
         session_ids: list[str],
     ) -> dict[str, list[ArchiveAgentPolicy]]:
         return await self.queries.get_session_agent_policies_batch(session_ids)
+
+    async def get_file_edits(self, session_id: str) -> list[FileEditRecord]:
+        """Read file-edit tool-call evidence (structuredPatch/originalFile/...) for a session.
+
+        polylogue-2qx.4: the writer materializes ``ParsedFileEdit`` evidence
+        into the dedicated ``file_edits`` table, keyed by the tool_use block
+        that made the edit -- this is the read surface for it.
+        """
+        return await self.queries.get_file_edits_for_session(session_id)
+
+    async def get_file_edits_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[FileEditRecord]]:
+        return await self.queries.get_file_edits_for_session_batch(session_ids)
+
+    async def get_session_refs(self, session_id: str) -> list[SessionRefRecord]:
+        """Read tracker-agnostic external references (pr-link, ...) for a session."""
+        return await self.queries.get_session_refs(session_id)
+
+    async def get_session_refs_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[SessionRefRecord]]:
+        return await self.queries.get_session_refs_batch(session_ids)
 
     async def get_messages_paginated(
         self,

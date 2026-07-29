@@ -54,7 +54,8 @@ _MESSAGE_RECORD_SELECT = """
     m.input_tokens,
     m.output_tokens,
     m.cache_read_tokens,
-    m.cache_write_tokens
+    m.cache_write_tokens,
+    m.stop_reason
 """
 
 
