@@ -635,15 +635,6 @@ class PolylogueConfig:
         return int(str(value))
 
     @property
-    def daemon_parse_stage_split(self) -> bool:
-        """Opt-in: pre-parse raw-materialization census candidates off the writer hold.
-
-        polylogue-m6tp phase (a). Off by default. See
-        ``polylogue.daemon.parse_prefetch.DaemonParseStage``.
-        """
-        return bool(self._data.get("daemon_parse_stage_split"))
-
-    @property
     def daemon_parse_stage_workers(self) -> int | None:
         """Worker cap for the daemon-owned pre-parse thread pool.
 
@@ -1487,20 +1478,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "daemon_parse_stage_split",
-        toml_path="daemon.raw_materialization.parse_stage_split",
-        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_SPLIT",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Opt-in (polylogue-m6tp phase (a)): pre-parse raw-materialization "
-            "census candidates in a bounded daemon-owned thread pool BEFORE "
-            "the writer hold, instead of parsing inside the writer-held pass. "
-            "Off by default; proves the parse/apply seam ahead of the "
-            "free-threaded 3.14t daemon deploy."
-        ),
-    ),
-    ConfigInventoryEntry(
         "daemon_parse_stage_workers",
         toml_path="daemon.raw_materialization.parse_stage_workers",
         env_var="POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS",
@@ -1559,7 +1536,7 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "full-ingest catch-up/live-batch candidates (small JSONL files) "
             "in a bounded thread pool BEFORE the writer hold, instead of "
             "parsing inside the writer-held pass. Off by default; mirrors "
-            "daemon_parse_stage_split's polylogue-m6tp phase (a) seam for "
+            "the daemon raw-materialization parse-stage seam for "
             "the watcher route ahead of the free-threaded 3.14t deploy."
         ),
     ),
@@ -1722,7 +1699,6 @@ _BOOL_CONFIG_KEYS = frozenset(
         "notification_email_use_tls",
         "notification_email_use_starttls",
         "observability_enabled",
-        "daemon_parse_stage_split",
         "daemon_bulk_rebuild_routing",
         "daemon_whale_raw_materialization",
         "mcp_write_enabled",
@@ -1929,7 +1905,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "raw_authority_commit_batch_size": None,
         "raw_authority_whale_payload_bytes": None,
         "subscription_plans": (),
-        "daemon_parse_stage_split": False,
         "daemon_parse_stage_workers": None,
         "daemon_parse_stage_max_inflight_bytes": None,
         "daemon_parse_stage_max_cached_tree_bytes": None,

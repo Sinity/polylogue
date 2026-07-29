@@ -181,9 +181,9 @@ def daemon_parse_stage_warm_timeout_seconds() -> float:
 class DaemonParseStage:
     """Owns the daemon's bounded pre-parse ``ThreadPoolExecutor`` and cache.
 
-    One instance lives for the daemon process's lifetime (created lazily by
-    the raw-materialization conveyor loop when ``daemon_parse_stage_split``
-    is enabled). ``warm`` is synchronous/blocking -- callers run it off the
+    One instance lives for the daemon process's lifetime (created lazily on
+    first use by the raw-materialization conveyor loop). ``warm`` is
+    synchronous/blocking -- callers run it off the
     event loop (``asyncio.to_thread``), exactly like every other conveyor
     pass, and NEVER under ``daemon_write_coordinator().run_sync``: doing so
     would defeat the entire point, since the pre-parse must run without the

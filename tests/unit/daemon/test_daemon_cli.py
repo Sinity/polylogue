@@ -1284,7 +1284,6 @@ def test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count
     from polylogue.daemon import cli as daemon_cli
 
     class FakeResolved:
-        daemon_parse_stage_split = True
         daemon_bulk_rebuild_routing = False
 
     class FakeStage:
@@ -1367,40 +1366,6 @@ def test_periodic_raw_materialization_yields_to_pending_browser_capture_spool(
         asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
 
 
-def test_periodic_raw_materialization_flag_off_never_warms_parse_stage(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """polylogue-m6tp phase (a): flag off (the default) must never construct
-    or call the parse-stage warmer, and the ``prefetch_cache`` kwarg threaded
-    into ``_drain_raw_materialization_once`` must be ``None`` -- reproducing
-    the exact unmodified in-hold parse path."""
-    from polylogue.daemon import cli as daemon_cli
-
-    class FakeResolved:
-        daemon_parse_stage_split = False
-        daemon_bulk_rebuild_routing = False
-
-    seen_prefetch_cache: list[object] = []
-
-    def fail_daemon_parse_stage() -> object:
-        pytest.fail("parse-stage warmer must not be constructed when the flag is off")
-
-    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
-        partial = cast(functools.partial[object], func)
-        seen_prefetch_cache.append(partial.keywords["prefetch_cache"])
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", fail_daemon_parse_stage)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert seen_prefetch_cache == [None]
-
-
 def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drain(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1417,7 +1382,6 @@ def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drai
     from polylogue.product.raw_authority import RawMaterializationCounts
 
     class FakeResolved:
-        daemon_parse_stage_split = True
         daemon_bulk_rebuild_routing = False
 
     order: list[str] = []
@@ -1469,7 +1433,6 @@ def test_periodic_raw_materialization_flag_on_warm_exception_still_hands_back_ca
     from polylogue.daemon import cli as daemon_cli
 
     class FakeResolved:
-        daemon_parse_stage_split = True
         daemon_bulk_rebuild_routing = False
 
     _sentinel_cache = object()
@@ -1516,7 +1479,6 @@ def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_w
     from polylogue.product.raw_authority import RawMaterializationCounts
 
     class FakeResolved:
-        daemon_parse_stage_split = True
         daemon_bulk_rebuild_routing = False
 
     warm_delay_seconds = 0.2
