@@ -1220,11 +1220,14 @@ def test_pr_link_record_persisted_as_session_event_not_dropped() -> None:
     # Containment, not equality: the parser also carries the record's own
     # `summary` text. Pinning an exact dict would make every future field
     # addition a test failure rather than a contract change.
-    assert pr_events[0].payload.items() >= {
-        "pr_number": 166,
-        "pr_url": "https://github.com/Sinity/polylogue/pull/166",
-        "pr_repository": "Sinity/polylogue",
-    }.items()
+    assert (
+        pr_events[0].payload.items()
+        >= {
+            "pr_number": 166,
+            "pr_url": "https://github.com/Sinity/polylogue/pull/166",
+            "pr_repository": "Sinity/polylogue",
+        }.items()
+    )
 
 
 def test_file_history_snapshot_persisted_as_session_event_not_dropped() -> None:
@@ -1270,11 +1273,14 @@ def test_file_history_snapshot_persisted_as_session_event_not_dropped() -> None:
     event = fhs_events[0]
     assert event.source_message_provider_id == "snap-1"
     # Containment, not equality -- see the pr-link assertion above.
-    assert event.payload.items() >= {
-        "is_snapshot_update": False,
-        "file_count": 2,
-        "files": [
-            "/realm/project/sinnix/hosts/sinnix-prime/storage.nix",
-            "/realm/project/sinnix/modules/foundation.nix",
-        ],
-    }.items()
+    assert (
+        event.payload.items()
+        >= {
+            "is_snapshot_update": False,
+            "file_count": 2,
+            "files": [
+                "/realm/project/sinnix/hosts/sinnix-prime/storage.nix",
+                "/realm/project/sinnix/modules/foundation.nix",
+            ],
+        }.items()
+    )
